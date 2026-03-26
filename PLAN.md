@@ -670,11 +670,268 @@ Assets/
 
 ---
 
-## 十、验证方案
+## 十、测试策略
 
-- **Sprint 1**：接口编译通过 + 人工 review 契约设计
-- **Sprint 2**：demo YAML 剧本端到端跑通（NUnit 单测 + Play Mode）
-- **Sprint 3**：完整游戏循环手动验收
-- **Sprint 4**：编辑器创建 → 导出 → 运行的闭环测试
-- **Sprint 5-6**：各功能独立验证 + 集成回归
-- **Sprint 7**：示例项目从零跑通作为最终验收
+### 测试基础设施
+
+**CI 配置**：GitHub Actions + Unity `-batchmode -runTests`，每次 PR 自动运行全部测试。
+
+**测试分类**：
+
+| 类型 | 框架 | 运行环境 | 用途 |
+|------|------|---------|------|
+| **Edit Mode Test** | NUnit | 不需要 Unity 运行时 | 纯 C# 逻辑（Core 层全部） |
+| **Play Mode Test** | NUnit + UnityTest | 需要 Unity 运行时，无需 GUI 交互 | 表现层行为、系统集成 |
+| **集成测试剧本** | 自定义 YAML 测试场景 | Play Mode | 端到端流程验证 |
+| **截图回归测试** | Play Mode + ImageAssert | Play Mode | 视觉效果变更检测 |
+
+### 测试规范
+
+每个 agent 提交的模块必须附带对应测试，**测试通过是合入条件**。
+
+---
+
+### Sprint 1 — 核心骨架
+
+全部 Edit Mode Test，100% 自动化。
+
+```
+Tests/EditMode/
+├── EventBusTests.cs              -- 发布/订阅/取消订阅、多订阅者、事件隔离
+├── ServiceLocatorTests.cs        -- 注册/获取/覆盖注册/未注册异常
+└── InterfaceContractTests.cs     -- 反射扫描：确保所有 ICommandHandler 实现都有 CommandType
+```
+
+### Sprint 2 — 引擎 + 表现层
+
+**Edit Mode（Core 逻辑）**：
+```
+Tests/EditMode/
+├── ScriptParser/
+│   ├── YamlScenarioLoaderTests.cs     -- YAML 解析正确性、畸形数据容错、嵌套结构
+│   └── CommandDataTests.cs            -- 参数提取、类型转换、缺省值
+├── ScenarioEngine/
+│   ├── ScenarioEngineTests.cs         -- 指令顺序执行、场景跳转、空场景处理
+│   ├── CommandExecutorTests.cs        -- Handler 查找、未注册类型报错
+│   ├── WaitControllerTests.cs         -- 等待/完成回调
+│   └── FlowControlTests.cs           -- jump、条件分支（true/false 路径）、子程序调用栈
+├── VariableSystem/
+│   ├── VariableStoreTests.cs          -- 三个作用域读写、类型转换、不存在的变量
+│   └── ExpressionEvaluatorTests.cs    -- 算术、比较、逻辑组合、嵌套括号、语法错误
+└── Commands/
+    └── CommandRegistryTests.cs        -- 注册、重复注册、按 type 查找
+```
+
+**Play Mode（表现层行为）**：
+```
+Tests/PlayMode/
+├── Dialogue/
+│   ├── TextAnimatorTests.cs           -- 打字机效果：逐字显示计时、内联标签（wait/speed）、完成回调
+│   └── DialoguePresenterTests.cs      -- 显示对话 → 文本内容正确、角色名正确、语音触发
+├── Character/
+│   ├── CharacterPresenterTests.cs     -- 显示/隐藏/切换位置/表情切换
+│   └── ExpressionControllerTests.cs   -- 差分合成：底图+面部图层叠正确
+├── Background/
+│   └── BackgroundPresenterTests.cs    -- 切换背景、转场完成回调、双缓冲交换
+├── Audio/
+│   ├── BgmControllerTests.cs          -- 播放/暂停/淡入淡出/交叉混合
+│   ├── SeControllerTests.cs           -- 多通道并行播放
+│   └── VoiceControllerTests.cs        -- 播放/停止/播放完成事件
+└── Integration/
+    └── ScenarioIntegrationTests.cs    -- 加载测试 YAML → 自动推进 → 断言最终状态
+```
+
+**集成测试剧本** — `Tests/Fixtures/test_all_commands.yaml`：
+
+```yaml
+# 覆盖所有指令类型的测试剧本
+scenes:
+  - id: "test_dialogue"
+    commands:
+      - { type: bg, asset: "test_bg", transition: { type: fade, duration: 0.1 } }
+      - { type: char_show, character: "test_char", expression: "default", position: center }
+      - { type: dialogue, character: "test_char", text: "测试文本" }
+      - { type: set, var: "flag_a", value: 1 }
+      - { type: condition, if: "flag_a == 1", then: { jump: "test_choice" }, else: { jump: "test_fail" } }
+  - id: "test_choice"
+    commands:
+      - { type: choice, style: "text", options: [{ id: "a", label: "A", jump: "test_parallel" }] }
+  - id: "test_parallel"
+    commands:
+      - type: parallel
+        commands:
+          - { type: bg, asset: "test_bg_2", transition: { type: fade, duration: 0.1 } }
+          - { type: char_show, character: "test_char", expression: "smile" }
+      - { type: dialogue, character: "test_char", text: "并行指令测试通过" }
+      - { type: jump, target: "test_end" }
+  - id: "test_end"
+    commands:
+      - { type: set, var: "test_completed", value: true }
+  - id: "test_fail"
+    commands:
+      - { type: set, var: "test_completed", value: false }
+```
+
+```csharp
+[UnityTest]
+public IEnumerator AllCommands_ExecuteCorrectly()
+{
+    var engine = SetupTestEngine("test_all_commands");
+    engine.Start();
+
+    // 自动推进所有对话（模拟点击）
+    while (!engine.IsFinished)
+    {
+        if (engine.IsWaitingForClick) engine.AdvanceClick();
+        if (engine.IsWaitingForChoice) engine.SelectChoice("a");
+        yield return null;
+    }
+
+    Assert.IsTrue(engine.Context.Variables.GetBool("test_completed"));
+}
+```
+
+### Sprint 3 — 游戏体验完善
+
+**Edit Mode**：
+```
+Tests/EditMode/
+├── SaveSystem/
+│   ├── SaveSerializerTests.cs         -- 序列化/反序列化一致性、版本迁移
+│   ├── SaveManagerTests.cs            -- 存档/读档/删除/列表、存档槽位上限
+│   └── SnapshotTests.cs              -- 各 Provider 快照捕获/恢复数据一致
+├── Settings/
+│   ├── GameSettingsTests.cs           -- 默认值、修改后持久化、重置
+│   └── GameSettingsManagerTests.cs    -- JSON 读写、事件发布
+└── PlaybackControl/
+    ├── ReadFlagManagerTests.cs        -- 已读标记：标记/查询/持久化
+    └── BacklogManagerTests.cs         -- 记录添加、容量限制、按索引查询
+```
+
+**Play Mode**：
+```
+Tests/PlayMode/
+├── SaveLoad/
+│   └── SaveLoadIntegrationTests.cs    -- 运行剧本到中间 → 存档 → 修改状态 → 读档 → 断言状态恢复
+├── Settings/
+│   └── SettingsApplyTests.cs          -- 修改 CharacterInterval → 断言打字速度变化
+│                                          修改 BgmVolume → 断言 AudioSource.volume 变化
+├── PlaybackControl/
+│   ├── AutoPlayTests.cs              -- 开启自动 → 断言对话按设定间隔自动推进
+│   ├── SkipTests.cs                  -- 快进已读 → 跳过；快进未读 → 停止（SkipOnlyRead=true）
+│   └── BacklogReplayTests.cs         -- 打开 Backlog → 点击条目 → 断言语音重播触发
+└── Choice/
+    └── ChoicePresenterTests.cs        -- 显示选项 → 模拟选择 → 断言返回正确 id + 跳转
+```
+
+### Sprint 4 — 编辑器
+
+Editor 测试用 Edit Mode，通过代码操作 GraphView 对象：
+
+```
+Tests/EditMode/
+└── Editor/
+    ├── GraphSerializationTests.cs     -- 构建 Graph → 转 YAML → 转回 Graph → 断言节点/连线一致
+    ├── NodeCreationTests.cs           -- 代码创建各类节点 → 断言端口数量、属性默认值
+    └── YamlRoundTripTests.cs          -- YAML → Graph → YAML → 断言两份 YAML 内容等价
+```
+
+### Sprint 5 — 表现增强 + 鉴赏
+
+**Play Mode**：
+```
+Tests/PlayMode/
+├── Transition/
+│   └── TransitionEffectTests.cs       -- 每种转场效果执行 → 断言完成回调触发、front/back 交换
+├── Character/
+│   └── CharacterAnimationTests.cs     -- 入场/退场动画 → 断言位置/透明度变化
+├── Gallery/
+│   ├── UnlockManagerTests.cs          -- 设置 global 变量 → 断言解锁状态
+│   └── CgGalleryTests.cs             -- 解锁 CG → 鉴赏列表包含该 CG
+```
+
+**截图回归测试**（可选，用于视觉变更检测）：
+```csharp
+[UnityTest]
+public IEnumerator FadeTransition_MatchesBaseline()
+{
+    SetupBackground("test_bg_1");
+    yield return ExecuteTransition("fade", "test_bg_2", 0.5f);
+
+    var screenshot = CaptureScreenshot();
+    ImageAssert.AreEqual(LoadBaseline("fade_transition"), screenshot, tolerance: 0.01f);
+}
+```
+
+### Sprint 6 — 高级扩展
+
+**Edit Mode**：
+```
+Tests/EditMode/
+├── DSL/
+│   ├── DslLexerTests.cs               -- 词法分析：各 token 类型识别、错误行号报告
+│   ├── DslParserTests.cs              -- 语法分析：各语法结构解析正确
+│   └── DslRoundTripTests.cs           -- DSL → YAML → DSL → 断言等价
+├── Localization/
+│   └── LocalizationManagerTests.cs    -- 多语言加载、key 查找、缺失 key 回退
+└── VoiceBookmark/
+    └── VoiceBookmarkManagerTests.cs   -- 添加/删除/查询/持久化
+```
+
+**Play Mode**：
+```
+Tests/PlayMode/
+├── VoiceExpressionSync/
+│   └── ExpressionTimelineTests.cs     -- 播放语音 → 到达时间标记 → 断言表情切换事件触发
+├── Debug/
+│   └── SceneJumpTests.cs             -- JumpToScene → 断言各子系统状态正确重建
+└── VoiceBookmark/
+    └── BookmarkJumpTests.cs          -- 收藏 → 跳转 → 断言完整状态恢复
+```
+
+### Sprint 7 — CI + 最终验收
+
+```yaml
+# .github/workflows/test.yml
+name: Tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: game-ci/unity-test-runner@v4
+        with:
+          testMode: all          # EditMode + PlayMode
+          unityVersion: 6000.x
+          coverageOptions: generateBadges
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: CodeCoverage/
+```
+
+最终验收：完整示例项目自动测试跑通 = 全部功能可用。
+
+---
+
+### 测试覆盖目标
+
+| 层 | 目标覆盖率 | 测试类型 | 说明 |
+|----|-----------|---------|------|
+| **Core 层** | ≥90% | Edit Mode | 纯逻辑，必须高覆盖 |
+| **Presentation 层** | ≥70% | Play Mode | 行为逻辑可测，视觉效果靠截图回归 |
+| **Editor 层** | ≥60% | Edit Mode | 序列化/反序列化必测，GUI 交互难自动化 |
+| **集成** | 关键路径 100% | Play Mode | 测试剧本覆盖所有指令类型和流程分支 |
+
+### 每个 Sprint 的验证方式
+
+| Sprint | 自动化测试 | 人工验证 |
+|--------|-----------|---------|
+| Sprint 1 | Edit Mode：接口契约、EventBus、ServiceLocator | review 接口设计 |
+| Sprint 2 | Edit Mode：解析/变量/引擎逻辑；Play Mode：表现层行为 + 集成剧本 | 视觉效果确认（首次搭建场景） |
+| Sprint 3 | Edit Mode：存档序列化/设置持久化；Play Mode：存读档一致性、设置生效、播放控制 | 完整游戏循环体验 |
+| Sprint 4 | Edit Mode：Graph ↔ YAML 往返一致性 | 编辑器 GUI 交互体验 |
+| Sprint 5 | Play Mode：转场完成/动画行为 + 截图回归 | 视觉效果审美确认 |
+| Sprint 6 | Edit Mode：DSL 往返/本地化/收藏管理；Play Mode：语音同步/跳转恢复 | 高级功能体验 |
+| Sprint 7 | CI 全量测试 + 示例项目自动跑通 | 最终整体体验 |
