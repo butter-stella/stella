@@ -257,6 +257,39 @@ public class ChoiceOption
 - 动画（入场/退场/呼吸）
 - 表情切换统一为 `SetExpression(string id)`，各 Renderer 内部决定具体行为
 
+**立绘动画指令**：
+
+通过 `char_move` 和 `char_anim` 指令控制立绘运行时动画，基于 DOTween 实现：
+
+```yaml
+# 移动到指定位置
+- { type: char_move, character: "sakura", position: right, duration: 0.5, ease: OutQuad }
+
+# 播放预设动画
+- { type: char_anim, character: "sakura", anim: "jump" }
+- { type: char_anim, character: "sakura", anim: "shake", intensity: 8, duration: 0.3 }
+- { type: char_anim, character: "sakura", anim: "nod" }
+
+# 可与其他指令并行
+- type: parallel
+  commands:
+    - { type: char_move, character: "sakura", position: center, duration: 0.5 }
+    - { type: char_anim, character: "kaito", anim: "shake" }
+```
+
+内置动画预设：
+
+| 预设 | 效果 | 典型用途 |
+|------|------|---------|
+| `jump` | 上下弹跳 | 惊讶、开心 |
+| `shake` | 左右震动 | 受惊、愤怒 |
+| `nod` | 小幅下移回弹 | 点头 |
+| `bounce` | 缩放弹跳 | 兴奋 |
+| `fade_in` / `fade_out` | 透明度渐变 | 入场/退场 |
+| `slide_in` / `slide_out` | 从屏幕外滑入/滑出 | 入场/退场 |
+
+支持自定义动画：通过注册 `ICharacterAnimation` 实现扩展。
+
 ### 4.3 背景系统
 - 双缓冲（front/back RawImage）
 - 转场效果基于 Shader（fade/dissolve/wipe/pixelate/blur），可扩展
