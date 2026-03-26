@@ -1,0 +1,448 @@
+# Natsume DSL 详细设计
+
+> **设计理念：脚本即演出。** 编剧写完 DSL 脚本就能完成 90% 的演出效果，程序员只负责特殊定制。
+> DSL 与 YAML 双向等价转换，DSL 是编剧的书写层，YAML 是框架的存储层/IR。
+
+## 1. 设计原则
+
+1. **编剧零门槛** — 不需要理解编程概念，看示例即可上手
+2. **省略即合理** — 所有参数都有智能默认值，只写需要改变的部分
+3. **高频操作最短语法** — 对话、表情切换、场景跳转这些最常用的操作，语法最简洁
+4. **渐进式复杂度** — 简单场景一行搞定，复杂演出可以逐步加参数，不用换语法体系
+
+## 2. 文件格式
+
+- 扩展名：`.natsume`
+- 编码：UTF-8
+- 注释：`//` 行注释
+- 一个文件 = 一个剧本（scenario），可包含多个场景
+
+## 3. 核心语法
+
+### 3.1 场景定义
+
+```
+@scene scene_001 "樱花树下的相遇"
+```
+
+`@scene` 后跟场景 ID，可选标题（仅用于编辑器显示和 Backlog）。
+
+### 3.2 对话（最高频操作，语法最短）
+
+```
+// 基本对话 — 角色名 + 日式括号
+sakura「你好，初次见面。」
+
+// 旁白 — 无角色名
+「窗外下起了雨。」
+
+// 内心独白
+sakura（这个人...好奇怪。）
+
+// 附带语音
+sakura「你好，初次见面。」 #voice:sakura_001
+
+// 句内表情切换 — 编剧只需标注语义位置
+sakura「我本来很开心的...[surprised]但是听到这个消息...[cry]呜呜...」
+
+// 句内内联效果
+sakura「那个人就是..{wait:500}{speed:0.3}你吗？」
+```
+
+**默认行为**：
+- 打字机速度使用全局设置
+- 自动等待玩家点击后推进
+- 如有语音，自动播放
+
+### 3.3 对话框模式切换
+
+```
+// 切换到全屏文本模式（独白、信件、旁白）
+@nvl
+「那是一个寒冷的冬天。」
+「风呼啸着穿过空旷的街道。」
+「没有人知道，一切即将改变。」
+@nvl off
+
+// 无框叠字模式
+@overlay
+「（我到底...在做什么呢）」
+@overlay off
+```
+
+`@nvl` / `@overlay` 作为模式开关，之后的所有对话都使用该模式，直到 `off` 或切换。不需要每句都写 `mode`。
+
+### 3.4 背景
+
+```
+// 基本切换 — 默认 fade 0.5s
+@bg bg_school
+
+// 指定转场
+@bg bg_school fade 0.8
+@bg bg_sunset dissolve 1.0
+@bg bg_night wipe 0.6
+```
+
+**省略规则**：不写转场类型和时间 = `fade 0.5`。
+
+### 3.5 立绘
+
+```
+// 显示 — 默认居中、默认表情、默认 fade 入场
+@show sakura
+
+// 指定表情和位置
+@show sakura smile left
+@show kaito default right
+
+// 隐藏
+@hide sakura
+@hide all
+
+// 切换表情（立绘已显示时）
+@expr sakura surprised
+@expr sakura cry
+```
+
+**省略规则**：
+- 不写表情 = 使用角色配置的 `default`
+- 不写位置 = `center`
+- 不写过渡 = `fade 0.3`
+
+### 3.6 立绘动画
+
+```
+// 移动
+@move sakura right          // 移动到预设位置，默认 0.5s
+@move sakura right 0.3      // 指定时间
+@move sakura 0.7 0.5        // 自定义坐标 (x, y)
+
+// 预设动画 — 一个词搞定
+@anim sakura jump
+@anim sakura shake
+@anim sakura nod
+@anim sakura bounce
+
+// 带参数
+@anim sakura shake strong    // 预设强度别名
+@anim sakura shake 10 0.5    // 自定义 intensity duration
+```
+
+**强度别名**：`light` / `normal`（默认）/ `strong`，编剧不需要记数值。
+
+### 3.7 SD 插画
+
+```
+// 在对话框旁弹出 SD 小图
+@sd sakura_chibi_angry
+
+// 指定位置和动画
+@sd sakura_chibi_shock center pop
+
+// 自动消失（秒）
+@sd sakura_chibi_laugh 1.5s
+
+// 清除
+@sd off
+```
+
+**省略规则**：不写位置 = `dialogue_right`，不写动画 = `pop`。
+
+### 3.8 音频
+
+```
+// BGM — 默认淡入
+@bgm bgm_spring
+@bgm bgm_spring 1.5        // 指定淡入时间
+@bgm off                    // 淡出停止
+@bgm off 2.0               // 指定淡出时间
+
+// 音效
+@se se_door_open
+@se se_rain loop             // 循环音效
+@se se_rain off              // 停止指定音效
+
+// 语音（通常不需要手写，跟在对话后面用 #voice: 即可）
+@voice sakura_001
+```
+
+### 3.9 转场与特效
+
+```
+// 屏幕特效
+@effect shake               // 屏幕震动
+@effect flash                // 白屏闪光
+@effect blur 0.5             // 模糊
+@effect off                  // 清除所有特效
+
+// 黑屏过渡（常用于时间跳跃）
+@fade out 1.0
+「第二天——」
+@fade in 1.0
+```
+
+### 3.10 分支选择
+
+```
+// 基本选择
+@choice
+  - "一起走吧" -> scene_go
+  - "今天有点忙..." -> scene_busy
+
+// 带变量修改
+@choice
+  - "一起走吧" -> scene_go {sakura_affection += 5}
+  - "今天有点忙..." -> scene_busy
+
+// 带条件显示（好感不够时隐藏选项）
+@choice
+  - "一起走吧" -> scene_go {sakura_affection += 5} ?if sakura_affection >= 5
+  - "今天有点忙..." -> scene_busy
+
+// 带提示文本
+@choice "你该怎么回应？"
+  - "一起走吧" -> scene_go
+  - "今天有点忙..." -> scene_busy
+```
+
+### 3.11 变量与条件
+
+```
+// 赋值
+@set talked_to_sakura = true
+@set sakura_affection += 5
+
+// 条件跳转
+@if sakura_affection >= 10
+  @jump good_ending
+@elif sakura_affection >= 5
+  @jump normal_ending
+@else
+  @jump bad_ending
+
+// 条件段落（控制一段内容是否显示）
+@if has_key
+  sakura「你有钥匙！太好了。」
+@else
+  sakura「没有钥匙的话...怎么办呢。」
+@end
+```
+
+### 3.12 流程控制
+
+```
+// 跳转场景
+@jump scene_002
+
+// 调用子场景（执行完后返回）
+@call flashback_001
+
+// 结束当前剧本
+@end
+```
+
+### 3.13 并行指令
+
+```
+// 同时执行多个操作
+@parallel
+  @bg bg_sunset dissolve 1.0
+  @move sakura center 0.5
+  @anim kaito shake
+@end
+```
+
+编剧只有在需要"多件事同时发生"时才用 `@parallel`，日常演出不需要。
+
+### 3.14 等待
+
+```
+@wait 1.5                   // 等待 1.5 秒
+@wait click                  // 等待玩家点击
+```
+
+大部分情况不需要手写 `@wait` — 对话自动等待点击，动画自动等待完成。
+
+## 4. 完整示例
+
+```
+// demo.natsume
+@scene start "序章"
+
+// 背景和角色登场
+@bg bg_school_gate
+@show sakura smile left
+@show kaito default right
+
+// 日常对话
+sakura「今天天气真好呢。」 #voice:sakura_001
+kaito「是啊。」
+
+// 演出：sakura 开心地跳了一下
+@anim sakura jump
+sakura「对了！放学后一起去新开的咖啡店吧！」 #voice:sakura_002
+
+// 选择分支
+@choice
+  - "好啊，走吧" -> scene_cafe {sakura_affection += 5}
+  - "今天有点忙..." -> scene_reject
+
+//========================================
+@scene scene_cafe "咖啡店"
+
+@bg bg_cafe fade 1.0
+@show sakura smile center
+
+sakura「你看你看，这个蛋糕好可爱！」 #voice:sakura_010
+@sd sakura_chibi_excited 2s
+@anim sakura bounce
+sakura「我要点这个！」 #voice:sakura_011
+
+// 回忆闪回
+@fade out 0.5
+@overlay
+「（她的笑容...让我想起了小时候的事。）」
+@overlay off
+@fade in 0.5
+
+// 表情变化的长台词
+sakura「我一直很喜欢这种店呢。[default]不过...[sad]自从那件事之后就没怎么来过了。」 #voice:sakura_012
+
+@if sakura_affection >= 10
+  @jump good_ending
+@else
+  @jump normal_ending
+
+//========================================
+@scene scene_reject "拒绝"
+
+@expr sakura sad
+sakura「这样啊...那没关系。」 #voice:sakura_020
+@anim sakura nod
+
+@jump normal_ending
+
+//========================================
+@scene good_ending "Good End"
+
+@nvl
+「那天之后，我们的关系发生了变化。」
+「不知不觉间，放学后一起回家成了习惯。」
+「那个春天的相遇，改变了一切。」
+@nvl off
+
+// END
+@bg bg_sakura dissolve 2.0
+@hide all
+「—— Good End ——」
+@end
+
+//========================================
+@scene normal_ending "Normal End"
+
+@nvl
+「日子一天天过去，一切都没有改变。」
+「但是那个春天的记忆，我一直没有忘记。」
+@nvl off
+
+「—— Normal End ——」
+@end
+```
+
+## 5. 语法速查表
+
+| 操作 | 语法 | 最短形式 |
+|------|------|---------|
+| 对话 | `角色「台词」 #voice:id` | `角色「台词」` |
+| 旁白 | `「文本」` | `「文本」` |
+| 独白 | `角色（文本）` | `角色（文本）` |
+| 背景 | `@bg asset transition duration` | `@bg asset` |
+| 显示立绘 | `@show char expr pos` | `@show char` |
+| 隐藏立绘 | `@hide char` | `@hide all` |
+| 表情 | `@expr char expression` | — |
+| 句内表情 | `[expression]` | — |
+| 移动 | `@move char pos duration` | `@move char pos` |
+| 动画 | `@anim char type intensity` | `@anim char type` |
+| SD 插画 | `@sd asset pos anim duration` | `@sd asset` |
+| BGM | `@bgm asset fadein` | `@bgm asset` |
+| 音效 | `@se asset` | `@se asset` |
+| 全屏对话 | `@nvl ... @nvl off` | — |
+| 无框叠字 | `@overlay ... @overlay off` | — |
+| 特效 | `@effect type` | — |
+| 黑屏 | `@fade out/in duration` | `@fade out/in` |
+| 选择 | `@choice` + 选项列表 | — |
+| 变量 | `@set var = value` | — |
+| 条件 | `@if ... @elif ... @else ... @end` | — |
+| 跳转 | `@jump scene_id` | — |
+| 并行 | `@parallel ... @end` | — |
+| 等待 | `@wait duration/click` | — |
+| 场景 | `@scene id "title"` | `@scene id` |
+
+## 6. 智能默认值总表
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| 转场类型 | `fade` | 背景/立绘切换 |
+| 转场时长 | `0.5s`（背景）/ `0.3s`（立绘） | 可在项目配置中全局修改 |
+| 立绘位置 | `center` | 第一个角色默认居中 |
+| 立绘表情 | `default` | 取角色配置中的 default |
+| 动画强度 | `normal` | light / normal / strong |
+| 动画时长 | 预设自带 | jump=0.4s, shake=0.3s, nod=0.3s, bounce=0.35s |
+| SD 位置 | `dialogue_right` | 对话框右侧 |
+| SD 动画 | `pop` | 弹出效果 |
+| BGM 淡入 | `1.0s` | — |
+| BGM 淡出 | `1.0s` | — |
+| 对话推进 | 等待点击 | 有语音时可配置等语音播完 |
+
+## 7. DSL ↔ YAML 转译
+
+### 转译器架构
+
+```
+ScriptParser/
+├── DslLexer.cs                -- 词法分析：将 .natsume 文本分割为 Token 流
+├── DslParser.cs               -- 语法分析：Token 流 → AST（抽象语法树）
+├── DslToYamlCompiler.cs       -- AST → YAML（填充默认值、展开简写）
+├── YamlToDslDecompiler.cs     -- YAML → DSL（尽量还原简写形式）
+├── DslValidator.cs            -- 静态检查：未定义的角色/场景引用、死路检测
+└── Editor/
+    └── DslImporter.cs         -- Unity Asset Importer：.natsume 文件导入时自动转译
+```
+
+### 转译示例
+
+DSL：
+```
+@show sakura
+sakura「你好。」
+@anim sakura jump
+```
+
+等价 YAML：
+```yaml
+commands:
+  - type: char_show
+    character: "sakura"
+    expression: "default"
+    position: center
+    transition: { type: fade, duration: 0.3 }
+  - type: dialogue
+    character: "sakura"
+    text: "你好。"
+    mode: "adv"
+  - type: char_anim
+    character: "sakura"
+    anim: "jump"
+    intensity: normal
+```
+
+编剧写 3 行，等价于 YAML 的 12 行。默认值由转译器自动填充。
+
+### 静态检查
+
+`DslValidator` 在转译时自动检查：
+- 引用了未定义的角色 → 警告
+- `@jump` 指向不存在的场景 → 错误
+- 场景无出口（无 jump/choice/end）→ 死路警告
+- 变量在 `@if` 中使用但从未 `@set` → 警告
