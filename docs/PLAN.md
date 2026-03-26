@@ -599,15 +599,9 @@ DebugTools/
 
 ### 6.5 DSL 脚本系统
 
-轻量 DSL ↔ YAML 双向转译。
+编剧的主要工作界面。设计理念：**脚本即演出，写完即可跑**。
 
-```
-ScriptParser/
-├── DslLexer.cs / DslParser.cs         -- 词法/语法分析
-├── DslToYamlCompiler.cs               -- DSL → YAML
-├── YamlToDslDecompiler.cs             -- YAML → DSL
-└── Editor/DslImporter.cs              -- .novel 文件 Asset Importer
-```
+详细设计见 [DSL.md](DSL.md) — 包含完整语法定义、智能默认值、转译器架构、完整示例。
 
 ### 6.6 本地化系统
 
