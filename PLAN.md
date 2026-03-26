@@ -56,12 +56,15 @@ scenes:
         text: "初次见面，我叫樱。"
         voice: "sakura_ch01_001"
       - type: choice
+        style: "text"              # 选项展示风格，由游戏项目注册的 IChoicePresenter 处理
         prompt: "你该怎么回应？"
         options:
-          - text: "你好，我叫..."
+          - id: "greet"
+            label: "你好，我叫..."
             jump: "scene_002a"
             set: { sakura_affection: "+5" }
-          - text: "......"
+          - id: "silent"
+            label: "......"
             jump: "scene_002b"
 ```
 
@@ -150,7 +153,71 @@ public interface ISnapshotProvider
 
 各子系统实现此接口，存档时统一收集快照，读档时统一恢复。
 
-### 3.6 指令并行执行
+### 3.6 选择系统（抽象）
+
+选择的本质是「暂停引擎 → 等待玩家做出选择 → 返回选中的 option id」。具体用什么 UI 展示（文字列表、地图选点、角色头像…）不是引擎关心的事。
+
+```csharp
+// 核心层只定义接口
+public interface IChoicePresenter
+{
+    string Style { get; }  // 对应 YAML 中的 style 字段
+    Task<string> ShowAndWaitAsync(ChoiceData data);  // 返回选中的 option id
+}
+
+// 选择数据（纯数据，不含 UI 逻辑）
+public class ChoiceData
+{
+    public string Style;                    // "text", "map", "character", 自定义...
+    public string Prompt;                   // 可选的提示文字
+    public List<ChoiceOption> Options;
+    public Dictionary<string, object> Extra; // style 特有的扩展参数
+}
+
+public class ChoiceOption
+{
+    public string Id;                       // 选项唯一标识
+    public string Label;                    // 显示文本（部分 style 可能不用）
+    public string Jump;                     // 跳转目标
+    public Dictionary<string, string> Set;  // 变量修改
+    public string Condition;                // 可选：显示条件表达式
+    public Dictionary<string, object> Extra; // style 特有的扩展参数（坐标、图片等）
+}
+```
+
+**引擎流程**：`ChoiceCommandHandler` 根据 `style` 字段查找对应的 `IChoicePresenter`，调用 `ShowAndWaitAsync`，拿到 id 后执行 jump/set。
+
+**YAML 示例 — 不同风格**：
+
+```yaml
+# 经典文字选项
+- type: choice
+  style: "text"
+  prompt: "你该怎么回应？"
+  options:
+    - { id: "greet", label: "你好，我叫...", jump: "scene_002a" }
+    - { id: "silent", label: "......", jump: "scene_002b" }
+
+# 地图选点
+- type: choice
+  style: "map"
+  extra: { background: "map_school" }
+  options:
+    - { id: "library", label: "图书馆", extra: { x: 0.3, y: 0.6 }, jump: "scene_library" }
+    - { id: "rooftop", label: "天台", extra: { x: 0.7, y: 0.2 }, jump: "scene_rooftop" }
+
+# 角色选择
+- type: choice
+  style: "character"
+  prompt: "今天和谁一起回家？"
+  options:
+    - { id: "sakura", label: "樱", extra: { avatar: "sakura_icon" }, jump: "scene_sakura" }
+    - { id: "kaito", label: "海斗", extra: { avatar: "kaito_icon" }, jump: "scene_kaito" }
+```
+
+框架内置 `TextChoicePresenter` 作为默认实现。游戏项目注册自定义 `IChoicePresenter`（如 `MapChoicePresenter`）即可扩展新的选择风格。
+
+### 3.7 指令并行执行
 
 ```yaml
 - type: parallel
@@ -163,7 +230,7 @@ public interface ISnapshotProvider
       transition: { type: dissolve, duration: 1.0 }
 ```
 
-### 3.7 设计模式汇总
+### 3.8 设计模式汇总
 
 | 模式 | 应用 |
 |------|------|
