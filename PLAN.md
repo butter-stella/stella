@@ -210,33 +210,52 @@ public interface ISnapshotProvider
 ```csharp
 public class GameSettings
 {
-    // 文字
-    float TextSpeed;                // 文字速度（0~1）
-    float AutoPlaySpeed;            // 自动播放等待（秒）
-    bool  AutoPlayWaitVoice;        // 等语音播完再推进
-    float SkipSpeed;                // 快进速度
-    bool  SkipOnlyRead;             // 仅跳过已读
-    float TextWindowOpacity;        // 文本框透明度
+    // ═══ 文字显示 ═══
+    int   CharacterInterval;        // 每个文字的显示间隔（毫秒），0=瞬间显示全部
+    int   PunctuationPause;         // 标点符号额外停顿（毫秒），如句号/逗号后多等一拍
+    bool  ClickToComplete;          // 打字中点击：true=先显示完整文本，false=直接下一句
+    float TextWindowOpacity;        // 文本框透明度（0~1）
 
-    // 音量
-    float MasterVolume;
-    float BgmVolume, SeVolume, SystemSeVolume, VoiceVolume;
+    // ═══ 自动播放 ═══
+    float AutoPlayDelay;            // 文本显示完后等待时间（秒）
+    bool  AutoPlayWaitVoice;        // 等语音播完再推进（语音比 delay 长时以语音为准）
+    bool  AutoPlayPauseOnChoice;    // 遇到选项时自动暂停自动播放
+
+    // ═══ 快进 ═══
+    int   SkipInterval;             // 快进时每条对话停留时间（毫秒），0=最快
+    bool  SkipOnlyRead;             // 仅跳过已读文本
+    bool  SkipUnreadConfirm;        // 快进遇到未读时弹确认
+    bool  SkipStopOnChoice;         // 遇到选项时停止快进
+
+    // ═══ 音量 ═══
+    float MasterVolume;             // 主音量（0~1）
+    float BgmVolume;
+    float SeVolume;
+    float SystemSeVolume;           // 系统音效（UI 点击等）
+    float VoiceVolume;              // 语音总音量
     Dictionary<string, float> CharacterVoiceVolume;  // 角色单独音量
     Dictionary<string, bool>  CharacterVoiceEnabled;  // 角色语音开关
 
-    // 语音
-    bool VoiceContinueOnAdvance;    // 推进后语音继续播放
-    bool VoiceReplayOnBacklog;      // Backlog 点击重播
+    // ═══ 语音行为 ═══
+    bool VoiceContinueOnAdvance;    // 推进对话后语音继续播放（不中断）
+    bool VoiceReplayOnBacklog;      // Backlog 中点击条目可重播语音
 
-    // 画面
+    // ═══ 画面 ═══
     ScreenMode ScreenMode;          // 全屏/窗口/无边框
     Resolution Resolution;
-    bool EffectEnabled;             // 特效开关
+    bool EffectEnabled;             // 转场/屏幕特效开关
 
-    // 操作
+    // ═══ 操作 ═══
     Dictionary<string, KeyCode> KeyBindings;  // 快捷键绑定
 }
 ```
+
+**文字显示控制的具体行为**：
+- `CharacterInterval=50` 表示每 50ms 显示一个字（约 20 字/秒）
+- `PunctuationPause=200` 表示遇到 `。、！？…` 等标点后额外等 200ms
+- 内联标签 `{wait:500}` 可在脚本中覆盖，插入指定毫秒的停顿
+- 内联标签 `{speed:30}` 可临时改变当前句的字符间隔
+- 这些设置项最终由 `TextAnimator` 在逐字显示时读取并应用
 
 **框架提供的能力**：
 ```
