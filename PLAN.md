@@ -369,33 +369,110 @@ Editor/
 
 ### 6.1 语音驱动差分切换（Voice-Driven Expression）
 
-一句对话中，角色表情随语音时间轴自动切换。
+一句对话中，角色表情随语音/文字进度自动切换。
 
-**扩展点**：dialogue 指令预留 `expression_timeline` 字段。
+#### DSL 中的表达
+
+编剧在文本中用 `[expr:xxx]` 内联标记切换点，标注的是**语义位置**（"说到这里表情该变了"）：
+
+```
+sakura「我本来很开心的...[expr:surprised]但是听到这个消息之后...[expr:cry]呜呜...」 #voice:sakura_ch01_042
+```
+
+#### 转译为 YAML
+
+转译器自动计算字符位置，生成 `at_char`：
 
 ```yaml
 - type: dialogue
   character: "sakura"
-  text: "我本来很开心的...但是听到这个消息之后..."
+  text: "我本来很开心的...但是听到这个消息之后...呜呜..."   # [expr:] 标记已移除
   voice: "sakura_ch01_042"
-  expression_timeline:       # 扩展字段，无此字段时走默认行为
-    - { at: 0.0, expression: "smile" }
-    - { at: 1.8, expression: "surprised" }
-    - { at: 3.2, expression: "cry" }
+  expression_timeline:
+    - { at_char: 0, expression: "smile" }       # 默认表情（角色配置）
+    - { at_char: 9, expression: "surprised" }    # 第 9 个字符处
+    - { at_char: 21, expression: "cry" }         # 第 21 个字符处
 ```
 
-DSL：`#expr:0.0=smile,1.8=surprised,3.2=cry`
+#### 双定位模式：at_char vs at
 
-**实现模块**：
+| 字段 | 来源 | 用途 |
+|------|------|------|
+| `at_char` | DSL 转译自动生成 | 无语音时：打字机到达该字符位置触发切换 |
+| `at` | 编辑器波形工具手动标注 | 有语音时：精确秒数，优先级高于 at_char |
+
+**文字位置 ≠ 语音时长**（同样的字说话快慢差异很大），所以有语音时 `at` 必须由编辑器波形工具来标。
+
+#### 工作流
+
+```
+编剧 DSL 标记 [expr:xxx]
+        ↓
+转译器 → YAML（at_char）        ← 无语音到此即可用
+        ↓
+编辑器波形工具 → 补充 at（秒）    ← 有语音时精确对齐
+        ↓
+运行时：有 at 用 at，否则 fallback 到 at_char
+```
+
+#### 实现模块
+
 ```
 VoiceExpressionSync/
-├── VoiceExpressionSyncController.cs  -- 监听 AudioSource.time，到达标记点发布 ChangeExpressionEvent
-├── ExpressionTimeline.cs             -- 时间轴数据
-├── ExpressionTimelineEditor.cs       -- 编辑器：波形图上拖拽标记点
+├── VoiceExpressionSyncController.cs  -- 双模式：监听 AudioSource.time（at）或 TextAnimator 字符进度（at_char）
+├── ExpressionTimeline.cs             -- 时间轴数据（at_char + at 并存）
+├── ExpressionTimelineEditor.cs       -- 编辑器：波形图上拖拽标记，自动生成 at 秒数
 └── VoiceWaveformPreview.cs           -- 语音波形预览
 ```
 
-### 6.2 语音收藏系统（Voice Bookmark）
+### 6.2 语音播放进度条（Voice Progress）
+
+框架提供语音播放状态的实时数据，游戏项目可据此实现进度条 UI。
+
+**框架提供的能力（API，不含 UI）**：
+
+```csharp
+public class VoicePlaybackInfo
+{
+    public bool   IsPlaying;        // 是否正在播放
+    public float  CurrentTime;      // 当前播放位置（秒）
+    public float  TotalDuration;    // 语音总时长（秒）
+    public float  Progress;         // 0~1 归一化进度
+    public string CharacterName;    // 当前说话角色
+    public string VoiceAssetId;     // 当前语音资源 ID
+}
+
+// VoiceController 暴露
+public VoicePlaybackInfo GetPlaybackInfo();
+
+// 事件
+public struct VoiceStartedEvent : IEvent { ... }
+public struct VoiceProgressEvent : IEvent { float Progress; float CurrentTime; }
+public struct VoiceFinishedEvent : IEvent { ... }
+```
+
+**游戏项目对接示例**：
+
+```csharp
+// 游戏项目自己实现进度条 UI
+public class VoiceProgressBar : MonoBehaviour
+{
+    [SerializeField] Slider progressSlider;
+
+    void Update()
+    {
+        var info = ServiceLocator.Get<VoiceController>().GetPlaybackInfo();
+        progressSlider.gameObject.SetActive(info.IsPlaying);
+        progressSlider.value = info.Progress;
+    }
+}
+```
+
+**与差分切换联动**：进度条上可叠加显示 expression_timeline 的标记点，让玩家看到表情切换时刻。这是游戏项目的 UI 层行为，框架只提供数据。
+
+**扩展点**：`VoiceController` 已有 `AudioSource.time` / `AudioClip.length`，只需封装为 `VoicePlaybackInfo` 并定时发布 `VoiceProgressEvent`。
+
+### 6.3 语音收藏系统（Voice Bookmark）
 
 游戏中收藏语音 → 收藏界面浏览/重播 → 可跳转回对应场景继续游玩。
 
@@ -424,7 +501,7 @@ VoiceBookmark/
 └── VoiceBookmarkJumper.cs        -- 跳转 = 读取隐藏存档，复用 RestoreSnapshot
 ```
 
-### 6.3 双端场景跳转（Editor + Runtime）
+### 6.4 双端场景跳转（Editor + Runtime）
 
 **扩展点**：`ScenarioEngine.JumpToScene()` + `ContextBuilder` 状态重建。
 
@@ -444,7 +521,7 @@ DebugTools/
 └── ContextBuilder.cs
 ```
 
-### 6.4 DSL 脚本系统
+### 6.5 DSL 脚本系统
 
 轻量 DSL ↔ YAML 双向转译。
 
@@ -456,11 +533,11 @@ ScriptParser/
 └── Editor/DslImporter.cs              -- .novel 文件 Asset Importer
 ```
 
-### 6.5 本地化系统
+### 6.6 本地化系统
 
 对话文本用 `text_key` 引用本地化表，支持导出 CSV 供翻译。
 
-### 6.6 热更新
+### 6.7 热更新
 
 基于 Addressables Remote Content Catalog，剧本/资源按章节分包。
 
