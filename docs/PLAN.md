@@ -250,10 +250,86 @@ public class ChoiceOption
 - 内联标签：`{wait:0.5}` 暂停、`{speed:0.5}` 变速、`{shake}` 震动
 - Backlog 数据管理
 
+**对话框模式**：通过 `IDialoguePresenter` 接口抽象，`dialogue` 指令通过 `mode` 字段切换：
+
+| 模式 | 说明 |
+|------|------|
+| `adv`（默认） | 底部对话框，标准 Galgame 模式 |
+| `nvl` | 全屏文本，文字逐行累积，适合独白、旁白、信件 |
+| `overlay` | 无对话框，文字直接叠在画面上（内心独白、回忆闪回） |
+
+```yaml
+# 切换到全屏对话模式
+- { type: dialogue, mode: "nvl", character: "narrator", text: "那是一个寒冷的冬天..." }
+- { type: dialogue, mode: "nvl", text: "风呼啸着穿过空旷的街道。" }
+
+# 切回普通模式
+- { type: dialogue, mode: "adv", character: "sakura", text: "你来了。" }
+```
+
+游戏项目可注册自定义 `IDialoguePresenter` 实现更多风格。
+
+### 4.1.1 SD 插画（Chibi / 演出用小图）
+
+SD 插画用于对话中插入 Q 版角色小图、表情包、反应图等演出效果，通过 `sd` 指令控制：
+
+```yaml
+# 对话框内嵌入 SD 小图
+- { type: sd, asset: "sakura_chibi_angry", position: "dialogue_right" }
+
+# 屏幕指定位置弹出 SD 图
+- { type: sd, asset: "sakura_chibi_shock", position: { x: 0.7, y: 0.6 }, anim: "pop", duration: 1.5 }
+
+# 清除 SD 插画
+- { type: sd_clear }
+```
+
+| 参数 | 说明 |
+|------|------|
+| `position` | 预设位置（`dialogue_left`/`dialogue_right`/`center`/`top`）或自定义坐标 |
+| `anim` | 弹出动画（`pop`/`slide`/`bounce`/`fade`） |
+| `duration` | 自动消失时间（秒），省略则手动清除 |
+| `scale` | 缩放比例，默认 1.0 |
+
 ### 4.2 立绘系统
-- 整张替换 / 分层合成（身体底图 + 表情差分叠加）
+- 通过 `ICharacterRenderer` 接口抽象渲染方式，前期实现静态图片，后续可扩展 Live2D 等
+- 内置两种静态模式：整张替换 / 分层合成（身体底图 + 表情差分叠加）
 - 位置预设（left/center/right + 自定义）
 - 动画（入场/退场/呼吸）
+- 表情切换统一为 `SetExpression(string id)`，各 Renderer 内部决定具体行为
+
+**立绘动画指令**：
+
+通过 `char_move` 和 `char_anim` 指令控制立绘运行时动画，基于 DOTween 实现：
+
+```yaml
+# 移动到指定位置
+- { type: char_move, character: "sakura", position: right, duration: 0.5, ease: OutQuad }
+
+# 播放预设动画
+- { type: char_anim, character: "sakura", anim: "jump" }
+- { type: char_anim, character: "sakura", anim: "shake", intensity: 8, duration: 0.3 }
+- { type: char_anim, character: "sakura", anim: "nod" }
+
+# 可与其他指令并行
+- type: parallel
+  commands:
+    - { type: char_move, character: "sakura", position: center, duration: 0.5 }
+    - { type: char_anim, character: "kaito", anim: "shake" }
+```
+
+内置动画预设：
+
+| 预设 | 效果 | 典型用途 |
+|------|------|---------|
+| `jump` | 上下弹跳 | 惊讶、开心 |
+| `shake` | 左右震动 | 受惊、愤怒 |
+| `nod` | 小幅下移回弹 | 点头 |
+| `bounce` | 缩放弹跳 | 兴奋 |
+| `fade_in` / `fade_out` | 透明度渐变 | 入场/退场 |
+| `slide_in` / `slide_out` | 从屏幕外滑入/滑出 | 入场/退场 |
+
+支持自定义动画：通过注册 `ICharacterAnimation` 实现扩展。
 
 ### 4.3 背景系统
 - 双缓冲（front/back RawImage）
@@ -523,15 +599,9 @@ DebugTools/
 
 ### 6.5 DSL 脚本系统
 
-轻量 DSL ↔ YAML 双向转译。
+编剧的主要工作界面。设计理念：**脚本即演出，写完即可跑**。
 
-```
-ScriptParser/
-├── DslLexer.cs / DslParser.cs         -- 词法/语法分析
-├── DslToYamlCompiler.cs               -- DSL → YAML
-├── YamlToDslDecompiler.cs             -- YAML → DSL
-└── Editor/DslImporter.cs              -- .novel 文件 Asset Importer
-```
+详细设计见 [DSL.md](DSL.md) — 包含完整语法定义、智能默认值、转译器架构、完整示例。
 
 ### 6.6 本地化系统
 
@@ -582,6 +652,27 @@ public interface IInputProvider
 | 触摸手势 | 单指点击=推进、双指=隐藏 UI、上滑=Backlog（可在 MobileInputProvider 中配置） |
 
 **扩展点**：`IInputProvider` 接口在 Sprint 1 定义，`DesktopInputProvider` 在 Sprint 2 实现，移动端实现放在 P3。
+
+### 6.9 Live2D 立绘支持
+
+通过 `ICharacterRenderer` 接口扩展，新增 `Live2DCharacterRenderer` 实现。
+
+**角色配置**：
+```yaml
+id: "sakura"
+render_mode: "live2d"   # sprite / layered / live2d
+model: "sakura/sakura.model3.json"
+expressions:
+  smile: "expr_smile"     # Live2D Expression ID
+  cry: "expr_cry"
+motions:
+  idle: "motion_idle"     # Live2D Motion ID
+  talk: "motion_talk"
+```
+
+**依赖**：Live2D Cubism SDK for Unity（免费，商用需授权）。
+
+**扩展点**：`ICharacterRenderer` 接口在 Sprint 2 定义，`SpriteCharacterRenderer` 和 `LayeredCharacterRenderer` 先行实现；`Live2DCharacterRenderer` 后续作为独立模块接入，不影响核心代码。表情切换统一走 `SetExpression(string id)`，Live2D 内部映射为 Cubism Expression/Motion。
 
 ---
 
@@ -792,6 +883,7 @@ Assets/
 | 语音收藏 | `ISnapshotProvider` 机制（存档系统本身就有）；对话系统预留收藏触发点 |
 | 双端跳转 | `ScenarioEngine` 暴露 `JumpToScene(sceneId)` 方法 |
 | DSL | YAML 作为 IR 的设计本身就是扩展点，DSL 只是多一个输入源 |
+| Live2D | `ICharacterRenderer` 接口抽象渲染方式；角色配置支持 `render_mode` 字段；`SetExpression` 统一表情切换入口 |
 
 ---
 
