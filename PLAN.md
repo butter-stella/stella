@@ -201,61 +201,52 @@ public interface ISnapshotProvider
 - 自动播放 / 快进（仅已读/全部）
 - 游戏状态机管理宏观流程
 
-### 4.6 游戏设置（参考柚子社）
+### 4.6 游戏设置系统（框架提供功能，UI 由游戏项目实现）
 
-分 Tab 布局：**文字 | 音量 | 语音 | 画面 | 操作**
+框架只提供设置数据模型、持久化、事件通知。不提供设置 UI —— 每个游戏的设置界面风格不同，由游戏项目自行实现。
+
+**数据模型** — `GameSettings.cs`：
 
 ```csharp
 public class GameSettings
 {
-    // ═══ 文字 ═══
+    // 文字
     float TextSpeed;                // 文字速度（0~1）
     float AutoPlaySpeed;            // 自动播放等待（秒）
-    bool  AutoPlayWaitVoice;        // 自动播放等语音播完
+    bool  AutoPlayWaitVoice;        // 等语音播完再推进
     float SkipSpeed;                // 快进速度
     bool  SkipOnlyRead;             // 仅跳过已读
-    bool  SkipUnreadConfirm;        // 跳过未读时确认
     float TextWindowOpacity;        // 文本框透明度
 
-    // ═══ 音量 ═══
+    // 音量
     float MasterVolume;
-    float BgmVolume;
-    float SeVolume;
-    float SystemSeVolume;           // 系统音效（UI 点击等）
-    float VoiceVolume;
+    float BgmVolume, SeVolume, SystemSeVolume, VoiceVolume;
     Dictionary<string, float> CharacterVoiceVolume;  // 角色单独音量
     Dictionary<string, bool>  CharacterVoiceEnabled;  // 角色语音开关
 
-    // ═══ 语音 ═══
+    // 语音
     bool VoiceContinueOnAdvance;    // 推进后语音继续播放
     bool VoiceReplayOnBacklog;      // Backlog 点击重播
-    bool TitleCallVoiceEnabled;     // 标题语音开关
 
-    // ═══ 画面 ═══
+    // 画面
     ScreenMode ScreenMode;          // 全屏/窗口/无边框
     Resolution Resolution;
     bool EffectEnabled;             // 特效开关
-    int  TextWindowStyle;           // 文本框样式
 
-    // ═══ 操作 ═══
-    MouseWheelBehavior MouseWheelUp;   // 滚轮上：回看/上一条
-    MouseWheelBehavior MouseWheelDown; // 滚轮下：推进/下一条
-    bool RightClickBehavior;        // 右键行为
-    bool ConfirmOnExit;
-    bool ConfirmOnTitle;
-    Dictionary<string, KeyCode> KeyBindings;  // 快捷键
+    // 操作
+    Dictionary<string, KeyCode> KeyBindings;  // 快捷键绑定
 }
 ```
 
-设置变更实时生效，通过 `SettingsChangedEvent` 通知各子系统。角色列表从 `CharacterDatabase` 自动生成。
-
+**框架提供的能力**：
 ```
 Settings/
-├── GameSettings.cs / GameSettingsManager.cs
-├── SettingsPresenter.cs
-├── Tabs/  (Text / Audio / Voice / Display / Control)
-├── SettingsSlider.cs / SettingsToggle.cs
+├── GameSettings.cs              -- 数据模型
+├── GameSettingsManager.cs       -- 读取/保存/重置默认值/JSON 持久化
+└── SettingsChangedEvent.cs      -- 设置变更事件，各子系统订阅后动态调整
 ```
+
+游戏项目自行实现 `SettingsPresenter` 绑定到自己的 UI。
 
 ### 4.7 CG 鉴赏 / 回忆模式
 - CG 鉴赏、音乐鉴赏、场景回放
@@ -467,7 +458,7 @@ Assets/
 | 阶段 | 内容 | 里程碑 |
 |------|------|--------|
 | **Phase 3** 存档与流程 (~1-2w) | SaveManager + ISnapshotProvider、存读档 UI、标题画面、游戏状态机 | **完整游戏循环** |
-| **Phase 4** 游戏设置 (~1-2w) | 柚子社风格设置面板（文字/音量/语音/画面/操作 5 Tab）、角色单独音量、快捷键绑定 | 可配置的游戏体验 |
+| **Phase 4** 游戏设置 (~1-2w) | GameSettings 数据模型、GameSettingsManager（持久化/重置/事件通知）、各子系统响应设置变更 | 设置功能可用，游戏项目可对接自己的 UI |
 | **Phase 5** 播放控制 (~1w) | 自动播放、快进（已读/全部）、Backlog（含语音重播）、已读标记 | 成熟的阅读体验 |
 
 ### P2 — 创作工具链（~5-8 周）
