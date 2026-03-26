@@ -251,9 +251,11 @@ public class ChoiceOption
 - Backlog 数据管理
 
 ### 4.2 立绘系统
-- 整张替换 / 分层合成（身体底图 + 表情差分叠加）
+- 通过 `ICharacterRenderer` 接口抽象渲染方式，前期实现静态图片，后续可扩展 Live2D 等
+- 内置两种静态模式：整张替换 / 分层合成（身体底图 + 表情差分叠加）
 - 位置预设（left/center/right + 自定义）
 - 动画（入场/退场/呼吸）
+- 表情切换统一为 `SetExpression(string id)`，各 Renderer 内部决定具体行为
 
 ### 4.3 背景系统
 - 双缓冲（front/back RawImage）
@@ -583,6 +585,27 @@ public interface IInputProvider
 
 **扩展点**：`IInputProvider` 接口在 Sprint 1 定义，`DesktopInputProvider` 在 Sprint 2 实现，移动端实现放在 P3。
 
+### 6.9 Live2D 立绘支持
+
+通过 `ICharacterRenderer` 接口扩展，新增 `Live2DCharacterRenderer` 实现。
+
+**角色配置**：
+```yaml
+id: "sakura"
+render_mode: "live2d"   # sprite / layered / live2d
+model: "sakura/sakura.model3.json"
+expressions:
+  smile: "expr_smile"     # Live2D Expression ID
+  cry: "expr_cry"
+motions:
+  idle: "motion_idle"     # Live2D Motion ID
+  talk: "motion_talk"
+```
+
+**依赖**：Live2D Cubism SDK for Unity（免费，商用需授权）。
+
+**扩展点**：`ICharacterRenderer` 接口在 Sprint 2 定义，`SpriteCharacterRenderer` 和 `LayeredCharacterRenderer` 先行实现；`Live2DCharacterRenderer` 后续作为独立模块接入，不影响核心代码。表情切换统一走 `SetExpression(string id)`，Live2D 内部映射为 Cubism Expression/Motion。
+
 ---
 
 ## 七、使用指南
@@ -792,6 +815,7 @@ Assets/
 | 语音收藏 | `ISnapshotProvider` 机制（存档系统本身就有）；对话系统预留收藏触发点 |
 | 双端跳转 | `ScenarioEngine` 暴露 `JumpToScene(sceneId)` 方法 |
 | DSL | YAML 作为 IR 的设计本身就是扩展点，DSL 只是多一个输入源 |
+| Live2D | `ICharacterRenderer` 接口抽象渲染方式；角色配置支持 `render_mode` 字段；`SetExpression` 统一表情切换入口 |
 
 ---
 
