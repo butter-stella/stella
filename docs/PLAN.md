@@ -250,6 +250,47 @@ public class ChoiceOption
 - 内联标签：`{wait:0.5}` 暂停、`{speed:0.5}` 变速、`{shake}` 震动
 - Backlog 数据管理
 
+**对话框模式**：通过 `IDialoguePresenter` 接口抽象，`dialogue` 指令通过 `mode` 字段切换：
+
+| 模式 | 说明 |
+|------|------|
+| `adv`（默认） | 底部对话框，标准 Galgame 模式 |
+| `nvl` | 全屏文本，文字逐行累积，适合独白、旁白、信件 |
+| `overlay` | 无对话框，文字直接叠在画面上（内心独白、回忆闪回） |
+
+```yaml
+# 切换到全屏对话模式
+- { type: dialogue, mode: "nvl", character: "narrator", text: "那是一个寒冷的冬天..." }
+- { type: dialogue, mode: "nvl", text: "风呼啸着穿过空旷的街道。" }
+
+# 切回普通模式
+- { type: dialogue, mode: "adv", character: "sakura", text: "你来了。" }
+```
+
+游戏项目可注册自定义 `IDialoguePresenter` 实现更多风格。
+
+### 4.1.1 SD 插画（Chibi / 演出用小图）
+
+SD 插画用于对话中插入 Q 版角色小图、表情包、反应图等演出效果，通过 `sd` 指令控制：
+
+```yaml
+# 对话框内嵌入 SD 小图
+- { type: sd, asset: "sakura_chibi_angry", position: "dialogue_right" }
+
+# 屏幕指定位置弹出 SD 图
+- { type: sd, asset: "sakura_chibi_shock", position: { x: 0.7, y: 0.6 }, anim: "pop", duration: 1.5 }
+
+# 清除 SD 插画
+- { type: sd_clear }
+```
+
+| 参数 | 说明 |
+|------|------|
+| `position` | 预设位置（`dialogue_left`/`dialogue_right`/`center`/`top`）或自定义坐标 |
+| `anim` | 弹出动画（`pop`/`slide`/`bounce`/`fade`） |
+| `duration` | 自动消失时间（秒），省略则手动清除 |
+| `scale` | 缩放比例，默认 1.0 |
+
 ### 4.2 立绘系统
 - 通过 `ICharacterRenderer` 接口抽象渲染方式，前期实现静态图片，后续可扩展 Live2D 等
 - 内置两种静态模式：整张替换 / 分层合成（身体底图 + 表情差分叠加）
