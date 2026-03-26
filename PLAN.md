@@ -541,6 +541,48 @@ ScriptParser/
 
 基于 Addressables Remote Content Catalog，剧本/资源按章节分包。
 
+### 6.8 跨端支持（iOS / Android）
+
+目标平台：PC（优先） + iOS + Android。
+
+**输入抽象** — 将具体输入映射为语义动作：
+
+```csharp
+public enum InputAction
+{
+    Advance,        // 推进对话（点击/触摸/手柄A）
+    Cancel,         // 取消/返回（右键/返回键/手柄B）
+    ShowMenu,       // 打开菜单
+    HistoryPrev,    // 回看上一条（滚轮上/上滑）
+    HistoryNext,    // 回看下一条（滚轮下/下滑）
+    ToggleAuto,     // 切换自动播放
+    ToggleSkip,     // 切换快进
+    HideUI,         // 隐藏文本框
+    QuickSave,      // 快速存档
+    QuickLoad,      // 快速读档
+}
+
+public interface IInputProvider
+{
+    bool IsActionTriggered(InputAction action);
+    Vector2 GetPointerPosition();  // 鼠标/触摸位置
+}
+```
+
+框架内置 `DesktopInputProvider`（鼠标+键盘），游戏项目可注册 `MobileInputProvider`（触摸+手势）。
+
+**其他跨端注意事项**（前期架构预留，后期实现）：
+
+| 问题 | 方案 |
+|------|------|
+| 存档路径 | `ISaveStorage` 已抽象，移动端用 `Application.persistentDataPath` |
+| 屏幕适配 | UI 用 Canvas Scaler（Scale With Screen Size），立绘/背景基于安全区适配 |
+| 刘海屏/挖孔屏 | `Screen.safeArea` 控制文本框和 UI 不超出安全区 |
+| 性能 | `GameSettings.EffectEnabled` 可关闭特效；资源按平台出包（低分辨率立绘） |
+| 触摸手势 | 单指点击=推进、双指=隐藏 UI、上滑=Backlog（可在 MobileInputProvider 中配置） |
+
+**扩展点**：`IInputProvider` 接口在 Sprint 1 定义，`DesktopInputProvider` 在 Sprint 2 实现，移动端实现放在 P3。
+
 ---
 
 ## 七、使用指南（开发者视角）
