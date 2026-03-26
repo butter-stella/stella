@@ -529,50 +529,142 @@ Assets/
 
 ---
 
-## 九、开发路线图
+## 九、开发路线图（Agent Team 模式）
 
-### P0 — 基础可运行（~4-6 周）
+> 全程由 AI agent team 实现。时间评估基于：agent 可多模块并行开发、模式化代码产出极快，但需要人工 review 和集成调试。每个 Sprint 结束需要人工验收。
 
-| 阶段 | 内容 | 里程碑 |
-|------|------|--------|
-| **Phase 0** 基础设施 (~1w) | 项目创建、UPM 结构、Assembly Definition、引入依赖、EventBus + ServiceLocator | 项目可编译 |
-| **Phase 1** 核心引擎 (~2-3w) | YAML 加载器、ScenarioEngine 主循环、CommandRegistry、基础 Handler（dialogue/bg/char_show/choice）、变量系统、流程控制 | **YAML 驱动分支剧情** |
-| **Phase 2** 基础表现 (~2-3w) | 对话（打字机+名字）、立绘（显示/位置/表情）、背景（fade 转场）、音频（BGM/SE/Voice）、选项 UI | **视觉小说形式演出** |
+### 执行原则
 
-### P1 — 完整游戏体验（~4-6 周）
+- **串行的**：Phase 之间有依赖的必须串行（如 Core 先于 Presentation）
+- **并行的**：同一 Phase 内独立模块由不同 agent 并行实现
+- **人工卡点**：每个 Sprint 结束后人工 review + 集成测试，通过后进入下一 Sprint
+- **Agent 分工**：按模块边界分配，每个 agent 负责一个独立模块，通过接口对接
 
-| 阶段 | 内容 | 里程碑 |
-|------|------|--------|
-| **Phase 3** 存档与流程 (~1-2w) | SaveManager + ISnapshotProvider、存读档 UI、标题画面、游戏状态机 | **完整游戏循环** |
-| **Phase 4** 游戏设置 (~1-2w) | GameSettings 数据模型、GameSettingsManager（持久化/重置/事件通知）、各子系统响应设置变更 | 设置功能可用，游戏项目可对接自己的 UI |
-| **Phase 5** 播放控制 (~1w) | 自动播放、快进（已读/全部）、Backlog（含语音重播）、已读标记 | 成熟的阅读体验 |
+---
 
-### P2 — 创作工具链（~5-8 周）
+### Sprint 1 — 核心骨架（~2-3 天）
 
-| 阶段 | 内容 | 里程碑 |
-|------|------|--------|
-| **Phase 6** 编辑器基础 (~3-4w) | GraphView 节点图、属性面板、Graph ↔ YAML 双向转换、资源选择器 | **编辑器创建可运行剧本** |
-| **Phase 7** 表现增强 (~2-3w) | 更多转场 Shader、立绘动画、差分合成、文本内联效果、NVL 模式、屏幕特效 | 丰富的演出效果 |
-| **Phase 8** CG/鉴赏系统 (~1w) | CG 鉴赏、音乐鉴赏、场景回放、解锁管理 | 完整的额外内容 |
+串行：必须先完成，后续所有工作依赖此阶段产出。
 
-### P3 — 高级扩展（~6-8 周，可按需取舍）
+| Agent | 任务 | 产出 |
+|-------|------|------|
+| **Agent A** | 项目脚手架：UPM 结构、Assembly Definition、引入依赖 | 可编译的空项目 |
+| **Agent B**（A 完成后） | EventBus + ServiceLocator + 核心接口定义（ICommandHandler、IChoicePresenter、ISnapshotProvider、IResourceProvider） | 所有模块的对接契约 |
 
-| 阶段 | 内容 | 里程碑 |
-|------|------|--------|
-| **Phase 9** 语音差分联动 (~2w) | VoiceExpressionSync、ExpressionTimeline、波形编辑器 | 语音驱动表情切换 |
-| **Phase 10** 双端场景跳转 (~2w) | 编辑器预览跳转 + 运行时调试面板（断点/变量监控/指令日志） | 高效调试工作流 |
-| **Phase 11** 语音收藏 (~1-2w) | 收藏/重播/跳转恢复、收藏界面 | 语音收藏系统 |
-| **Phase 12** DSL + 本地化 (~2w) | DSL 词法/语法/双向转译、本地化导出导入 | 编剧友好工作流 |
-| **Phase 13** 开源准备 (~1-2w) | API 文档、使用指南、示例项目、CI | 可发布状态 |
+**人工卡点**：review 接口设计，确认契约合理后开放并行开发。
+
+---
+
+### Sprint 2 — 核心引擎 + 基础表现（~3-4 天，并行）
+
+接口已定义，以下 agent 可完全并行：
+
+| Agent | 任务 | 依赖 |
+|-------|------|------|
+| **Agent C** — 引擎核心 | ScenarioEngine 主循环、CommandExecutor、WaitController、FlowControl（jump/条件分支） | Sprint 1 接口 |
+| **Agent D** — 数据层 | YAML 加载器（YamlDotNet）、ScenarioData/SceneData/CommandData 数据模型、VariableStore + ExpressionEvaluator | Sprint 1 接口 |
+| **Agent E** — 对话 + 文字 | DialoguePresenter、TextAnimator（打字机效果 + 内联标签）、NameBoxController、DialogueCommandHandler | Sprint 1 接口 |
+| **Agent F** — 立绘 + 背景 | CharacterPresenter（整张/差分两种模式）、BackgroundPresenter（双缓冲）、基础转场 Shader（fade） | Sprint 1 接口 |
+| **Agent G** — 音频 | BgmController、SeController、VoiceController、AudioCommandHandler | Sprint 1 接口 |
+
+**人工卡点**：集成测试 — 用一段 YAML demo 剧本跑通完整流程。
+
+**里程碑：视觉小说形式可演出。**
+
+---
+
+### Sprint 3 — 游戏体验完善（~2-3 天，并行）
+
+| Agent | 任务 | 依赖 |
+|-------|------|------|
+| **Agent H** — 存档系统 | SaveManager、FileSaveStorage、SaveSerializer、各子系统 ISnapshotProvider 实现 | Sprint 2 各子系统 |
+| **Agent I** — 设置系统 | GameSettings 数据模型、GameSettingsManager、SettingsChangedEvent、各子系统订阅响应 | Sprint 2 各子系统 |
+| **Agent J** — 播放控制 | AutoPlayController、SkipController、ReadFlagManager、BacklogManager（含语音重播） | Sprint 2 对话+音频 |
+| **Agent K** — 选择系统 | ChoiceCommandHandler、TextChoicePresenter（默认实现）、IChoicePresenter 注册机制 | Sprint 2 引擎 |
+| **Agent L** — 游戏流程 | GameStateMachine（标题/游戏中/暂停）、标题画面逻辑、存读档 UI 逻辑 | Sprint 2 引擎 |
+
+**人工卡点**：完整游戏循环验收 — 标题 → 新游戏 → 存档 → 读档 → 设置 → 快进/自动。
+
+**里程碑：完整游戏循环。**
+
+---
+
+### Sprint 4 — 编辑器（~4-5 天，并行）
+
+| Agent | 任务 | 依赖 |
+|-------|------|------|
+| **Agent M** — 节点图 | ScenarioGraphView、SceneNode/ChoiceNode/ConditionNode、连线逻辑 | Sprint 1 数据模型 |
+| **Agent N** — 序列化 | GraphToYamlConverter、YamlToGraphConverter（双向转换） | Sprint 1 数据模型 + Agent M 节点定义 |
+| **Agent O** — 属性面板 | NodeInspectorPanel、资源选择器（背景/立绘/音频）、指令列表编辑器 | Agent M 节点定义 |
+
+**人工卡点**：在编辑器中创建一个完整剧本 → 导出 YAML → 运行验证。
+
+**里程碑：编辑器可创建可运行剧本。**
+
+---
+
+### Sprint 5 — 表现增强 + 鉴赏（~3-4 天，并行）
+
+| Agent | 任务 | 依赖 |
+|-------|------|------|
+| **Agent P** — 转场/特效 | 更多转场 Shader（dissolve/wipe/pixelate/blur）、屏幕特效（闪白/震动/滤镜） | Sprint 2 背景系统 |
+| **Agent Q** — 立绘增强 | 差分合成系统、入场/退场动画、呼吸效果、NVL 模式 | Sprint 2 立绘系统 |
+| **Agent R** — 鉴赏系统 | CG 鉴赏、音乐鉴赏、场景回放、UnlockManager | Sprint 3 存档系统（global 变量） |
+
+**里程碑：丰富演出效果 + 完整额外内容。**
+
+---
+
+### Sprint 6 — 高级扩展（~3-5 天，并行，可按需取舍）
+
+| Agent | 任务 | 依赖 |
+|-------|------|------|
+| **Agent S** — 语音差分联动 | VoiceExpressionSyncController、ExpressionTimeline、ExpressionTimelineEditor（波形标记） | Sprint 2 音频+立绘 |
+| **Agent T** — 双端跳转 | 编辑器 SceneJumpHandler + ContextInferencer、运行时 ScenarioDebugger + BreakpointManager | Sprint 4 编辑器 + Sprint 2 引擎 |
+| **Agent U** — 语音收藏 | VoiceBookmarkManager/Trigger/Jumper、收藏 UI 逻辑 | Sprint 3 存档系统 |
+| **Agent V** — DSL + 本地化 | DslLexer/DslParser、双向转译、LocalizationManager、CSV 导出导入 | Sprint 1 数据模型 |
+
+**里程碑：全部高级功能可用。**
+
+---
+
+### Sprint 7 — 开源准备（~1-2 天）
+
+| Agent | 任务 |
+|-------|------|
+| **Agent W** | API 文档（XML 注释 + DocFX）、README |
+| **Agent X** | 示例项目（含完整短篇 demo 剧本）、CI 配置（GitHub Actions） |
+
+---
+
+### 时间总结
+
+| Sprint | 内容 | 耗时 | 并行 Agent 数 |
+|--------|------|------|---------------|
+| Sprint 1 | 核心骨架 + 接口契约 | 2-3 天 | 2（串行） |
+| Sprint 2 | 引擎 + 表现层 | 3-4 天 | 5 并行 |
+| Sprint 3 | 存档/设置/播放/选择/流程 | 2-3 天 | 5 并行 |
+| Sprint 4 | 编辑器 | 4-5 天 | 3 并行 |
+| Sprint 5 | 表现增强 + 鉴赏 | 3-4 天 | 3 并行 |
+| Sprint 6 | 高级扩展 | 3-5 天 | 4 并行 |
+| Sprint 7 | 开源准备 | 1-2 天 | 2 并行 |
+| **总计** | | **18-26 天** | 峰值 5 agent |
+
+**对比人工：18-28 周 → agent team：18-26 天**，约 5-7 倍加速。
+
+瓶颈不在编码速度，而在：
+1. **Sprint 1 的接口设计** — 决定了后续所有并行是否顺畅，需要人工仔细 review
+2. **每个 Sprint 的集成调试** — agent 各自模块能跑，组合起来可能有问题
+3. **Unity 编辑器开发** — GraphView API 文档不充分，agent 可能需要更多迭代
 
 ### 前期需预留的扩展点
 
-在 P0-P2 实现时，为 P3 高级功能预留接口：
+在 Sprint 1-5 实现时，为 Sprint 6 高级功能预留接口：
 
 | 扩展功能 | 需预留的扩展点 |
 |----------|---------------|
 | 语音差分联动 | `CommandData` 支持 `expression_timeline` 字段解析（忽略即可）；`CharacterPresenter` 支持外部触发表情切换 |
-| 语音收藏 | `ISnapshotProvider` 机制（存档系统本身就有）；对话框 UI 预留收藏按钮位 |
+| 语音收藏 | `ISnapshotProvider` 机制（存档系统本身就有）；对话系统预留收藏触发点 |
 | 双端跳转 | `ScenarioEngine` 暴露 `JumpToScene(sceneId)` 方法 |
 | DSL | YAML 作为 IR 的设计本身就是扩展点，DSL 只是多一个输入源 |
 
@@ -580,8 +672,9 @@ Assets/
 
 ## 十、验证方案
 
-- **P0**：Core 层纯 C#，NUnit 单元测试（解析、变量、流程控制）
-- **P1**：Play Mode 测试 + demo 剧本手动验证
-- **P2**：编辑器手动验证 + 导出剧本集成测试
-- **P3**：各高级功能独立验证
-- 每个 Phase 结束用 demo 剧本端到端验证
+- **Sprint 1**：接口编译通过 + 人工 review 契约设计
+- **Sprint 2**：demo YAML 剧本端到端跑通（NUnit 单测 + Play Mode）
+- **Sprint 3**：完整游戏循环手动验收
+- **Sprint 4**：编辑器创建 → 导出 → 运行的闭环测试
+- **Sprint 5-6**：各功能独立验证 + 集成回归
+- **Sprint 7**：示例项目从零跑通作为最终验收
