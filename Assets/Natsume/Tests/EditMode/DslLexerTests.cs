@@ -299,6 +299,26 @@ namespace Natsume.Tests.EditMode
             Assert.AreEqual(5, tokens[2].Line); // @jump on line 5
         }
 
+        // === Unknown ===
+
+        [Test]
+        public void Tokenize_UnrecognizedLine_ReturnsUnknownToken()
+        {
+            var tokens = DslLexer.Tokenize("some random text without brackets");
+            Assert.AreEqual(1, tokens.Count);
+            Assert.AreEqual(DslTokenType.Unknown, tokens[0].Type);
+            Assert.AreEqual("some random text without brackets", tokens[0].RawText);
+        }
+
+        [Test]
+        public void Tokenize_UnknownLine_PreservesLineNumber()
+        {
+            var tokens = DslLexer.Tokenize("@bg bg_school\nunknown line here\nsakura「你好。」");
+            Assert.AreEqual(3, tokens.Count);
+            Assert.AreEqual(DslTokenType.Unknown, tokens[1].Type);
+            Assert.AreEqual(2, tokens[1].Line);
+        }
+
         // === Mixed Scenario ===
 
         [Test]

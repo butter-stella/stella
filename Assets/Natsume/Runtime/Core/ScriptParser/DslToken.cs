@@ -8,14 +8,15 @@ namespace Natsume.Core.ScriptParser
         Narration,        // 「text」
         Monologue,        // sakura（text）
         ChoiceOption,     // - "text" -> target [{var op val}] [?if expr]
+        Unknown,          // Unrecognized line — preserved for Parser to handle
     }
 
-    public struct DslToken
+    public readonly struct DslToken
     {
-        public DslTokenType Type;
-        public string RawText;
-        public int Line;
-        public int Indent;
+        public readonly DslTokenType Type;
+        public readonly string RawText;
+        public readonly int Line;
+        public readonly int Indent;
 
         public DslToken(DslTokenType type, string rawText, int line, int indent = 0)
         {

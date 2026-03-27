@@ -40,14 +40,13 @@ namespace Natsume.Core.ScriptParser
                     continue;
 
                 var token = ClassifyLine(trimmed, lineNum, indent);
-                if (token.HasValue)
-                    tokens.Add(token.Value);
+                tokens.Add(token);
             }
 
             return tokens;
         }
 
-        private static DslToken? ClassifyLine(string trimmed, int line, int indent)
+        private static DslToken ClassifyLine(string trimmed, int line, int indent)
         {
             // 1. @scene directive
             if (trimmed.StartsWith("@scene ") || trimmed == "@scene")
@@ -73,9 +72,8 @@ namespace Natsume.Core.ScriptParser
             if (ContainsMonologueBrackets(trimmed))
                 return new DslToken(DslTokenType.Monologue, trimmed, line, indent);
 
-            // Unknown line — skip silently for now
-            // Future: could emit a warning via EventBus.Logger
-            return null;
+            // Unknown line — preserve for Parser to handle (warn or error)
+            return new DslToken(DslTokenType.Unknown, trimmed, line, indent);
         }
 
         private static bool IsChoiceOption(string trimmed)
