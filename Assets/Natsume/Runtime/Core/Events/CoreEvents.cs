@@ -194,6 +194,12 @@ namespace Natsume.Core.Events
         }
     }
 
+    /// <summary>
+    /// Published when the player advances dialogue (click, space, etc.).
+    /// DialogueCommandHandler awaits this to proceed to the next command.
+    /// </summary>
+    public readonly struct AdvanceEvent : IEvent { }
+
     public readonly struct ShowChoiceEvent : IEvent
     {
         public readonly string Prompt;

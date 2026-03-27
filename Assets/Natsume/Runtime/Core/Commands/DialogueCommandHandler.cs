@@ -7,13 +7,16 @@ using Natsume.Core.ScenarioEngine;
 namespace Natsume.Core.Commands
 {
     /// <summary>
-    /// Handles "dialogue" command — publishes a ShowDialogueEvent via EventBus.
+    /// Handles "dialogue" command — publishes ShowDialogueEvent, then awaits
+    /// AdvanceEvent before returning (blocks the engine until player advances).
     /// </summary>
     public class DialogueCommandHandler : ICommandHandler
     {
         public string CommandType => "dialogue";
 
-        public Task ExecuteAsync(CommandData data, ScenarioContext context)
+        private readonly WaitController _wait = new WaitController();
+
+        public async Task ExecuteAsync(CommandData data, ScenarioContext context)
         {
             var character = data.GetString("character");
             var text = data.GetString("text");
@@ -21,7 +24,8 @@ namespace Natsume.Core.Commands
             var mode = data.GetString("mode", "adv");
 
             EventBus.EventBus.Publish(new ShowDialogueEvent(character, text, voice, mode));
-            return Task.CompletedTask;
+
+            await _wait.WaitForAdvanceAsync();
         }
 
         public void Rollback(CommandData data, ScenarioContext context) { }
