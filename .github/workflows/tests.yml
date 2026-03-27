@@ -7,10 +7,9 @@ on:
     branches: [main]
 
 jobs:
-  unity-tests:
+  test:
     name: ${{ matrix.testMode }} tests
     runs-on: ubuntu-latest
-    if: ${{ secrets.UNITY_LICENSE != '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -19,6 +18,15 @@ jobs:
           - playmode
 
     steps:
+      - name: Check Unity license
+        run: |
+          if [ -z "$UNITY_LICENSE" ]; then
+            echo "::error::UNITY_LICENSE secret is not configured. Please add UNITY_LICENSE, UNITY_EMAIL, and UNITY_PASSWORD to repository secrets."
+            exit 1
+          fi
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -51,11 +59,3 @@ jobs:
         with:
           name: test-results-${{ matrix.testMode }}
           path: test-results-${{ matrix.testMode }}
-
-  check-no-license:
-    name: CI status (no Unity license)
-    runs-on: ubuntu-latest
-    if: ${{ secrets.UNITY_LICENSE == '' }}
-    steps:
-      - name: Skip notice
-        run: echo "Unity tests skipped — UNITY_LICENSE secret not configured. See DEPENDENCIES.md for setup instructions."
