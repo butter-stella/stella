@@ -16,6 +16,12 @@ namespace Natsume.Core.Commands
         public Task ExecuteAsync(CommandData data, ScenarioContext context)
         {
             var asset = data.GetString("asset");
+            if (string.IsNullOrEmpty(asset))
+            {
+                EventBus.EventBus.Logger?.Invoke("[BgCommandHandler] Missing required 'asset' parameter, skipping.");
+                return Task.CompletedTask;
+            }
+
             var transition = data.GetString("transition");
             var duration = data.GetFloat("duration");
 

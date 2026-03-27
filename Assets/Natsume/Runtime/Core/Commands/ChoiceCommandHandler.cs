@@ -1,20 +1,30 @@
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Natsume.Core.Data;
 using Natsume.Core.EventBus;
 using Natsume.Core.Events;
 using Natsume.Core.ScenarioEngine;
+using Natsume.Core.VariableSystem;
 
 namespace Natsume.Core.Commands
 {
     /// <summary>
-    /// Handles "choice" command — parses options from CommandData and publishes a ShowChoiceEvent.
+    /// Handles "choice" command — parses options, publishes ShowChoiceEvent,
+    /// then awaits ChoiceSelectedEvent to apply jump and variable assignments.
     /// </summary>
     public class ChoiceCommandHandler : ICommandHandler
     {
         public string CommandType => "choice";
 
-        public Task ExecuteAsync(CommandData data, ScenarioContext context)
+        private readonly VariableStore _variables;
+
+        public ChoiceCommandHandler(VariableStore variables = null)
+        {
+            _variables = variables;
+        }
+
+        public async Task ExecuteAsync(CommandData data, ScenarioContext context)
         {
             var prompt = data.GetString("prompt");
             var rawOptions = data.Get<List<Dictionary<string, object>>>("options");
@@ -45,8 +55,36 @@ namespace Natsume.Core.Commands
                 }
             }
 
+            var tcs = new TaskCompletionSource<string>();
+            Action<ChoiceSelectedEvent> handler = null;
+            handler = e =>
+            {
+                EventBus.EventBus.Unsubscribe(handler);
+                tcs.TrySetResult(e.SelectedOptionId);
+            };
+            EventBus.EventBus.Subscribe(handler);
+
             EventBus.EventBus.Publish(new ShowChoiceEvent(prompt, options));
-            return Task.CompletedTask;
+
+            var selectedId = await tcs.Task;
+
+            // Find selected option and apply jump/set
+            var selected = options.Find(o => o.Id == selectedId);
+            if (selected != null)
+            {
+                if (!string.IsNullOrEmpty(selected.Jump))
+                {
+                    context.PendingJump = selected.Jump;
+                }
+
+                if (_variables != null && selected.Set != null)
+                {
+                    foreach (var kv in selected.Set)
+                    {
+                        _variables.Set(kv.Key, kv.Value, VariableScope.Scenario);
+                    }
+                }
+            }
         }
 
         public void Rollback(CommandData data, ScenarioContext context) { }

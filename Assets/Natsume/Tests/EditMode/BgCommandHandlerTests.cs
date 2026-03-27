@@ -80,5 +80,22 @@ namespace Natsume.Tests.EditMode
             Assert.IsNull(received.Value.Transition);
             Assert.AreEqual(0f, received.Value.Duration, 0.001f);
         }
+
+        [Test]
+        public async Task Execute_MissingAsset_SkipsAndLogs()
+        {
+            ShowBgEvent? received = null;
+            string logMessage = null;
+            EventBus.Logger = msg => logMessage = msg;
+            EventBus.Subscribe<ShowBgEvent>(e => received = e);
+
+            var data = new CommandData("bg");
+
+            await _handler.ExecuteAsync(data, _context);
+
+            Assert.IsNull(received);
+            Assert.IsNotNull(logMessage);
+            StringAssert.Contains("asset", logMessage);
+        }
     }
 }

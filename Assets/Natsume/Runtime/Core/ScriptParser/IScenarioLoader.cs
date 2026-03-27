@@ -8,6 +8,11 @@ namespace Natsume.Core.ScriptParser
     /// </summary>
     public interface IScenarioLoader
     {
+        /// <summary>
+        /// Loads a scenario by its identifier.
+        /// Returns null if the scenario is not found. Callers must handle null
+        /// (e.g., ScenarioEngine throws if the loaded scenario is null).
+        /// </summary>
         Task<ScenarioData> LoadAsync(string scenarioId);
     }
 }

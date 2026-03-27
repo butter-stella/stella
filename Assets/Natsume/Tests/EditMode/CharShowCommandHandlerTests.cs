@@ -114,5 +114,22 @@ namespace Natsume.Tests.EditMode
             Assert.AreEqual("dissolve", received.Value.Transition);
             Assert.AreEqual(0.5f, received.Value.Duration, 0.001f);
         }
+
+        [Test]
+        public async Task Execute_MissingCharacter_SkipsAndLogs()
+        {
+            CharShowEvent? received = null;
+            string logMessage = null;
+            EventBus.Logger = msg => logMessage = msg;
+            EventBus.Subscribe<CharShowEvent>(e => received = e);
+
+            var data = new CommandData("char_show");
+
+            await _handler.ExecuteAsync(data, _context);
+
+            Assert.IsNull(received);
+            Assert.IsNotNull(logMessage);
+            StringAssert.Contains("character", logMessage);
+        }
     }
 }

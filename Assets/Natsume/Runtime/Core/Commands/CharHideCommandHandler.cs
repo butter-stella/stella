@@ -16,6 +16,12 @@ namespace Natsume.Core.Commands
         public Task ExecuteAsync(CommandData data, ScenarioContext context)
         {
             var character = data.GetString("character");
+            if (string.IsNullOrEmpty(character))
+            {
+                EventBus.EventBus.Logger?.Invoke("[CharHideCommandHandler] Missing required 'character' parameter, skipping.");
+                return Task.CompletedTask;
+            }
+
             var transition = data.GetString("transition");
             var duration = data.GetFloat("duration");
 

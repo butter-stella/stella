@@ -197,12 +197,12 @@ namespace Natsume.Core.Events
     public readonly struct ShowChoiceEvent : IEvent
     {
         public readonly string Prompt;
-        public readonly List<ChoiceOption> Options;
+        public readonly IReadOnlyList<ChoiceOption> Options;
 
         public ShowChoiceEvent(string prompt, List<ChoiceOption> options)
         {
             Prompt = prompt;
-            Options = options;
+            Options = options?.AsReadOnly();
         }
     }
 }

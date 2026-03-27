@@ -63,5 +63,22 @@ namespace Natsume.Tests.EditMode
             Assert.AreEqual("fade", received.Value.Transition);
             Assert.AreEqual(0.3f, received.Value.Duration, 0.001f);
         }
+
+        [Test]
+        public async Task Execute_MissingCharacter_SkipsAndLogs()
+        {
+            CharHideEvent? received = null;
+            string logMessage = null;
+            EventBus.Logger = msg => logMessage = msg;
+            EventBus.Subscribe<CharHideEvent>(e => received = e);
+
+            var data = new CommandData("char_hide");
+
+            await _handler.ExecuteAsync(data, _context);
+
+            Assert.IsNull(received);
+            Assert.IsNotNull(logMessage);
+            StringAssert.Contains("character", logMessage);
+        }
     }
 }
