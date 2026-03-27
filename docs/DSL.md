@@ -12,7 +12,7 @@
 
 ## 2. 文件格式
 
-- 扩展名：`.natsume`
+- 扩展名：`.ntm`
 - 编码：UTF-8
 - 注释：`//` 行注释
 - 一个文件 = 一个剧本（scenario），可包含多个场景
@@ -267,7 +267,7 @@ sakura「那个人就是..{wait:500}{speed:0.3}你吗？」
 ## 4. 完整示例
 
 ```
-// demo.natsume
+// demo.ntm
 @scene start "序章"
 
 // 背景和角色登场
@@ -401,13 +401,13 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 
 ```
 ScriptParser/
-├── DslLexer.cs                -- 词法分析：将 .natsume 文本分割为 Token 流
+├── DslLexer.cs                -- 词法分析：将 .ntm 文本分割为 Token 流
 ├── DslParser.cs               -- 语法分析：Token 流 → AST（抽象语法树）
 ├── DslToYamlCompiler.cs       -- AST → YAML（填充默认值、展开简写）
 ├── YamlToDslDecompiler.cs     -- YAML → DSL（尽量还原简写形式）
 ├── DslValidator.cs            -- 静态检查：未定义的角色/场景引用、死路检测
 └── Editor/
-    └── DslImporter.cs         -- Unity Asset Importer：.natsume 文件导入时自动转译
+    └── DslImporter.cs         -- Unity Asset Importer：.ntm 文件导入时自动转译
 ```
 
 ### 转译示例
