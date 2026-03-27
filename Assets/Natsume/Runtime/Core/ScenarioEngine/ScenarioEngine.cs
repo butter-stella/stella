@@ -63,9 +63,19 @@ namespace Natsume.Core.ScenarioEngine
 
                 if (Context.CommandIndex >= scene.Commands.Count)
                 {
-                    // Scene exhausted, no more commands
-                    Context.IsFinished = true;
-                    break;
+                    // Scene exhausted — auto-advance to next scene in list
+                    var scenes = Context.CurrentScenario.Scenes;
+                    var idx = scenes.FindIndex(s => s.Id == Context.CurrentSceneId);
+                    if (idx >= 0 && idx + 1 < scenes.Count)
+                    {
+                        await SetSceneAsync(scenes[idx + 1].Id);
+                        continue;
+                    }
+                    else
+                    {
+                        Context.IsFinished = true;
+                        break;
+                    }
                 }
 
                 var command = scene.Commands[Context.CommandIndex];
@@ -88,9 +98,9 @@ namespace Natsume.Core.ScenarioEngine
         /// <summary>
         /// Jump to a specific scene by ID.
         /// </summary>
-        public async Task JumpToSceneAsync(string sceneId)
+        public Task JumpToSceneAsync(string sceneId)
         {
-            await SetSceneAsync(sceneId);
+            return SetSceneAsync(sceneId);
         }
 
         private Task SetSceneAsync(string sceneId)

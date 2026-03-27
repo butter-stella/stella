@@ -339,5 +339,42 @@ namespace Natsume.Tests.EditMode
 
             Assert.AreEqual("start", receivedSceneId);
         }
+
+        // === Auto-advance to next scene ===
+
+        [Test]
+        public async Task RunAsync_AutoAdvancesToNextScene()
+        {
+            var scenario = new ScenarioData
+            {
+                Id = "test",
+                Scenes = new List<SceneData>
+                {
+                    new SceneData
+                    {
+                        Id = "scene_1",
+                        Commands = new List<CommandData>
+                        {
+                            new CommandData("dialogue", new Dictionary<string, object> { { "text", "Scene 1" } })
+                        }
+                    },
+                    new SceneData
+                    {
+                        Id = "scene_2",
+                        Commands = new List<CommandData>
+                        {
+                            new CommandData("dialogue", new Dictionary<string, object> { { "text", "Scene 2" } })
+                        }
+                    }
+                }
+            };
+
+            _engine.LoadScenario(scenario);
+            await _engine.RunAsync();
+
+            Assert.AreEqual(2, _dialogueHandler.ExecutedCommands.Count);
+            Assert.AreEqual("Scene 1", _dialogueHandler.ExecutedCommands[0].GetString("text"));
+            Assert.AreEqual("Scene 2", _dialogueHandler.ExecutedCommands[1].GetString("text"));
+        }
     }
 }

@@ -22,6 +22,8 @@ namespace Natsume.Core.Commands
         public Task ExecuteAsync(CommandData data, ScenarioContext context)
         {
             var name = data.GetString("var");
+            if (string.IsNullOrEmpty(name))
+                return Task.CompletedTask;
             var value = data.Parameters.ContainsKey("value") ? data.Parameters["value"] : null;
             var scopeStr = data.GetString("scope", "scenario");
 

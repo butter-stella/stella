@@ -50,7 +50,11 @@ namespace Natsume.Core.VariableSystem
                 return !Evaluate(expression.Substring(1).Trim());
             }
 
-            // Handle comparison operators (order matters: >= before >, <= before <, != before single chars)
+            // Handle comparison operators.
+            // Limitation: only supports a single comparison per expression.
+            // Chain comparisons (a >= b >= c) and parenthesized grouping are not supported.
+            // For complex conditions, combine simple comparisons with && / ||,
+            // or split into multiple condition commands.
             string[] operators = { ">=", "<=", "!=", "==", ">", "<" };
             foreach (var op in operators)
             {

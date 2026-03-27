@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using Natsume.Core.Data;
 using Natsume.Core.Interfaces;
 
@@ -109,6 +108,7 @@ namespace Natsume.Core.VariableSystem
 
         // === ISnapshotProvider (Scenario scope) ===
 
+        /// <remarks>Shallow copy — reference-type values are shared between snapshot and live store.</remarks>
         public object CaptureSnapshot()
         {
             return new Dictionary<string, object>(_scenario);
