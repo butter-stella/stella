@@ -7,9 +7,10 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  unity-tests:
     name: ${{ matrix.testMode }} tests
     runs-on: ubuntu-latest
+    if: ${{ secrets.UNITY_LICENSE != '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -50,3 +51,11 @@ jobs:
         with:
           name: test-results-${{ matrix.testMode }}
           path: test-results-${{ matrix.testMode }}
+
+  check-no-license:
+    name: CI status (no Unity license)
+    runs-on: ubuntu-latest
+    if: ${{ secrets.UNITY_LICENSE == '' }}
+    steps:
+      - name: Skip notice
+        run: echo "Unity tests skipped — UNITY_LICENSE secret not configured. See DEPENDENCIES.md for setup instructions."
