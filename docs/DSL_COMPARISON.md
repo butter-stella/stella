@@ -94,7 +94,7 @@ select "你好",*scene_a,"……",*scene_b
 | ADV/NVL 切换 | `@nvl` 开关 | 角色类型 | 层配置 | Printer 配置 | 模式命令 | N/A |
 | 条件选项 | `?if expr` | `if` 守卫 | TJS | `if:expr` | `if`+`goto` | `{condition}` |
 | 选项+副作用 | `{var += 5}` 内联 | `$` Python | TJS | `@set` 嵌套 | 分开写 | `~ var += 5` |
-| SD 插画 | `@sd`（内建）| 自定义 | 自定义 | 自定义 | 无 | N/A |
+| CG 系统 | `@cg`（全屏/SD/动态/差分）| 自定义 | 自定义 | 自定义 | 无 | N/A |
 | 角色动画 | `@anim` | ATL | TJS | `@animate` | 无 | N/A |
 | 运行时 | Unity | 独立（Python）| Windows | Unity | Windows | 任意 |
 | 面向人群 | 编剧优先 | 编剧→程序员 | 程序员 | 编剧+C# | 程序员 | 纯写作 |
@@ -141,7 +141,7 @@ KAG 没有默认值（每个参数必须写）。Ren'Py 有一些但不系统。
 
 ### 6. 独有功能
 
-- `@sd` SD 插画指令——Galgame 特有的演出方式，其他引擎无内建支持
+- `@cg` 统一 CG 系统——全屏 CG / SD CG / 动态 CG / 差分 CG 统一管理，其他引擎无内建支持
 - `@overlay` 无框叠字模式——区别于 ADV/NVL 的第三种文本模式
 - 语音驱动表情时间轴——对话中角色表情随语音进度自动切换
 

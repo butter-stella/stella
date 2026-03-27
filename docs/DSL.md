@@ -131,23 +131,40 @@ sakura「那个人就是..{wait:500}{speed:0.3}你吗？」
 
 **强度别名**：`light` / `normal`（默认）/ `strong`，编剧不需要记数值。
 
-### 3.7 SD 插画
+### 3.7 CG 系统
+
+CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
 
 ```
-// 在对话框旁弹出 SD 小图
-@sd sakura_chibi_angry
+// 全屏 CG — 替换背景，隐藏立绘，全屏展示
+@cg sakura_confession
+@cg sakura_confession fade 1.0    // 指定转场
 
-// 指定位置和动画
-@sd sakura_chibi_shock center pop
+// SD CG — 对话框旁弹出 Q 版小图
+@cg sakura_chibi_angry sd
+@cg sakura_chibi_laugh sd 1.5s    // 自动消失
 
-// 自动消失（秒）
-@sd sakura_chibi_laugh 1.5s
+// 动态 CG — 带动画/粒子效果
+@cg sakura_rain animated
 
-// 清除
-@sd off
+// 差分 CG — 切换同一张 CG 的不同状态
+@cg sakura_confession:smile       // asset:variant 语法
+@cg sakura_confession:cry
+
+// 关闭 CG（恢复之前的背景/立绘状态）
+@cg off
+@cg off fade 0.5
 ```
 
-**省略规则**：不写位置 = `dialogue_right`，不写动画 = `pop`。
+**CG 模式**：
+
+| 模式 | 关键字 | 行为 |
+|------|--------|------|
+| 全屏 | （默认） | 替换背景层，自动隐藏立绘，点击推进后恢复 |
+| SD | `sd` | 小图弹出在对话框旁，不影响背景和立绘 |
+| 动态 | `animated` | 全屏 CG + 附加动画效果（粒子、摇晃等） |
+
+**省略规则**：不写模式 = 全屏 CG，不写转场 = `fade 0.5`，SD 模式不写位置 = `dialogue_right`，不写动画 = `pop`。
 
 ### 3.8 音频
 
@@ -295,7 +312,7 @@ sakura「对了！放学后一起去新开的咖啡店吧！」 #voice:sakura_00
 @show sakura smile center
 
 sakura「你看你看，这个蛋糕好可爱！」 #voice:sakura_010
-@sd sakura_chibi_excited 2s
+@cg sakura_chibi_excited sd 2s
 @anim sakura bounce
 sakura「我要点这个！」 #voice:sakura_011
 
@@ -364,7 +381,7 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | 句内表情 | `[expression]` | — |
 | 移动 | `@move char pos duration` | `@move char pos` |
 | 动画 | `@anim char type intensity` | `@anim char type` |
-| SD 插画 | `@sd asset pos anim duration` | `@sd asset` |
+| CG | `@cg asset [mode] [transition] [duration]` | `@cg asset` |
 | BGM | `@bgm asset fadein` | `@bgm asset` |
 | 音效 | `@se asset` | `@se asset` |
 | 全屏对话 | `@nvl ... @nvl off` | — |
@@ -389,59 +406,47 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | 立绘表情 | `default` | 取角色配置中的 default |
 | 动画强度 | `normal` | light / normal / strong |
 | 动画时长 | 预设自带 | jump=0.4s, shake=0.3s, nod=0.3s, bounce=0.35s |
-| SD 位置 | `dialogue_right` | 对话框右侧 |
-| SD 动画 | `pop` | 弹出效果 |
+| CG 模式 | 全屏 | 不写 mode 时为全屏 CG |
+| CG 转场 | `fade 0.5` | 全屏 CG 默认转场 |
+| SD CG 位置 | `dialogue_right` | 对话框右侧 |
+| SD CG 动画 | `pop` | 弹出效果 |
 | BGM 淡入 | `1.0s` | — |
 | BGM 淡出 | `1.0s` | — |
 | 对话推进 | 等待点击 | 有语音时可配置等语音播完 |
 
-## 7. DSL ↔ YAML 转译
+## 7. 解析器架构
 
-### 转译器架构
+DSL 是唯一的脚本格式，引擎直接解析 `.ntm` 为内部数据结构（ScenarioData）。
 
 ```
 ScriptParser/
 ├── DslLexer.cs                -- 词法分析：将 .ntm 文本分割为 Token 流
-├── DslParser.cs               -- 语法分析：Token 流 → AST（抽象语法树）
-├── DslToYamlCompiler.cs       -- AST → YAML（填充默认值、展开简写）
-├── YamlToDslDecompiler.cs     -- YAML → DSL（尽量还原简写形式）
+├── DslParser.cs               -- 语法分析：Token 流 → ScenarioData（填充默认值、展开简写）
+├── DslScenarioLoader.cs       -- IScenarioLoader 实现：读取 .ntm 文件
+├── DslParseException.cs       -- 解析错误（携带行号信息）
 ├── DslValidator.cs            -- 静态检查：未定义的角色/场景引用、死路检测
-└── Editor/
-    └── DslImporter.cs         -- Unity Asset Importer：.ntm 文件导入时自动转译
+└── DslToken.cs                -- Token 类型定义
 ```
 
-### 转译示例
+### 解析示例
 
-DSL：
+DSL（3 行）：
 ```
 @show sakura
 sakura「你好。」
 @anim sakura jump
 ```
 
-等价 YAML：
-```yaml
-commands:
-  - type: char_show
-    character: "sakura"
-    expression: "default"
-    position: center
-    transition: { type: fade, duration: 0.3 }
-  - type: dialogue
-    character: "sakura"
-    text: "你好。"
-    mode: "adv"
-  - type: char_anim
-    character: "sakura"
-    anim: "jump"
-    intensity: normal
+解析器自动填充默认值，生成等价的 CommandData 序列（12 个参数）：
 ```
-
-编剧写 3 行，等价于 YAML 的 12 行。默认值由转译器自动填充。
+CommandData("char_show",  { character: "sakura", expression: "default", position: "center" })
+CommandData("dialogue",   { character: "sakura", text: "你好。", mode: "adv" })
+CommandData("char_anim",  { character: "sakura", anim: "jump", intensity: "normal" })
+```
 
 ### 静态检查
 
-`DslValidator` 在转译时自动检查：
+`DslValidator` 在解析时自动检查：
 - 引用了未定义的角色 → 警告
 - `@jump` 指向不存在的场景 → 错误
 - 场景无出口（无 jump/choice/end）→ 死路警告

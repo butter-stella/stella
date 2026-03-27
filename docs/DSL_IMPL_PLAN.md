@@ -246,14 +246,14 @@ public class DslScenarioLoader : IScenarioLoader
 
 ### Sprint 5：P2 — 高级功能
 
-**目标**：@anim/@move/@sd/@parallel/@call/@elif/条件选项/句内标签。
+**目标**：@anim/@move/@cg/@parallel/@call/@elif/条件选项/句内标签。
 
 **新建文件**：
 | 文件 | 说明 |
 |------|------|
 | `Core/Commands/CharAnimCommandHandler.cs` | 角色动画 |
 | `Core/Commands/CharMoveCommandHandler.cs` | 角色移动 |
-| `Core/Commands/SdCommandHandler.cs` | SD 插画 |
+| `Core/Commands/CgCommandHandler.cs` | CG 系统（全屏/SD/动态/差分） |
 | `Core/Commands/ParallelCommandHandler.cs` | 并行执行（需注入 CommandRegistry） |
 | `Core/Commands/CallCommandHandler.cs` | 调用子场景（需 ReturnStack） |
 
