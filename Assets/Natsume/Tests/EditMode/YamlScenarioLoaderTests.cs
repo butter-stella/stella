@@ -166,5 +166,25 @@ scenes:
             var cmd = result.Scenes[0].Commands[0];
             Assert.AreEqual(1.5f, cmd.GetFloat("duration"), 0.001f);
         }
+
+        [Test]
+        public async Task Load_DialogueWithColonInText()
+        {
+            var yaml = @"
+id: test
+scenes:
+  - id: start
+    commands:
+      - type: dialogue
+        params:
+          character: sakura
+          text: 樱：你好啊，初次见面
+";
+            var loader = new YamlScenarioLoader();
+            var result = await loader.LoadFromStringAsync(yaml);
+
+            var cmd = result.Scenes[0].Commands[0];
+            Assert.AreEqual("樱：你好啊，初次见面", cmd.GetString("text"));
+        }
     }
 }

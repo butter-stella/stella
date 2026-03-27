@@ -91,6 +91,11 @@ namespace Natsume.Core.ScriptParser
             return scenario;
         }
 
+        /// <summary>
+        /// Currently synchronous (File.ReadAllText wrapped in Task.FromResult).
+        /// Scenario files are small enough that blocking is acceptable.
+        /// Replace with truly async I/O if large files become a concern.
+        /// </summary>
         private static Task<string> ReadFileAsync(string path)
         {
             return Task.FromResult(File.ReadAllText(path));

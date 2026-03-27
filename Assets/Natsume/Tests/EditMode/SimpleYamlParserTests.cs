@@ -100,5 +100,35 @@ namespace Natsume.Tests.EditMode
             Assert.AreEqual("b", scenes[1].GetString("id"));
             Assert.AreEqual("Scene B", scenes[1].GetString("title"));
         }
+
+        [Test]
+        public void Parse_ValueContainingColon_NotSplitIncorrectly()
+        {
+            var yaml = "text: Hello: World";
+            var node = SimpleYamlParser.Parse(yaml);
+
+            Assert.AreEqual("Hello: World", node.GetString("text"));
+        }
+
+        [Test]
+        public void Parse_JapaneseDialogueWithColon()
+        {
+            var yaml = "text: 樱：你好啊";
+            var node = SimpleYamlParser.Parse(yaml);
+
+            Assert.AreEqual("樱：你好啊", node.GetString("text"));
+        }
+
+        [Test]
+        public void Parse_TabIndentation_ConvertedToSpaces()
+        {
+            // Tab-indented YAML (editor might mix in tabs)
+            var yaml = "root:\n\tchild: value";
+            var node = SimpleYamlParser.Parse(yaml);
+
+            var child = node.GetMap("root");
+            Assert.IsNotNull(child);
+            Assert.AreEqual("value", child.GetString("child"));
+        }
     }
 }

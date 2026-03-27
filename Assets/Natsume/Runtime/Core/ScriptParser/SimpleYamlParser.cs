@@ -7,7 +7,9 @@ namespace Natsume.Core.ScriptParser
     /// <summary>
     /// Lightweight YAML parser for the scenario file schema.
     /// Supports: maps, lists (- item), scalar values (string, int, float, bool).
-    /// Does NOT support: anchors, tags, multi-line strings, flow collections.
+    /// Does NOT support: anchors, tags, multi-line strings (| or >), flow collections.
+    /// Long text values should be written on a single line or wrapped in quotes.
+    /// Tab indentation is automatically converted to spaces (2 per tab).
     /// </summary>
     public static class SimpleYamlParser
     {
@@ -19,7 +21,8 @@ namespace Natsume.Core.ScriptParser
             var lines = new List<string>();
             foreach (var rawLine in yaml.Split('\n'))
             {
-                var line = rawLine.TrimEnd('\r');
+                // Normalize: strip CR, replace tabs with 2 spaces (YAML forbids tabs but editors mix them in)
+                var line = rawLine.TrimEnd('\r').Replace("\t", "  ");
                 // Skip empty lines and comments
                 if (string.IsNullOrWhiteSpace(line) || line.TrimStart().StartsWith("#"))
                     continue;
@@ -73,12 +76,21 @@ namespace Natsume.Core.ScriptParser
                 if (trimmed.StartsWith("- "))
                     break;
 
-                var colonPos = trimmed.IndexOf(':');
+                // Split on ": " (colon+space) to avoid cutting values containing colons
+                var colonPos = trimmed.IndexOf(": ", StringComparison.Ordinal);
                 if (colonPos < 0)
-                    break;
+                {
+                    // Check for key with no inline value (trailing colon: "key:\n")
+                    if (trimmed.EndsWith(":"))
+                        colonPos = trimmed.Length - 1;
+                    else
+                        break;
+                }
 
                 var key = trimmed.Substring(0, colonPos).Trim();
-                var afterColon = trimmed.Substring(colonPos + 1).Trim();
+                var afterColon = colonPos < trimmed.Length - 1
+                    ? trimmed.Substring(colonPos + 2).Trim()
+                    : "";
 
                 index++;
 
@@ -130,7 +142,8 @@ namespace Natsume.Core.ScriptParser
 
                 // Check if this is a simple list item: - value
                 // or a list item starting a map: - key: value
-                if (afterDash.Contains(":"))
+                // Use ": " to avoid false positives on values containing colons
+                if (afterDash.Contains(": ") || afterDash.EndsWith(":"))
                 {
                     // Inline map start: - key: value
                     // Reconstruct as a map entry with adjusted indent
