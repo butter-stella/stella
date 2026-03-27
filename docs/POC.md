@@ -143,15 +143,30 @@ Core 层全部就绪，无需额外工作：
 职责：
 - 订阅 ShowDialogueEvent → 显示对话框
 - 订阅 HideDialogueEvent → 隐藏对话框
+- 左侧角色头像（face icon）：从 ShowDialogueEvent.Character 查找对应头像素材
+  - 有 character 时显示头像 + 角色名
+  - 无 character 时（旁白）隐藏头像区域，文本区域扩展到全宽
 - 角色名显示（NameBox）
 - 打字机效果（TMP maxVisibleCharacters 逐字递增）
 - 打字机完成后等待玩家点击（配合 AdvanceEvent）
 
 UI 结构：
 - Canvas
-  - DialoguePanel (底部对话框)
-    - NameText (TMP) — 角色名
-    - ContentText (TMP) — 对话内容
+  - DialoguePanel (底部对话框, HorizontalLayout)
+    - FaceIcon (Image, 左侧固定宽度) — 角色头像/半身像
+    - TextArea (VerticalLayout, 右侧自适应)
+      - NameText (TMP) — 角色名
+      - ContentText (TMP) — 对话内容
+
+头像素材约定：
+- 路径：Characters/{character}/face_{expression}.png（或 face_default.png）
+- ShowDialogueEvent 不携带 expression，默认使用 face_default.png
+- 如需对话中指定头像表情，可在 dialogue 指令的 params 中加 face 字段：
+    - type: dialogue
+      params:
+        character: sakura
+        text: 太好了！
+        face: happy        ← 可选，覆盖默认头像
 ```
 
 ### Step 4：BackgroundPresenter — 背景显示
