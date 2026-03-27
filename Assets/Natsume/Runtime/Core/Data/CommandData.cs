@@ -28,21 +28,30 @@ namespace Natsume.Core.Data
         public int GetInt(string key, int defaultValue = 0)
         {
             if (Parameters.TryGetValue(key, out var value))
-                return Convert.ToInt32(value);
+            {
+                try { return Convert.ToInt32(value); }
+                catch (Exception) { return defaultValue; }
+            }
             return defaultValue;
         }
 
         public float GetFloat(string key, float defaultValue = 0f)
         {
             if (Parameters.TryGetValue(key, out var value))
-                return Convert.ToSingle(value);
+            {
+                try { return Convert.ToSingle(value); }
+                catch (Exception) { return defaultValue; }
+            }
             return defaultValue;
         }
 
         public bool GetBool(string key, bool defaultValue = false)
         {
             if (Parameters.TryGetValue(key, out var value))
-                return Convert.ToBoolean(value);
+            {
+                try { return Convert.ToBoolean(value); }
+                catch (Exception) { return defaultValue; }
+            }
             return defaultValue;
         }
 

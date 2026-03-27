@@ -128,5 +128,38 @@ namespace Natsume.Tests.EditMode
             Assert.IsTrue(cmd.HasKey("exists"));
             Assert.IsFalse(cmd.HasKey("missing"));
         }
+
+        [Test]
+        public void GetInt_InvalidType_ReturnsDefault()
+        {
+            var cmd = new CommandData("test", new Dictionary<string, object>
+            {
+                { "bad", "not_a_number" }
+            });
+
+            Assert.AreEqual(99, cmd.GetInt("bad", 99));
+        }
+
+        [Test]
+        public void GetFloat_InvalidType_ReturnsDefault()
+        {
+            var cmd = new CommandData("test", new Dictionary<string, object>
+            {
+                { "bad", "not_a_float" }
+            });
+
+            Assert.AreEqual(1.5f, cmd.GetFloat("bad", 1.5f), 0.001f);
+        }
+
+        [Test]
+        public void GetBool_InvalidType_ReturnsDefault()
+        {
+            var cmd = new CommandData("test", new Dictionary<string, object>
+            {
+                { "bad", "not_a_bool" }
+            });
+
+            Assert.IsTrue(cmd.GetBool("bad", true));
+        }
     }
 }

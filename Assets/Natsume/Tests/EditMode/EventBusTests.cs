@@ -104,5 +104,17 @@ namespace Natsume.Tests.EditMode
             EventBus.Publish(new TestEventB("x"));
             Assert.AreEqual(0, count);
         }
+
+        [Test]
+        public void Publish_SubscriberException_DoesNotBlockOtherSubscribers()
+        {
+            int secondHandlerCalled = 0;
+
+            EventBus.Subscribe<TestEventA>(_ => throw new System.Exception("boom"));
+            EventBus.Subscribe<TestEventA>(_ => secondHandlerCalled++);
+
+            Assert.DoesNotThrow(() => EventBus.Publish(new TestEventA(1)));
+            Assert.AreEqual(1, secondHandlerCalled);
+        }
     }
 }

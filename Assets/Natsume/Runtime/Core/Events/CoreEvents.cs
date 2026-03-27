@@ -1,3 +1,5 @@
+using Natsume.Core.Data;
+
 namespace Natsume.Core.Events
 {
     public readonly struct ShowDialogueEvent : IEvent
@@ -55,9 +57,9 @@ namespace Natsume.Core.Events
         public readonly string VariableName;
         public readonly object OldValue;
         public readonly object NewValue;
-        public readonly string Scope;
+        public readonly VariableScope Scope;
 
-        public VariableChangedEvent(string variableName, object oldValue, object newValue, string scope)
+        public VariableChangedEvent(string variableName, object oldValue, object newValue, VariableScope scope)
         {
             VariableName = variableName;
             OldValue = oldValue;

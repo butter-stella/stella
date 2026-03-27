@@ -43,8 +43,24 @@ namespace Natsume.Core.EventBus
         public static void Publish<T>(T evt) where T : IEvent
         {
             var type = typeof(T);
-            if (_handlers.TryGetValue(type, out var existing))
-                ((Action<T>)existing).Invoke(evt);
+            if (!_handlers.TryGetValue(type, out var existing))
+                return;
+
+            foreach (var d in existing.GetInvocationList())
+            {
+                try
+                {
+                    ((Action<T>)d).Invoke(evt);
+                }
+                catch (Exception e)
+                {
+                    // Isolate subscriber exceptions so one broken handler
+                    // does not block the rest of the event chain.
+                    // Core layer is pure C# — log via System.Diagnostics.
+                    // Presentation layer can subscribe to catch and forward to UnityEngine.Debug.
+                    System.Diagnostics.Debug.WriteLine($"[EventBus] Exception in handler for {type.Name}: {e}");
+                }
+            }
         }
 
         /// <summary>
