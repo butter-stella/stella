@@ -143,9 +143,13 @@ Core 层全部就绪，无需额外工作：
 职责：
 - 订阅 ShowDialogueEvent → 显示对话框
 - 订阅 HideDialogueEvent → 隐藏对话框
-- 左侧角色头像（face icon）：从 ShowDialogueEvent.Character 查找对应头像素材
+- 左侧角色头像（face icon）：
   - 有 character 时显示头像 + 角色名
   - 无 character 时（旁白）隐藏头像区域，文本区域扩展到全宽
+  - 头像表情来源（优先级从高到低）：
+    1. dialogue 指令的 face 参数（显式覆盖，用于 CG/SD CG 等无立绘场景）
+    2. 当前立绘状态（CharacterPresenter 追踪的 expression，立绘在场时自动同步）
+    3. face_default.png（兜底）
 - 角色名显示（NameBox）
 - 打字机效果（TMP maxVisibleCharacters 逐字递增）
 - 打字机完成后等待玩家点击（配合 AdvanceEvent）
@@ -160,13 +164,17 @@ UI 结构：
 
 头像素材约定：
 - 路径：Characters/{character}/face_{expression}.png（或 face_default.png）
-- ShowDialogueEvent 不携带 expression，默认使用 face_default.png
-- 如需对话中指定头像表情，可在 dialogue 指令的 params 中加 face 字段：
+
+头像同步机制：
+- 常规立绘模式：CharacterPresenter 维护每个角色当前的 expression 状态，
+  DialoguePresenter 查询该状态来显示对应头像，立绘切换表情时头像自动同步
+- CG / SD CG 模式：场景中无立绘（char_hide 或未 char_show），头像无法从
+  立绘状态获取，此时通过 dialogue 指令的 face 参数独立控制：
     - type: dialogue
       params:
         character: sakura
         text: 太好了！
-        face: happy        ← 可选，覆盖默认头像
+        face: happy        ← CG 场景中独立指定头像表情
 ```
 
 ### Step 4：BackgroundPresenter — 背景显示
