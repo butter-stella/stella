@@ -12,6 +12,17 @@ namespace Natsume.Core.EventBus
     {
         private static readonly Dictionary<Type, Delegate> _handlers = new Dictionary<Type, Delegate>();
 
+        /// <summary>
+        /// Replaceable logger for exception reporting. Defaults to System.Diagnostics.
+        /// Presentation layer should replace with UnityEngine.Debug.LogWarning at init.
+        /// </summary>
+        public static Action<string> Logger { get; set; } = System.Diagnostics.Debug.WriteLine;
+
+        /// <summary>
+        /// Subscribe a handler for events of type T.
+        /// To unsubscribe later, store the handler reference. Lambda expressions
+        /// create a new delegate instance each time and cannot be matched by Delegate.Remove.
+        /// </summary>
         public static void Subscribe<T>(Action<T> handler) where T : IEvent
         {
             if (handler == null)
@@ -54,11 +65,7 @@ namespace Natsume.Core.EventBus
                 }
                 catch (Exception e)
                 {
-                    // Isolate subscriber exceptions so one broken handler
-                    // does not block the rest of the event chain.
-                    // Core layer is pure C# — log via System.Diagnostics.
-                    // Presentation layer can subscribe to catch and forward to UnityEngine.Debug.
-                    System.Diagnostics.Debug.WriteLine($"[EventBus] Exception in handler for {type.Name}: {e}");
+                    Logger?.Invoke($"[EventBus] Exception in handler for {type.Name}: {e}");
                 }
             }
         }
