@@ -1,5 +1,8 @@
+using System;
+using System.Globalization;
 using System.Threading.Tasks;
 using Natsume.Core.Data;
+using Natsume.Core.EventBus;
 using Natsume.Core.ScenarioEngine;
 using Natsume.Core.VariableSystem;
 
@@ -7,6 +10,7 @@ namespace Natsume.Core.Commands
 {
     /// <summary>
     /// Handles "set" command — sets a variable value.
+    /// Supports operators: "=" (default), "+=", "-=".
     /// </summary>
     public class SetCommandHandler : ICommandHandler
     {
@@ -33,6 +37,22 @@ namespace Natsume.Core.Commands
                 case "global": scope = VariableScope.Global; break;
                 case "temp": scope = VariableScope.Temp; break;
                 default: scope = VariableScope.Scenario; break;
+            }
+
+            var op = data.GetString("op", "=");
+            if (op == "+=" || op == "-=")
+            {
+                var current = _variables.GetInt(name);
+                int delta;
+                try { delta = Convert.ToInt32(value, CultureInfo.InvariantCulture); }
+                catch
+                {
+                    EventBus.EventBus.Logger?.Invoke(
+                        $"[SetCommandHandler] Cannot convert '{value}' to int for '{name} {op}', defaulting to 0.");
+                    delta = 0;
+                }
+
+                value = op == "+=" ? current + delta : current - delta;
             }
 
             _variables.Set(name, value, scope);
