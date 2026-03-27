@@ -295,10 +295,12 @@ namespace Natsume.Tests.EditMode
 
             var options = cmd.Get<List<Dictionary<string, object>>>("options");
 
-            // First option has set
+            // First option has structured set: { var, op, value }
             var set0 = options[0]["set"] as Dictionary<string, string>;
             Assert.IsNotNull(set0);
-            Assert.AreEqual("+= 5", set0["sakura_affection"]);
+            Assert.AreEqual("sakura_affection", set0["var"]);
+            Assert.AreEqual("+=", set0["op"]);
+            Assert.AreEqual("5", set0["value"]);
 
             // Second option has condition
             Assert.AreEqual("sakura_affection >= 10", options[1]["condition"]);

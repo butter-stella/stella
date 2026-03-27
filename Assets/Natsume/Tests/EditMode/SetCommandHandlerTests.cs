@@ -44,6 +44,22 @@ namespace Natsume.Tests.EditMode
         }
 
         [Test]
+        public async Task Execute_StringBoolAssignment_SetsVariable()
+        {
+            // DSL parser always produces string values; verify handler stores them correctly
+            var data = new CommandData("set", new Dictionary<string, object>
+            {
+                { "var", "talked" },
+                { "value", "true" }
+            });
+
+            await _handler.ExecuteAsync(data, _context);
+
+            Assert.AreEqual("true", _variables.GetRaw("talked"));
+            Assert.IsTrue(_variables.GetBool("talked"));
+        }
+
+        [Test]
         public async Task Execute_MissingVar_DoesNothing()
         {
             var data = new CommandData("set", new Dictionary<string, object>

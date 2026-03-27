@@ -443,6 +443,7 @@ namespace Natsume.Core.ScriptParser
         private static Dictionary<string, string> ParseSetExpression(string content)
         {
             // "sakura_affection += 5" → { "sakura_affection": "+= 5" }
+            // Structured format consistent with ParseSet: var, op, value
             var result = new Dictionary<string, string>();
 
             foreach (var compOp in new[] { "+=", "-=", "=" })
@@ -451,8 +452,10 @@ namespace Natsume.Core.ScriptParser
                 if (idx > 0)
                 {
                     var varName = content.Substring(0, idx).Trim();
-                    var rest = content.Substring(idx).Trim(); // includes operator
-                    result[varName] = rest;
+                    var val = content.Substring(idx + compOp.Length).Trim();
+                    result["var"] = varName;
+                    result["op"] = compOp;
+                    result["value"] = val;
                     return result;
                 }
             }
@@ -541,7 +544,10 @@ namespace Natsume.Core.ScriptParser
                 thenScene.Commands.Add(MakeJump(jumpTarget));
             ctx.Scenario.Scenes.Add(thenScene);
 
-            // Else scene (even if empty — @else branch might be empty or absent)
+            // Else scene — always generated even without @else branch.
+            // When the source has no @else, this scene is empty except for the
+            // continuation jump. The condition command needs a valid else_jump
+            // target, so the scene must exist.
             var elseScene = new SceneData { Id = elseSceneId };
             elseScene.Commands.AddRange(elseCommands);
             if (jumpTarget != null && !EndsWithJump(elseCommands))
@@ -613,8 +619,12 @@ namespace Natsume.Core.ScriptParser
                         case "@overlay":
                             ctx.CurrentMode = (parts.Length >= 2 && parts[1] == "off") ? "adv" : "overlay";
                             return null;
+                        case "@if":
+                            throw new DslParseException(token.Line, "Nested @if is not supported.");
+                        case "@choice":
+                            throw new DslParseException(token.Line, "@choice inside @if block is not supported.");
                         default:
-                            throw new DslParseException(token.Line, $"Unknown directive in @if block: {parts[0]}");
+                            throw new DslParseException(token.Line, $"Unknown directive: {parts[0]}");
                     }
 
                 case DslTokenType.ChoiceOption:

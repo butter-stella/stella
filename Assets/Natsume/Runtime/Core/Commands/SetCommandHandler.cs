@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.Threading.Tasks;
 using Natsume.Core.Data;
+using Natsume.Core.EventBus;
 using Natsume.Core.ScenarioEngine;
 using Natsume.Core.VariableSystem;
 
@@ -44,7 +45,12 @@ namespace Natsume.Core.Commands
                 var current = _variables.GetInt(name);
                 int delta;
                 try { delta = Convert.ToInt32(value, CultureInfo.InvariantCulture); }
-                catch { delta = 0; }
+                catch
+                {
+                    EventBus.EventBus.Logger?.Invoke(
+                        $"[SetCommandHandler] Cannot convert '{value}' to int for '{name} {op}', defaulting to 0.");
+                    delta = 0;
+                }
 
                 value = op == "+=" ? current + delta : current - delta;
             }
