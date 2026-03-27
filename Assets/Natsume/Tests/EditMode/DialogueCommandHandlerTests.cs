@@ -20,6 +20,9 @@ namespace Natsume.Tests.EditMode
             EventBus.Clear();
             _handler = new DialogueCommandHandler();
             _context = new ScenarioContext();
+
+            // Auto-advance on every dialogue to prevent test hangs
+            EventBus.Subscribe<ShowDialogueEvent>(_ => EventBus.Publish(new AdvanceEvent()));
         }
 
         [Test]
