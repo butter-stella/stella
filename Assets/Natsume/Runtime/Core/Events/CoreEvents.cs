@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Natsume.Core.Data;
 
 namespace Natsume.Core.Events
@@ -143,6 +144,65 @@ namespace Natsume.Core.Events
         {
             CharacterName = characterName;
             Expression = expression;
+        }
+    }
+
+    public readonly struct ShowBgEvent : IEvent
+    {
+        public readonly string Asset;
+        public readonly string Transition;
+        public readonly float Duration;
+
+        public ShowBgEvent(string asset, string transition = null, float duration = 0f)
+        {
+            Asset = asset;
+            Transition = transition;
+            Duration = duration;
+        }
+    }
+
+    public readonly struct CharShowEvent : IEvent
+    {
+        public readonly string Character;
+        public readonly string Expression;
+        public readonly string Position;
+        public readonly string Transition;
+        public readonly float Duration;
+
+        public CharShowEvent(string character, string expression = null, string position = "center",
+            string transition = null, float duration = 0f)
+        {
+            Character = character;
+            Expression = expression;
+            Position = position;
+            Transition = transition;
+            Duration = duration;
+        }
+    }
+
+    public readonly struct CharHideEvent : IEvent
+    {
+        public readonly string Character;
+        public readonly string Transition;
+        public readonly float Duration;
+
+        public CharHideEvent(string character, string transition = null, float duration = 0f)
+        {
+            Character = character;
+            Transition = transition;
+            Duration = duration;
+        }
+    }
+
+    public readonly struct ShowChoiceEvent : IEvent
+    {
+        public readonly string Prompt;
+        public readonly IReadOnlyList<ChoiceOption> Options;
+
+        public ShowChoiceEvent(string prompt, List<ChoiceOption> options)
+        {
+            Prompt = prompt;
+            Options = options?.AsReadOnly();
         }
     }
 }
