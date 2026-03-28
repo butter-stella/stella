@@ -1,0 +1,126 @@
+extends GutTest
+## Tests for BgmController, SeController, VoiceController.
+## These controllers manage AudioStreamPlayers and respond to SignalBus signals.
+## Since we're testing in headless mode, we test the logic and signal wiring,
+## not actual audio playback.
+
+
+# --- BgmHandler ---
+
+func test_bgm_handler_type():
+	var handler = BgmHandler.new()
+	assert_eq(handler.get_command_type(), "bgm")
+
+
+func test_bgm_handler_emits_play_signal():
+	var received: Array = []
+	var bus = get_tree().root.get_node("SignalBus")
+	bus.bgm_play.connect(func(a, f): received.append({"asset": a, "fade": f}))
+
+	var handler = BgmHandler.new()
+	var cmd = CommandData.new()
+	cmd.type = "bgm"
+	cmd.params = {"asset": "bgm_spring", "fade_duration": 1.5}
+
+	var ctx = ScenarioContext.new()
+	await handler.execute(cmd, ctx)
+
+	assert_eq(received.size(), 1)
+	assert_eq(received[0]["asset"], "bgm_spring")
+
+
+func test_bgm_handler_stop_emits_signal():
+	var received: Array = []
+	var bus = get_tree().root.get_node("SignalBus")
+	bus.bgm_stop.connect(func(f): received.append(f))
+
+	var handler = BgmHandler.new()
+	var cmd = CommandData.new()
+	cmd.type = "bgm"
+	cmd.params = {"off": true, "fade_duration": 2.0}
+
+	var ctx = ScenarioContext.new()
+	await handler.execute(cmd, ctx)
+
+	assert_eq(received.size(), 1)
+	assert_almost_eq(received[0], 2.0, 0.01)
+
+
+func test_bgm_handler_defaults():
+	var received: Array = []
+	var bus = get_tree().root.get_node("SignalBus")
+	bus.bgm_play.connect(func(a, f): received.append({"fade": f}))
+
+	var handler = BgmHandler.new()
+	var cmd = CommandData.new()
+	cmd.type = "bgm"
+	cmd.params = {"asset": "bgm_test"}
+	await handler.execute(cmd, ScenarioContext.new())
+
+	assert_almost_eq(received[0]["fade"], 1.0, 0.01)
+
+
+# --- SeHandler ---
+
+func test_se_handler_type():
+	var handler = SeHandler.new()
+	assert_eq(handler.get_command_type(), "se")
+
+
+func test_se_handler_emits_play_signal():
+	var received: Array = []
+	var bus = get_tree().root.get_node("SignalBus")
+	bus.se_play.connect(func(a, l): received.append({"asset": a, "loop": l}))
+
+	var handler = SeHandler.new()
+	var cmd = CommandData.new()
+	cmd.type = "se"
+	cmd.params = {"asset": "se_click", "loop": false}
+	await handler.execute(cmd, ScenarioContext.new())
+
+	assert_eq(received.size(), 1)
+	assert_eq(received[0]["asset"], "se_click")
+	assert_false(received[0]["loop"])
+
+
+func test_se_handler_stop_emits_signal():
+	var received: Array = []
+	var bus = get_tree().root.get_node("SignalBus")
+	bus.se_stop.connect(func(a): received.append(a))
+
+	var handler = SeHandler.new()
+	var cmd = CommandData.new()
+	cmd.type = "se"
+	cmd.params = {"asset": "se_rain", "off": true}
+	await handler.execute(cmd, ScenarioContext.new())
+
+	assert_eq(received, ["se_rain"])
+
+
+# --- FadeHandler ---
+
+func test_fade_handler_type():
+	var handler = FadeHandler.new()
+	assert_eq(handler.get_command_type(), "fade")
+
+
+func test_fade_handler_emits_signal():
+	var received: Array = []
+	var bus = get_tree().root.get_node("SignalBus")
+	bus.fade_requested.connect(func(d, dur): received.append({"direction": d, "duration": dur}))
+
+	var handler = FadeHandler.new()
+	var cmd = CommandData.new()
+	cmd.type = "fade"
+	cmd.params = {"direction": "out", "duration": 1.0}
+	await handler.execute(cmd, ScenarioContext.new())
+
+	assert_eq(received.size(), 1)
+	assert_eq(received[0]["direction"], "out")
+
+
+# --- WaitHandler ---
+
+func test_wait_handler_type():
+	var handler = WaitHandler.new()
+	assert_eq(handler.get_command_type(), "wait")
