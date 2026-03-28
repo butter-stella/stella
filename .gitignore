@@ -17,3 +17,6 @@ Thumbs.db
 export/
 *.pck
 *.zip
+
+# Test results
+.gut_editor_config.json
