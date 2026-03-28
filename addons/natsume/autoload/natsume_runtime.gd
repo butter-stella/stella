@@ -65,6 +65,7 @@ func _register_handlers():
 	registry.register(WaitHandler.new())
 	registry.register(AnimHandler.new())
 	registry.register(MoveHandler.new())
+	registry.register(CallHandler.new())
 	registry.register(CgHandler.new())
 	registry.register(EffectHandler.new())
 	var parallel_handler = ParallelHandler.new()

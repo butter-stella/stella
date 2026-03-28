@@ -42,19 +42,46 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 					choice_cmd = _parse_choice_command(token)
 				elif cmd_name == "if":
 					if_stack.append(_create_if_context(token, current_scene, data))
+				elif cmd_name == "elif":
+					if if_stack.size() > 0:
+						# Close current if block's else into a new elif chain
+						var elif_expr = token.raw_text.substr(6).strip_edges()
+						var ctx = if_stack[-1]
+						# Switch to else branch and create a nested if inside it
+						ctx["branch"] = "else"
+						# Create a new if context that will live inside the else branch
+						var nested = {
+							"expr": elif_expr,
+							"scene_id": ctx["scene_id"],
+							"line": token.line,
+							"then_commands": [],
+							"else_commands": [],
+							"branch": "then",
+							"parent_scene": ctx["parent_scene"],
+							"is_elif": true,
+							"parent_if": ctx,
+						}
+						if_stack.append(nested)
 				elif cmd_name == "else":
 					if if_stack.size() > 0:
 						if_stack[-1]["branch"] = "else"
 				elif cmd_name == "end":
 					if in_parallel:
-						# Close @parallel block
 						var parallel_cmd = _make_cmd("parallel", {"commands": parallel_commands.duplicate()})
 						parallel_commands.clear()
 						in_parallel = false
 						if current_scene:
 							_add_command(parallel_cmd, current_scene, if_stack)
 					elif if_stack.size() > 0:
-						current_scene = _close_if_block(if_stack.pop_back(), data)
+						# Close elif chain: pop all elif blocks, then the original if
+						while if_stack.size() > 0 and if_stack[-1].get("is_elif", false):
+							var elif_ctx = if_stack.pop_back()
+							var parent_ctx = elif_ctx.get("parent_if")
+							# Build the elif as a nested condition inside parent's else
+							_close_elif_into_parent(elif_ctx, parent_ctx, data)
+						# Now close the original @if block
+						if if_stack.size() > 0:
+							current_scene = _close_if_block(if_stack.pop_back(), data)
 					# else: @end at scene level, ignore
 				elif cmd_name == "nvl":
 					var args = token.raw_text.substr(4).strip_edges()
@@ -194,6 +221,10 @@ static func _parse_at_command(token: DslToken) -> CommandData:
 				"character": parts[0] if parts.size() > 0 else "",
 				"position": parts[1] if parts.size() > 1 else "center",
 				"duration": float(parts[2]) if parts.size() > 2 else 0.5,
+			})
+		"call":
+			return _make_cmd("call", {
+				"target": parts[0] if parts.size() > 0 else "",
 			})
 		"set":
 			return _parse_set_command(args)
@@ -427,6 +458,37 @@ static func _create_if_context(token: DslToken, current_scene: SceneData, _data:
 		"branch": "then",
 		"parent_scene": current_scene,
 	}
+
+
+static func _close_elif_into_parent(elif_ctx: Dictionary, parent_ctx: Dictionary, data: ScenarioData) -> void:
+	var base_id = "__elif_%s_%d" % [elif_ctx["scene_id"], elif_ctx["line"]]
+	# The parent if's continuation scene ID (created later by _close_if_block)
+	var parent_cont_id = "__if_%s_%d_cont" % [parent_ctx["scene_id"], parent_ctx["line"]]
+
+	var then_scene = SceneData.new()
+	then_scene.id = base_id + "_then"
+	for cmd in elif_ctx["then_commands"]:
+		then_scene.commands.append(cmd)
+	# Jump to parent's continuation after elif branch executes
+	then_scene.commands.append(_make_cmd("jump", {"target": parent_cont_id}))
+	data.scenes.append(then_scene)
+
+	var else_target = parent_cont_id
+	if elif_ctx["else_commands"].size() > 0:
+		var else_scene = SceneData.new()
+		else_scene.id = base_id + "_else"
+		for cmd in elif_ctx["else_commands"]:
+			else_scene.commands.append(cmd)
+		else_scene.commands.append(_make_cmd("jump", {"target": parent_cont_id}))
+		data.scenes.append(else_scene)
+		else_target = else_scene.id
+
+	var condition_cmd = _make_cmd("condition", {
+		"if": elif_ctx["expr"],
+		"then_jump": then_scene.id,
+		"else_jump": else_target,
+	})
+	parent_ctx["else_commands"].append(condition_cmd)
 
 
 static func _close_if_block(ctx: Dictionary, data: ScenarioData) -> SceneData:
