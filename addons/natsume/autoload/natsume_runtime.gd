@@ -45,6 +45,11 @@ func _ready():
 	engine.registry = registry
 	_register_handlers()
 
+	# Bridge engine signals to SignalBus
+	engine.scenario_started.connect(func(id): SignalBus.scenario_started_event.emit(id))
+	engine.scenario_ended.connect(func(id): SignalBus.scenario_ended_event.emit(id))
+	engine.scene_changed.connect(func(id): SignalBus.scene_changed_event.emit(id))
+
 	# Wire dialogue to backlog
 	SignalBus.show_dialogue.connect(_on_dialogue_for_backlog)
 
@@ -74,6 +79,7 @@ func _register_handlers():
 
 
 func start_scenario(scenario_path: String) -> void:
+	_last_scenario_path = scenario_path
 	var file = FileAccess.open(scenario_path, FileAccess.READ)
 	if file == null:
 		push_error("NatsumeRuntime: cannot open %s" % scenario_path)
@@ -93,6 +99,35 @@ func start_scenario(scenario_path: String) -> void:
 
 	game_state.transition_to(GameStateMachine.State.PLAYING)
 	engine.run()
+
+
+## The last loaded scenario path — needed for continue/load to re-parse and resume.
+var _last_scenario_path: String = ""
+
+
+func continue_from_save(slot_id: int) -> bool:
+	if _last_scenario_path == "" or not save_manager.has_save(slot_id):
+		return false
+
+	# Re-parse the scenario
+	var file = FileAccess.open(_last_scenario_path, FileAccess.READ)
+	if file == null:
+		return false
+	var source = file.get_as_text()
+	file.close()
+
+	var tokens = DslLexer.tokenize(source)
+	var scenario_id = _last_scenario_path.get_file().get_basename()
+	var data = DslParser.parse(tokens, scenario_id)
+
+	engine.load_scenario(data)
+
+	# Restore saved state
+	save_manager.load_save(slot_id)
+
+	game_state.transition_to(GameStateMachine.State.PLAYING)
+	engine.run()
+	return true
 
 
 func _on_dialogue_for_backlog(character: String, text: String, voice: String, _mode: String):
