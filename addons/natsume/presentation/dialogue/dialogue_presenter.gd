@@ -8,14 +8,21 @@ extends PanelContainer
 
 var _char_interval: float = 0.03  # seconds per character
 var _is_typing: bool = false
-var _nvl_text: String = ""  # accumulated NVL text
+var _nvl_text: String = ""  # accumulated NVL text (already shown)
 var _current_mode: String = "adv"
+
+# Store original anchors for switching between ADV and NVL layout
+var _adv_anchor_top: float
+var _adv_offset_top: float
 
 
 func _ready():
 	SignalBus.show_dialogue.connect(_on_show_dialogue)
 	SignalBus.scenario_ended_event.connect(func(_id): visible = false)
 	visible = false
+	# Save ADV layout values
+	_adv_anchor_top = anchor_top
+	_adv_offset_top = offset_top
 
 
 func _on_show_dialogue(character: String, text: String, _voice: String, mode: String):
@@ -33,21 +40,37 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 	clean_text = processed["text"]
 	var effects = processed["effects"]
 
-	# NVL mode: accumulate text
+	# Prepare display based on mode
+	var new_line_text: String = ""
+
 	if mode == "nvl":
+		_apply_nvl_layout()
+		name_label.visible = false
+		# Build the new line
 		if character != "":
-			_nvl_text += "%s: %s\n" % [character, clean_text]
+			new_line_text = "%s：%s" % [character, clean_text]
 		else:
-			_nvl_text += "%s\n" % clean_text
-		name_label.visible = false
-		text_label.text = _nvl_text
+			new_line_text = clean_text
+		# Full text = old accumulated + new line
+		var full_text = _nvl_text + new_line_text
+		text_label.text = full_text
+		# Only typewrite the new portion — show old text instantly
+		var old_char_count = _nvl_text.length()
+		text_label.visible_characters = old_char_count
+		# After typewriter completes, add newline to accumulated
+		_nvl_text = full_text + "\n"
+
 	elif mode == "overlay":
+		_apply_overlay_layout()
 		name_label.visible = false
+		new_line_text = clean_text
 		text_label.text = clean_text
-		modulate.a = 0.7
-	else:
+		text_label.visible_characters = 0
+
+	else:  # adv
+		_apply_adv_layout()
 		_nvl_text = ""
-		modulate.a = 1.0
+		new_line_text = clean_text
 		if character != "":
 			name_label.text = character
 			name_label.visible = true
@@ -55,17 +78,18 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 			name_label.text = ""
 			name_label.visible = false
 		text_label.text = clean_text
+		text_label.visible_characters = 0
 
-	text_label.visible_characters = 0
 	_is_typing = true
 
-	# Typewriter effect with inline expression switching and effects
-	var total_chars = clean_text.length()
-	for i in range(total_chars):
+	# Typewriter effect — only for the new text portion
+	var start_visible = text_label.visible_characters
+	var total_new_chars = new_line_text.length()
+	for i in range(total_new_chars):
 		if not _is_typing:
 			break
 
-		text_label.visible_characters = i + 1
+		text_label.visible_characters = start_visible + i + 1
 
 		# Check expression timeline
 		var expr = timeline.get_expression_at_char(i)
@@ -93,6 +117,45 @@ func _unhandled_input(event: InputEvent) -> void:
 			_is_typing = false
 			text_label.visible_characters = -1
 			get_viewport().set_input_as_handled()
+
+
+func _apply_nvl_layout():
+	# Fullscreen centered layout for NVL mode
+	anchor_left = 0.1
+	anchor_top = 0.1
+	anchor_right = 0.9
+	anchor_bottom = 0.9
+	offset_left = 0
+	offset_top = 0
+	offset_right = 0
+	offset_bottom = 0
+	modulate.a = 0.9
+
+
+func _apply_overlay_layout():
+	# Centered, semi-transparent overlay
+	anchor_left = 0.15
+	anchor_top = 0.3
+	anchor_right = 0.85
+	anchor_bottom = 0.7
+	offset_left = 0
+	offset_top = 0
+	offset_right = 0
+	offset_bottom = 0
+	modulate.a = 0.7
+
+
+func _apply_adv_layout():
+	# Restore bottom dialogue box
+	anchor_left = 0.0
+	anchor_top = _adv_anchor_top
+	anchor_right = 1.0
+	anchor_bottom = 1.0
+	offset_left = 0
+	offset_top = _adv_offset_top
+	offset_right = 0
+	offset_bottom = 0
+	modulate.a = 1.0
 
 
 func _process_inline_effects(text: String) -> Dictionary:
