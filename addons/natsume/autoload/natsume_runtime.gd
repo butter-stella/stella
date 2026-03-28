@@ -5,6 +5,14 @@ extends Node
 var engine: ScenarioEngine
 var registry: CommandRegistry
 
+## Resource base paths — configure these before starting a scenario.
+## Users set these to match their project layout.
+var backgrounds_path: String = "res://art/backgrounds/"
+var characters_path: String = "res://art/characters/"
+var bgm_path: String = "res://audio/bgm/"
+var se_path: String = "res://audio/se/"
+var voice_path: String = "res://audio/voice/"
+
 
 func _ready():
 	registry = CommandRegistry.new()

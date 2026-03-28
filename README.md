@@ -81,14 +81,14 @@ tests/                                 ← GUT 测试（232+ 测试用例）
 └── integration/                       ← 端到端集成测试
 ```
 
-**日常工作流：** 写 `.ntm` 剧本 + 放素材到 `game/art/` → F5 运行。
+**日常工作流：** 写 `.ntm` 剧本 + 放素材到对应目录 → 配置路径 → F5 运行。
 
 ## Docs
 
-- [Architecture & Plan](docs/PLAN.md) — architecture, tech stack, sprint roadmap, testing strategy
-- [DSL Design](docs/DSL.md) — DSL syntax spec, smart defaults, examples
-- [POC Plan](docs/POC.md) — proof of concept implementation details
-- [Research](docs/RESEARCH.md) — competitive analysis, syntax comparison
+- [Usage Guide](docs/USAGE.md) — 安装、快速上手、资源命名、自定义扩展
+- [DSL Design](docs/DSL.md) — DSL 语法详细设计、智能默认值、完整示例
+- [Architecture & Plan](docs/PLAN.md) — 架构设计、技术选型、开发路线图
+- [Research](docs/RESEARCH.md) — 竞品调研、语法对比
 
 ## License
 
