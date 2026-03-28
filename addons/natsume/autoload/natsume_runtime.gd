@@ -29,6 +29,11 @@ func _register_handlers():
 	registry.register(WaitHandler.new())
 	registry.register(AnimHandler.new())
 	registry.register(MoveHandler.new())
+	registry.register(CgHandler.new())
+	registry.register(EffectHandler.new())
+	var parallel_handler = ParallelHandler.new()
+	parallel_handler._registry = registry
+	registry.register(parallel_handler)
 
 
 func start_scenario(scenario_path: String) -> void:
