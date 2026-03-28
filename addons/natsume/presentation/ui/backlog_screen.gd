@@ -28,7 +28,7 @@ func _show():
 
 func _hide_screen():
 	visible = false
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	NatsumeRuntime.game_state.return_to_previous()
 
 
 func _populate():
