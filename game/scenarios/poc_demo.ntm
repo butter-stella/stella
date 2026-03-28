@@ -1,0 +1,35 @@
+// poc_demo.ntm — POC 演示剧本
+
+@scene start "初次相遇"
+
+@bg bg_school_gate fade 0.8
+@show sakura smile center
+
+sakura「你好，初次见面！我叫樱。」
+sakura「你是新转来的同学吧？」
+
+@choice "你该怎么回应？"
+  - "你好，请多关照！" -> friendly {affection += 5}
+  - "……嗯。" -> cold
+
+//========================================
+@scene friendly
+
+@expr sakura happy
+sakura「太好了，感觉我们能成为好朋友！」
+@jump ending
+
+//========================================
+@scene cold
+
+@expr sakura sad
+sakura「啊……这样啊。那、那我先走了。」
+@jump ending
+
+//========================================
+@scene ending
+
+「（第一天就这样结束了。）」
+@hide sakura
+@bg bg_black fade 1.0
+@end
