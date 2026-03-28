@@ -27,6 +27,8 @@ func _register_handlers():
 	registry.register(SeHandler.new())
 	registry.register(FadeHandler.new())
 	registry.register(WaitHandler.new())
+	registry.register(AnimHandler.new())
+	registry.register(MoveHandler.new())
 
 
 func start_scenario(scenario_path: String) -> void:
