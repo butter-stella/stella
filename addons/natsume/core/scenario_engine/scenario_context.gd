@@ -7,6 +7,7 @@ var current_scene_index: int = 0
 var current_command_index: int = 0
 var pending_jump: String = ""
 var is_finished: bool = false
+var variable_store: VariableStore
 
 
 func _init(data: ScenarioData = null):
