@@ -1,4 +1,4 @@
-[gd_scene load_steps=13 format=3 uid="uid://bnatsu001"]
+[gd_scene load_steps=14 format=3 uid="uid://bnatsu001"]
 
 [ext_resource type="Script" path="res://addons/natsume/presentation/background/background_presenter.gd" id="1"]
 [ext_resource type="Script" path="res://addons/natsume/presentation/character/character_presenter.gd" id="2"]
@@ -12,6 +12,7 @@
 [ext_resource type="Script" path="res://addons/natsume/presentation/ui/backlog_screen.gd" id="10"]
 [ext_resource type="Script" path="res://addons/natsume/presentation/ui/save_load_screen.gd" id="11"]
 [ext_resource type="Script" path="res://addons/natsume/presentation/ui/settings_screen.gd" id="12"]
+[ext_resource type="Script" path="res://addons/natsume/presentation/ui/title_screen.gd" id="13"]
 
 [node name="Main" type="Node2D"]
 
@@ -259,6 +260,40 @@ script = ExtResource("8")
 
 [node name="AudioPresenter" type="Node" parent="."]
 script = ExtResource("9")
+
+[node name="TitleScreen" type="CanvasLayer" parent="."]
+layer = 3
+script = ExtResource("13")
+
+[node name="Panel" type="PanelContainer" parent="TitleScreen"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="CenterContainer" type="CenterContainer" parent="TitleScreen/Panel"]
+layout_mode = 2
+
+[node name="VBox" type="VBoxContainer" parent="TitleScreen/Panel/CenterContainer"]
+layout_mode = 2
+alignment = 1
+
+[node name="TitleLabel" type="Label" parent="TitleScreen/Panel/CenterContainer/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 48
+horizontal_alignment = 1
+text = "Natsume"
+
+[node name="Spacer" type="Control" parent="TitleScreen/Panel/CenterContainer/VBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 40)
+
+[node name="TitleButtons" type="VBoxContainer" parent="TitleScreen/Panel/CenterContainer/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+alignment = 1
 
 [node name="PocBootstrap" type="Node" parent="."]
 script = ExtResource("6")
