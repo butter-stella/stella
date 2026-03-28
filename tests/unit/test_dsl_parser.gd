@@ -1,0 +1,258 @@
+extends GutTest
+## Tests for DslParser — converting tokens into ScenarioData.
+
+
+func _parse(source: String, id: String = "test") -> ScenarioData:
+	var tokens = DslLexer.tokenize(source)
+	return DslParser.parse(tokens, id)
+
+
+func test_empty_tokens():
+	var data = _parse("")
+	assert_eq(data.id, "test")
+	assert_eq(data.scenes.size(), 0)
+
+
+func test_single_scene():
+	var data = _parse('@scene start "序章"')
+	assert_eq(data.scenes.size(), 1)
+	assert_eq(data.scenes[0].id, "start")
+
+
+func test_multiple_scenes():
+	var data = _parse("""@scene start
+@scene middle
+@scene ending""")
+	assert_eq(data.scenes.size(), 3)
+	assert_eq(data.scenes[0].id, "start")
+	assert_eq(data.scenes[1].id, "middle")
+	assert_eq(data.scenes[2].id, "ending")
+
+
+func test_dialogue_basic():
+	var data = _parse("""@scene start
+sakura「你好。」""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.type, "dialogue")
+	assert_eq(cmd.get_string("character"), "sakura")
+	assert_eq(cmd.get_string("text"), "你好。")
+	assert_eq(cmd.get_string("mode"), "adv")
+
+
+func test_dialogue_with_voice():
+	var data = _parse("""@scene start
+sakura「你好。」 #voice:sakura_001""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_string("voice"), "sakura_001")
+
+
+func test_narration():
+	var data = _parse("""@scene start
+「窗外下起了雨。」""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.type, "dialogue")
+	assert_eq(cmd.get_string("character"), "")
+	assert_eq(cmd.get_string("text"), "窗外下起了雨。")
+
+
+func test_monologue():
+	var data = _parse("""@scene start
+sakura（这个人...好奇怪。）""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.type, "dialogue")
+	assert_eq(cmd.get_string("character"), "sakura")
+	assert_eq(cmd.get_string("text"), "这个人...好奇怪。")
+	assert_eq(cmd.get_string("mode"), "monologue")
+
+
+func test_bg_full_params():
+	var data = _parse("""@scene start
+@bg bg_school fade 0.8""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.type, "bg")
+	assert_eq(cmd.get_string("asset"), "bg_school")
+	assert_eq(cmd.get_string("transition"), "fade")
+	assert_almost_eq(cmd.get_float("duration"), 0.8, 0.001)
+
+
+func test_bg_defaults():
+	var data = _parse("""@scene start
+@bg bg_school""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_string("transition"), "fade")
+	assert_almost_eq(cmd.get_float("duration"), 0.5, 0.001)
+
+
+func test_show_full_params():
+	var data = _parse("""@scene start
+@show sakura smile left""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.type, "char_show")
+	assert_eq(cmd.get_string("character"), "sakura")
+	assert_eq(cmd.get_string("expression"), "smile")
+	assert_eq(cmd.get_string("position"), "left")
+
+
+func test_show_defaults():
+	var data = _parse("""@scene start
+@show sakura""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_string("expression"), "default")
+	assert_eq(cmd.get_string("position"), "center")
+
+
+func test_hide():
+	var data = _parse("""@scene start
+@hide sakura""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.type, "char_hide")
+	assert_eq(cmd.get_string("character"), "sakura")
+
+
+func test_hide_all():
+	var data = _parse("""@scene start
+@hide all""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_string("character"), "all")
+
+
+func test_expr():
+	var data = _parse("""@scene start
+@expr sakura sad""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.type, "char_expr")
+	assert_eq(cmd.get_string("character"), "sakura")
+	assert_eq(cmd.get_string("expression"), "sad")
+
+
+func test_jump():
+	var data = _parse("""@scene start
+@jump ending""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.type, "jump")
+	assert_eq(cmd.get_string("target"), "ending")
+
+
+func test_set_assign():
+	var data = _parse("""@scene start
+@set talked = true""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.type, "set")
+	assert_eq(cmd.get_string("var"), "talked")
+	assert_eq(cmd.get_string("value"), "true")
+	assert_eq(cmd.get_string("op"), "=")
+
+
+func test_set_increment():
+	var data = _parse("""@scene start
+@set score += 5""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_string("var"), "score")
+	assert_eq(cmd.get_string("op"), "+=")
+
+
+func test_choice_basic():
+	var data = _parse("""@scene start
+@choice
+  - "你好" -> scene_a
+  - "再见" -> scene_b""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.type, "choice")
+	var options = cmd.params.get("options", [])
+	assert_eq(options.size(), 2)
+	assert_eq(options[0]["label"], "你好")
+	assert_eq(options[0]["jump"], "scene_a")
+	assert_eq(options[1]["label"], "再见")
+	assert_eq(options[1]["jump"], "scene_b")
+
+
+func test_choice_with_prompt():
+	var data = _parse("""@scene start
+@choice "你该怎么回应？"
+  - "你好" -> scene_a""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_string("prompt"), "你该怎么回应？")
+
+
+func test_choice_with_set():
+	var data = _parse("""@scene start
+@choice
+  - "走吧" -> scene_go {affection += 5}""")
+	var cmd = data.scenes[0].commands[0]
+	var options = cmd.params.get("options", [])
+	assert_true(options[0].has("set"))
+
+
+func test_if_else_end():
+	var data = _parse("""@scene start
+@if has_key
+  sakura「你有钥匙！」
+@else
+  sakura「没有钥匙...」
+@end""")
+	# Should generate a condition command + synthetic scenes
+	var found_condition = false
+	for scene in data.scenes:
+		for cmd in scene.commands:
+			if cmd.type == "condition":
+				found_condition = true
+				assert_eq(cmd.get_string("if"), "has_key")
+				assert_true(cmd.has_param("then_jump"))
+				assert_true(cmd.has_param("else_jump"))
+	assert_true(found_condition, "Should have a condition command")
+
+
+func test_if_without_else():
+	var data = _parse("""@scene start
+@if has_key
+  sakura「你有钥匙！」
+@end
+sakura「继续...」""")
+	var found_condition = false
+	for scene in data.scenes:
+		for cmd in scene.commands:
+			if cmd.type == "condition":
+				found_condition = true
+	assert_true(found_condition)
+
+
+func test_end_command():
+	var data = _parse("""@scene start
+@end""")
+	# @end at scene level is just a marker, no command generated
+	assert_eq(data.scenes[0].commands.size(), 0)
+
+
+func test_full_poc_scenario():
+	var source = """@scene start "初次相遇"
+@bg bg_school_gate fade 0.8
+@show sakura smile center
+sakura「你好，初次见面！」
+@choice "你该怎么回应？"
+  - "你好！" -> friendly {affection += 5}
+  - "……嗯。" -> cold
+
+@scene friendly
+@expr sakura happy
+sakura「太好了！」
+@jump ending
+
+@scene cold
+@expr sakura sad
+sakura「这样啊...」
+@jump ending
+
+@scene ending
+「（第一天就这样结束了。）」
+@hide sakura
+@bg bg_black fade 1.0
+@end"""
+	var data = _parse(source, "poc_demo")
+	assert_eq(data.id, "poc_demo")
+	assert_eq(data.scenes.size(), 4)
+	assert_eq(data.scenes[0].id, "start")
+	assert_eq(data.scenes[1].id, "friendly")
+	assert_eq(data.scenes[2].id, "cold")
+	assert_eq(data.scenes[3].id, "ending")
+	# Start scene should have: bg, char_show, dialogue, choice
+	assert_true(data.scenes[0].commands.size() >= 4)
