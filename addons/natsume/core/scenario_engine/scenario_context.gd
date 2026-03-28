@@ -37,12 +37,14 @@ func capture_snapshot() -> Dictionary:
 		"scenario_id": scenario_data.id if scenario_data else "",
 		"scene_index": current_scene_index,
 		"command_index": current_command_index,
+		"is_finished": is_finished,
 	}
 
 
 func restore_snapshot(snapshot: Dictionary) -> void:
 	current_scene_index = int(snapshot.get("scene_index", 0))
 	current_command_index = int(snapshot.get("command_index", 0))
+	is_finished = snapshot.get("is_finished", false)
 
 
 func advance() -> void:
