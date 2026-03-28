@@ -184,7 +184,7 @@ func _show_sprite(slot: Control, character: String, expression: String):
 	sprite.texture = texture
 	sprite.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	sprite.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
-	sprite.anchors_preset = Control.PRESET_FULL_RECT
+	sprite.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	slot.add_child(sprite)
 
 
@@ -201,7 +201,7 @@ func _show_layered(slot: Control, character: String, config: CharacterConfig, ex
 			body_sprite.texture = body_texture
 			body_sprite.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 			body_sprite.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
-			body_sprite.anchors_preset = Control.PRESET_FULL_RECT
+			body_sprite.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 			slot.add_child(body_sprite)
 
 	# Face layer (on top of body)
@@ -214,7 +214,7 @@ func _show_layered(slot: Control, character: String, config: CharacterConfig, ex
 			face_sprite.texture = face_texture
 			face_sprite.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 			face_sprite.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
-			face_sprite.anchors_preset = Control.PRESET_FULL_RECT
+			face_sprite.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 			slot.add_child(face_sprite)
 
 	_character_bodies[character] = body_override
