@@ -6,9 +6,76 @@ Godot AVG / Galgame framework. Architecture docs in `docs/PLAN.md`, DSL design i
 
 ## Tech Stack
 
-- Godot 4, GDScript (primary)
+- Godot 4.6+, GDScript (primary)
 - Rust via gdext (for performance-critical extensions, when needed)
 - Custom DSL (.ntm) for scenario scripting
+- GUT 9.6+ for testing
+
+## Development Workflow
+
+Every task follows this standard loop. Do not skip any step.
+
+### 1. Branch
+
+```
+git checkout main && git pull
+git checkout -b <type>/<short-description>
+```
+
+Branch naming: `feat/`, `fix/`, `chore/`, `docs/`.
+
+### 2. TDD — Red / Green / Refactor
+
+1. **Red**: Write failing tests first. Run tests to confirm they fail (preload errors or assertion failures count as red).
+2. **Green**: Write the minimum implementation to make all tests pass.
+3. **Refactor**: Clean up while keeping tests green.
+
+Never write implementation before tests. Never skip the red phase.
+
+### 3. Run Tests Locally
+
+```bash
+godot --headless --import 2>&1 | tail -1
+godot -s addons/gut/gut_cmdln.gd --headless 2>&1
+```
+
+All tests must pass (exit code 0) before proceeding.
+
+### 4. Commit & Push
+
+- Stage only relevant files (avoid `git add -A` if possible, but acceptable for new features with many new files).
+- Commit message format: `<type>: <concise description>`
+- Always include `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>` in the commit body.
+
+### 5. Create PR
+
+PR must include the Work Summary section (see PR Requirements below). Use `gh pr create`.
+
+### 6. Code Review (Sub-Agent)
+
+Launch a sub-agent (sonnet model, background) to review the PR:
+- Read all changed files
+- Check for correctness, edge cases, GDScript idioms, test coverage
+- If no critical issues: merge with `gh pr merge <number> --squash --delete-branch`
+- If critical issues found: list them, do NOT merge
+
+### 7. Fix CR Feedback
+
+If the CR agent (or any previous CR) found issues:
+- Create a dedicated `fix/` branch
+- Write tests that expose the bugs first (TDD)
+- Fix the bugs
+- Run tests, commit, PR, merge
+
+### 8. Next Task
+
+```
+git checkout main && git pull
+```
+
+Repeat from step 1.
+
+---
 
 ## Development Rules
 
@@ -45,8 +112,22 @@ Every PR description must include a **Work Summary** section:
 - (what tests were added, coverage notes)
 ```
 
+### Code Review Checklist
+
+CR sub-agents should check:
+- Correctness of logic and edge cases
+- GDScript idioms and best practices
+- Test coverage (are there missing cases?)
+- Signal emission timing and async/await correctness
+- API design (will it work for downstream consumers?)
+- No silent failures (push_warning for unexpected states)
+
 ## Repo Conventions
 
-- Code organized as a Godot project
-- Tests use GUT (Godot Unit Test) framework
+- Code organized as a Godot project under `addons/natsume/`
+- Core layer: `addons/natsume/core/` (engine-independent logic)
+- Presentation layer: `addons/natsume/presentation/` (Godot UI/rendering)
+- Autoloads: `addons/natsume/autoload/` (SignalBus, NatsumeRuntime)
+- Tests: `tests/unit/` and `tests/integration/` (GUT framework)
+- Game content: `game/` (scenarios, art, audio, scenes)
 - Docs: `docs/`
