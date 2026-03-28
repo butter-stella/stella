@@ -13,6 +13,8 @@ var registry: CommandRegistry
 
 func load_scenario(data: ScenarioData) -> void:
 	context = ScenarioContext.new(data)
+	if context.variable_store == null:
+		context.variable_store = VariableStore.new()
 
 
 func run() -> void:
