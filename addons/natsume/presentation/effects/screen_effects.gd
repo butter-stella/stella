@@ -33,7 +33,7 @@ func _flash(duration: float):
 	# Create a white overlay briefly
 	var overlay = ColorRect.new()
 	overlay.color = Color.WHITE
-	overlay.anchors_preset = Control.PRESET_FULL_RECT
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	get_parent().add_child(overlay)
 	overlay.modulate.a = 1.0
