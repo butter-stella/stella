@@ -28,6 +28,23 @@ func current_command() -> CommandData:
 	return scene.commands[current_command_index]
 
 
+func get_provider_id() -> String:
+	return "scenario_context"
+
+
+func capture_snapshot() -> Dictionary:
+	return {
+		"scenario_id": scenario_data.id if scenario_data else "",
+		"scene_index": current_scene_index,
+		"command_index": current_command_index,
+	}
+
+
+func restore_snapshot(snapshot: Dictionary) -> void:
+	current_scene_index = int(snapshot.get("scene_index", 0))
+	current_command_index = int(snapshot.get("command_index", 0))
+
+
 func advance() -> void:
 	current_command_index += 1
 

@@ -29,6 +29,10 @@ func get_var(name: String, default: Variant = null) -> Variant:
 	return default
 
 
+func get_provider_id() -> String:
+	return "variable_store"
+
+
 func clear_temp() -> void:
 	_stores[Scope.TEMP].clear()
 
