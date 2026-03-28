@@ -45,5 +45,5 @@ func capture_snapshot() -> Dictionary:
 
 
 func restore_snapshot(snapshot: Dictionary) -> void:
-	_stores[Scope.SCENARIO] = snapshot["scenario"].duplicate()
-	_stores[Scope.GLOBAL] = snapshot["global"].duplicate()
+	_stores[Scope.SCENARIO] = snapshot.get("scenario", {}).duplicate()
+	_stores[Scope.GLOBAL] = snapshot.get("global", {}).duplicate()
