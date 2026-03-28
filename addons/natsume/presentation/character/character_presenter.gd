@@ -140,7 +140,7 @@ func _get_slot(position: String) -> TextureRect:
 
 
 func _load_character_texture(character: String, expression: String) -> Texture2D:
-	var path = "res://game/art/characters/%s/%s.png" % [character, expression]
+	var path = NatsumeRuntime.characters_path + "%s/%s.png" % [character, expression]
 	var texture = load(path) as Texture2D
 	if texture == null:
 		push_warning("CharacterPresenter: texture not found: %s" % path)

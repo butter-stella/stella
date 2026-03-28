@@ -11,7 +11,7 @@ func _ready():
 
 
 func _on_bg_changed(asset: String, _transition: String, duration: float):
-	var path = "res://game/art/backgrounds/%s.png" % asset
+	var path = NatsumeRuntime.backgrounds_path + "%s.png" % asset
 	var texture = load(path) as Texture2D
 	if texture == null:
 		push_warning("BackgroundPresenter: texture not found: %s" % path)
