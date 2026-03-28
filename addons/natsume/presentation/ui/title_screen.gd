@@ -68,8 +68,7 @@ func _on_start():
 
 
 func _on_continue():
-	if NatsumeRuntime.save_manager.load_save(0):
-		NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	NatsumeRuntime.continue_from_save(0)
 
 
 func _on_load():
