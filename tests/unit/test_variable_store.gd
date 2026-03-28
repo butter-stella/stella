@@ -69,3 +69,19 @@ func test_set_numeric_operations():
 	assert_eq(_store.get_var("score"), 15)
 	_store.set_var("score", 3, VariableStore.Scope.SCENARIO, "-=")
 	assert_eq(_store.get_var("score"), 12)
+
+
+func test_increment_reads_from_same_scope():
+	# Bug: += on GLOBAL should read from GLOBAL, not create shadow in SCENARIO
+	_store.set_var("score", 10, VariableStore.Scope.GLOBAL)
+	_store.set_var("score", 5, VariableStore.Scope.GLOBAL, "+=")
+	assert_eq(_store.get_var("score"), 15)
+
+
+func test_increment_does_not_cross_scope():
+	# If var is in GLOBAL and we += in SCENARIO, it should read from the
+	# correct scope chain but write to the specified scope
+	_store.set_var("score", 10, VariableStore.Scope.GLOBAL)
+	_store.set_var("score", 5, VariableStore.Scope.SCENARIO, "+=")
+	# Scenario scope should have 15 (read 10 from global + 5)
+	assert_eq(_store.get_var("score"), 15)
