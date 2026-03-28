@@ -62,13 +62,15 @@ Launch a sub-agent (sonnet model, background) to review the PR:
 - **Planned tasks** (from PLAN.md sprints): CR agent can auto-merge if no critical issues
 - **Unplanned tasks** (ad-hoc features, user requests, bug fixes): create PR but do NOT merge — leave open for user to review
 
+**重要：只有 CR sub-agent 有权合并 PR。** 主 agent 不得自行执行 `gh pr merge`。如果 CR agent 未能合并（超时、报错等），应重新启动 CR agent 而不是手动合并。这确保所有合并到 main 的代码都经过了独立 review。
+
 ### 7. Fix CR Feedback
 
 If the CR agent (or any previous CR) found issues:
 - Create a dedicated `fix/` branch
 - Write tests that expose the bugs first (TDD)
 - Fix the bugs
-- Run tests, commit, PR, merge
+- Run tests, commit, PR, CR agent review + merge
 
 ### 8. Next Task
 
