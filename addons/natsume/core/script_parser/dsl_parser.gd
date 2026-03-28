@@ -159,6 +159,18 @@ static func _parse_at_command(token: DslToken) -> CommandData:
 			return _make_cmd("jump", {
 				"target": parts[0] if parts.size() > 0 else "",
 			})
+		"anim":
+			return _make_cmd("char_anim", {
+				"character": parts[0] if parts.size() > 0 else "",
+				"anim": parts[1] if parts.size() > 1 else "",
+				"intensity": parts[2] if parts.size() > 2 else "normal",
+			})
+		"move":
+			return _make_cmd("char_move", {
+				"character": parts[0] if parts.size() > 0 else "",
+				"position": parts[1] if parts.size() > 1 else "center",
+				"duration": float(parts[2]) if parts.size() > 2 else 0.5,
+			})
 		"set":
 			return _parse_set_command(args)
 		"bgm":
