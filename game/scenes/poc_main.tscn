@@ -1,4 +1,4 @@
-[gd_scene load_steps=7 format=3 uid="uid://bnatsu001"]
+[gd_scene load_steps=10 format=3 uid="uid://bnatsu001"]
 
 [ext_resource type="Script" path="res://addons/natsume/presentation/background/background_presenter.gd" id="1"]
 [ext_resource type="Script" path="res://addons/natsume/presentation/character/character_presenter.gd" id="2"]
@@ -6,6 +6,9 @@
 [ext_resource type="Script" path="res://addons/natsume/presentation/choice/text_choice_presenter.gd" id="4"]
 [ext_resource type="Script" path="res://addons/natsume/presentation/input/input_handler.gd" id="5"]
 [ext_resource type="Script" path="res://game/scripts/poc_bootstrap.gd" id="6"]
+[ext_resource type="Script" path="res://addons/natsume/presentation/effects/fade_presenter.gd" id="7"]
+[ext_resource type="Script" path="res://addons/natsume/presentation/effects/screen_effects.gd" id="8"]
+[ext_resource type="Script" path="res://addons/natsume/presentation/audio/audio_presenter.gd" id="9"]
 
 [node name="Main" type="Node2D"]
 
@@ -149,8 +152,24 @@ horizontal_alignment = 1
 unique_name_in_owner = true
 layout_mode = 2
 
+[node name="FadeOverlay" type="ColorRect" parent="UILayer"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0, 0, 0, 1)
+script = ExtResource("7")
+
 [node name="InputHandler" type="Node" parent="."]
 script = ExtResource("5")
+
+[node name="ScreenEffects" type="Node" parent="."]
+script = ExtResource("8")
+
+[node name="AudioPresenter" type="Node" parent="."]
+script = ExtResource("9")
 
 [node name="PocBootstrap" type="Node" parent="."]
 script = ExtResource("6")
