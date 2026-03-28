@@ -2,7 +2,13 @@
 
 ## Project
 
-Unity AVG / Galgame framework. Architecture docs in `docs/PLAN.md`, usage guide in `docs/USAGE.md`, DSL design in `docs/DSL.md`.
+Godot AVG / Galgame framework. DSL design in `docs/DSL.md`, competitive research in `docs/RESEARCH.md`.
+
+## Tech Stack
+
+- Godot 4, GDScript (primary)
+- Rust via gdext (for performance-critical extensions, when needed)
+- Custom DSL (.ntm) for scenario scripting
 
 ## Development Rules
 
@@ -17,7 +23,7 @@ Unity AVG / Galgame framework. Architecture docs in `docs/PLAN.md`, usage guide 
 ### Test Coverage
 
 - **Minimum 80% coverage** for all modules.
-- Core layer (pure C#): target ≥ 90%.
+- Core layer: target ≥ 90%.
 - Presentation layer: target ≥ 70%.
 - Every PR must include tests for the code it introduces or modifies.
 
@@ -39,16 +45,8 @@ Every PR description must include a **Work Summary** section:
 - (what tests were added, coverage notes)
 ```
 
-## Tech Stack
-
-- Unity 6 LTS, C#
-- YamlDotNet, UniTask, DOTween
-- Pure C# core layer (no Unity dependency), presentation layer uses Unity APIs
-
 ## Repo Conventions
 
-- Namespace: `Natsume.*`
-- Code under `Assets/Natsume/` (UPM package structure)
-- Tests: `Assets/Natsume/Tests/EditMode/` and `Assets/Natsume/Tests/PlayMode/`
+- Code organized as a Godot project
+- Tests use GUT (Godot Unit Test) framework
 - Docs: `docs/`
-- CI: GitHub Actions with game-ci

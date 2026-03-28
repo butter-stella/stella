@@ -1,0 +1,19 @@
+# Godot
+.godot/
+*.import
+
+# IDE
+.idea/
+.vs/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Export
+export/
+*.pck
+*.zip
