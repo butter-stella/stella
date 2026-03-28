@@ -1,13 +1,23 @@
-// poc_demo.ntm — POC 演示剧本
+// poc_demo.ntm — Enhanced demo showcasing all Natsume features
 
-@scene start "初次相遇"
+@scene start "序章 — 初次相遇"
 
+// Background with fade transition
 @bg bg_school_gate fade 0.8
+
+// Character entrance
 @show sakura smile center
 
+// Dialogue with typewriter
 sakura「你好，初次见面！我叫樱。」
 sakura「你是新转来的同学吧？」
 
+// Character animation — bounce with excitement
+@anim sakura bounce
+
+sakura「这个学校很有趣的哦！」
+
+// Choice with variable effect
 @choice "你该怎么回应？"
   - "你好，请多关照！" -> friendly {affection += 5}
   - "……嗯。" -> cold
@@ -15,21 +25,64 @@ sakura「你是新转来的同学吧？」
 //========================================
 @scene friendly
 
+// Expression change
 @expr sakura happy
-sakura「太好了，感觉我们能成为好朋友！」
+
+// Dialogue with inline expression switching
+sakura「太好了！[smile]我们一起去看看校园吧。[happy]一定会很开心的！」
+
+// Character animation — jump with joy
+@anim sakura jump
+
+@wait 0.5
+
+// Screen fade for time skip
+@fade out 0.5
+@wait 0.3
+@fade in 0.5
+
+// NVL mode for narration
+@nvl
+「那天之后，我和樱成了朋友。」
+「每天放学后，我们都会一起回家。」
+「不知不觉间，春天已经过去了一半。」
+@nvl off
+
 @jump ending
 
 //========================================
 @scene cold
 
 @expr sakura sad
-sakura「啊……这样啊。那、那我先走了。」
+
+// Shake animation for emotional impact
+@anim sakura shake light
+
+sakura「啊……这样啊。{wait:300}那、那我先走了。」
+
+@wait 0.5
+
+// Overlay mode for inner monologue
+@overlay
+「（也许我应该更友善一些……）」
+@overlay off
+
 @jump ending
 
 //========================================
 @scene ending
 
-「（第一天就这样结束了。）」
+// Fade to black
+@fade out 1.0
 @hide sakura
-@bg bg_black fade 1.0
+@bg bg_black fade 0.5
+@fade in 0.5
+
+// NVL epilogue
+@nvl
+「（第一天就这样结束了。）」
+「（明天，会有什么在等着我呢？）」
+@nvl off
+
+@wait 1.0
 @end
