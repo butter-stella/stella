@@ -65,6 +65,14 @@ func run() -> void:
 
 
 func _advance_to_next_scene() -> bool:
+	# Check return stack first (for @call returns)
+	if context.return_stack.size() > 0:
+		var return_point = context.return_stack.pop_back()
+		context.current_scene_index = return_point["scene_index"]
+		context.current_command_index = return_point["command_index"]
+		scene_changed.emit(context.current_scene().id)
+		return true
+
 	context.current_scene_index += 1
 	context.current_command_index = 0
 	if context.current_scene_index >= context.scenario_data.scenes.size():
