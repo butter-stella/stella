@@ -122,7 +122,11 @@ func continue_from_save(slot_id: int) -> bool:
 
 	engine.load_scenario(data)
 
-	# Restore saved state
+	# Re-register new context as snapshot provider (load_scenario creates a new context)
+	save_manager.register_provider(engine.context)
+	save_manager.register_provider(engine.context.variable_store)
+
+	# Restore saved state into the new context
 	save_manager.load_save(slot_id)
 
 	game_state.transition_to(GameStateMachine.State.PLAYING)
