@@ -65,6 +65,50 @@ func test_elif_without_else():
 	assert_true(data.scenes.size() >= 1)
 
 
+func test_elif_only_executes_matching_branch():
+	# Critical bug: elif then_scene was missing continuation jump,
+	# causing fall-through to subsequent branches
+	var source = """@scene start
+@set score = 15
+@if score >= 20
+  @set result = "A"
+@elif score >= 10
+  @set result = "B"
+@else
+  @set result = "C"
+@end
+@set done = true"""
+
+	var tokens = DslLexer.tokenize(source)
+	var scenario = DslParser.parse(tokens, "test")
+
+	# Verify that all synthetic then_scenes have jump to continuation
+	for scene in scenario.scenes:
+		if scene.id.find("_then") != -1:
+			var last_cmd = scene.commands[-1] if scene.commands.size() > 0 else null
+			assert_not_null(last_cmd, "then scene '%s' should have commands" % scene.id)
+			if last_cmd:
+				assert_eq(last_cmd.type, "jump", "then scene '%s' should end with jump" % scene.id)
+
+
+func test_call_empty_target_no_crash():
+	var scenario = ScenarioData.new()
+	scenario.id = "test"
+	var scene = SceneData.new()
+	scene.id = "main"
+	scenario.scenes = [scene]
+
+	var ctx = ScenarioContext.new(scenario)
+	var handler = CallHandler.new()
+	var cmd = CommandData.new()
+	cmd.type = "call"
+	cmd.params = {"target": ""}
+
+	# Should not push to return stack with empty target
+	await handler.execute(cmd, ctx)
+	assert_eq(ctx.return_stack.size(), 0, "Empty target should not push return stack")
+
+
 # --- @call ---
 
 func test_call_handler_type():

@@ -461,25 +461,28 @@ static func _create_if_context(token: DslToken, current_scene: SceneData, _data:
 
 
 static func _close_elif_into_parent(elif_ctx: Dictionary, parent_ctx: Dictionary, data: ScenarioData) -> void:
-	# Build synthetic scenes for this elif branch
 	var base_id = "__elif_%s_%d" % [elif_ctx["scene_id"], elif_ctx["line"]]
+	# The parent if's continuation scene ID (created later by _close_if_block)
+	var parent_cont_id = "__if_%s_%d_cont" % [parent_ctx["scene_id"], parent_ctx["line"]]
 
 	var then_scene = SceneData.new()
 	then_scene.id = base_id + "_then"
 	for cmd in elif_ctx["then_commands"]:
 		then_scene.commands.append(cmd)
+	# Jump to parent's continuation after elif branch executes
+	then_scene.commands.append(_make_cmd("jump", {"target": parent_cont_id}))
 	data.scenes.append(then_scene)
 
-	var else_target = ""
+	var else_target = parent_cont_id
 	if elif_ctx["else_commands"].size() > 0:
 		var else_scene = SceneData.new()
 		else_scene.id = base_id + "_else"
 		for cmd in elif_ctx["else_commands"]:
 			else_scene.commands.append(cmd)
+		else_scene.commands.append(_make_cmd("jump", {"target": parent_cont_id}))
 		data.scenes.append(else_scene)
 		else_target = else_scene.id
 
-	# Add condition to parent's else_commands
 	var condition_cmd = _make_cmd("condition", {
 		"if": elif_ctx["expr"],
 		"then_jump": then_scene.id,
