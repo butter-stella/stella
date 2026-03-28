@@ -80,6 +80,9 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 		text_label.text = clean_text
 		text_label.visible_characters = 0
 
+	# Wait one frame so the advance click from the previous line
+	# doesn't immediately trigger click-to-complete on this line
+	await get_tree().process_frame
 	_is_typing = true
 
 	# Typewriter effect — only for the new text portion
