@@ -112,6 +112,11 @@ text = ""
 visible_characters = 0
 fit_content = true
 
+[node name="Toolbar" type="HBoxContainer" parent="UILayer/DialoguePanel/MarginContainer/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+alignment = 2
+
 [node name="ChoicePanel" type="PanelContainer" parent="UILayer"]
 anchors_preset = 8
 anchor_left = 0.5
