@@ -51,13 +51,16 @@ All tests must pass (exit code 0) before proceeding.
 
 PR must include the Work Summary section (see PR Requirements below). Use `gh pr create`.
 
-### 6. Code Review (Sub-Agent)
+### 6. Code Review + Merge Policy
 
 Launch a sub-agent (sonnet model, background) to review the PR:
 - Read all changed files
 - Check for correctness, edge cases, GDScript idioms, test coverage
-- If no critical issues: merge with `gh pr merge <number> --squash --delete-branch`
 - If critical issues found: list them, do NOT merge
+
+**Merge policy:**
+- **Planned tasks** (from PLAN.md sprints): CR agent can auto-merge if no critical issues
+- **Unplanned tasks** (ad-hoc features, user requests, bug fixes): create PR but do NOT merge — leave open for user to review
 
 ### 7. Fix CR Feedback
 
