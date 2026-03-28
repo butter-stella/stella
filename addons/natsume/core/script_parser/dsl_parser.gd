@@ -10,9 +10,14 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 	var current_scene: SceneData = null
 	var pending_options: Array = []
 	var choice_cmd: CommandData = null
+	var current_mode: String = "adv"  # adv / nvl / overlay
 
 	# @if/@else/@end state
 	var if_stack: Array = []  # Array of IfContext
+
+	# @parallel state
+	var in_parallel: bool = false
+	var parallel_commands: Array = []
 
 	var i = 0
 	while i < tokens.size():
@@ -41,19 +46,38 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 					if if_stack.size() > 0:
 						if_stack[-1]["branch"] = "else"
 				elif cmd_name == "end":
-					if if_stack.size() > 0:
+					if in_parallel:
+						# Close @parallel block
+						var parallel_cmd = _make_cmd("parallel", {"commands": parallel_commands.duplicate()})
+						parallel_commands.clear()
+						in_parallel = false
+						if current_scene:
+							_add_command(parallel_cmd, current_scene, if_stack)
+					elif if_stack.size() > 0:
 						current_scene = _close_if_block(if_stack.pop_back(), data)
 					# else: @end at scene level, ignore
+				elif cmd_name == "nvl":
+					var args = token.raw_text.substr(4).strip_edges()
+					current_mode = "adv" if args == "off" else "nvl"
+				elif cmd_name == "overlay":
+					var args = token.raw_text.substr(8).strip_edges()
+					current_mode = "adv" if args == "off" else "overlay"
+				elif cmd_name == "parallel":
+					in_parallel = true
+					parallel_commands.clear()
 				else:
 					var cmd = _parse_at_command(token)
 					if cmd and current_scene:
-						_add_command(cmd, current_scene, if_stack)
+						if in_parallel:
+							parallel_commands.append(cmd)
+						else:
+							_add_command(cmd, current_scene, if_stack)
 
 			DslToken.Type.DIALOGUE:
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 				choice_cmd = null
 				pending_options = []
-				var cmd = _parse_dialogue(token)
+				var cmd = _parse_dialogue(token, current_mode)
 				if cmd and current_scene:
 					_add_command(cmd, current_scene, if_stack)
 
@@ -61,7 +85,7 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 				choice_cmd = null
 				pending_options = []
-				var cmd = _parse_narration(token)
+				var cmd = _parse_narration(token, current_mode)
 				if cmd and current_scene:
 					_add_command(cmd, current_scene, if_stack)
 
@@ -201,6 +225,28 @@ static func _parse_at_command(token: DslToken) -> CommandData:
 			return _make_cmd("wait", {
 				"duration": float(parts[0]) if parts.size() > 0 else 1.0,
 			})
+		"cg":
+			if parts.size() > 0 and parts[0] == "off":
+				return _make_cmd("cg", {
+					"off": true,
+					"transition": parts[1] if parts.size() > 1 else "fade",
+					"duration": float(parts[2]) if parts.size() > 2 else 0.5,
+				})
+			var cg_mode = "fullscreen"
+			if parts.size() > 1 and parts[1] in ["sd", "animated"]:
+				cg_mode = parts[1]
+			return _make_cmd("cg", {
+				"asset": parts[0] if parts.size() > 0 else "",
+				"mode": cg_mode,
+				"transition": "fade",
+				"duration": 0.5,
+			})
+		"effect":
+			if parts.size() > 0 and parts[0] == "off":
+				return _make_cmd("effect", {"off": true, "effect_type": "off"})
+			return _make_cmd("effect", {
+				"effect_type": parts[0] if parts.size() > 0 else "",
+			})
 		"end":
 			return null  # Handled by if_stack or ignored
 		_:
@@ -304,7 +350,7 @@ static func _parse_set_expression(expr: String) -> Dictionary:
 
 # --- Dialogue ---
 
-static func _parse_dialogue(token: DslToken) -> CommandData:
+static func _parse_dialogue(token: DslToken, mode: String = "adv") -> CommandData:
 	var raw = token.raw_text
 	var bracket_start = raw.find("\u300c")  # 「
 	var bracket_end = raw.rfind("\u300d")    # 」
@@ -327,11 +373,11 @@ static func _parse_dialogue(token: DslToken) -> CommandData:
 		"character": character,
 		"text": text,
 		"voice": voice,
-		"mode": "adv",
+		"mode": mode,
 	})
 
 
-static func _parse_narration(token: DslToken) -> CommandData:
+static func _parse_narration(token: DslToken, mode: String = "adv") -> CommandData:
 	var raw = token.raw_text
 	var bracket_start = raw.find("\u300c")
 	var bracket_end = raw.rfind("\u300d")
@@ -345,7 +391,7 @@ static func _parse_narration(token: DslToken) -> CommandData:
 		"character": "",
 		"text": text,
 		"voice": "",
-		"mode": "adv",
+		"mode": mode,
 	})
 
 
