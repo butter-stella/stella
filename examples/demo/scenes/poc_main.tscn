@@ -1,4 +1,4 @@
-[gd_scene load_steps=10 format=3 uid="uid://bnatsu001"]
+[gd_scene load_steps=11 format=3 uid="uid://bnatsu001"]
 
 [ext_resource type="Script" path="res://addons/natsume/presentation/background/background_presenter.gd" id="1"]
 [ext_resource type="Script" path="res://addons/natsume/presentation/character/character_presenter.gd" id="2"]
@@ -9,6 +9,7 @@
 [ext_resource type="Script" path="res://addons/natsume/presentation/effects/fade_presenter.gd" id="7"]
 [ext_resource type="Script" path="res://addons/natsume/presentation/effects/screen_effects.gd" id="8"]
 [ext_resource type="Script" path="res://addons/natsume/presentation/audio/audio_presenter.gd" id="9"]
+[ext_resource type="Script" path="res://addons/natsume/presentation/ui/backlog_screen.gd" id="10"]
 
 [node name="Main" type="Node2D"]
 
@@ -150,6 +151,30 @@ horizontal_alignment = 1
 [node name="OptionsContainer" type="VBoxContainer" parent="UILayer/ChoicePanel/MarginContainer/VBox"]
 unique_name_in_owner = true
 layout_mode = 2
+
+[node name="BacklogScreen" type="PanelContainer" parent="UILayer"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("10")
+
+[node name="MarginContainer" type="MarginContainer" parent="UILayer/BacklogScreen"]
+layout_mode = 2
+theme_override_constants/margin_left = 50
+theme_override_constants/margin_top = 50
+theme_override_constants/margin_right = 50
+theme_override_constants/margin_bottom = 50
+
+[node name="BacklogScroll" type="ScrollContainer" parent="UILayer/BacklogScreen/MarginContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="BacklogEntries" type="VBoxContainer" parent="UILayer/BacklogScreen/MarginContainer/BacklogScroll"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
 
 [node name="FadeOverlay" type="ColorRect" parent="UILayer"]
 anchors_preset = 15
