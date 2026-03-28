@@ -2,7 +2,7 @@
 
 ## Project
 
-Godot AVG / Galgame framework. DSL design in `docs/DSL.md`, competitive research in `docs/RESEARCH.md`.
+Godot AVG / Galgame framework. Architecture docs in `docs/PLAN.md`, DSL design in `docs/DSL.md`, competitive research in `docs/RESEARCH.md`.
 
 ## Tech Stack
 
