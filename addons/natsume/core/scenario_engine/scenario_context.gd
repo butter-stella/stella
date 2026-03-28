@@ -8,6 +8,7 @@ var current_command_index: int = 0
 var pending_jump: String = ""
 var is_finished: bool = false
 var variable_store: VariableStore
+var return_stack: Array = []  # Array of {scene_index, command_index} for @call returns
 
 
 func _init(data: ScenarioData = null):
