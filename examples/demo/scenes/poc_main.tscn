@@ -36,7 +36,7 @@ stretch_mode = 6
 layer = 1
 script = ExtResource("2")
 
-[node name="SlotLeft" type="TextureRect" parent="CharacterLayer"]
+[node name="SlotLeft" type="Control" parent="CharacterLayer"]
 anchors_preset = 7
 anchor_left = 0.15
 anchor_top = 1.0
@@ -47,10 +47,8 @@ offset_top = -800.0
 offset_right = 100.0
 grow_horizontal = 2
 grow_vertical = 0
-stretch_mode = 5
-expand_mode = 3
 
-[node name="SlotCenter" type="TextureRect" parent="CharacterLayer"]
+[node name="SlotCenter" type="Control" parent="CharacterLayer"]
 anchors_preset = 7
 anchor_left = 0.5
 anchor_top = 1.0
@@ -61,10 +59,8 @@ offset_top = -800.0
 offset_right = 100.0
 grow_horizontal = 2
 grow_vertical = 0
-stretch_mode = 5
-expand_mode = 3
 
-[node name="SlotRight" type="TextureRect" parent="CharacterLayer"]
+[node name="SlotRight" type="Control" parent="CharacterLayer"]
 anchors_preset = 7
 anchor_left = 0.85
 anchor_top = 1.0
@@ -75,8 +71,6 @@ offset_top = -800.0
 offset_right = 100.0
 grow_horizontal = 2
 grow_vertical = 0
-stretch_mode = 5
-expand_mode = 3
 
 [node name="UILayer" type="CanvasLayer" parent="."]
 layer = 2
