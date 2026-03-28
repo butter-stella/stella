@@ -1,0 +1,31 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; but it can also be manually edited with care.
+
+[application]
+
+config/name="Natsume"
+config/description="Godot AVG / Galgame Framework"
+config/version="0.1.0"
+run/main_scene=""
+config/features=PackedStringArray("4.4")
+
+[autoload]
+
+SignalBus="*res://addons/natsume/autoload/signal_bus.gd"
+
+[display]
+
+window/size/viewport_width=1920
+window/size/viewport_height=1080
+window/stretch/mode="canvas_items"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/gut/plugin.cfg")
+
+[gut]
+
+directory="res://tests"
+prefix="test_"
+suffix=".gd"
