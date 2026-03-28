@@ -111,12 +111,11 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 	_is_typing = false
 
 
-func _unhandled_input(event: InputEvent) -> void:
+func _input(event: InputEvent) -> void:
 	if _is_typing and event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 			_is_typing = false
 			text_label.visible_characters = -1
-			get_viewport().set_input_as_handled()
 
 
 func _apply_nvl_layout():
