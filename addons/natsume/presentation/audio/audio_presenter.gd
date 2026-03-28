@@ -26,10 +26,11 @@ func _ready():
 
 
 func _on_bgm_play(asset: String, fade_duration: float):
-	var path = "res://game/audio/bgm/%s.ogg" % asset
+	var base = NatsumeRuntime.bgm_path
+	var path = base + "%s.ogg" % asset
 	var stream = load(path)
 	if stream == null:
-		path = "res://game/audio/bgm/%s.mp3" % asset
+		path = base + "%s.mp3" % asset
 		stream = load(path)
 	if stream == null:
 		push_warning("AudioPresenter: BGM not found: %s" % asset)
@@ -56,10 +57,11 @@ func _on_bgm_stop(fade_duration: float):
 
 
 func _on_se_play(asset: String, _loop: bool):
-	var path = "res://game/audio/se/%s.ogg" % asset
+	var base = NatsumeRuntime.se_path
+	var path = base + "%s.ogg" % asset
 	var stream = load(path)
 	if stream == null:
-		path = "res://game/audio/se/%s.wav" % asset
+		path = base + "%s.wav" % asset
 		stream = load(path)
 	if stream == null:
 		push_warning("AudioPresenter: SE not found: %s" % asset)
