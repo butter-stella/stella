@@ -30,6 +30,8 @@ func get_bool(key: String, default: bool = false) -> bool:
 	var val = params[key]
 	if val is bool:
 		return val
+	if val is int or val is float:
+		return val != 0
 	return str(val).to_lower() == "true"
 
 

@@ -223,3 +223,11 @@ func test_context_tracks_current_position():
 	_engine.load_scenario(scenario)
 	assert_eq(_engine.context.current_scene_index, 0)
 	assert_eq(_engine.context.current_command_index, 0)
+
+
+func test_engine_auto_creates_variable_store():
+	var scenario = _build_scenario([{
+		"id": "start", "commands": []
+	}])
+	_engine.load_scenario(scenario)
+	assert_not_null(_engine.context.variable_store)

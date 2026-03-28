@@ -92,3 +92,18 @@ func test_empty_params():
 	assert_eq(cmd.get_int("anything"), 0)
 	assert_almost_eq(cmd.get_float("anything"), 0.0, 0.001)
 	assert_false(cmd.get_bool("anything"))
+
+
+func test_get_bool_converts_int_one():
+	var cmd = _create("set", {"value": 1})
+	assert_true(cmd.get_bool("value"))
+
+
+func test_get_bool_converts_int_zero():
+	var cmd = _create("set", {"value": 0})
+	assert_false(cmd.get_bool("value"))
+
+
+func test_get_bool_converts_float():
+	var cmd = _create("set", {"value": 1.0})
+	assert_true(cmd.get_bool("value"))
