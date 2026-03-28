@@ -161,6 +161,34 @@ static func _parse_at_command(token: DslToken) -> CommandData:
 			})
 		"set":
 			return _parse_set_command(args)
+		"bgm":
+			if parts.size() > 0 and parts[0] == "off":
+				return _make_cmd("bgm", {
+					"off": true,
+					"fade_duration": float(parts[1]) if parts.size() > 1 else 1.0,
+				})
+			return _make_cmd("bgm", {
+				"asset": parts[0] if parts.size() > 0 else "",
+				"fade_duration": float(parts[1]) if parts.size() > 1 else 1.0,
+			})
+		"se":
+			if parts.size() > 1 and parts[1] == "off":
+				return _make_cmd("se", {"asset": parts[0], "off": true})
+			return _make_cmd("se", {
+				"asset": parts[0] if parts.size() > 0 else "",
+				"loop": parts[1] == "loop" if parts.size() > 1 else false,
+			})
+		"fade":
+			return _make_cmd("fade", {
+				"direction": parts[0] if parts.size() > 0 else "out",
+				"duration": float(parts[1]) if parts.size() > 1 else 0.5,
+			})
+		"wait":
+			if parts.size() > 0 and parts[0] == "click":
+				return _make_cmd("wait", {"mode": "click"})
+			return _make_cmd("wait", {
+				"duration": float(parts[0]) if parts.size() > 0 else 1.0,
+			})
 		"end":
 			return null  # Handled by if_stack or ignored
 		_:
