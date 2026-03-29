@@ -126,6 +126,10 @@ CR sub-agents should check:
 - Signal emission timing and async/await correctness
 - API design (will it work for downstream consumers?)
 - No silent failures (push_warning for unexpected states)
+- **End-to-end wiring**: Does the feature actually work? Trace from UI button → signal → handler → presenter → visual feedback. A toggle that only sets a flag but never drives behavior is a critical bug.
+- **Godot API correctness**: Property assignment vs method call (e.g. `anchors_preset` vs `set_anchors_and_offsets_preset()`). Verify the API is used correctly per Godot docs.
+- **Signal bridging**: If Core layer emits signals, are they connected to SignalBus for Presentation layer to receive?
+- **State management**: When entering/leaving UI states, is the previous state preserved? Can overlays return to the correct origin (TITLE vs PLAYING)?
 
 ## Repo Conventions
 
