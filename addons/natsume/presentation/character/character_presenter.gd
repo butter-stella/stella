@@ -236,18 +236,15 @@ func _show_sprite(slot: Control, character: String, expression: String):
 		push_warning("CharacterPresenter: texture not found: %s" % path)
 		return
 
-	slot.clip_contents = true
-
 	var sprite = TextureRect.new()
 	sprite.name = "Sprite"
 	sprite.texture = texture
 	sprite.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	sprite.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
-	# 2x size, shifted down by 2/3
 	sprite.anchor_left = -0.5
-	sprite.anchor_top = 0.3
+	sprite.anchor_top = 0.2
 	sprite.anchor_right = 1.5
-	sprite.anchor_bottom = 2.3
+	sprite.anchor_bottom = 2.2
 	sprite.offset_left = 0
 	sprite.offset_top = 0
 	sprite.offset_right = 0
