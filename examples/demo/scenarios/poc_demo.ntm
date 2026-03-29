@@ -104,7 +104,7 @@ sakura「真的吗！学姐最好了！」
 @expr senpai happy
 senpai「看你开心就好。」
 
-@fade out 0.5
+@hide all
 
 @nvl
 「那天之后，放学后三个人去咖啡店成了惯例。」
@@ -112,7 +112,6 @@ senpai「看你开心就好。」
 「虽然只是平凡的日常，却让人格外珍惜。」
 @nvl off
 
-@fade in 0.5
 @jump ending
 
 //========================================
