@@ -1,6 +1,10 @@
 # Art Credits
 
-## Character Sprites
+## Character Sprites — sakura
+- Source: [Kuudere Visual Novel Sprite](https://opengameart.org/content/kuudere-visual-novel-sprite) by LisadiKaprio
+- License: CC-BY 4.0
+
+## Character Sprites — kaito
 - Source: [Visual Novel Character Sprite](https://opengameart.org/content/visual-novel-character-sprite) by OpenGameArt contributor
 - License: CC0 (Public Domain)
 
