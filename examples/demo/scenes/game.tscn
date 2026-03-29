@@ -39,40 +39,34 @@ layer = 1
 script = ExtResource("2")
 
 [node name="SlotLeft" type="Control" parent="CharacterLayer"]
-anchors_preset = 7
-anchor_left = 0.15
-anchor_top = 1.0
-anchor_right = 0.15
+anchor_left = 0.0
+anchor_top = 0.0
+anchor_right = 0.3
 anchor_bottom = 1.0
-offset_left = -100.0
-offset_top = -800.0
-offset_right = 100.0
-grow_horizontal = 2
-grow_vertical = 0
+offset_left = 0
+offset_top = 0
+offset_right = 0
+offset_bottom = 0
 
 [node name="SlotCenter" type="Control" parent="CharacterLayer"]
-anchors_preset = 7
-anchor_left = 0.5
-anchor_top = 1.0
-anchor_right = 0.5
+anchor_left = 0.25
+anchor_top = 0.0
+anchor_right = 0.75
 anchor_bottom = 1.0
-offset_left = -100.0
-offset_top = -800.0
-offset_right = 100.0
-grow_horizontal = 2
-grow_vertical = 0
+offset_left = 0
+offset_top = 0
+offset_right = 0
+offset_bottom = 0
 
 [node name="SlotRight" type="Control" parent="CharacterLayer"]
-anchors_preset = 7
-anchor_left = 0.85
-anchor_top = 1.0
-anchor_right = 0.85
+anchor_left = 0.7
+anchor_top = 0.0
+anchor_right = 1.0
 anchor_bottom = 1.0
-offset_left = -100.0
-offset_top = -800.0
-offset_right = 100.0
-grow_horizontal = 2
-grow_vertical = 0
+offset_left = 0
+offset_top = 0
+offset_right = 0
+offset_bottom = 0
 
 [node name="UILayer" type="CanvasLayer" parent="."]
 layer = 3
