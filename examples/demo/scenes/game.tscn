@@ -1,24 +1,24 @@
-[gd_scene load_steps=12 format=3 uid="uid://bnatsu_game"]
+[gd_scene format=3 uid="uid://dhvclqgbx6gpb"]
 
-[ext_resource type="Script" path="res://addons/natsume/presentation/background/background_presenter.gd" id="1"]
-[ext_resource type="Script" path="res://addons/natsume/presentation/character/character_presenter.gd" id="2"]
-[ext_resource type="Script" path="res://addons/natsume/presentation/dialogue/dialogue_presenter.gd" id="3"]
-[ext_resource type="Script" path="res://addons/natsume/presentation/choice/text_choice_presenter.gd" id="4"]
-[ext_resource type="Script" path="res://addons/natsume/presentation/input/input_handler.gd" id="5"]
+[ext_resource type="Script" uid="uid://r85pc74kv7i3" path="res://addons/natsume/presentation/background/background_presenter.gd" id="1"]
+[ext_resource type="Script" uid="uid://boya1orvodq01" path="res://addons/natsume/presentation/character/character_presenter.gd" id="2"]
+[ext_resource type="Script" uid="uid://dn3xiyn8tgmvf" path="res://addons/natsume/presentation/dialogue/dialogue_presenter.gd" id="3"]
+[ext_resource type="Script" uid="uid://blb0ko5o6p7ex" path="res://addons/natsume/presentation/choice/text_choice_presenter.gd" id="4"]
+[ext_resource type="Script" uid="uid://dsbqcj0usnsh2" path="res://addons/natsume/presentation/input/input_handler.gd" id="5"]
 [ext_resource type="Script" path="res://addons/natsume/presentation/effects/fade_presenter.gd" id="7"]
-[ext_resource type="Script" path="res://addons/natsume/presentation/effects/screen_effects.gd" id="8"]
-[ext_resource type="Script" path="res://addons/natsume/presentation/audio/audio_presenter.gd" id="9"]
+[ext_resource type="Script" uid="uid://wkgv23f4gu6f" path="res://addons/natsume/presentation/effects/screen_effects.gd" id="8"]
+[ext_resource type="Script" uid="uid://bcborytacuhy0" path="res://addons/natsume/presentation/audio/audio_presenter.gd" id="9"]
 [ext_resource type="Script" path="res://addons/natsume/presentation/ui/backlog_screen.gd" id="10"]
-[ext_resource type="Script" path="res://addons/natsume/presentation/ui/save_load_screen.gd" id="11"]
+[ext_resource type="Script" uid="uid://c8motbbd1o85r" path="res://addons/natsume/presentation/ui/save_load_screen.gd" id="11"]
 [ext_resource type="Script" path="res://addons/natsume/presentation/ui/settings_screen.gd" id="12"]
 
-[node name="Game" type="Node2D"]
+[node name="Game" type="Node2D" unique_id=2021434320]
 
-[node name="BackgroundLayer" type="CanvasLayer" parent="."]
+[node name="BackgroundLayer" type="CanvasLayer" parent="." unique_id=1517759929]
 layer = 0
 script = ExtResource("1")
 
-[node name="BgFront" type="TextureRect" parent="BackgroundLayer"]
+[node name="BgFront" type="TextureRect" parent="BackgroundLayer" unique_id=484532639]
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
@@ -26,7 +26,7 @@ grow_horizontal = 2
 grow_vertical = 2
 stretch_mode = 6
 
-[node name="BgBack" type="TextureRect" parent="BackgroundLayer"]
+[node name="BgBack" type="TextureRect" parent="BackgroundLayer" unique_id=1696053110]
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
@@ -34,44 +34,46 @@ grow_horizontal = 2
 grow_vertical = 2
 stretch_mode = 6
 
-[node name="CharacterLayer" type="CanvasLayer" parent="."]
-layer = 1
+[node name="CharacterLayer" type="CanvasLayer" parent="." unique_id=1295087027]
 script = ExtResource("2")
 
-[node name="SlotLeft" type="Control" parent="CharacterLayer"]
+[node name="SlotLeft" type="Control" parent="CharacterLayer" unique_id=1373131325]
+layout_mode = 3
 anchor_left = -0.2
 anchor_top = 0.2
 anchor_right = 0.4
 anchor_bottom = 2.2
-offset_left = 0
-offset_top = 0
-offset_right = 0
-offset_bottom = 0
+offset_left = 287.0
+offset_top = -133.0
+offset_right = 287.0
+offset_bottom = -133.0
 
-[node name="SlotCenter" type="Control" parent="CharacterLayer"]
+[node name="SlotCenter" type="Control" parent="CharacterLayer" unique_id=683235921]
+layout_mode = 3
 anchor_left = 0.1
 anchor_top = 0.2
 anchor_right = 0.9
 anchor_bottom = 2.2
-offset_left = 0
-offset_top = 0
-offset_right = 0
-offset_bottom = 0
+offset_left = 2.0
+offset_top = -136.0
+offset_right = 2.0
+offset_bottom = -136.0
 
-[node name="SlotRight" type="Control" parent="CharacterLayer"]
+[node name="SlotRight" type="Control" parent="CharacterLayer" unique_id=407592576]
+layout_mode = 3
 anchor_left = 0.6
 anchor_top = 0.2
 anchor_right = 1.2
 anchor_bottom = 2.2
-offset_left = 0
-offset_top = 0
-offset_right = 0
-offset_bottom = 0
+offset_left = -293.0
+offset_top = -138.0
+offset_right = -293.0
+offset_bottom = -138.0
 
-[node name="UILayer" type="CanvasLayer" parent="."]
+[node name="UILayer" type="CanvasLayer" parent="." unique_id=25130991]
 layer = 3
 
-[node name="DialoguePanel" type="PanelContainer" parent="UILayer"]
+[node name="DialoguePanel" type="PanelContainer" parent="UILayer" unique_id=1870871759]
 unique_name_in_owner = true
 anchors_preset = 12
 anchor_top = 1.0
@@ -82,38 +84,37 @@ grow_horizontal = 2
 grow_vertical = 0
 script = ExtResource("3")
 
-[node name="MarginContainer" type="MarginContainer" parent="UILayer/DialoguePanel"]
+[node name="MarginContainer" type="MarginContainer" parent="UILayer/DialoguePanel" unique_id=1524759950]
 layout_mode = 2
 theme_override_constants/margin_left = 30
 theme_override_constants/margin_top = 15
 theme_override_constants/margin_right = 30
 theme_override_constants/margin_bottom = 15
 
-[node name="VBox" type="VBoxContainer" parent="UILayer/DialoguePanel/MarginContainer"]
+[node name="VBox" type="VBoxContainer" parent="UILayer/DialoguePanel/MarginContainer" unique_id=1815611747]
 layout_mode = 2
 
-[node name="NameLabel" type="Label" parent="UILayer/DialoguePanel/MarginContainer/VBox"]
+[node name="NameLabel" type="Label" parent="UILayer/DialoguePanel/MarginContainer/VBox" unique_id=158493987]
 unique_name_in_owner = true
 layout_mode = 2
-theme_override_font_sizes/font_size = 24
 theme_override_colors/font_color = Color(1, 0.72, 0.77, 1)
+theme_override_font_sizes/font_size = 24
 
-[node name="TextLabel" type="RichTextLabel" parent="UILayer/DialoguePanel/MarginContainer/VBox"]
+[node name="TextLabel" type="RichTextLabel" parent="UILayer/DialoguePanel/MarginContainer/VBox" unique_id=1270479636]
 unique_name_in_owner = true
-layout_mode = 2
 custom_minimum_size = Vector2(0, 120)
+layout_mode = 2
 theme_override_font_sizes/normal_font_size = 22
 bbcode_enabled = true
-text = ""
-visible_characters = 0
 fit_content = true
+visible_characters = 0
 
-[node name="Toolbar" type="HBoxContainer" parent="UILayer/DialoguePanel/MarginContainer/VBox"]
+[node name="Toolbar" type="HBoxContainer" parent="UILayer/DialoguePanel/MarginContainer/VBox" unique_id=946234756]
 unique_name_in_owner = true
 layout_mode = 2
 alignment = 2
 
-[node name="ChoicePanel" type="PanelContainer" parent="UILayer"]
+[node name="ChoicePanel" type="PanelContainer" parent="UILayer" unique_id=1398717553]
 anchors_preset = 8
 anchor_left = 0.5
 anchor_top = 0.5
@@ -127,27 +128,27 @@ grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("4")
 
-[node name="MarginContainer" type="MarginContainer" parent="UILayer/ChoicePanel"]
+[node name="MarginContainer" type="MarginContainer" parent="UILayer/ChoicePanel" unique_id=2020096517]
 layout_mode = 2
 theme_override_constants/margin_left = 20
 theme_override_constants/margin_top = 20
 theme_override_constants/margin_right = 20
 theme_override_constants/margin_bottom = 20
 
-[node name="VBox" type="VBoxContainer" parent="UILayer/ChoicePanel/MarginContainer"]
+[node name="VBox" type="VBoxContainer" parent="UILayer/ChoicePanel/MarginContainer" unique_id=455627553]
 layout_mode = 2
 
-[node name="PromptLabel" type="Label" parent="UILayer/ChoicePanel/MarginContainer/VBox"]
+[node name="PromptLabel" type="Label" parent="UILayer/ChoicePanel/MarginContainer/VBox" unique_id=706574970]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 20
 horizontal_alignment = 1
 
-[node name="OptionsContainer" type="VBoxContainer" parent="UILayer/ChoicePanel/MarginContainer/VBox"]
+[node name="OptionsContainer" type="VBoxContainer" parent="UILayer/ChoicePanel/MarginContainer/VBox" unique_id=1215023490]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="BacklogScreen" type="PanelContainer" parent="UILayer"]
+[node name="BacklogScreen" type="PanelContainer" parent="UILayer" unique_id=1080862207]
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
@@ -155,23 +156,23 @@ grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("10")
 
-[node name="MarginContainer" type="MarginContainer" parent="UILayer/BacklogScreen"]
+[node name="MarginContainer" type="MarginContainer" parent="UILayer/BacklogScreen" unique_id=1053304424]
 layout_mode = 2
 theme_override_constants/margin_left = 50
 theme_override_constants/margin_top = 50
 theme_override_constants/margin_right = 50
 theme_override_constants/margin_bottom = 50
 
-[node name="BacklogScroll" type="ScrollContainer" parent="UILayer/BacklogScreen/MarginContainer"]
+[node name="BacklogScroll" type="ScrollContainer" parent="UILayer/BacklogScreen/MarginContainer" unique_id=326670884]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="BacklogEntries" type="VBoxContainer" parent="UILayer/BacklogScreen/MarginContainer/BacklogScroll"]
+[node name="BacklogEntries" type="VBoxContainer" parent="UILayer/BacklogScreen/MarginContainer/BacklogScroll" unique_id=1417175504]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="SaveLoadScreen" type="PanelContainer" parent="UILayer"]
+[node name="SaveLoadScreen" type="PanelContainer" parent="UILayer" unique_id=1253440610]
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
@@ -179,43 +180,43 @@ grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("11")
 
-[node name="MarginContainer" type="MarginContainer" parent="UILayer/SaveLoadScreen"]
+[node name="MarginContainer" type="MarginContainer" parent="UILayer/SaveLoadScreen" unique_id=1835583262]
 layout_mode = 2
 theme_override_constants/margin_left = 50
 theme_override_constants/margin_top = 50
 theme_override_constants/margin_right = 50
 theme_override_constants/margin_bottom = 50
 
-[node name="VBox" type="VBoxContainer" parent="UILayer/SaveLoadScreen/MarginContainer"]
+[node name="VBox" type="VBoxContainer" parent="UILayer/SaveLoadScreen/MarginContainer" unique_id=1691639511]
 layout_mode = 2
 
-[node name="Header" type="HBoxContainer" parent="UILayer/SaveLoadScreen/MarginContainer/VBox"]
+[node name="Header" type="HBoxContainer" parent="UILayer/SaveLoadScreen/MarginContainer/VBox" unique_id=1283299740]
 layout_mode = 2
 
-[node name="SaveLoadTitle" type="Label" parent="UILayer/SaveLoadScreen/MarginContainer/VBox/Header"]
+[node name="SaveLoadTitle" type="Label" parent="UILayer/SaveLoadScreen/MarginContainer/VBox/Header" unique_id=517620077]
 unique_name_in_owner = true
 layout_mode = 2
+size_flags_horizontal = 3
 theme_override_font_sizes/font_size = 28
 text = "存档"
-size_flags_horizontal = 3
 
-[node name="SaveTab" type="Button" parent="UILayer/SaveLoadScreen/MarginContainer/VBox/Header"]
+[node name="SaveTab" type="Button" parent="UILayer/SaveLoadScreen/MarginContainer/VBox/Header" unique_id=1002993073]
 unique_name_in_owner = true
 layout_mode = 2
 text = "存档"
 
-[node name="LoadTab" type="Button" parent="UILayer/SaveLoadScreen/MarginContainer/VBox/Header"]
+[node name="LoadTab" type="Button" parent="UILayer/SaveLoadScreen/MarginContainer/VBox/Header" unique_id=1522690837]
 unique_name_in_owner = true
 layout_mode = 2
 text = "读档"
 
-[node name="SlotsContainer" type="GridContainer" parent="UILayer/SaveLoadScreen/MarginContainer/VBox"]
+[node name="SlotsContainer" type="GridContainer" parent="UILayer/SaveLoadScreen/MarginContainer/VBox" unique_id=1664010620]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
 columns = 4
 
-[node name="SettingsScreen" type="PanelContainer" parent="UILayer"]
+[node name="SettingsScreen" type="PanelContainer" parent="UILayer" unique_id=146383114]
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
@@ -223,21 +224,21 @@ grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("12")
 
-[node name="MarginContainer" type="MarginContainer" parent="UILayer/SettingsScreen"]
+[node name="MarginContainer" type="MarginContainer" parent="UILayer/SettingsScreen" unique_id=2067973000]
 layout_mode = 2
 theme_override_constants/margin_left = 100
 theme_override_constants/margin_top = 80
 theme_override_constants/margin_right = 100
 theme_override_constants/margin_bottom = 80
 
-[node name="SettingsContainer" type="VBoxContainer" parent="UILayer/SettingsScreen/MarginContainer"]
+[node name="SettingsContainer" type="VBoxContainer" parent="UILayer/SettingsScreen/MarginContainer" unique_id=1584004377]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="FadeLayer" type="CanvasLayer" parent="."]
+[node name="FadeLayer" type="CanvasLayer" parent="." unique_id=2063555924]
 layer = 2
 
-[node name="FadeOverlay" type="ColorRect" parent="FadeLayer"]
+[node name="FadeOverlay" type="ColorRect" parent="FadeLayer" unique_id=322863677]
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
@@ -247,11 +248,11 @@ mouse_filter = 2
 color = Color(0, 0, 0, 1)
 script = ExtResource("7")
 
-[node name="InputHandler" type="Node" parent="."]
+[node name="InputHandler" type="Node" parent="." unique_id=181026061]
 script = ExtResource("5")
 
-[node name="ScreenEffects" type="Node" parent="."]
+[node name="ScreenEffects" type="Node" parent="." unique_id=191658614]
 script = ExtResource("8")
 
-[node name="AudioPresenter" type="Node" parent="."]
+[node name="AudioPresenter" type="Node" parent="." unique_id=141497012]
 script = ExtResource("9")
