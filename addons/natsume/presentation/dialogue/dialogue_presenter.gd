@@ -1,6 +1,7 @@
 ## Displays dialogue text with typewriter effect.
 ## Supports ADV (bottom box), NVL (fullscreen accumulate), overlay modes.
 ## Includes bottom toolbar for game controls.
+## Handles skip (toolbar + Ctrl held) and auto-play.
 extends PanelContainer
 
 @onready var name_label: Label = %NameLabel
@@ -12,10 +13,18 @@ var _is_typing: bool = false
 var _nvl_text: String = ""  # accumulated NVL text (already shown)
 var _current_mode: String = "adv"
 var _ui_hidden: bool = false
+var _ctrl_held: bool = false  # Ctrl key skip
 
 # Store original anchors for switching between ADV and NVL layout
 var _adv_anchor_top: float
 var _adv_offset_top: float
+
+## Icon paths — set these to customize toolbar button icons.
+var toolbar_icons: Dictionary = {
+	"auto": "", "skip": "", "backlog": "",
+	"quick_save": "", "quick_load": "",
+	"save": "", "load": "", "settings": "",
+}
 
 
 func _ready():
@@ -25,20 +34,6 @@ func _ready():
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
 	_setup_toolbar()
-
-
-## Icon paths — set these to customize toolbar button icons.
-## If a path is empty or the texture doesn't exist, the button shows text only.
-var toolbar_icons: Dictionary = {
-	"auto": "",        # e.g. "res://ui/icons/auto.png"
-	"skip": "",
-	"backlog": "",
-	"quick_save": "",
-	"quick_load": "",
-	"save": "",
-	"load": "",
-	"settings": "",
-}
 
 
 func _setup_toolbar():
@@ -65,12 +60,9 @@ func _setup_toolbar():
 		btn.custom_minimum_size = Vector2(60, 30)
 		btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 		btn.pressed.connect(btn_info["callback"])
-
-		# Hover and press effects
 		btn.mouse_entered.connect(func(): btn.modulate = Color(1.2, 1.2, 1.2) if not _is_toggle_active(btn_info["id"]) else btn.modulate)
 		btn.mouse_exited.connect(func(): _update_button_modulate(btn, btn_info["id"]))
 
-		# Try to load custom icon
 		var icon_path = toolbar_icons.get(btn_info["id"], "")
 		if icon_path != "" and FileAccess.file_exists(icon_path):
 			var icon = load(icon_path) as Texture2D
@@ -87,11 +79,16 @@ func _setup_toolbar():
 
 func _on_auto_pressed():
 	NatsumeRuntime.auto_play.toggle()
+	# Auto and skip are mutually exclusive
+	if NatsumeRuntime.auto_play.is_active:
+		NatsumeRuntime.skip_controller.stop()
 	_update_toggle_buttons()
 
 
 func _on_skip_pressed():
 	NatsumeRuntime.skip_controller.toggle()
+	if NatsumeRuntime.skip_controller.is_active:
+		NatsumeRuntime.auto_play.stop()
 	_update_toggle_buttons()
 
 
@@ -143,6 +140,10 @@ func _update_toggle_buttons():
 			_update_button_modulate(btn, btn_id)
 
 
+func _is_skipping() -> bool:
+	return NatsumeRuntime.skip_controller.is_active or _ctrl_held
+
+
 func _on_show_dialogue(character: String, text: String, _voice: String, mode: String):
 	if _ui_hidden:
 		return
@@ -150,7 +151,6 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 	visible = true
 	_current_mode = mode
 
-	# Show toolbar only in ADV mode
 	if toolbar:
 		toolbar.visible = (mode == "adv")
 
@@ -160,7 +160,7 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 	var clean_text: String = result["clean_text"]
 	timeline.markers = result["markers"]
 
-	# Handle inline effects {wait:500} {speed:0.3}
+	# Handle inline effects
 	var processed = _process_inline_effects(clean_text)
 	clean_text = processed["text"]
 	var effects = processed["effects"]
@@ -201,10 +201,16 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 		text_label.text = clean_text
 		text_label.visible_characters = 0
 
-	# Wait one frame so the advance click from the previous line
-	# doesn't immediately trigger click-to-complete on this line
 	await get_tree().process_frame
 	_is_typing = true
+
+	# Skip mode: show all text immediately
+	if _is_skipping():
+		text_label.visible_characters = -1
+		_is_typing = false
+		await get_tree().create_timer(NatsumeRuntime.settings_manager.settings.skip_interval / 1000.0).timeout
+		SignalBus.advance_requested.emit()
+		return
 
 	# Typewriter effect
 	var start_visible = text_label.visible_characters
@@ -212,6 +218,13 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 	for i in range(total_new_chars):
 		if not _is_typing:
 			break
+		# Check if skip activated mid-typewriter
+		if _is_skipping():
+			text_label.visible_characters = -1
+			_is_typing = false
+			await get_tree().create_timer(NatsumeRuntime.settings_manager.settings.skip_interval / 1000.0).timeout
+			SignalBus.advance_requested.emit()
+			return
 
 		text_label.visible_characters = start_visible + i + 1
 
@@ -232,8 +245,21 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 	text_label.visible_characters = -1
 	_is_typing = false
 
+	# Auto-play: wait delay then advance
+	if NatsumeRuntime.auto_play.is_active:
+		var delay = NatsumeRuntime.settings_manager.settings.auto_play_delay
+		await get_tree().create_timer(delay).timeout
+		# Only advance if auto-play is still active (user might have toggled off)
+		if NatsumeRuntime.auto_play.is_active:
+			SignalBus.advance_requested.emit()
+
 
 func _input(event: InputEvent) -> void:
+	# Ctrl key: skip while held
+	if event is InputEventKey:
+		if event.keycode == KEY_CTRL:
+			_ctrl_held = event.pressed
+
 	# Right-click: toggle UI visibility
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
 		if _ui_hidden:
