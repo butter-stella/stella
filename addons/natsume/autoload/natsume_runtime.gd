@@ -80,6 +80,10 @@ func _register_handlers():
 
 func start_scenario(scenario_path: String) -> void:
 	_last_scenario_path = scenario_path
+
+	# Reset presentation state (clear leftover from previous run)
+	_reset_presentation()
+
 	var file = FileAccess.open(scenario_path, FileAccess.READ)
 	if file == null:
 		push_error("NatsumeRuntime: cannot open %s" % scenario_path)
@@ -93,12 +97,20 @@ func start_scenario(scenario_path: String) -> void:
 
 	engine.load_scenario(data)
 
-	# Register engine context as snapshot provider
+	# Register fresh context as snapshot provider
 	save_manager.register_provider(engine.context)
 	save_manager.register_provider(engine.context.variable_store)
 
 	game_state.transition_to(GameStateMachine.State.PLAYING)
 	engine.run()
+
+
+func _reset_presentation():
+	# Clear screen state so a fresh scenario starts clean
+	SignalBus.fade_requested.emit("in", 0.0)
+	SignalBus.char_hide.emit("all")
+	SignalBus.hide_dialogue.emit()
+	backlog_manager.clear()
 
 
 ## The last loaded scenario path — needed for continue/load to re-parse and resume.
@@ -109,7 +121,8 @@ func continue_from_save(slot_id: int) -> bool:
 	if _last_scenario_path == "" or not save_manager.has_save(slot_id):
 		return false
 
-	# Re-parse the scenario
+	_reset_presentation()
+
 	var file = FileAccess.open(_last_scenario_path, FileAccess.READ)
 	if file == null:
 		return false
@@ -122,7 +135,7 @@ func continue_from_save(slot_id: int) -> bool:
 
 	engine.load_scenario(data)
 
-	# Re-register new context as snapshot provider (load_scenario creates a new context)
+	# Re-register new context as snapshot provider
 	save_manager.register_provider(engine.context)
 	save_manager.register_provider(engine.context.variable_store)
 
