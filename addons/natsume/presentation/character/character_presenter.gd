@@ -110,7 +110,7 @@ func _on_char_show(character: String, expression: String, position: String):
 	if config.is_layered():
 		_show_layered(slot, character, config, expression, "")
 	else:
-		_show_sprite(slot, character, expression)
+		_show_sprite(slot, character, expression, config.crop)
 
 	_character_positions[character] = position
 	_character_expressions[character] = expression
@@ -229,19 +229,42 @@ func _on_char_move(character: String, target_position: String, duration: float):
 
 # --- Rendering helpers ---
 
-func _show_sprite(slot: Control, character: String, expression: String):
+func _show_sprite(slot: Control, character: String, expression: String, crop: float = 1.0):
 	var path = NatsumeRuntime.characters_path + "%s/%s.png" % [character, expression]
 	var texture = load(path) as Texture2D
 	if texture == null:
 		push_warning("CharacterPresenter: texture not found: %s" % path)
 		return
 
+	# Enable clipping so content beyond slot bounds is hidden
+	slot.clip_contents = (crop < 1.0)
+
 	var sprite = TextureRect.new()
 	sprite.name = "Sprite"
 	sprite.texture = texture
-	sprite.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	sprite.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
-	sprite.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	if crop < 1.0:
+		# Scale the image up so that the top `crop` portion fills the slot.
+		# Top-aligned, slot clips the overflow below.
+		sprite.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT
+		sprite.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		var scale_factor = 1.0 / crop
+		sprite.anchor_left = 0.0
+		sprite.anchor_top = 0.0
+		sprite.anchor_right = 1.0
+		sprite.anchor_bottom = 0.0
+		sprite.offset_left = 0
+		sprite.offset_top = 0
+		sprite.offset_right = 0
+		# Full image height at slot width, then scaled up
+		var img_ratio = float(texture.get_height()) / float(texture.get_width())
+		var slot_width = slot.size.x if slot.size.x > 0 else 200.0
+		sprite.offset_bottom = slot_width * img_ratio * scale_factor
+	else:
+		sprite.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		sprite.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+		sprite.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
 	slot.add_child(sprite)
 
 
