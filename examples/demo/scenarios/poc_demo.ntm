@@ -1,88 +1,138 @@
-// poc_demo.ntm — Enhanced demo showcasing all Natsume features
+// poc_demo.ntm — Enhanced demo with real character sprites
 
 @scene start "序章 — 初次相遇"
 
-// Background with fade transition
-@bg bg_school_gate fade 0.8
-
-// Character entrance
+@bg bg_school_gate fade 1.0
 @show sakura smile center
 
-// Dialogue with typewriter
-sakura「你好，初次见面！我叫樱。」
-sakura「你是新转来的同学吧？」
+sakura「你好！你是新转来的同学吧？」
+sakura「我叫樱，请多关照。」
 
-// Character animation — bounce with excitement
 @anim sakura bounce
 
-sakura「这个学校很有趣的哦！」
+sakura「这个学校很有趣的哦！要不要我带你参观一下？」
 
-// Choice with variable effect
 @choice "你该怎么回应？"
-  - "你好，请多关照！" -> friendly {affection += 5}
-  - "……嗯。" -> cold
+  - "好啊，麻烦你了！" -> tour {affection += 5}
+  - "不用了，谢谢。" -> decline
 
 //========================================
-@scene friendly
+@scene tour "校园参观"
 
-// Expression change
 @expr sakura happy
+sakura「太好了！那我们走吧！」
 
-// Dialogue with inline expression switching
-sakura「太好了！[smile]我们一起去看看校园吧。[happy]一定会很开心的！」
+@hide sakura
+@bg bg_hallway fade 0.8
+@show sakura smile left
+@show kaito default right
 
-// Character animation — jump with joy
-@anim sakura jump
+sakura「啊，海斗！你也在啊。」
 
-@wait 0.5
+kaito「嗯。这位是？」
 
-// Screen fade for time skip
-@fade out 0.5
-@wait 0.3
-@fade in 0.5
+sakura「新来的同学哦。海斗是我的青梅竹马。」
 
-// NVL mode for narration
-@nvl
-「那天之后，我和樱成了朋友。」
-「每天放学后，我们都会一起回家。」
-「不知不觉间，春天已经过去了一半。」
-@nvl off
+@expr kaito surprised
 
-@jump ending
+kaito「哦...你好。」
+
+@expr sakura smile
+
+sakura「对了，放学后我们一起去咖啡店吧！」
+
+@choice
+  - "好主意！" -> cafe {affection += 3}
+  - "看海斗方不方便？" -> ask_kaito
 
 //========================================
-@scene cold
+@scene ask_kaito
+
+@expr kaito smile
+kaito「我没问题。」
+
+@expr sakura happy
+@anim sakura jump
+sakura「那就这么定了！」
+
+@jump cafe
+
+//========================================
+@scene cafe "放学后"
+
+@bg bg_cafe dissolve 1.0
+@show sakura happy left
+@show kaito default right
+
+sakura「这里的蛋糕超好吃的！」
+
+@anim sakura bounce
+
+kaito「你每次来都点一样的。」
+
+sakura「因为好吃嘛！{wait:300}对了...」
 
 @expr sakura sad
+sakura「我本来很开心的...[surprised]但是听说下周要考试...[sad]好紧张啊。」
 
-// Shake animation for emotional impact
+kaito「我可以帮你复习。」
+
+@expr sakura happy
+@anim sakura jump
+sakura「真的吗！海斗最好了！」
+
+@expr kaito smile
+kaito「...随便吧。」
+
+@fade out 0.5
+
+@nvl
+「那天之后，我和樱还有海斗成了朋友。」
+「每天放学后，三个人一起去咖啡店成了习惯。」
+「虽然只是平凡的日常，却意外地让人珍惜。」
+@nvl off
+
+@fade in 0.5
+@jump ending
+
+//========================================
+@scene decline "婉拒"
+
+@expr sakura sad
 @anim sakura shake light
 
-sakura「啊……这样啊。{wait:300}那、那我先走了。」
+sakura「啊...这样啊。{wait:500}那、那没关系。」
 
 @wait 0.5
 
-// Overlay mode for inner monologue
 @overlay
-「（也许我应该更友善一些……）」
+「（她看起来有点失望...也许我应该主动一些。）」
 @overlay off
+
+@expr sakura smile
+sakura「那要是以后有什么不懂的，随时可以来找我哦！」
 
 @jump ending
 
 //========================================
-@scene ending
+@scene ending "尾声"
 
-// Fade to black
-@fade out 1.0
-@hide sakura
-@bg bg_black fade 0.5
-@fade in 0.5
+@bg bg_outside fade 1.0
+@hide all
 
-// NVL epilogue
 @nvl
-「（第一天就这样结束了。）」
-「（明天，会有什么在等着我呢？）」
+「（不知不觉，春天已经过去了一半。）」
+「（新的学校，新的朋友。）」
+「（这个故事，才刚刚开始。）」
 @nvl off
 
 @wait 1.0
+
+@fade out 1.5
+@bg bg_black fade 0.0
+@fade in 0.5
+
+「—— 序章 完 ——」
+
+@wait 2.0
 @end
