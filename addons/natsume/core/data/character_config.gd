@@ -6,7 +6,6 @@ var render_mode: String = "sprite"  # "sprite" or "layered"
 var default_body: String = ""
 var bodies: Dictionary = {}          # body_name -> file_name
 var expressions: Dictionary = {}     # expression_name -> face_file_name
-var crop: float = 1.0                # 0.0-1.0, show top N% of sprite (1.0 = full body)
 
 
 func load_from_dict(data: Dictionary) -> void:
@@ -14,7 +13,6 @@ func load_from_dict(data: Dictionary) -> void:
 	default_body = data.get("default_body", "")
 	bodies = data.get("bodies", {})
 	expressions = data.get("expressions", {})
-	crop = data.get("crop", 1.0)
 
 
 func is_layered() -> bool:

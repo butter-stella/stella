@@ -110,7 +110,7 @@ func _on_char_show(character: String, expression: String, position: String):
 	if config.is_layered():
 		_show_layered(slot, character, config, expression, "")
 	else:
-		_show_sprite(slot, character, expression, config.crop)
+		_show_sprite(slot, character, expression)
 
 	_character_positions[character] = position
 	_character_expressions[character] = expression
@@ -229,7 +229,7 @@ func _on_char_move(character: String, target_position: String, duration: float):
 
 # --- Rendering helpers ---
 
-func _show_sprite(slot: Control, character: String, expression: String, crop: float = 1.0):
+func _show_sprite(slot: Control, character: String, expression: String):
 	var path = NatsumeRuntime.characters_path + "%s/%s.png" % [character, expression]
 	var texture = load(path) as Texture2D
 	if texture == null:
@@ -239,25 +239,9 @@ func _show_sprite(slot: Control, character: String, expression: String, crop: fl
 	var sprite = TextureRect.new()
 	sprite.name = "Sprite"
 	sprite.texture = texture
-	sprite.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT
-	sprite.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-
-	if crop < 1.0:
-		# Scale up: sprite fills slot width, extends beyond slot bottom.
-		# slot.clip_contents hides the overflow — no data cropping.
-		# Anchors define size relative to slot: bottom = 1/crop makes sprite taller.
-		slot.clip_contents = true
-		sprite.anchor_left = 0.0
-		sprite.anchor_top = 0.0
-		sprite.anchor_right = 1.0
-		sprite.anchor_bottom = 1.0 / crop
-		sprite.offset_left = 0
-		sprite.offset_top = 0
-		sprite.offset_right = 0
-		sprite.offset_bottom = 0
-	else:
-		sprite.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-
+	sprite.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	sprite.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+	sprite.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	slot.add_child(sprite)
 
 
