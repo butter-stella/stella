@@ -17,10 +17,9 @@ func _ready():
 
 
 func _on_bg_changed(asset: String, transition: String, duration: float):
-	var path = NatsumeRuntime.backgrounds_path + "%s.png" % asset
-	var texture = load(path) as Texture2D
+	var texture = _load_bg_texture(asset)
 	if texture == null:
-		push_warning("BackgroundPresenter: texture not found: %s" % path)
+		push_warning("BackgroundPresenter: texture not found: %s" % asset)
 		return
 
 	match transition:
@@ -30,6 +29,15 @@ func _on_bg_changed(asset: String, transition: String, duration: float):
 			await _transition_wipe(texture, duration)
 		_:  # "fade" or default
 			await _transition_fade(texture, duration)
+
+
+func _load_bg_texture(asset: String) -> Texture2D:
+	var base = NatsumeRuntime.backgrounds_path
+	for ext in [".png", ".jpg", ".jpeg", ".webp"]:
+		var path = base + asset + ext
+		if ResourceLoader.exists(path):
+			return load(path) as Texture2D
+	return null
 
 
 func _transition_fade(texture: Texture2D, duration: float):

@@ -83,8 +83,12 @@ func _on_slot_pressed(slot_id: int):
 		NatsumeRuntime.save_manager.save(slot_id)
 		_refresh_slots()
 	else:  # load
-		if NatsumeRuntime.save_manager.load_save(slot_id):
-			_hide_screen()
+		visible = false
+		if NatsumeRuntime.continue_from_save(slot_id):
+			pass  # continue_from_save handles state transition
+		else:
+			push_warning("SaveLoadScreen: failed to load slot %d" % slot_id)
+			visible = true
 
 
 func _get_save_timestamp(path: String) -> String:

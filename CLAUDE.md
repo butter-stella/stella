@@ -84,6 +84,10 @@ Repeat from step 1.
 
 ## Development Rules
 
+### No Delays to Fix Race Conditions
+
+**永远不要用加延时（await create_timer、sleep、process_frame）的方法解决竞态问题。** 延时只是把 bug 藏起来，换个时序就会复现。竞态问题必须用状态机、信号守卫、或同步取消（kill tween）等确定性方案解决。
+
 ### TDD (Test-Driven Development)
 
 - **Write tests first, then implementation.** For every new feature or module:

@@ -29,6 +29,7 @@ var toolbar_icons: Dictionary = {
 
 func _ready():
 	SignalBus.show_dialogue.connect(_on_show_dialogue)
+	SignalBus.hide_dialogue.connect(func(): visible = false; _nvl_text = "")
 	SignalBus.scenario_ended_event.connect(func(_id): visible = false)
 	visible = false
 	_adv_anchor_top = anchor_top
@@ -101,7 +102,7 @@ func _on_quick_save_pressed():
 
 
 func _on_quick_load_pressed():
-	NatsumeRuntime.save_manager.load_save(0)
+	NatsumeRuntime.continue_from_save(0)
 
 
 func _on_save_pressed():
