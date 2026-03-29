@@ -1,38 +1,22 @@
-## Title screen — game title with start/continue/load/settings/quit buttons.
+## Title screen — game title with start/continue/quit buttons.
+## This is a standalone scene, NOT part of the game scene.
+## Starting a game switches to the game scene via NatsumeRuntime.
 extends CanvasLayer
 
 @onready var title_label: Label = %TitleLabel
 @onready var buttons_container: VBoxContainer = %TitleButtons
 
 ## The scenario path to load when "Start" is pressed.
-## Set by the game's bootstrap script.
 var scenario_path: String = ""
 
-## Custom title text — set before showing.
+## The game scene path to switch to.
+var game_scene_path: String = ""
+
+## Custom title text.
 var game_title: String = "Natsume"
 
 
 func _ready():
-	layer = 3
-	NatsumeRuntime.game_state.state_changed.connect(_on_state_changed)
-	SignalBus.scenario_ended_event.connect(_on_scenario_ended)
-	# Show title on start
-	_show()
-
-
-func _on_state_changed(_from: int, to: int):
-	if to == GameStateMachine.State.TITLE:
-		_show()
-	elif to == GameStateMachine.State.PLAYING:
-		visible = false
-
-
-func _on_scenario_ended(_id: String):
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.TITLE)
-
-
-func _show():
-	visible = true
 	_build_ui()
 
 
@@ -45,8 +29,6 @@ func _build_ui():
 	var buttons = [
 		{"text": "开始游戏", "callback": _on_start},
 		{"text": "继续游戏", "callback": _on_continue, "condition": NatsumeRuntime.save_manager.has_save(0)},
-		{"text": "读档", "callback": _on_load},
-		{"text": "设置", "callback": _on_settings},
 		{"text": "退出", "callback": _on_quit},
 	]
 
@@ -63,20 +45,16 @@ func _build_ui():
 
 
 func _on_start():
-	if scenario_path != "":
-		NatsumeRuntime.start_scenario(scenario_path)
+	if scenario_path == "" or game_scene_path == "":
+		push_error("TitleScreen: scenario_path or game_scene_path not configured")
+		return
+	NatsumeRuntime.start_game(scenario_path, game_scene_path)
 
 
 func _on_continue():
-	NatsumeRuntime.continue_from_save(0)
-
-
-func _on_load():
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
-
-
-func _on_settings():
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.SETTINGS)
+	if game_scene_path == "":
+		return
+	NatsumeRuntime.load_game(0, scenario_path, game_scene_path)
 
 
 func _on_quit():

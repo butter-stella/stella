@@ -1,11 +1,11 @@
-## Framework entry point. Initializes engine, registers handlers, loads scenario.
-## Registered as Autoload singleton.
+## Framework entry point. Initializes engine, registers handlers, manages scene lifecycle.
+## Registered as Autoload singleton — persists across scene changes.
 extends Node
 
 var engine: ScenarioEngine
 var registry: CommandRegistry
 
-## Subsystem instances — exposed for UI to interact with.
+## Subsystem instances
 var save_manager: SaveManager
 var settings_manager: SettingsManager
 var backlog_manager: BacklogManager
@@ -15,16 +15,21 @@ var read_flags: ReadFlagManager
 var game_state: GameStateMachine
 var unlock_manager: UnlockManager
 
-## Resource base paths — configure these before starting a scenario.
+## Resource base paths — game project configures these.
 var backgrounds_path: String = "res://art/backgrounds/"
 var characters_path: String = "res://art/characters/"
 var bgm_path: String = "res://audio/bgm/"
 var se_path: String = "res://audio/se/"
 var voice_path: String = "res://audio/voice/"
 
+## Scene paths — set by the game project's bootstrap.
+var title_scene_path: String = ""
+
+## Internal state
+var _last_scenario_path: String = ""
+
 
 func _ready():
-	# Core subsystems
 	save_manager = SaveManager.new()
 	settings_manager = SettingsManager.new()
 	settings_manager.load_settings()
@@ -35,11 +40,9 @@ func _ready():
 	game_state = GameStateMachine.new()
 	unlock_manager = UnlockManager.new()
 
-	# Register snapshot providers
 	save_manager.register_provider(read_flags)
 	save_manager.register_provider(unlock_manager)
 
-	# Engine
 	registry = CommandRegistry.new()
 	engine = ScenarioEngine.new()
 	engine.registry = registry
@@ -47,7 +50,7 @@ func _ready():
 
 	# Bridge engine signals to SignalBus
 	engine.scenario_started.connect(func(id): SignalBus.scenario_started_event.emit(id))
-	engine.scenario_ended.connect(func(id): SignalBus.scenario_ended_event.emit(id))
+	engine.scenario_ended.connect(_on_scenario_ended)
 	engine.scene_changed.connect(func(id): SignalBus.scene_changed_event.emit(id))
 
 	# Wire dialogue to backlog
@@ -70,16 +73,66 @@ func _register_handlers():
 	registry.register(WaitHandler.new())
 	registry.register(AnimHandler.new())
 	registry.register(MoveHandler.new())
-	registry.register(CallHandler.new())
 	registry.register(CgHandler.new())
 	registry.register(EffectHandler.new())
+	registry.register(CallHandler.new())
 	var parallel_handler = ParallelHandler.new()
 	parallel_handler._registry = registry
 	registry.register(parallel_handler)
 
 
+## Start a new game — switch to game scene, then run scenario.
+func start_game(scenario_path: String, game_scene_path: String) -> void:
+	_last_scenario_path = scenario_path
+	game_state.transition_to(GameStateMachine.State.PLAYING)
+	get_tree().change_scene_to_file(game_scene_path)
+	# Wait for scene to be ready before starting engine
+	await get_tree().tree_changed
+	await get_tree().process_frame
+	_start_scenario_internal(scenario_path)
+
+
+## Load a saved game — switch to game scene, restore state, run.
+func load_game(slot_id: int, scenario_path: String, game_scene_path: String) -> bool:
+	if not save_manager.has_save(slot_id):
+		return false
+	_last_scenario_path = scenario_path
+	game_state.transition_to(GameStateMachine.State.PLAYING)
+	get_tree().change_scene_to_file(game_scene_path)
+	await get_tree().tree_changed
+	await get_tree().process_frame
+	_start_scenario_internal(scenario_path)
+	save_manager.load_save(slot_id)
+	return true
+
+
+## Continue from quick save (used by toolbar quick-load).
+func continue_from_save(slot_id: int) -> bool:
+	if _last_scenario_path == "" or not save_manager.has_save(slot_id):
+		return false
+	_start_scenario_internal(_last_scenario_path)
+	save_manager.load_save(slot_id)
+	return true
+
+
+## Return to title screen.
+func return_to_title() -> void:
+	backlog_manager.clear()
+	auto_play.stop()
+	skip_controller.stop()
+	game_state.transition_to(GameStateMachine.State.TITLE)
+	if title_scene_path != "":
+		get_tree().change_scene_to_file(title_scene_path)
+
+
+## Legacy API — starts scenario in current scene (for testing).
 func start_scenario(scenario_path: String) -> void:
 	_last_scenario_path = scenario_path
+	game_state.transition_to(GameStateMachine.State.PLAYING)
+	_start_scenario_internal(scenario_path)
+
+
+func _start_scenario_internal(scenario_path: String) -> void:
 	var file = FileAccess.open(scenario_path, FileAccess.READ)
 	if file == null:
 		push_error("NatsumeRuntime: cannot open %s" % scenario_path)
@@ -92,46 +145,15 @@ func start_scenario(scenario_path: String) -> void:
 	var data = DslParser.parse(tokens, scenario_id)
 
 	engine.load_scenario(data)
-
-	# Register engine context as snapshot provider
 	save_manager.register_provider(engine.context)
 	save_manager.register_provider(engine.context.variable_store)
-
-	game_state.transition_to(GameStateMachine.State.PLAYING)
 	engine.run()
 
 
-## The last loaded scenario path — needed for continue/load to re-parse and resume.
-var _last_scenario_path: String = ""
-
-
-func continue_from_save(slot_id: int) -> bool:
-	if _last_scenario_path == "" or not save_manager.has_save(slot_id):
-		return false
-
-	# Re-parse the scenario
-	var file = FileAccess.open(_last_scenario_path, FileAccess.READ)
-	if file == null:
-		return false
-	var source = file.get_as_text()
-	file.close()
-
-	var tokens = DslLexer.tokenize(source)
-	var scenario_id = _last_scenario_path.get_file().get_basename()
-	var data = DslParser.parse(tokens, scenario_id)
-
-	engine.load_scenario(data)
-
-	# Re-register new context as snapshot provider (load_scenario creates a new context)
-	save_manager.register_provider(engine.context)
-	save_manager.register_provider(engine.context.variable_store)
-
-	# Restore saved state into the new context
-	save_manager.load_save(slot_id)
-
-	game_state.transition_to(GameStateMachine.State.PLAYING)
-	engine.run()
-	return true
+func _on_scenario_ended(id: String) -> void:
+	SignalBus.scenario_ended_event.emit(id)
+	# Auto return to title after scenario ends
+	return_to_title()
 
 
 func _on_dialogue_for_backlog(character: String, text: String, voice: String, _mode: String):
