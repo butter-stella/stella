@@ -1,116 +1,137 @@
-// poc_demo.ntm — Enhanced demo with real character sprites
+// poc_demo.ntm — Natsume Demo: 樱与学姐
 
-@scene start "序章 — 初次相遇"
+@scene start "序章 — 樱花树下"
 
 @bg bg_school_gate fade 1.0
 @show sakura smile center
 
-sakura「你好！你是新转来的同学吧？」
-sakura「我叫樱，请多关照。」
+sakura「你好！你就是新来的转校生吧？」
+sakura「我叫樱，二年级的。请多关照！」
 
 @anim sakura bounce
 
-sakura「这个学校很有趣的哦！要不要我带你参观一下？」
+sakura「今天是你第一天，要不要我带你逛逛校园？」
 
 @choice "你该怎么回应？"
-  - "好啊，麻烦你了！" -> tour {affection += 5}
-  - "不用了，谢谢。" -> decline
+  - "好啊，拜托你了！" -> tour {affection += 5}
+  - "我自己看看就好。" -> decline
 
 //========================================
-@scene tour "校园参观"
+@scene tour "校园漫步"
 
 @expr sakura happy
-sakura「太好了！那我们走吧！」
+sakura「太好了！走吧走吧！」
 
 @hide sakura
 @bg bg_hallway fade 0.8
 @show sakura smile left
-@show kaito default right
 
-sakura「啊，海斗！你也在啊。」
+sakura「这里是教学楼的走廊，我们教室在那边——」
 
-kaito「嗯。这位是？」
+@show senpai default right
 
-sakura「新来的同学哦。海斗是我的青梅竹马。」
+sakura「啊！学姐！」
 
-@expr kaito surprised
+@expr senpai smile
+senpai「小樱，又在到处跑了。」
 
-kaito「哦...你好。」
+sakura「才没有！我在帮转校生参观呢。」
 
-@expr sakura smile
+senpai「这样啊。」
 
-sakura「对了，放学后我们一起去咖啡店吧！」
-
-@choice
-  - "好主意！" -> cafe {affection += 3}
-  - "看海斗方不方便？" -> ask_kaito
-
-//========================================
-@scene ask_kaito
-
-@expr kaito smile
-kaito「我没问题。」
+@expr senpai smile
+senpai「你好，我是三年级的。有什么不懂的可以来找我。」
 
 @expr sakura happy
+sakura「学姐人超好的哦！是学生会长！」
+
+@expr senpai surprised
+senpai「小樱，别什么都说出来...」
+
+@choice
+  - "学姐好厉害！" -> praise_senpai {affection += 3}
+  - "谢谢学姐。" -> thank_senpai
+
+//========================================
+@scene praise_senpai
+
+@expr senpai happy
+senpai「没有什么厉害的，只是做该做的事而已。」
+
 @anim sakura jump
-sakura「那就这么定了！」
+@expr sakura happy
+sakura「学姐又在谦虚了！」
 
 @jump cafe
 
 //========================================
-@scene cafe "放学后"
+@scene thank_senpai
+
+@expr senpai smile
+senpai「不客气。有困难随时来找我。」
+
+@expr sakura smile
+sakura「学姐对谁都很温柔呢。」
+
+@jump cafe
+
+//========================================
+@scene cafe "放学后的咖啡店"
 
 @bg bg_cafe dissolve 1.0
 @show sakura happy left
-@show kaito default right
+@show senpai default right
 
-sakura「这里的蛋糕超好吃的！」
+sakura「这里的蛋糕超好吃的！学姐，你要尝尝吗？」
 
 @anim sakura bounce
 
-kaito「你每次来都点一样的。」
+@expr senpai smile
+senpai「好啊，那就来一份吧。」
 
 sakura「因为好吃嘛！{wait:300}对了...」
 
 @expr sakura sad
-sakura「我本来很开心的...[surprised]但是听说下周要考试...[sad]好紧张啊。」
+sakura「我本来很开心的...[surprised]但是听说下周要期中考...[sad]我数学肯定完蛋了。」
 
-kaito「我可以帮你复习。」
+@expr senpai smile
+senpai「要不我帮你补习？我数学还算可以。」
 
 @expr sakura happy
 @anim sakura jump
-sakura「真的吗！海斗最好了！」
+sakura「真的吗！学姐最好了！」
 
-@expr kaito smile
-kaito「...随便吧。」
+@expr senpai happy
+senpai「看你开心就好。」
 
 @fade out 0.5
 
 @nvl
-「那天之后，我和樱还有海斗成了朋友。」
-「每天放学后，三个人一起去咖啡店成了习惯。」
-「虽然只是平凡的日常，却意外地让人珍惜。」
+「那天之后，放学后三个人去咖啡店成了惯例。」
+「学姐帮我们补习，樱负责活跃气氛。」
+「虽然只是平凡的日常，却让人格外珍惜。」
 @nvl off
 
 @fade in 0.5
 @jump ending
 
 //========================================
-@scene decline "婉拒"
+@scene decline "独自一人"
 
 @expr sakura sad
 @anim sakura shake light
 
-sakura「啊...这样啊。{wait:500}那、那没关系。」
+sakura「啊...这样啊。{wait:500}那、那也好。」
 
 @wait 0.5
 
 @overlay
-「（她看起来有点失望...也许我应该主动一些。）」
+「（她看起来有些失落...也许我太冷淡了。）」
 @overlay off
 
 @expr sakura smile
-sakura「那要是以后有什么不懂的，随时可以来找我哦！」
+sakura「那以后有什么不明白的，随时来找我哦！」
+sakura「教室在二楼最左边那间！」
 
 @jump ending
 
@@ -121,9 +142,10 @@ sakura「那要是以后有什么不懂的，随时可以来找我哦！」
 @hide all
 
 @nvl
-「（不知不觉，春天已经过去了一半。）」
-「（新的学校，新的朋友。）」
-「（这个故事，才刚刚开始。）」
+「（就这样，在这所新学校的第一天结束了。）」
+「（热情的同级生，温柔的学姐。）」
+「（也许转学来这里，是一个正确的选择。）」
+「（这段故事...才刚刚开始。）」
 @nvl off
 
 @wait 1.0

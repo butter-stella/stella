@@ -1,12 +1,12 @@
 # Art Credits
 
 ## Character Sprites — sakura
-- Source: [Kuudere Visual Novel Sprite](https://opengameart.org/content/kuudere-visual-novel-sprite) by LisadiKaprio
-- License: CC-BY 4.0
+- Generated with Nano Banana
+- License: Project-owned
 
-## Character Sprites — kaito
-- Source: [Visual Novel Character Sprite](https://opengameart.org/content/visual-novel-character-sprite) by OpenGameArt contributor
-- License: CC0 (Public Domain)
+## Character Sprites — senpai
+- Generated with Nano Banana
+- License: Project-owned
 
 ## Backgrounds
 - Source: [Visual Novel House Backgrounds](https://opengameart.org/content/visual-novel-house-backgrounds) by Spiral Atlas
