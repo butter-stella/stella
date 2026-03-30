@@ -1,97 +1,106 @@
 # Natsume — 开发进度
 
-> 最后更新：2026-03-29
+> 最后更新：2026-03-30
 
 ## 总览
 
 | 指标 | 数量 |
 |------|------|
-| 已合并 PR | 38 |
-| 源代码文件 | 57 个 `.gd` |
-| 测试文件 | 23 个 |
-| 测试用例 | 240 个，全绿 |
-| 断言数 | 474 |
+| 已合并 PR | 55 |
+| 源代码文件 | 62 个 `.gd` |
+| 测试文件 | 27 个 |
+| 测试用例 | 259 个，全绿 |
+| 断言数 | 517 |
 
 ---
 
-## Sprint 完成情况
-
-| Sprint | 内容 | 状态 | PRs |
-|--------|------|------|-----|
-| Sprint 1 | 核心骨架 + 数据模型 | ✅ 完成 | #14, #15 |
-| Sprint 2 | 命令系统 + 剧情引擎 | ✅ 完成 | #16 |
-| Sprint 3 | DSL 解析器 | ✅ 完成 | #17, #18 |
-| Sprint 4 | 基础表现层（POC） | ✅ 完成 | #20 |
-| Sprint 5 | 游戏体验完善 | ✅ 完成 | #22-#26 |
-| Sprint 6 | 表现增强 | ✅ 完成 | #27, #28 |
-| Sprint 7 | 高级扩展 | ✅ 完成 | #29, #30 |
-| Sprint 8 | 开源准备 | ✅ 完成 | #31 |
-
----
-
-## 已完成的模块
+## 已完成
 
 ### Core 层（100%）
 
-| 模块 | 文件 | 说明 |
-|------|------|------|
-| 数据模型 | `core/data/` | CommandData, ScenarioData, SceneData, ChoiceData, CharacterConfig |
-| DSL 解析器 | `core/script_parser/` | DslLexer + DslParser，支持全部 DSL 指令 |
-| 剧情引擎 | `core/scenario_engine/` | ScenarioEngine 主循环 + ScenarioContext + WaitController + ExpressionTimeline |
-| 命令处理器 | `core/commands/` | 18 个 handler（dialogue/bg/char_show/hide/expr/anim/move/choice/jump/condition/set/bgm/se/fade/wait/cg/effect/parallel） |
-| 变量系统 | `core/variable_system/` | VariableStore（3 作用域）+ ExpressionEvaluator |
-| 存档系统 | `core/save_system/` | SaveManager + 快照协议 |
-| 设置系统 | `core/settings/` | GameSettings + SettingsManager |
-| 播放控制 | `core/playback/` | AutoPlayController + SkipController + ReadFlagManager + BacklogManager |
-| 状态机 | `core/state/` | GameStateMachine（6 种状态） |
-| 语音收藏 | `core/bookmark/` | VoiceBookmarkManager |
-| 鉴赏管理 | `core/gallery/` | UnlockManager |
-| 本地化 | `core/localization/` | LocalizationManager |
+| 模块 | 说明 |
+|------|------|
+| DSL 解析器 | Lexer + Parser，支持全部指令（含 @elif、@call） |
+| 剧情引擎 | 主循环、命令派发、跳转、子场景调用 + 返回栈 |
+| 命令处理器 | 19 个（dialogue/bg/show/hide/expr/anim/move/choice/jump/condition/set/bgm/se/fade/wait/cg/effect/parallel/call） |
+| 变量系统 | 3 作用域（global/scenario/temp）+ 表达式求值器 |
+| 存档系统 | 快照协议、JSON 持久化、多槽位 |
+| 设置系统 | 文字速度/音量/自动播放/快进，JSON 持久化 |
+| 播放控制 | 自动播放/快进/已读管理/Backlog |
+| 状态机 | 6 种状态，previous_state 追踪 + return_to_previous |
+| 表情时间轴 | 句内 [expression] 标记提取和查询 |
+| 语音收藏 | VoiceBookmarkManager |
+| 鉴赏管理 | UnlockManager（CG/BGM/场景） |
+| 本地化 | LocalizationManager（多语言 key-value） |
+| 角色配置 | CharacterConfig + CharacterConfigLoader（sprite/layered 渲染） |
 
 ### Presentation 层
 
-| 模块 | 文件 | 说明 |
-|------|------|------|
-| 对话系统 | `presentation/dialogue/` | 打字机效果、ADV/NVL/overlay 三种模式、句内表情切换、{wait}/{speed} 句内效果 |
-| 背景系统 | `presentation/background/` | 双缓冲 + fade 转场 |
-| 立绘系统 | `presentation/character/` | 单图/差分双层渲染、show/hide/expr/anim/move、jump/shake/nod/bounce 动画 |
-| 选项系统 | `presentation/choice/` | 动态按钮生成 |
-| 音频系统 | `presentation/audio/` | BGM 淡入淡出 + SE 多通道 |
-| 屏幕特效 | `presentation/effects/` | fade 黑屏 + shake/flash |
-| 输入处理 | `presentation/input/` | 鼠标/键盘 → 信号 |
+| 模块 | 说明 |
+|------|------|
+| 对话系统 | 打字机效果、ADV/NVL/overlay 三模式、句内效果 {wait}/{speed}、句内表情切换 |
+| 立绘系统 | 单图/差分双层渲染、状态机驱动（EMPTY→SHOWING→VISIBLE→HIDING）、jump/shake/nod/bounce 动画 |
+| 背景系统 | 双缓冲、fade/dissolve/wipe 转场 Shader、多格式支持（png/jpg/webp） |
+| 选项 UI | 动态按钮生成 |
+| 音频播放 | BGM 淡入淡出 + SE 多通道 |
+| 屏幕特效 | FadeLayer 独立分层 + shake/flash |
+| 输入处理 | 鼠标/键盘 → 信号 |
 
-### DSL 指令覆盖率
+### 用户交互 UI
+
+| 模块 | 说明 |
+|------|------|
+| 工具栏 | 自动/快进/记录/快存/快读/存档/读档/设置（8 按钮） |
+| 快进 | 工具栏按钮 + Ctrl 长按，跳过打字机 + 自动推进 |
+| 自动播放 | 打字机完成后等 auto_play_delay 自动推进 |
+| Backlog | 全屏对话历史，ScrollContainer |
+| 存档/读档 | 8 槽位网格 + 时间戳 |
+| 设置 | 文字速度/音量/全屏 滑条 |
+| 标题画面 | 开始/继续/退出 |
+| 右键隐藏 UI | 右键隐藏对话框，再次点击恢复 |
+
+### 架构
+
+| 项目 | 说明 |
+|------|------|
+| 场景分离 | title.tscn + game.tscn，游戏组件按需加载 |
+| 资源路径可配置 | NatsumeRuntime.*_path |
+| 插件化发布 | EditorPlugin 自动注册 Autoload |
+| FadeLayer 独立 | 不遮挡 UI（layer 2，UI 在 layer 3） |
+| 立绘状态机 | 消除 tween 竞态（EMPTY/SHOWING/VISIBLE/HIDING） |
+| 信号桥接 | Engine 信号 → SignalBus → Presentation |
+
+### DSL 指令覆盖率（100%）
 
 | 指令 | 状态 |
 |------|------|
 | `@scene` / `@end` | ✅ |
-| 对话 `sakura「」` / 旁白 `「」` / 独白 `sakura（）` | ✅ |
-| `#voice:id` / `[expression]` 句内表情 | ✅ |
+| 对话 / 旁白 / 独白 | ✅ |
+| `#voice:id` / `[expression]` / `{wait}` / `{speed}` | ✅ |
 | `@bg` / `@show` / `@hide` / `@expr` | ✅ |
 | `@anim` / `@move` | ✅ |
-| `@cg` / `@cg off` | ✅ |
-| `@bgm` / `@bgm off` / `@se` / `@se off` | ✅ |
-| `@effect` / `@fade` / `@wait` | ✅ |
+| `@cg` / `@effect` / `@fade` / `@wait` | ✅ |
+| `@bgm` / `@se` | ✅ |
 | `@nvl` / `@overlay` | ✅ |
-| `@choice` + 选项 | ✅ |
+| `@choice` | ✅ |
 | `@set` (=, +=, -=) | ✅ |
-| `@if` / `@else` / `@end` | ✅ |
-| `@jump` | ✅ |
-| `@parallel` / `@end` | ✅ |
-| `@elif` | ❌ 未实现 |
-| `@call`（子场景调用+返回） | ❌ 未实现 |
+| `@if` / `@elif` / `@else` / `@end` | ✅ |
+| `@jump` / `@call` | ✅ |
+| `@parallel` | ✅ |
 
-### 其他
+### Demo
 
-| 项目 | 状态 |
-|------|------|
-| 插件化发布 | ✅ plugin.cfg + Autoload 自动注册 |
-| 资源路径可配置 | ✅ NatsumeRuntime.*_path |
-| 差分立绘 | ✅ config.json + body/face 分层 |
-| 使用文档 | ✅ docs/USAGE.md |
-| CI | ✅ GitHub Actions + GUT headless |
-| Godot 版本 | 4.6.1 |
-| GUT 版本 | 9.6.0 |
+- 2 个角色：sakura（7 表情）、senpai（4 表情），nano banana 生成
+- 4 张背景：校门、走廊、咖啡店、室外，nano banana 生成
+- 7 个场景的完整剧本（对话/选择/分支/NVL/overlay/动画/fade）
+
+### 规范化
+
+- 开发工作流（CLAUDE.md）：branch → TDD → test → PR → CR agent → merge
+- CR agent 独占合并权，主 agent 不得自行 merge
+- CR checklist：端到端验证、Godot API、信号桥接、状态管理
+- 禁止用延时修竞态，必须用状态机/信号守卫
+- 计划内/计划外 PR 合并策略区分
 
 ---
 
@@ -99,13 +108,11 @@
 
 | 项目 | 说明 | 优先级 |
 |------|------|--------|
-| `@elif` | 多分支条件 | 低 |
-| `@call` | 子场景调用 + 返回栈 | 低 |
-| 转场 Shader | dissolve/wipe/pixelate/blur（目前只有 fade） | 中 |
-| 存档/读档 UI | 界面 | 中 |
-| 设置 UI | 文字速度/音量控制界面 | 中 |
-| Backlog UI | 对话历史界面 | 中 |
-| 标题画面 | Title screen | 中 |
-| 编辑器插件 | GraphEdit 节点图剧情编辑器 | 大 |
-| 音频实际播放调试 | 需要真实音频素材测试 | 低 |
-| CR 反馈修复 | ScenarioContext.restore_snapshot 缺 is_finished、VariableStore 缺 .get() 防护 | 低 |
+| 立绘 zoom + offset 系统 | 替代固定 slot，逐句精确控制立绘缩放/偏移/位置 | 高 |
+| @show 扩展参数 | `x:0.3 y:0.5 zoom:1.5 oy:-100` 精确定位 | 高 |
+| @camera 指令 | 演出中动态调整角色视口（带过渡动画） | 高 |
+| 可视化编辑器 | 拖拽调整立绘位置/大小，预览 DSL，自动输出参数 | 中 |
+| 运行时调试面板 | F2 打开，拖拽调参，输出到控制台供编剧复制 | 中 |
+| 角色 config.json 默认 zoom/offset | 角色级别的默认显示参数，DSL 逐句可覆盖 | 中 |
+| 音频实际播放调试 | 需要真实音频素材测试 BGM/SE/Voice | 低 |
+| sprite sheet 支持 | 表情差分用一张合图 + 坐标裁切，减少文件数 | 低 |
