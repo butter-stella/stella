@@ -126,9 +126,9 @@ Main (Node2D)
 
 所有 UI 功能完成后，必须在 `examples/demo/` 中完整实装：
 
-- `poc_main.tscn` 场景树加入所有新 UI 节点（Toolbar、Backlog、存档/读档、设置、标题画面）
-- `poc_bootstrap.gd` 改为从标题画面启动，不再直接 start_scenario
-- `poc_demo.nat` 确保包含足够的对话量以测试 Backlog 和存档/读档
+- `game.tscn` + `title.tscn` 场景树包含所有 UI 节点（Toolbar、Backlog、存档/读档、设置、标题画面）
+- `bootstrap.gd` 从标题画面启动
+- `demo.nat` 确保包含足够的对话量以测试 Backlog 和存档/读档
 - F5 运行即可体验完整游戏循环
 
 ## 验证标准

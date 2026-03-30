@@ -1,7 +1,7 @@
 [gd_scene format=3 uid="uid://bhn7wjk2jr1lw"]
 
 [ext_resource type="Script" uid="uid://bhj5w3a6j1eg6" path="res://addons/natsume/presentation/ui/title_screen.gd" id="1"]
-[ext_resource type="Script" uid="uid://bc3xf6xspmbvp" path="res://examples/demo/scripts/poc_bootstrap.gd" id="2"]
+[ext_resource type="Script" uid="uid://bc3xf6xspmbvp" path="res://examples/demo/scripts/bootstrap.gd" id="2"]
 
 [node name="Title" type="Node" unique_id=1196576088]
 
