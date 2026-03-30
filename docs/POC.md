@@ -15,7 +15,7 @@
 ## POC 演示剧本
 
 ```ntm
-// poc_demo.nat
+// demo.nat
 
 @scene start "初次相遇"
 
@@ -362,7 +362,7 @@ game/
 │           ├── sad.png
 │           └── default.png
 └── scenarios/
-    └── poc_demo.nat              — POC 演示剧本
+    └── demo.nat              — POC 演示剧本
 ```
 
 可用纯色矩形 + 文字标注作为临时素材，先跑通流程。
@@ -410,7 +410,7 @@ Step 5-6 需要在 Godot 编辑器中搭建场景并运行。
 
 ## POC 完成标准
 
-- [ ] `poc_demo.nat` 可从头到尾完整运行
+- [ ] `demo.nat` 可从头到尾完整运行
 - [ ] 背景 fade 切换正确
 - [ ] 立绘显示/隐藏/表情切换正确
 - [ ] 对话打字机效果正常，点击推进

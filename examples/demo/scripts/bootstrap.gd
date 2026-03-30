@@ -16,5 +16,5 @@ func _ready():
 	var title_screen = get_parent().get_node_or_null("TitleScreen")
 	if title_screen:
 		title_screen.game_title = "Natsume Demo"
-		title_screen.scenario_path = "res://examples/demo/scenarios/poc_demo.nat"
+		title_screen.scenario_path = "res://examples/demo/scenarios/demo.nat"
 		title_screen.game_scene_path = "res://examples/demo/scenes/game.tscn"
