@@ -77,7 +77,7 @@ func _ready():
 
 ### Step 4 — 搭建场景
 
-创建一个场景，包含以下节点结构（可参考 `examples/demo/scenes/poc_main.tscn`）：
+创建一个场景，包含以下节点结构（可参考 `examples/demo/scenes/game.tscn`）：
 
 ```
 Main (Node2D)
