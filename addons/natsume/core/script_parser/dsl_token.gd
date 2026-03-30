@@ -1,4 +1,4 @@
-## Token produced by DslLexer from .ntm source text.
+## Token produced by DslLexer from .nat source text.
 class_name DslToken extends RefCounted
 
 enum Type {

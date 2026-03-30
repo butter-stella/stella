@@ -1,6 +1,6 @@
 # Natsume — POC 计划
 
-> 目标：用一段 DSL 剧本（`.ntm`）驱动一个可交互的视觉小说场景，验证从 Core 到 Presentation 的完整链路。
+> 目标：用一段 DSL 剧本（`.nat`）驱动一个可交互的视觉小说场景，验证从 Core 到 Presentation 的完整链路。
 
 ## POC 目标场景
 
@@ -15,7 +15,7 @@
 ## POC 演示剧本
 
 ```ntm
-// poc_demo.ntm
+// poc_demo.nat
 
 @scene start "初次相遇"
 
@@ -205,7 +205,7 @@ func complete() -> void:
 
 ### Step 4：DSL 解析器
 
-**目标**：将 `.ntm` 文本解析为 ScenarioData。
+**目标**：将 `.nat` 文本解析为 ScenarioData。
 
 **新建文件**：
 
@@ -362,7 +362,7 @@ game/
 │           ├── sad.png
 │           └── default.png
 └── scenarios/
-    └── poc_demo.ntm              — POC 演示剧本
+    └── poc_demo.nat              — POC 演示剧本
 ```
 
 可用纯色矩形 + 文字标注作为临时素材，先跑通流程。
@@ -372,7 +372,7 @@ game/
 ## 数据流总览
 
 ```
-.ntm 文件
+.nat 文件
   ↓ DslLexer.tokenize()
 Token[]
   ↓ DslParser.parse()
@@ -398,7 +398,7 @@ Step 0: 项目脚手架 + GUT            — 空项目可运行
 Step 1: 核心数据模型                 — 数据结构就绪
 Step 2: 命令系统 + 引擎              — 引擎可执行指令序列
 Step 3: 变量 + 基础命令处理器         — Core 层完整
-Step 4: DSL 解析器                   — .ntm 驱动引擎
+Step 4: DSL 解析器                   — .nat 驱动引擎
 Step 5: Presentation 层              — 可看到完整演出
 Step 6: 测试素材 + 组装运行           — POC 完成
 ```
@@ -410,7 +410,7 @@ Step 5-6 需要在 Godot 编辑器中搭建场景并运行。
 
 ## POC 完成标准
 
-- [ ] `poc_demo.ntm` 可从头到尾完整运行
+- [ ] `poc_demo.nat` 可从头到尾完整运行
 - [ ] 背景 fade 切换正确
 - [ ] 立绘显示/隐藏/表情切换正确
 - [ ] 对话打字机效果正常，点击推进
