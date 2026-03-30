@@ -4,7 +4,7 @@ Godot AVG / Galgame framework — the first open-source Godot framework with com
 
 ## Features
 
-- **Custom DSL** (`.ntm`) — writer-friendly scripting with smart defaults
+- **Custom DSL** (`.nat`) — writer-friendly scripting with smart defaults
 - **Scenario Engine** — command-pattern architecture, fully extensible
 - **Dialogue System** — typewriter effect, ADV/NVL/overlay modes, inline expression switching
 - **Character System** — show/hide/move/animate, expression switching, position presets
@@ -43,7 +43,7 @@ addons/natsume/                        ← 框架代码（一般不需要修改�
 │   └── natsume_runtime.gd             ← 框架入口（注册 handler、启动剧本）
 ├── core/                              ← 核心层（纯逻辑，不依赖 Godot 渲染）
 │   ├── data/                          ← 数据模型（CommandData, ScenarioData 等）
-│   ├── script_parser/                 ← DSL 解析器（.ntm → 内部数据结构）
+│   ├── script_parser/                 ← DSL 解析器（.nat → 内部数据结构）
 │   ├── scenario_engine/               ← 剧情引擎（主循环、上下文、等待控制）
 │   ├── commands/                      ← 18 个命令处理器（对话/背景/立绘/音频/特效...）
 │   ├── variable_system/               ← 变量系统 + 表达式求值
@@ -65,7 +65,7 @@ addons/natsume/                        ← 框架代码（一般不需要修改�
 └── plugin.cfg
 
 game/                                  ← 游戏内容（日常工作目录）
-├── scenarios/                         ← .ntm 剧本文件
+├── scenarios/                         ← .nat 剧本文件
 ├── art/
 │   ├── backgrounds/                   ← 背景图（@bg bg_name → bg_name.png）
 │   └── characters/{角色名}/            ← 立绘（@show sakura smile → sakura/smile.png）
@@ -81,7 +81,7 @@ tests/                                 ← GUT 测试（232+ 测试用例）
 └── integration/                       ← 端到端集成测试
 ```
 
-**日常工作流：** 写 `.ntm` 剧本 + 放素材到对应目录 → 配置路径 → F5 运行。
+**日常工作流：** 写 `.nat` 剧本 + 放素材到对应目录 → 配置路径 → F5 运行。
 
 ## Docs
 

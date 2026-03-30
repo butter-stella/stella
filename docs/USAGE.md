@@ -35,13 +35,13 @@ your_project/
 ├── audio/
 │   ├── bgm/               ← BGM (ogg/mp3)
 │   └── se/                ← 音效 (ogg/wav)
-├── scenarios/             ← .ntm 剧本
+├── scenarios/             ← .nat 剧本
 └── scenes/                ← Godot 场景
 ```
 
 ### Step 2 — 写一段剧本
 
-创建 `scenarios/demo.ntm`：
+创建 `scenarios/demo.nat`：
 
 ```
 @scene start "开始"
@@ -72,7 +72,7 @@ func _ready():
     NatsumeRuntime.se_path = "res://audio/se/"
 
     await get_tree().process_frame
-    NatsumeRuntime.start_scenario("res://scenarios/demo.ntm")
+    NatsumeRuntime.start_scenario("res://scenarios/demo.nat")
 ```
 
 ### Step 4 — 搭建场景
