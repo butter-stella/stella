@@ -1,4 +1,4 @@
-## Tokenizes .ntm source text into a list of DslTokens.
+## Tokenizes .nat source text into a list of DslTokens.
 class_name DslLexer extends RefCounted
 
 
