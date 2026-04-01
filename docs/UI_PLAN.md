@@ -126,8 +126,8 @@ Main (Node2D)
 
 所有 UI 功能完成后，必须在 `examples/demo/` 中完整实装：
 
-- `game.tscn` + `title.tscn` 场景树包含所有 UI 节点（Toolbar、Backlog、存档/读档、设置、标题画面）
-- `bootstrap.gd` 从标题画面启动
+- 内置 `game.tscn` + `title.tscn` 场景树包含所有 UI 节点（Toolbar、Backlog、存档/读档、设置、标题画面）
+- `natsume.cfg` 配置文件指定素材路径和功能开关
 - `demo.nat` 确保包含足够的对话量以测试 Backlog 和存档/读档
 - F5 运行即可体验完整游戏循环
 

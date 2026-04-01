@@ -2,8 +2,13 @@
 ## Registered as Autoload singleton — persists across scene changes.
 extends Node
 
+const CONFIG_PATH = "res://natsume.cfg"
+const DEFAULT_TITLE_SCENE = "res://addons/natsume/scenes/title.tscn"
+const DEFAULT_GAME_SCENE = "res://addons/natsume/scenes/game.tscn"
+
 var engine: ScenarioEngine
 var registry: CommandRegistry
+var config: NatsumeConfig
 
 ## Subsystem instances
 var save_manager: SaveManager
@@ -15,14 +20,14 @@ var read_flags: ReadFlagManager
 var game_state: GameStateMachine
 var unlock_manager: UnlockManager
 
-## Resource base paths — game project configures these.
+## Resource base paths — populated from config, can be overridden manually.
 var backgrounds_path: String = "res://art/backgrounds/"
 var characters_path: String = "res://art/characters/"
 var bgm_path: String = "res://audio/bgm/"
 var se_path: String = "res://audio/se/"
 var voice_path: String = "res://audio/voice/"
 
-## Scene paths — set by the game project's bootstrap.
+## Scene paths
 var title_scene_path: String = ""
 
 ## Internal state
@@ -30,6 +35,11 @@ var _last_scenario_path: String = ""
 
 
 func _ready():
+	# Load project config
+	config = NatsumeConfig.new()
+	config.load_from_path(CONFIG_PATH)
+	_apply_config()
+
 	save_manager = SaveManager.new()
 	settings_manager = SettingsManager.new()
 	settings_manager.load_settings()
@@ -57,6 +67,35 @@ func _ready():
 	SignalBus.show_dialogue.connect(_on_dialogue_for_backlog)
 
 
+## Apply config values to runtime paths.
+func _apply_config() -> void:
+	backgrounds_path = config.backgrounds_path
+	characters_path = config.characters_path
+	bgm_path = config.bgm_path
+	se_path = config.se_path
+	voice_path = config.voice_path
+
+	if config.title_scene != "":
+		title_scene_path = config.title_scene
+	else:
+		title_scene_path = DEFAULT_TITLE_SCENE
+
+	if not config.has_config_file:
+		# Check if paths were manually set (legacy bootstrap.gd pattern)
+		# If so, don't overwrite them — but warn about migration
+		if _paths_differ_from_defaults():
+			push_warning("NatsumeRuntime: No natsume.cfg found. Consider creating one for configuration.")
+
+
+func _paths_differ_from_defaults() -> bool:
+	var default_config = NatsumeConfig.new()
+	return (backgrounds_path != default_config.backgrounds_path
+		or characters_path != default_config.characters_path
+		or bgm_path != default_config.bgm_path
+		or se_path != default_config.se_path
+		or voice_path != default_config.voice_path)
+
+
 func _register_handlers():
 	registry.register(DialogueHandler.new())
 	registry.register(BgHandler.new())
@@ -81,8 +120,20 @@ func _register_handlers():
 	registry.register(parallel_handler)
 
 
+## Resolve the game scene path — config override or built-in default.
+func _get_game_scene_path() -> String:
+	if config.game_scene != "":
+		return config.game_scene
+	return DEFAULT_GAME_SCENE
+
+
 ## Start a new game — switch to game scene, then run scenario.
-func start_game(scenario_path: String, game_scene_path: String) -> void:
+func start_game(scenario_path: String = "", game_scene_path: String = "") -> void:
+	if scenario_path == "":
+		scenario_path = config.scenario_path
+	if game_scene_path == "":
+		game_scene_path = _get_game_scene_path()
+
 	_last_scenario_path = scenario_path
 	game_state.transition_to(GameStateMachine.State.PLAYING)
 	get_tree().change_scene_to_file(game_scene_path)
@@ -93,9 +144,14 @@ func start_game(scenario_path: String, game_scene_path: String) -> void:
 
 
 ## Load a saved game — switch to game scene, restore state, run.
-func load_game(slot_id: int, scenario_path: String, game_scene_path: String) -> bool:
+func load_game(slot_id: int, scenario_path: String = "", game_scene_path: String = "") -> bool:
 	if not save_manager.has_save(slot_id):
 		return false
+	if scenario_path == "":
+		scenario_path = config.scenario_path
+	if game_scene_path == "":
+		game_scene_path = _get_game_scene_path()
+
 	_last_scenario_path = scenario_path
 	game_state.transition_to(GameStateMachine.State.PLAYING)
 	get_tree().change_scene_to_file(game_scene_path)
