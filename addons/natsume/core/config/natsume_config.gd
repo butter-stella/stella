@@ -1,0 +1,57 @@
+## Loads and provides access to natsume.cfg project configuration.
+## All fields have sensible defaults — a missing config file is valid.
+class_name NatsumeConfig
+extends RefCounted
+
+## Whether a config file was actually found and loaded.
+var has_config_file: bool = false
+
+# [game]
+var game_title: String = "Natsume"
+var scenario_path: String = "res://scenarios/main.nat"
+
+# [paths]
+var backgrounds_path: String = "res://art/backgrounds/"
+var characters_path: String = "res://art/characters/"
+var bgm_path: String = "res://audio/bgm/"
+var se_path: String = "res://audio/se/"
+var voice_path: String = "res://audio/voice/"
+
+# [features]
+var cg_gallery: bool = false
+var backlog: bool = true
+var save_slots: int = 8
+
+# [overrides]
+var title_scene: String = ""
+var game_scene: String = ""
+
+
+func load_from_path(path: String) -> void:
+	var cf = ConfigFile.new()
+	var err = cf.load(path)
+	if err != OK:
+		has_config_file = false
+		return
+
+	has_config_file = true
+
+	# [game]
+	game_title = cf.get_value("game", "title", game_title)
+	scenario_path = cf.get_value("game", "scenario", scenario_path)
+
+	# [paths]
+	backgrounds_path = cf.get_value("paths", "backgrounds", backgrounds_path)
+	characters_path = cf.get_value("paths", "characters", characters_path)
+	bgm_path = cf.get_value("paths", "bgm", bgm_path)
+	se_path = cf.get_value("paths", "se", se_path)
+	voice_path = cf.get_value("paths", "voice", voice_path)
+
+	# [features]
+	cg_gallery = cf.get_value("features", "cg_gallery", cg_gallery)
+	backlog = cf.get_value("features", "backlog", backlog)
+	save_slots = cf.get_value("features", "save_slots", save_slots)
+
+	# [overrides]
+	title_scene = cf.get_value("overrides", "title_scene", title_scene)
+	game_scene = cf.get_value("overrides", "game_scene", game_scene)

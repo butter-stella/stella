@@ -6,22 +6,14 @@ extends CanvasLayer
 @onready var title_label: Label = %TitleLabel
 @onready var buttons_container: VBoxContainer = %TitleButtons
 
-## The scenario path to load when "Start" is pressed.
-var scenario_path: String = ""
-
-## The game scene path to switch to.
-var game_scene_path: String = ""
-
-## Custom title text.
-var game_title: String = "Natsume"
-
 
 func _ready():
 	_build_ui()
 
 
 func _build_ui():
-	title_label.text = game_title
+	var cfg = NatsumeRuntime.config
+	title_label.text = cfg.game_title
 
 	for child in buttons_container.get_children():
 		child.queue_free()
@@ -45,16 +37,11 @@ func _build_ui():
 
 
 func _on_start():
-	if scenario_path == "" or game_scene_path == "":
-		push_error("TitleScreen: scenario_path or game_scene_path not configured")
-		return
-	NatsumeRuntime.start_game(scenario_path, game_scene_path)
+	NatsumeRuntime.start_game()
 
 
 func _on_continue():
-	if game_scene_path == "":
-		return
-	NatsumeRuntime.load_game(0, scenario_path, game_scene_path)
+	NatsumeRuntime.load_game(0)
 
 
 func _on_quit():

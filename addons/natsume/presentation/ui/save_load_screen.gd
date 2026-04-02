@@ -11,6 +11,7 @@ var _slot_count: int = 8
 
 
 func _ready():
+	_slot_count = NatsumeRuntime.config.save_slots
 	NatsumeRuntime.game_state.state_changed.connect(_on_state_changed)
 	visible = false
 

@@ -13,7 +13,7 @@
 1. 将 `addons/natsume/` 目录复制到你的项目的 `addons/` 下
 2. 启用插件（同上）
 
-插件激活后会自动注册 `SignalBus` 和 `NatsumeRuntime` 两个 Autoload。
+插件激活后会自动注册 `SignalBus` 和 `NatsumeRuntime` 两个 Autoload，并设置主场景为内置标题画面。
 
 ---
 
@@ -36,7 +36,7 @@ your_project/
 │   ├── bgm/               ← BGM (ogg/mp3)
 │   └── se/                ← 音效 (ogg/wav)
 ├── scenarios/             ← .nat 剧本
-└── scenes/                ← Godot 场景
+└── natsume.cfg            ← 配置文件
 ```
 
 ### Step 2 — 写一段剧本
@@ -57,60 +57,68 @@ sakura「这是一个最小的示例。」
 @end
 ```
 
-### Step 3 — 创建启动脚本
+### Step 3 — 创建配置文件
 
-创建 `scripts/bootstrap.gd`：
+创建 `natsume.cfg`：
 
-```gdscript
-extends Node
-
-func _ready():
-    # 配置资源路径（指向你的目录）
-    NatsumeRuntime.backgrounds_path = "res://art/backgrounds/"
-    NatsumeRuntime.characters_path = "res://art/characters/"
-    NatsumeRuntime.bgm_path = "res://audio/bgm/"
-    NatsumeRuntime.se_path = "res://audio/se/"
-
-    await get_tree().process_frame
-    NatsumeRuntime.start_scenario("res://scenarios/demo.nat")
+```ini
+[game]
+title = "我的视觉小说"
+scenario = "res://scenarios/demo.nat"
 ```
 
-### Step 4 — 搭建场景
+如果你的目录结构遵循默认约定（`art/backgrounds/`、`art/characters/` 等），只需要这两行配置。
 
-创建一个场景，包含以下节点结构（可参考 `examples/demo/scenes/game.tscn`）：
+完整配置示例：
 
-```
-Main (Node2D)
-├── BackgroundLayer (CanvasLayer, layer=0)
-│   │  script: addons/natsume/presentation/background/background_presenter.gd
-│   ├── BgFront (TextureRect, 全屏)
-│   └── BgBack (TextureRect, 全屏)
-├── CharacterLayer (CanvasLayer, layer=1)
-│   │  script: addons/natsume/presentation/character/character_presenter.gd
-│   ├── SlotLeft (TextureRect)
-│   ├── SlotCenter (TextureRect)
-│   └── SlotRight (TextureRect)
-├── UILayer (CanvasLayer, layer=2)
-│   ├── DialoguePanel (PanelContainer, 底部)
-│   │  │  script: addons/natsume/presentation/dialogue/dialogue_presenter.gd
-│   │  └── ... (NameLabel + TextLabel)
-│   ├── ChoicePanel (PanelContainer, 居中)
-│   │     script: addons/natsume/presentation/choice/text_choice_presenter.gd
-│   └── FadeOverlay (ColorRect, 全屏)
-│         script: addons/natsume/presentation/effects/fade_presenter.gd
-├── InputHandler (Node)
-│     script: addons/natsume/presentation/input/input_handler.gd
-├── ScreenEffects (Node)
-│     script: addons/natsume/presentation/effects/screen_effects.gd
-├── AudioPresenter (Node)
-│     script: addons/natsume/presentation/audio/audio_presenter.gd
-└── Bootstrap (Node)
-      script: scripts/bootstrap.gd
+```ini
+[game]
+title = "我的视觉小说"
+scenario = "res://scenarios/main.nat"
+
+[paths]
+backgrounds = "res://art/backgrounds/"
+characters = "res://art/characters/"
+bgm = "res://audio/bgm/"
+se = "res://audio/se/"
+voice = "res://audio/voice/"
+
+[features]
+cg_gallery = false
+backlog = true
+save_slots = 8
+
+[overrides]
+title_scene = ""
+game_scene = ""
 ```
 
-### Step 5 — 运行
+### Step 4 — 运行
 
-在 **Project Settings → Application → Run** 中设置主场景，按 F5 运行。
+按 F5 运行。引擎会自动加载内置标题画面和游戏场景，无需手动搭建场景树。
+
+---
+
+## 三层定制体系
+
+### Level 1：配置定制（natsume.cfg）
+
+适合大部分用户。通过配置文件控制游戏标题、素材路径、功能开关、存档槽位数等。
+
+### Level 2：继承场景
+
+需要调整 UI 布局时，在编辑器中右键内置场景 → 新建继承场景 → 在 `natsume.cfg` 中指定覆盖：
+
+```ini
+[overrides]
+game_scene = "res://scenes/my_game.tscn"
+```
+
+### Level 3：完全自建
+
+有 Godot 经验的开发者可以从零搭建场景、覆写引擎脚本、注册自定义命令。
+
+详见 [ENGINE_DESIGN.md](ENGINE_DESIGN.md)。
 
 ---
 
@@ -124,14 +132,7 @@ Main (Node2D)
 | `@bgm bgm_spring` | `{bgm_path}/bgm_spring.ogg` (或 .mp3) |
 | `@se se_click` | `{se_path}/se_click.ogg` (或 .wav) |
 
-路径前缀通过 `NatsumeRuntime` 配置：
-
-```gdscript
-NatsumeRuntime.backgrounds_path = "res://art/backgrounds/"
-NatsumeRuntime.characters_path = "res://art/characters/"
-NatsumeRuntime.bgm_path = "res://audio/bgm/"
-NatsumeRuntime.se_path = "res://audio/se/"
-```
+路径前缀通过 `natsume.cfg` 的 `[paths]` 段配置，也可在代码中直接设置 `NatsumeRuntime` 的属性。
 
 ---
 
@@ -207,7 +208,7 @@ func execute(data: CommandData, _context: ScenarioContext) -> void:
     SignalBus.effect_requested.emit("shake", {"intensity": intensity})
 ```
 
-在 bootstrap 中注册：
+在启动时注册：
 ```gdscript
 NatsumeRuntime.registry.register(MyShakeHandler.new())
 ```
