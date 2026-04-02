@@ -80,50 +80,6 @@ tests/                                 ← GUT 测试（267+ 测试用例）
 
 **日常工作流：** 写 `.nat` 剧本 + 放素材 + 编辑 `natsume.cfg` → F5 运行。
 
-## Architecture
-
-```mermaid
-graph TD
-    CFG["natsume.cfg<br/><small>title · paths · features · overrides</small>"]
-    NAT[".nat 剧本文件"]
-
-    subgraph Runtime["NatsumeRuntime (Autoload)"]
-        Config[NatsumeConfig]
-        SM[SaveManager]
-        SET[SettingsManager]
-        GSM[GameStateMachine]
-    end
-
-    subgraph Core["Core Layer"]
-        Lexer[DslLexer] --> Parser[DslParser]
-        Parser --> Data[ScenarioData]
-        Data --> Engine[ScenarioEngine]
-        Engine --> Handlers["CommandHandlers ×21<br/><small>dialogue · bg · char · audio<br/>choice · jump · fade · effect ...</small>"]
-    end
-
-    subgraph Bus["SignalBus (Autoload)"]
-        Signals["show_dialogue · bg_changed<br/>char_show · bgm_play<br/>choice_show · fade_requested ..."]
-    end
-
-    subgraph Presentation["Presentation Layer"]
-        DP[DialoguePresenter]
-        BP[BackgroundPresenter]
-        CP[CharacterPresenter]
-        AP[AudioPresenter]
-        ChP[ChoicePresenter]
-        FP["FadePresenter<br/>ScreenEffects"]
-        IH[InputHandler]
-        UI["UI Screens<br/><small>Title · SaveLoad<br/>Settings · Backlog</small>"]
-    end
-
-    CFG -->|load| Config
-    NAT -->|read| Lexer
-    Handlers -->|emit| Signals
-    Signals -->|connect| DP & BP & CP & AP & ChP & FP
-    IH -->|user input| Signals
-    UI -->|state change| GSM
-```
-
 ## Docs
 
 - [Usage Guide](docs/USAGE.md) — 安装、快速上手、配置文件、自定义扩展
