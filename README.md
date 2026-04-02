@@ -82,51 +82,46 @@ tests/                                 ← GUT 测试（267+ 测试用例）
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        natsume.cfg                                  │
-│              (title, paths, features, overrides)                     │
-└──────────────────────────┬──────────────────────────────────────────┘
-                           │ load
-┌──────────────────────────▼──────────────────────────────────────────┐
-│                     NatsumeRuntime (Autoload)                        │
-│  ┌─────────────┐  ┌──────────┐  ┌────────────┐  ┌───────────────┐  │
-│  │NatsumeConfig│  │  Engine  │  │SaveManager │  │SettingsManager│  │
-│  └─────────────┘  │          │  └────────────┘  └───────────────┘  │
-│                   │ ScenarioEngine              ┌───────────────┐  │
-│                   │ CommandRegistry ─┐          │GameStateMachine│  │
-│                   └──────────┘      │          └───────────────┘  │
-│                                     │                              │
-│  ┌──────────────────────────────────▼────────────────────────────┐  │
-│  │                    Core Layer                                  │  │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────────────┐   │  │
-│  │  │DslLexer  │→│DslParser │→│Scenario  │→│ CommandHandlers │   │  │
-│  │  │          │ │          │ │  Data    │ │ ×21 (dialogue,  │   │  │
-│  │  │.nat file │ │Token流   │ │          │ │  bg, char, ...) │   │  │
-│  │  └──────────┘ └──────────┘ └──────────┘ └───────┬────────┘   │  │
-│  │                                                  │ emit       │  │
-│  └──────────────────────────────────────────────────┼────────────┘  │
-│                                                     │               │
-│  ┌──────────────────────────────────────────────────▼────────────┐  │
-│  │                    SignalBus (Autoload)                        │  │
-│  │  show_dialogue · bg_changed · char_show · bgm_play · ...     │  │
-│  └──────────────────────────────────────────────────┬────────────┘  │
-│                                                     │ connect       │
-│  ┌──────────────────────────────────────────────────▼────────────┐  │
-│  │                 Presentation Layer                              │  │
-│  │  ┌────────────┐ ┌──────────┐ ┌─────────┐ ┌──────────────┐    │  │
-│  │  │ Dialogue   │ │Background│ │Character│ │    Audio     │    │  │
-│  │  │ Presenter  │ │Presenter │ │Presenter│ │  Presenter   │    │  │
-│  │  └────────────┘ └──────────┘ └─────────┘ └──────────────┘    │  │
-│  │  ┌────────────┐ ┌──────────┐ ┌─────────┐ ┌──────────────┐    │  │
-│  │  │   Choice   │ │  Fade /  │ │  Input  │ │  UI Screens  │    │  │
-│  │  │ Presenter  │ │ Effects  │ │ Handler │ │(Title/Save/..)│    │  │
-│  │  └────────────┘ └──────────┘ └─────────┘ └──────────────┘    │  │
-│  └───────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    CFG["natsume.cfg<br/><small>title · paths · features · overrides</small>"]
+    NAT[".nat 剧本文件"]
 
-Data flow:
-  .nat file → Lexer → Parser → ScenarioData → Engine → Handler → SignalBus → Presenter → Screen
+    subgraph Runtime["NatsumeRuntime (Autoload)"]
+        Config[NatsumeConfig]
+        SM[SaveManager]
+        SET[SettingsManager]
+        GSM[GameStateMachine]
+    end
+
+    subgraph Core["Core Layer"]
+        Lexer[DslLexer] --> Parser[DslParser]
+        Parser --> Data[ScenarioData]
+        Data --> Engine[ScenarioEngine]
+        Engine --> Handlers["CommandHandlers ×21<br/><small>dialogue · bg · char · audio<br/>choice · jump · fade · effect ...</small>"]
+    end
+
+    subgraph Bus["SignalBus (Autoload)"]
+        Signals["show_dialogue · bg_changed<br/>char_show · bgm_play<br/>choice_show · fade_requested ..."]
+    end
+
+    subgraph Presentation["Presentation Layer"]
+        DP[DialoguePresenter]
+        BP[BackgroundPresenter]
+        CP[CharacterPresenter]
+        AP[AudioPresenter]
+        ChP[ChoicePresenter]
+        FP["FadePresenter<br/>ScreenEffects"]
+        IH[InputHandler]
+        UI["UI Screens<br/><small>Title · SaveLoad<br/>Settings · Backlog</small>"]
+    end
+
+    CFG -->|load| Config
+    NAT -->|read| Lexer
+    Handlers -->|emit| Signals
+    Signals -->|connect| DP & BP & CP & AP & ChP & FP
+    IH -->|user input| Signals
+    UI -->|state change| GSM
 ```
 
 ## Docs
