@@ -88,3 +88,92 @@ func test_has_config_file():
 	assert_true(config.has_config_file)
 
 	DirAccess.remove_absolute(path)
+
+
+## Integration: NatsumeRuntime._apply_config populates paths from config
+
+func test_runtime_applies_config_paths():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+
+	# Write a config with custom paths
+	var path = "user://test_apply_config.cfg"
+	var cf = ConfigFile.new()
+	cf.set_value("paths", "backgrounds", "res://custom/bg/")
+	cf.set_value("paths", "characters", "res://custom/chars/")
+	cf.set_value("paths", "bgm", "res://custom/bgm/")
+	cf.set_value("paths", "se", "res://custom/se/")
+	cf.set_value("paths", "voice", "res://custom/voice/")
+	cf.save(path)
+
+	# Save originals to restore later
+	var orig_bg = runtime.backgrounds_path
+	var orig_chars = runtime.characters_path
+	var orig_bgm = runtime.bgm_path
+	var orig_se = runtime.se_path
+	var orig_voice = runtime.voice_path
+
+	runtime.config.load_from_path(path)
+	runtime._apply_config()
+
+	assert_eq(runtime.backgrounds_path, "res://custom/bg/")
+	assert_eq(runtime.characters_path, "res://custom/chars/")
+	assert_eq(runtime.bgm_path, "res://custom/bgm/")
+	assert_eq(runtime.se_path, "res://custom/se/")
+	assert_eq(runtime.voice_path, "res://custom/voice/")
+
+	# Restore
+	runtime.backgrounds_path = orig_bg
+	runtime.characters_path = orig_chars
+	runtime.bgm_path = orig_bgm
+	runtime.se_path = orig_se
+	runtime.voice_path = orig_voice
+	DirAccess.remove_absolute(path)
+
+
+func test_runtime_preserves_paths_without_config():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+
+	# Manually set a custom path (legacy bootstrap pattern)
+	var orig_bg = runtime.backgrounds_path
+	runtime.backgrounds_path = "res://legacy/bg/"
+
+	# Load a non-existent config — should NOT overwrite manual paths
+	runtime.config.load_from_path("res://nonexistent.cfg")
+	runtime._apply_config()
+
+	assert_eq(runtime.backgrounds_path, "res://legacy/bg/",
+		"Without config file, manually set paths should be preserved")
+
+	# Restore
+	runtime.backgrounds_path = orig_bg
+
+
+func test_runtime_title_scene_defaults_to_builtin():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var orig_title = runtime.title_scene_path
+
+	# No config file — title_scene should default to built-in
+	runtime.config.load_from_path("res://nonexistent.cfg")
+	runtime._apply_config()
+
+	assert_eq(runtime.title_scene_path, "res://addons/natsume/scenes/title.tscn")
+
+	runtime.title_scene_path = orig_title
+
+
+func test_runtime_title_scene_from_config_override():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var orig_title = runtime.title_scene_path
+
+	var path = "user://test_title_override.cfg"
+	var cf = ConfigFile.new()
+	cf.set_value("overrides", "title_scene", "res://my/title.tscn")
+	cf.save(path)
+
+	runtime.config.load_from_path(path)
+	runtime._apply_config()
+
+	assert_eq(runtime.title_scene_path, "res://my/title.tscn")
+
+	runtime.title_scene_path = orig_title
+	DirAccess.remove_absolute(path)

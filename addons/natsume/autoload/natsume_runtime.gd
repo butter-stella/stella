@@ -69,31 +69,17 @@ func _ready():
 
 ## Apply config values to runtime paths.
 func _apply_config() -> void:
-	backgrounds_path = config.backgrounds_path
-	characters_path = config.characters_path
-	bgm_path = config.bgm_path
-	se_path = config.se_path
-	voice_path = config.voice_path
+	if config.has_config_file:
+		backgrounds_path = config.backgrounds_path
+		characters_path = config.characters_path
+		bgm_path = config.bgm_path
+		se_path = config.se_path
+		voice_path = config.voice_path
 
 	if config.title_scene != "":
 		title_scene_path = config.title_scene
 	else:
 		title_scene_path = DEFAULT_TITLE_SCENE
-
-	if not config.has_config_file:
-		# Check if paths were manually set (legacy bootstrap.gd pattern)
-		# If so, don't overwrite them — but warn about migration
-		if _paths_differ_from_defaults():
-			push_warning("NatsumeRuntime: No natsume.cfg found. Consider creating one for configuration.")
-
-
-func _paths_differ_from_defaults() -> bool:
-	var default_config = NatsumeConfig.new()
-	return (backgrounds_path != default_config.backgrounds_path
-		or characters_path != default_config.characters_path
-		or bgm_path != default_config.bgm_path
-		or se_path != default_config.se_path
-		or voice_path != default_config.voice_path)
 
 
 func _register_handlers():
