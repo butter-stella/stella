@@ -52,8 +52,10 @@ NatsumeRuntime.load(slot_id: int) -> bool
 NatsumeRuntime.has_save(slot_id: int) -> bool
 NatsumeRuntime.delete_save(slot_id: int) -> void
 NatsumeRuntime.get_save_list() -> Array
-NatsumeRuntime.quick_save() -> void           # save(0)
-NatsumeRuntime.quick_load() -> bool           # continue_from_save(0)
+NatsumeRuntime.quick_save() -> void           # 独立存档（quicksave.json）
+NatsumeRuntime.quick_load() -> bool           # 读取快存
+NatsumeRuntime.has_quick_save() -> bool       # 是否有快存
+NatsumeRuntime.delete_quick_save() -> void    # 删除快存
 ```
 
 ### 播放控制
