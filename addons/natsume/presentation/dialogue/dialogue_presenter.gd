@@ -252,11 +252,13 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 
 
 func _input(event: InputEvent) -> void:
-	# Ctrl key: skip while held
+	# Ctrl key: always track regardless of overlay state
 	if event is InputEventKey:
 		if event.keycode == KEY_CTRL:
 			_ctrl_held = event.pressed
 
+
+func _unhandled_input(event: InputEvent) -> void:
 	# Right-click: toggle UI visibility
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
 		if _ui_hidden:
