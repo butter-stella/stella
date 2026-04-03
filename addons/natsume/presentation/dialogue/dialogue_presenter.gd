@@ -60,11 +60,7 @@ func _setup_toolbar():
 		btn.flat = true
 		btn.custom_minimum_size = Vector2(60, 30)
 		btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-		var callback = btn_info["callback"]
-		btn.pressed.connect(func():
-			SignalBus.toolbar_button_pressed.emit()
-			callback.call()
-		)
+		btn.pressed.connect(btn_info["callback"])
 		btn.mouse_entered.connect(func(): btn.modulate = Color(1.2, 1.2, 1.2) if not _is_toggle_active(btn_info["id"]) else btn.modulate)
 		btn.mouse_exited.connect(func(): _update_button_modulate(btn, btn_info["id"]))
 

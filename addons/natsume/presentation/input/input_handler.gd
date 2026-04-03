@@ -1,23 +1,9 @@
 ## Handles dialogue advance, typing completion, and UI toggle.
 ##
-## Mouse via _input (GUI mouse_filter blocks _unhandled_input for mouse).
+## Mouse via _input — checks gui_get_hovered_control() to skip when
+## clicking on interactive Controls (buttons, sliders, etc.).
 ## Keyboard via _unhandled_input (not affected by mouse_filter).
-##
-## Mouse advance uses _process to defer until after GUI:
-##   _input sets _advance_pending → GUI processes buttons →
-##   button emits toolbar_button_pressed → _process checks flags.
 extends Node
-
-var _advance_pending := false
-var _button_pressed := false
-
-
-func _ready():
-	SignalBus.toolbar_button_pressed.connect(_on_toolbar_button)
-
-
-func _on_toolbar_button():
-	_button_pressed = true
 
 
 func _input(event: InputEvent) -> void:
@@ -27,17 +13,25 @@ func _input(event: InputEvent) -> void:
 	var dialogue = _get_dialogue()
 
 	if event.button_index == MOUSE_BUTTON_LEFT:
+		# Typing: complete text immediately, consume event (block buttons too)
 		if dialogue and dialogue._is_typing:
 			dialogue._is_typing = false
 			dialogue.text_label.visible_characters = -1
 			get_viewport().set_input_as_handled()
-		elif dialogue and dialogue._ui_hidden:
+			return
+		# UI hidden: restore
+		if dialogue and dialogue._ui_hidden:
 			dialogue._ui_hidden = false
 			dialogue.visible = true
 			get_viewport().set_input_as_handled()
-		elif NatsumeRuntime.game_state.is_playing():
-			_advance_pending = true
-			_button_pressed = false
+			return
+		# Skip if clicking on an interactive Control (button, slider, etc.)
+		var hovered = get_viewport().gui_get_hovered_control()
+		if hovered is Button or hovered is Slider:
+			return
+		# Advance dialogue
+		if NatsumeRuntime.game_state.is_playing():
+			SignalBus.advance_requested.emit()
 
 	elif event.button_index == MOUSE_BUTTON_RIGHT:
 		if not NatsumeRuntime.game_state.is_playing():
@@ -49,17 +43,6 @@ func _input(event: InputEvent) -> void:
 			elif dialogue.visible and not dialogue._is_typing:
 				dialogue._ui_hidden = true
 				dialogue.visible = false
-
-
-func _process(_delta: float) -> void:
-	if not _advance_pending:
-		return
-	_advance_pending = false
-	if _button_pressed:
-		_button_pressed = false
-		return
-	if NatsumeRuntime.game_state.is_playing():
-		SignalBus.advance_requested.emit()
 
 
 func _unhandled_input(event: InputEvent) -> void:
