@@ -11,7 +11,13 @@ var context: ScenarioContext
 var registry: CommandRegistry
 
 
+func stop() -> void:
+	if context != null:
+		context.is_finished = true
+
+
 func load_scenario(data: ScenarioData) -> void:
+	stop()
 	context = ScenarioContext.new(data)
 	if context.variable_store == null:
 		context.variable_store = VariableStore.new()
