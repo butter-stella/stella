@@ -26,8 +26,8 @@ func test_reset_settings_restores_defaults():
 	var orig = runtime.get_setting("bgm_volume")
 	runtime.set_setting("bgm_volume", 0.12)
 	runtime.reset_settings()
-	# After reset, should be back to default (1.0)
-	assert_almost_eq(runtime.get_setting("bgm_volume"), 1.0, 0.001)
+	# After reset, should be back to default (0.8)
+	assert_almost_eq(runtime.get_setting("bgm_volume"), 0.8, 0.001)
 	# Restore to original
 	runtime.set_setting("bgm_volume", orig)
 
