@@ -7,6 +7,11 @@ var _providers: Array = []
 
 
 func register_provider(provider) -> void:
+	var id = provider.get_provider_id()
+	for i in range(_providers.size()):
+		if _providers[i].get_provider_id() == id:
+			_providers[i] = provider
+			return
 	_providers.append(provider)
 
 

@@ -25,10 +25,9 @@ func test_start_scenario_resets_presentation_signals():
 
 
 func test_save_manager_duplicate_providers_handled():
-	# Calling start_scenario twice should not cause errors from duplicate providers
+	# Calling register_provider twice with same ID replaces, not accumulates
 	var sm = SaveManager.new()
 	var store1 = VariableStore.new()
 	sm.register_provider(store1)
-	sm.register_provider(store1)  # duplicate
-	# Should still work
-	assert_eq(sm.get_provider_count(), 2)  # Currently allows duplicates
+	sm.register_provider(store1)  # duplicate — should replace
+	assert_eq(sm.get_provider_count(), 1)

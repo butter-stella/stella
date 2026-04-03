@@ -22,6 +22,7 @@ var skip_controller: SkipController
 var read_flags: ReadFlagManager
 var game_state: GameStateMachine
 var unlock_manager: UnlockManager
+var presentation_state: PresentationState
 
 ## Resource base paths — populated from config, can be overridden manually.
 var backgrounds_path: String = "res://art/backgrounds/"
@@ -53,9 +54,12 @@ func _ready():
 	read_flags = ReadFlagManager.new()
 	game_state = GameStateMachine.new()
 	unlock_manager = UnlockManager.new()
+	presentation_state = PresentationState.new()
+	presentation_state.connect_signals()
 
 	save_manager.register_provider(read_flags)
 	save_manager.register_provider(unlock_manager)
+	save_manager.register_provider(presentation_state)
 
 	registry = CommandRegistry.new()
 	engine = ScenarioEngine.new()
@@ -149,8 +153,7 @@ func load_game(slot_id: int, scenario_path: String = "", game_scene_path: String
 	get_tree().change_scene_to_file(game_scene_path)
 	await get_tree().tree_changed
 	await get_tree().process_frame
-	_start_scenario_internal(scenario_path)
-	save_manager.load_save(slot_id)
+	_load_scenario_and_restore(scenario_path, slot_id)
 	return true
 
 
@@ -158,8 +161,12 @@ func load_game(slot_id: int, scenario_path: String = "", game_scene_path: String
 func continue_from_save(slot_id: int) -> bool:
 	if _last_scenario_path == "" or not save_manager.has_save(slot_id):
 		return false
-	_start_scenario_internal(_last_scenario_path)
-	save_manager.load_save(slot_id)
+	if game_state.current_state == GameStateMachine.State.TITLE:
+		return false
+	_close_current_overlay()
+	_reset_presentation()
+	game_state.transition_to(GameStateMachine.State.PLAYING)
+	_load_scenario_and_restore(_last_scenario_path, slot_id)
 	return true
 
 
@@ -182,6 +189,13 @@ func start_scenario(scenario_path: String) -> void:
 
 
 func _start_scenario_internal(scenario_path: String) -> void:
+	_prepare_scenario(scenario_path)
+	presentation_state.clear()
+	engine.run()
+
+
+## Load scenario data and register providers, but do NOT run the engine.
+func _prepare_scenario(scenario_path: String) -> void:
 	var file = FileAccess.open(scenario_path, FileAccess.READ)
 	if file == null:
 		push_error("NatsumeRuntime: cannot open %s" % scenario_path)
@@ -196,7 +210,22 @@ func _start_scenario_internal(scenario_path: String) -> void:
 	engine.load_scenario(data)
 	save_manager.register_provider(engine.context)
 	save_manager.register_provider(engine.context.variable_store)
+
+
+## Load scenario, restore snapshot, restore presentation, then run.
+func _load_scenario_and_restore(scenario_path: String, slot_id: int) -> void:
+	_prepare_scenario(scenario_path)
+	save_manager.load_save(slot_id)
+	presentation_state.emit_restore_signals()
 	engine.run()
+
+
+## Reset current presentation state (for in-scene reload).
+func _reset_presentation() -> void:
+	SignalBus.char_hide.emit("all")
+	SignalBus.bgm_stop.emit(0.0)
+	SignalBus.hide_dialogue.emit()
+	presentation_state.clear()
 
 
 func _on_scenario_ended(id: String) -> void:
@@ -218,9 +247,15 @@ func quick_save() -> void:
 
 ## Quick load (separate from manual save slots).
 func quick_load() -> bool:
-	if not save_manager.has_quick_save():
+	if not save_manager.has_quick_save() or _last_scenario_path == "":
 		return false
-	return save_manager.quick_load()
+	_reset_presentation()
+	_prepare_scenario(_last_scenario_path)
+	var ok = save_manager.quick_load()
+	if ok:
+		presentation_state.emit_restore_signals()
+		engine.run()
+	return ok
 
 
 ## Whether a quick save exists.
