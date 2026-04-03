@@ -250,11 +250,7 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 			SignalBus.advance_requested.emit()
 
 
-func _unhandled_input(event: InputEvent) -> void:
-	# Ctrl key: skip while held
-	if event is InputEventKey and event.keycode == KEY_CTRL:
-		_ctrl_held = event.pressed
-
+func _gui_input(event: InputEvent) -> void:
 	# Right-click: toggle UI visibility
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
 		if _ui_hidden:
@@ -263,20 +259,27 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif visible and not _is_typing:
 			_ui_hidden = true
 			visible = false
+		accept_event()
 		return
 
-	# Left-click during hidden: restore UI
-	if _ui_hidden and event is InputEventMouseButton:
-		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+	# Left-click
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+		if _ui_hidden:
 			_ui_hidden = false
 			visible = true
+			accept_event()
 			return
-
-	# Left-click during typing: complete text
-	if _is_typing and event is InputEventMouseButton:
-		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+		if _is_typing:
 			_is_typing = false
 			text_label.visible_characters = -1
+			accept_event()
+			return
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	# Ctrl key: skip while held (keyboard not affected by mouse_filter)
+	if event is InputEventKey and event.keycode == KEY_CTRL:
+		_ctrl_held = event.pressed
 
 
 func _apply_nvl_layout():
