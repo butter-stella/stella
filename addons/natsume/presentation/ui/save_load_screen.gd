@@ -1,4 +1,5 @@
 ## Save/Load screen — grid of save slots with save/load modes.
+## Loaded as overlay by NatsumeRuntime, closed with ESC or right-click.
 extends PanelContainer
 
 @onready var title_label: Label = %SaveLoadTitle
@@ -12,29 +13,14 @@ var _slot_count: int = 8
 
 func _ready():
 	_slot_count = NatsumeRuntime.config.save_slots
-	NatsumeRuntime.game_state.state_changed.connect(_on_state_changed)
-	visible = false
-
 	save_tab.pressed.connect(func(): _set_mode("save"))
 	load_tab.pressed.connect(func(): _set_mode("load"))
-
-
-func _on_state_changed(_from: int, to: int):
-	if to == GameStateMachine.State.SAVE_LOAD:
-		_show()
-	elif visible:
-		_hide_screen()
-
-
-func _show():
-	visible = true
-	_refresh_slots()
 	_update_tabs()
+	_refresh_slots()
 
 
-func _hide_screen():
-	visible = false
-	NatsumeRuntime.game_state.return_to_previous()
+func _close():
+	NatsumeRuntime.close_overlay()
 
 
 func set_mode(mode: String):
@@ -57,7 +43,7 @@ func _refresh_slots():
 	for child in slots_container.get_children():
 		child.queue_free()
 
-	var save_list = NatsumeRuntime.save_manager.get_save_list()
+	var save_list = NatsumeRuntime.get_save_list()
 
 	for i in range(1, _slot_count + 1):
 		var slot_btn = Button.new()
@@ -81,15 +67,13 @@ func _refresh_slots():
 
 func _on_slot_pressed(slot_id: int):
 	if _mode == "save":
-		NatsumeRuntime.save_manager.save(slot_id)
+		NatsumeRuntime.save(slot_id)
 		_refresh_slots()
 	else:  # load
-		visible = false
 		if NatsumeRuntime.continue_from_save(slot_id):
-			pass  # continue_from_save handles state transition
+			NatsumeRuntime.close_overlay()
 		else:
 			push_warning("SaveLoadScreen: failed to load slot %d" % slot_id)
-			visible = true
 
 
 func _get_save_timestamp(path: String) -> String:
@@ -109,15 +93,12 @@ func _get_save_timestamp(path: String) -> String:
 
 
 func _input(event: InputEvent) -> void:
-	if not visible:
-		return
-
 	if event is InputEventKey and event.pressed:
 		if event.keycode == KEY_ESCAPE:
-			_hide_screen()
+			_close()
 			get_viewport().set_input_as_handled()
 
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_RIGHT:
-			_hide_screen()
+			_close()
 			get_viewport().set_input_as_handled()

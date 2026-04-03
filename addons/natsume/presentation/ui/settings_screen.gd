@@ -1,30 +1,17 @@
 ## Settings screen — sliders and toggles for game configuration.
+## Loaded as overlay by NatsumeRuntime, closed with ESC or right-click.
 extends PanelContainer
 
 @onready var settings_container: VBoxContainer = %SettingsContainer
 
 
 func _ready():
-	NatsumeRuntime.game_state.state_changed.connect(_on_state_changed)
-	visible = false
-
-
-func _on_state_changed(_from: int, to: int):
-	if to == GameStateMachine.State.SETTINGS:
-		_show()
-	elif visible:
-		_hide_screen()
-
-
-func _show():
-	visible = true
 	_build_ui()
 
 
-func _hide_screen():
-	visible = false
-	NatsumeRuntime.settings_manager.save()
-	NatsumeRuntime.game_state.return_to_previous()
+func _close():
+	NatsumeRuntime.save_settings()
+	NatsumeRuntime.close_overlay()
 
 
 func _build_ui():
@@ -42,36 +29,36 @@ func _build_ui():
 
 	# Text speed
 	_add_slider("文字速度", s.character_interval, 0, 100, func(val):
-		NatsumeRuntime.settings_manager.set_value("character_interval", int(val))
+		NatsumeRuntime.set_setting("character_interval", int(val))
 	)
 
 	# Auto play delay
 	_add_slider("自动播放延迟（秒）", s.auto_play_delay * 10, 5, 50, func(val):
-		NatsumeRuntime.settings_manager.set_value("auto_play_delay", val / 10.0)
+		NatsumeRuntime.set_setting("auto_play_delay", val / 10.0)
 	)
 
 	settings_container.add_child(HSeparator.new())
 
 	# BGM volume
 	_add_slider("BGM 音量", s.bgm_volume * 100, 0, 100, func(val):
-		NatsumeRuntime.settings_manager.set_value("bgm_volume", val / 100.0)
+		NatsumeRuntime.set_setting("bgm_volume", val / 100.0)
 	)
 
 	# SE volume
 	_add_slider("SE 音量", s.se_volume * 100, 0, 100, func(val):
-		NatsumeRuntime.settings_manager.set_value("se_volume", val / 100.0)
+		NatsumeRuntime.set_setting("se_volume", val / 100.0)
 	)
 
 	# Voice volume
 	_add_slider("语音音量", s.voice_volume * 100, 0, 100, func(val):
-		NatsumeRuntime.settings_manager.set_value("voice_volume", val / 100.0)
+		NatsumeRuntime.set_setting("voice_volume", val / 100.0)
 	)
 
 	settings_container.add_child(HSeparator.new())
 
 	# Fullscreen toggle
 	_add_toggle("全屏", s.fullscreen, func(toggled):
-		NatsumeRuntime.settings_manager.set_value("fullscreen", toggled)
+		NatsumeRuntime.set_setting("fullscreen", toggled)
 		if toggled:
 			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
 		else:
@@ -136,15 +123,12 @@ func _add_toggle(label_text: String, current_value: bool, on_change: Callable):
 
 
 func _input(event: InputEvent) -> void:
-	if not visible:
-		return
-
 	if event is InputEventKey and event.pressed:
 		if event.keycode == KEY_ESCAPE:
-			_hide_screen()
+			_close()
 			get_viewport().set_input_as_handled()
 
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_RIGHT:
-			_hide_screen()
+			_close()
 			get_viewport().set_input_as_handled()

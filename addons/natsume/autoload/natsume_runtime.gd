@@ -268,22 +268,52 @@ func is_skipping() -> bool:
 
 ## Show the backlog overlay.
 func show_backlog() -> void:
+	var scene_path = config.backlog_scene if config.backlog_scene != "" else DEFAULT_BACKLOG_SCENE
+	_open_overlay(scene_path)
 	game_state.transition_to(GameStateMachine.State.BACKLOG)
 
 
 ## Show the save/load overlay.
 func show_save_load(mode: String = "save") -> void:
+	var scene_path = config.save_load_scene if config.save_load_scene != "" else DEFAULT_SAVE_LOAD_SCENE
+	_open_overlay(scene_path)
 	game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
 
 
 ## Show the settings overlay.
 func show_settings() -> void:
+	var scene_path = config.settings_scene if config.settings_scene != "" else DEFAULT_SETTINGS_SCENE
+	_open_overlay(scene_path)
 	game_state.transition_to(GameStateMachine.State.SETTINGS)
 
 
 ## Close the current overlay and return to previous state.
 func close_overlay() -> void:
+	_close_current_overlay()
 	game_state.return_to_previous()
+
+
+func _open_overlay(scene_path: String) -> void:
+	_close_current_overlay()
+	var scene = load(scene_path) as PackedScene
+	if scene == null:
+		push_error("NatsumeRuntime: cannot load overlay scene %s" % scene_path)
+		return
+	_current_overlay = scene.instantiate()
+	# Add as CanvasLayer child so it renders above game content
+	var overlay_layer = CanvasLayer.new()
+	overlay_layer.layer = 10
+	overlay_layer.name = "OverlayLayer"
+	overlay_layer.add_child(_current_overlay)
+	add_child(overlay_layer)
+
+
+func _close_current_overlay() -> void:
+	if _current_overlay != null:
+		var layer = _current_overlay.get_parent()
+		_current_overlay = null
+		if layer != null:
+			layer.queue_free()
 
 
 # ─── Facade API: Backlog ───
