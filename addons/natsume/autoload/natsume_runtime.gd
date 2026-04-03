@@ -345,3 +345,28 @@ func set_setting(key: String, value: Variant) -> void:
 ## Persist settings to disk.
 func save_settings() -> void:
 	settings_manager.save()
+
+
+## Reset all settings to defaults.
+func reset_settings() -> void:
+	settings_manager.reset_to_default()
+
+
+## Get save metadata for a slot (timestamp, etc). Returns empty dict if no save.
+func get_save_metadata(slot_id: int) -> Dictionary:
+	var path = save_manager.save_dir + "save_%d.json" % slot_id
+	if not FileAccess.file_exists(path):
+		return {}
+	var file = FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return {}
+	var data = JSON.parse_string(file.get_as_text())
+	if data == null or not data is Dictionary:
+		return {}
+	var result := {}
+	var ts = data.get("timestamp", 0)
+	if ts != 0:
+		var dt = Time.get_datetime_dict_from_unix_time(int(ts))
+		result["timestamp"] = ts
+		result["timestamp_str"] = "%04d/%02d/%02d %02d:%02d" % [dt["year"], dt["month"], dt["day"], dt["hour"], dt["minute"]]
+	return result

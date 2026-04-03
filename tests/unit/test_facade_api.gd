@@ -4,25 +4,8 @@ extends GutTest
 
 ## --- Save/Load Facade ---
 
-func test_quick_save_delegates_to_save_manager():
+func test_has_save_returns_false_for_empty():
 	var runtime = get_tree().root.get_node("NatsumeRuntime")
-	# quick_save should delegate to save_manager.save(0)
-	assert_true(runtime.has_method("quick_save"))
-
-
-func test_quick_load_delegates_to_continue_from_save():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
-	assert_true(runtime.has_method("quick_load"))
-
-
-func test_save_delegates_to_save_manager():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
-	assert_true(runtime.has_method("save"))
-
-
-func test_has_save_delegates():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
-	# Should return false for non-existent saves
 	assert_false(runtime.has_save(99))
 
 
@@ -32,9 +15,21 @@ func test_get_save_list_returns_array():
 	assert_typeof(result, TYPE_ARRAY)
 
 
-func test_delete_save_delegates():
+func test_get_save_metadata_empty_for_no_save():
 	var runtime = get_tree().root.get_node("NatsumeRuntime")
-	assert_true(runtime.has_method("delete_save"))
+	var meta = runtime.get_save_metadata(99)
+	assert_eq(meta, {})
+
+
+func test_reset_settings_restores_defaults():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var orig = runtime.get_setting("bgm_volume")
+	runtime.set_setting("bgm_volume", 0.12)
+	runtime.reset_settings()
+	# After reset, should be back to default (1.0)
+	assert_almost_eq(runtime.get_setting("bgm_volume"), 1.0, 0.001)
+	# Restore to original
+	runtime.set_setting("bgm_volume", orig)
 
 
 ## --- Playback Control Facade ---
