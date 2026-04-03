@@ -1,9 +1,11 @@
 ## Handles dialogue advance, typing completion, and UI toggle.
 ##
-## All mouse input via _input (GUI mouse_filter blocks _unhandled_input).
-## Advance is deferred to end of frame — if a toolbar button was pressed
-## during GUI processing, the advance is cancelled.
+## Mouse via _input (GUI mouse_filter blocks _unhandled_input for mouse).
 ## Keyboard via _unhandled_input (not affected by mouse_filter).
+##
+## Mouse advance uses _process to defer until after GUI:
+##   _input sets _advance_pending → GUI processes buttons →
+##   button emits toolbar_button_pressed → _process checks flags.
 extends Node
 
 var _advance_pending := false
@@ -11,7 +13,11 @@ var _button_pressed := false
 
 
 func _ready():
-	SignalBus.toolbar_button_pressed.connect(func(): _button_pressed = true)
+	SignalBus.toolbar_button_pressed.connect(_on_toolbar_button)
+
+
+func _on_toolbar_button():
+	_button_pressed = true
 
 
 func _input(event: InputEvent) -> void:
@@ -32,7 +38,6 @@ func _input(event: InputEvent) -> void:
 		elif NatsumeRuntime.game_state.is_playing():
 			_advance_pending = true
 			_button_pressed = false
-			call_deferred("_deferred_advance")
 
 	elif event.button_index == MOUSE_BUTTON_RIGHT:
 		if not NatsumeRuntime.game_state.is_playing():
@@ -46,7 +51,7 @@ func _input(event: InputEvent) -> void:
 				dialogue.visible = false
 
 
-func _deferred_advance() -> void:
+func _process(_delta: float) -> void:
 	if not _advance_pending:
 		return
 	_advance_pending = false

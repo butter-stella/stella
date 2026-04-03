@@ -1,103 +1,114 @@
 extends GutTest
-## Tests for InputHandler — deferred advance + button cancellation.
+## Tests for InputHandler — _process advance + button cancellation.
 
 
-# ─── Deferred advance ───
+# ─── _process advance ───
 
-func test_deferred_advance_emits_when_playing():
+func test_process_advances_when_playing():
 	var handler = _make_handler()
 	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
-
 	var received := []
 	var cb = func(): received.append(true)
 	SignalBus.advance_requested.connect(cb)
 
 	handler._advance_pending = true
 	handler._button_pressed = false
-	handler._deferred_advance()
+	handler._process(0.0)
 
 	assert_eq(received.size(), 1, "should advance when PLAYING and no button pressed")
+	assert_false(handler._advance_pending, "pending should be cleared")
 	SignalBus.advance_requested.disconnect(cb)
 	handler.queue_free()
 
 
-func test_deferred_advance_blocked_when_not_playing():
+func test_process_blocked_when_not_playing():
 	var handler = _make_handler()
 	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
-
 	var received := []
 	var cb = func(): received.append(true)
 	SignalBus.advance_requested.connect(cb)
 
 	handler._advance_pending = true
 	handler._button_pressed = false
-	handler._deferred_advance()
+	handler._process(0.0)
 
 	assert_eq(received.size(), 0, "should NOT advance when not PLAYING")
 	SignalBus.advance_requested.disconnect(cb)
 	handler.queue_free()
 
 
-func test_deferred_advance_cancelled_by_button():
+func test_process_cancelled_by_button():
 	var handler = _make_handler()
 	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
-
 	var received := []
 	var cb = func(): received.append(true)
 	SignalBus.advance_requested.connect(cb)
 
 	handler._advance_pending = true
-	handler._button_pressed = true  # Toolbar button was pressed
-	handler._deferred_advance()
+	handler._button_pressed = true
+	handler._process(0.0)
 
-	assert_eq(received.size(), 0, "should NOT advance when toolbar button was pressed")
+	assert_eq(received.size(), 0, "should NOT advance when button was pressed")
+	assert_false(handler._button_pressed, "button flag should be cleared")
 	SignalBus.advance_requested.disconnect(cb)
 	handler.queue_free()
 
 
-func test_deferred_advance_skips_when_not_pending():
+func test_process_noop_when_not_pending():
 	var handler = _make_handler()
 	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
-
 	var received := []
 	var cb = func(): received.append(true)
 	SignalBus.advance_requested.connect(cb)
 
 	handler._advance_pending = false
-	handler._deferred_advance()
+	handler._process(0.0)
 
 	assert_eq(received.size(), 0, "should NOT advance when not pending")
 	SignalBus.advance_requested.disconnect(cb)
 	handler.queue_free()
 
 
-# ─── Button signal integration ───
+# ─── Full flow simulation ───
 
-func test_toolbar_signal_sets_button_flag():
-	var handler = _make_handler()
-	handler._button_pressed = false
-
-	SignalBus.toolbar_button_pressed.emit()
-
-	assert_true(handler._button_pressed, "toolbar signal should set flag")
-	handler.queue_free()
-
-
-func test_toolbar_signal_cancels_pending_advance():
+func test_click_then_button_signal_cancels_advance():
 	var handler = _make_handler()
 	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
-
 	var received := []
 	var cb = func(): received.append(true)
 	SignalBus.advance_requested.connect(cb)
 
-	# Simulate: _input sets pending, then button fires, then deferred runs
+	# Step 1: _input sets pending (simulating left click on button area)
 	handler._advance_pending = true
 	handler._button_pressed = false
-	SignalBus.toolbar_button_pressed.emit()  # Button callback fires
-	handler._deferred_advance()  # Deferred runs
 
-	assert_eq(received.size(), 0, "toolbar signal should cancel advance")
+	# Step 2: GUI processes button → signal fires
+	SignalBus.toolbar_button_pressed.emit()
+
+	# Step 3: _process runs after input
+	handler._process(0.0)
+
+	assert_eq(received.size(), 0, "button signal should cancel advance")
+	SignalBus.advance_requested.disconnect(cb)
+	handler.queue_free()
+
+
+func test_click_without_button_advances():
+	var handler = _make_handler()
+	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	var received := []
+	var cb = func(): received.append(true)
+	SignalBus.advance_requested.connect(cb)
+
+	# Step 1: _input sets pending (click on empty area)
+	handler._advance_pending = true
+	handler._button_pressed = false
+
+	# Step 2: No button pressed (GUI finds no button at click position)
+	# Step 3: _process runs
+	handler._process(0.0)
+
+	assert_eq(received.size(), 1, "should advance when no button interfered")
 	SignalBus.advance_requested.disconnect(cb)
 	handler.queue_free()
 
@@ -107,7 +118,6 @@ func test_toolbar_signal_cancels_pending_advance():
 func test_keyboard_advance_when_playing():
 	var handler = _make_handler()
 	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
-
 	var received := []
 	var cb = func(): received.append(true)
 	SignalBus.advance_requested.connect(cb)
@@ -125,7 +135,6 @@ func test_keyboard_advance_when_playing():
 func test_keyboard_blocked_when_not_playing():
 	var handler = _make_handler()
 	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
-
 	var received := []
 	var cb = func(): received.append(true)
 	SignalBus.advance_requested.connect(cb)
