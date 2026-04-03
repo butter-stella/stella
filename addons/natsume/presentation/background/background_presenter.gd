@@ -11,9 +11,6 @@ var _wipe_shader: Shader
 
 
 func _ready():
-	# Decorative nodes must not consume mouse events
-	bg_front.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	bg_back.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	SignalBus.bg_changed.connect(_on_bg_changed)
 	_dissolve_shader = load("res://addons/natsume/presentation/background/shaders/dissolve.gdshader")
 	_wipe_shader = load("res://addons/natsume/presentation/background/shaders/wipe.gdshader")

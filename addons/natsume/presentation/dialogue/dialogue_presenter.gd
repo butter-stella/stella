@@ -32,6 +32,7 @@ func _ready():
 	SignalBus.hide_dialogue.connect(func(): visible = false; _nvl_text = "")
 	SignalBus.scenario_ended_event.connect(func(_id): visible = false)
 	visible = false
+	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
 	_setup_toolbar()
@@ -248,33 +249,6 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 		# Only advance if auto-play is still active (user might have toggled off)
 		if NatsumeRuntime.is_auto_playing():
 			SignalBus.advance_requested.emit()
-
-
-func _input(event: InputEvent) -> void:
-	if not event is InputEventMouseButton or not event.pressed:
-		return
-	# Right-click: toggle UI visibility (global — works anywhere on screen)
-	if event.button_index == MOUSE_BUTTON_RIGHT:
-		if _ui_hidden:
-			_ui_hidden = false
-			visible = true
-		elif visible and not _is_typing:
-			_ui_hidden = true
-			visible = false
-		get_viewport().set_input_as_handled()
-		return
-	# Left-click during typing or hidden: complete/restore, consume event
-	if event.button_index == MOUSE_BUTTON_LEFT:
-		if _ui_hidden:
-			_ui_hidden = false
-			visible = true
-			get_viewport().set_input_as_handled()
-			return
-		if _is_typing:
-			_is_typing = false
-			text_label.visible_characters = -1
-			get_viewport().set_input_as_handled()
-			return
 
 
 func _unhandled_input(event: InputEvent) -> void:
