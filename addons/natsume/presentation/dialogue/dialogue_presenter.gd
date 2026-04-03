@@ -250,34 +250,35 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 			SignalBus.advance_requested.emit()
 
 
-func _gui_input(event: InputEvent) -> void:
-	# Right-click: toggle UI visibility
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+func _input(event: InputEvent) -> void:
+	if not event is InputEventMouseButton or not event.pressed:
+		return
+	# Right-click: toggle UI visibility (global — works anywhere on screen)
+	if event.button_index == MOUSE_BUTTON_RIGHT:
 		if _ui_hidden:
 			_ui_hidden = false
 			visible = true
 		elif visible and not _is_typing:
 			_ui_hidden = true
 			visible = false
-		accept_event()
+		get_viewport().set_input_as_handled()
 		return
-
-	# Left-click
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+	# Left-click during typing or hidden: complete/restore, consume event
+	if event.button_index == MOUSE_BUTTON_LEFT:
 		if _ui_hidden:
 			_ui_hidden = false
 			visible = true
-			accept_event()
+			get_viewport().set_input_as_handled()
 			return
 		if _is_typing:
 			_is_typing = false
 			text_label.visible_characters = -1
-			accept_event()
+			get_viewport().set_input_as_handled()
 			return
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	# Ctrl key: skip while held (keyboard not affected by mouse_filter)
+	# Ctrl key: skip while held
 	if event is InputEventKey and event.keycode == KEY_CTRL:
 		_ctrl_held = event.pressed
 
