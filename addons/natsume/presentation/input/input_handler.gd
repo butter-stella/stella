@@ -46,7 +46,15 @@ func _input(event: InputEvent) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if not event is InputEventKey or not event.pressed or event.echo:
+	if not event is InputEventKey:
+		return
+	# Ctrl tracks press AND release — must not be blocked by pressed/echo guard
+	if event.keycode == KEY_CTRL:
+		var dialogue = _get_dialogue()
+		if dialogue:
+			dialogue._ctrl_held = event.pressed
+		return
+	if not event.pressed or event.echo:
 		return
 	if not NatsumeRuntime.game_state.is_playing():
 		return
@@ -57,10 +65,6 @@ func _unhandled_input(event: InputEvent) -> void:
 			dialogue.text_label.visible_characters = -1
 		else:
 			SignalBus.advance_requested.emit()
-	elif event.keycode == KEY_CTRL:
-		var dialogue = _get_dialogue()
-		if dialogue:
-			dialogue._ctrl_held = event.pressed
 
 
 func _get_dialogue():

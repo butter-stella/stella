@@ -110,9 +110,49 @@ func test_key_echo_ignored():
 	handler.queue_free()
 
 
+# ─── Ctrl held / release ───
+
+func test_ctrl_press_sets_held():
+	var scene = _make_scene_with_dialogue()
+	var handler = scene.get_node("InputHandler")
+	var dialogue = scene.get_node("%DialoguePanel")
+	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+
+	var press = InputEventKey.new()
+	press.keycode = KEY_CTRL
+	press.pressed = true
+	handler._unhandled_input(press)
+	assert_true(dialogue._ctrl_held, "Ctrl press should set _ctrl_held true")
+
+	scene.queue_free()
+
+
+func test_ctrl_release_clears_held():
+	var scene = _make_scene_with_dialogue()
+	var handler = scene.get_node("InputHandler")
+	var dialogue = scene.get_node("%DialoguePanel")
+	dialogue._ctrl_held = true
+	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+
+	var release = InputEventKey.new()
+	release.keycode = KEY_CTRL
+	release.pressed = false
+	handler._unhandled_input(release)
+	assert_false(dialogue._ctrl_held, "Ctrl release should clear _ctrl_held")
+
+	scene.queue_free()
+
+
 # ─── Helpers ───
+
 
 func _make_handler() -> Node:
 	var handler = preload("res://addons/natsume/presentation/input/input_handler.gd").new()
 	add_child(handler)
 	return handler
+
+
+func _make_scene_with_dialogue() -> Node:
+	var scene = preload("res://addons/natsume/scenes/game.tscn").instantiate()
+	add_child(scene)
+	return scene
