@@ -32,6 +32,7 @@ func _ready():
 	SignalBus.hide_dialogue.connect(func(): visible = false; _nvl_text = "")
 	SignalBus.scenario_ended_event.connect(func(_id): visible = false)
 	visible = false
+	_make_passthrough()
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
 	_setup_toolbar()
@@ -250,6 +251,23 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 			SignalBus.advance_requested.emit()
 
 
+
+
+## Set IGNORE on self and the container chain up to toolbar/labels.
+## Only touches framework-owned layout nodes. Buttons keep STOP (default).
+## User-added Controls outside this chain are not affected.
+func _make_passthrough() -> void:
+	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	text_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if toolbar:
+		toolbar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Walk the container chain from name_label up to self
+	var node = name_label.get_parent()
+	while node != null and node != self:
+		if node is Control:
+			node.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		node = node.get_parent()
 
 
 func _apply_nvl_layout():
