@@ -211,14 +211,26 @@ func _on_dialogue_for_backlog(character: String, text: String, voice: String, _m
 
 # ─── Facade API: Save/Load ───
 
-## Quick save to slot 0.
+## Quick save (separate from manual save slots).
 func quick_save() -> void:
-	save_manager.save(0)
+	save_manager.quick_save()
 
 
-## Quick load from slot 0.
+## Quick load (separate from manual save slots).
 func quick_load() -> bool:
-	return continue_from_save(0)
+	if not save_manager.has_quick_save():
+		return false
+	return save_manager.quick_load()
+
+
+## Whether a quick save exists.
+func has_quick_save() -> bool:
+	return save_manager.has_quick_save()
+
+
+## Delete the quick save.
+func delete_quick_save() -> void:
+	save_manager.delete_quick_save()
 
 
 ## Save to a specific slot.

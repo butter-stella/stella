@@ -134,10 +134,10 @@ func test_quick_save_creates_save():
 	_action.action = NatsumeAction.Action.QUICK_SAVE
 
 	_btn.pressed.emit()
-	assert_true(runtime.has_save(0))
+	assert_true(runtime.has_quick_save())
 
 	# Clean up
-	runtime.delete_save(0)
+	runtime.delete_quick_save()
 
 
 func test_none_action_does_nothing():
