@@ -51,9 +51,8 @@ func _refresh_slots():
 		slot_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 
 		if save_list.has(i):
-			# Load save file to get timestamp
-			var path = NatsumeRuntime.save_manager.save_dir + "save_%d.json" % i
-			var timestamp_str = _get_save_timestamp(path)
+			var meta = NatsumeRuntime.get_save_metadata(i)
+			var timestamp_str = meta.get("timestamp_str", "")
 			slot_btn.text = "Slot %d\n%s" % [i, timestamp_str]
 		else:
 			slot_btn.text = "Slot %d\n— 空 —" % i
@@ -74,22 +73,6 @@ func _on_slot_pressed(slot_id: int):
 			NatsumeRuntime.close_overlay()
 		else:
 			push_warning("SaveLoadScreen: failed to load slot %d" % slot_id)
-
-
-func _get_save_timestamp(path: String) -> String:
-	if not FileAccess.file_exists(path):
-		return ""
-	var file = FileAccess.open(path, FileAccess.READ)
-	if file == null:
-		return ""
-	var data = JSON.parse_string(file.get_as_text())
-	if data == null or not data is Dictionary:
-		return ""
-	var ts = data.get("timestamp", 0)
-	if ts == 0:
-		return ""
-	var dt = Time.get_datetime_dict_from_unix_time(int(ts))
-	return "%04d/%02d/%02d %02d:%02d" % [dt["year"], dt["month"], dt["day"], dt["hour"], dt["minute"]]
 
 
 func _input(event: InputEvent) -> void:

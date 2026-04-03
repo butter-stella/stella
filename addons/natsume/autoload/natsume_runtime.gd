@@ -334,7 +334,10 @@ func get_backlog() -> Array:
 
 ## Get a setting value by key.
 func get_setting(key: String) -> Variant:
-	return settings_manager.settings.get(key)
+	var val = settings_manager.settings.get(key)
+	if val == null and not key in settings_manager.settings.to_dict():
+		push_warning("NatsumeRuntime.get_setting: unknown key '%s'" % key)
+	return val
 
 
 ## Set a setting value by key.
@@ -345,3 +348,13 @@ func set_setting(key: String, value: Variant) -> void:
 ## Persist settings to disk.
 func save_settings() -> void:
 	settings_manager.save()
+
+
+## Reset all settings to defaults.
+func reset_settings() -> void:
+	settings_manager.reset_to_default()
+
+
+## Get save metadata for a slot (timestamp, etc). Returns empty dict if no save.
+func get_save_metadata(slot_id: int) -> Dictionary:
+	return save_manager.get_save_metadata(slot_id)

@@ -18,8 +18,6 @@ func _build_ui():
 	for child in settings_container.get_children():
 		child.queue_free()
 
-	var s = NatsumeRuntime.settings_manager.settings
-
 	# Title
 	var title = Label.new()
 	title.text = "设置"
@@ -28,36 +26,36 @@ func _build_ui():
 	settings_container.add_child(HSeparator.new())
 
 	# Text speed
-	_add_slider("文字速度", s.character_interval, 0, 100, func(val):
+	_add_slider("文字速度", NatsumeRuntime.get_setting("character_interval"), 0, 100, func(val):
 		NatsumeRuntime.set_setting("character_interval", int(val))
 	)
 
 	# Auto play delay
-	_add_slider("自动播放延迟（秒）", s.auto_play_delay * 10, 5, 50, func(val):
+	_add_slider("自动播放延迟（秒）", NatsumeRuntime.get_setting("auto_play_delay") * 10, 5, 50, func(val):
 		NatsumeRuntime.set_setting("auto_play_delay", val / 10.0)
 	)
 
 	settings_container.add_child(HSeparator.new())
 
 	# BGM volume
-	_add_slider("BGM 音量", s.bgm_volume * 100, 0, 100, func(val):
+	_add_slider("BGM 音量", NatsumeRuntime.get_setting("bgm_volume") * 100, 0, 100, func(val):
 		NatsumeRuntime.set_setting("bgm_volume", val / 100.0)
 	)
 
 	# SE volume
-	_add_slider("SE 音量", s.se_volume * 100, 0, 100, func(val):
+	_add_slider("SE 音量", NatsumeRuntime.get_setting("se_volume") * 100, 0, 100, func(val):
 		NatsumeRuntime.set_setting("se_volume", val / 100.0)
 	)
 
 	# Voice volume
-	_add_slider("语音音量", s.voice_volume * 100, 0, 100, func(val):
+	_add_slider("语音音量", NatsumeRuntime.get_setting("voice_volume") * 100, 0, 100, func(val):
 		NatsumeRuntime.set_setting("voice_volume", val / 100.0)
 	)
 
 	settings_container.add_child(HSeparator.new())
 
 	# Fullscreen toggle
-	_add_toggle("全屏", s.fullscreen, func(toggled):
+	_add_toggle("全屏", NatsumeRuntime.get_setting("fullscreen"), func(toggled):
 		NatsumeRuntime.set_setting("fullscreen", toggled)
 		if toggled:
 			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
@@ -72,7 +70,7 @@ func _build_ui():
 	reset_btn.text = "恢复默认"
 	reset_btn.custom_minimum_size = Vector2(150, 40)
 	reset_btn.pressed.connect(func():
-		NatsumeRuntime.settings_manager.reset_to_default()
+		NatsumeRuntime.reset_settings()
 		_build_ui()
 	)
 	settings_container.add_child(reset_btn)

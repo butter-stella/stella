@@ -204,7 +204,7 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 	if _is_skipping():
 		text_label.visible_characters = -1
 		_is_typing = false
-		await get_tree().create_timer(NatsumeRuntime.settings_manager.settings.skip_interval / 1000.0).timeout
+		await get_tree().create_timer(NatsumeRuntime.get_setting("skip_interval") / 1000.0).timeout
 		SignalBus.advance_requested.emit()
 		return
 
@@ -218,7 +218,7 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 		if _is_skipping():
 			text_label.visible_characters = -1
 			_is_typing = false
-			await get_tree().create_timer(NatsumeRuntime.settings_manager.settings.skip_interval / 1000.0).timeout
+			await get_tree().create_timer(NatsumeRuntime.get_setting("skip_interval") / 1000.0).timeout
 			SignalBus.advance_requested.emit()
 			return
 
@@ -243,7 +243,7 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 
 	# Auto-play: wait delay then advance
 	if NatsumeRuntime.is_auto_playing():
-		var delay = NatsumeRuntime.settings_manager.settings.auto_play_delay
+		var delay = NatsumeRuntime.get_setting("auto_play_delay")
 		await get_tree().create_timer(delay).timeout
 		# Only advance if auto-play is still active (user might have toggled off)
 		if NatsumeRuntime.is_auto_playing():
