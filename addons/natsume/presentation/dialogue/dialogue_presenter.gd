@@ -32,7 +32,7 @@ func _ready():
 	SignalBus.hide_dialogue.connect(func(): visible = false; _nvl_text = "")
 	SignalBus.scenario_ended_event.connect(func(_id): visible = false)
 	visible = false
-	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_set_ignore_recursive(self)
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
 	_setup_toolbar()
@@ -255,6 +255,16 @@ func _unhandled_input(event: InputEvent) -> void:
 	# Ctrl key: skip while held
 	if event is InputEventKey and event.keycode == KEY_CTRL:
 		_ctrl_held = event.pressed
+
+
+## Set IGNORE on all non-Button children so clicks pass through to InputHandler.
+func _set_ignore_recursive(node: Control) -> void:
+	if node is Button:
+		return
+	node.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	for child in node.get_children():
+		if child is Control:
+			_set_ignore_recursive(child)
 
 
 func _apply_nvl_layout():
