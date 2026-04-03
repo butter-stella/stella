@@ -5,8 +5,9 @@ class_name NatsumeAction
 extends Node
 
 enum Action {
+	NONE,
 	START_GAME,
-	LOAD_GAME,
+	CONTINUE_GAME,
 	RETURN_TO_TITLE,
 	QUICK_SAVE,
 	QUICK_LOAD,
@@ -19,10 +20,10 @@ enum Action {
 	QUIT,
 }
 
-@export var action: Action = Action.START_GAME
+@export var action: Action = Action.NONE
 
 
-func _ready():
+func _ready() -> void:
 	var parent = get_parent()
 	if parent is BaseButton:
 		parent.pressed.connect(_on_pressed)
@@ -30,11 +31,13 @@ func _ready():
 		push_warning("NatsumeAction: parent is not a BaseButton — action won't trigger")
 
 
-func _on_pressed():
+func _on_pressed() -> void:
 	match action:
+		Action.NONE:
+			push_warning("NatsumeAction: no action selected")
 		Action.START_GAME:
 			NatsumeRuntime.start_game()
-		Action.LOAD_GAME:
+		Action.CONTINUE_GAME:
 			NatsumeRuntime.load_game(0)
 		Action.RETURN_TO_TITLE:
 			NatsumeRuntime.return_to_title()

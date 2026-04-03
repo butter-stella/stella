@@ -1,127 +1,147 @@
 extends GutTest
 ## Tests for NatsumeAction — zero-code button binding component.
 
+var _btn: Button
+var _action: NatsumeAction
+
+
+func before_each():
+	_btn = Button.new()
+	_action = NatsumeAction.new()
+	_btn.add_child(_action)
+	add_child(_btn)
+
+
+func after_each():
+	_btn.queue_free()
+
+
+## --- Connection ---
 
 func test_auto_connects_to_parent_button():
-	var btn = Button.new()
-	var action = NatsumeAction.new()
-	action.action = NatsumeAction.Action.TOGGLE_AUTO_PLAY
-	btn.add_child(action)
-	add_child(btn)
-
-	assert_true(btn.pressed.get_connections().size() > 0,
-		"NatsumeAction should connect to parent button's pressed signal")
-
-	btn.queue_free()
+	_action.action = NatsumeAction.Action.TOGGLE_AUTO_PLAY
+	var connections = _btn.pressed.get_connections()
+	var found = false
+	for conn in connections:
+		if conn["callable"].get_object() == _action:
+			found = true
+			break
+	assert_true(found, "NatsumeAction should connect to parent button's pressed signal")
 
 
 func test_does_not_crash_on_non_button_parent():
+	_btn.queue_free()
 	var node = Node.new()
 	var action = NatsumeAction.new()
 	action.action = NatsumeAction.Action.QUICK_SAVE
 	node.add_child(action)
 	add_child(node)
-
 	# Should not crash, just warn
-	assert_true(true, "NatsumeAction on non-button parent should not crash")
-
+	assert_true(true)
 	node.queue_free()
+	# Re-create for after_each
+	_btn = Button.new()
+	_action = NatsumeAction.new()
+	_btn.add_child(_action)
+	add_child(_btn)
 
 
-func test_toggle_auto_play_action():
+func test_default_action_is_none():
+	assert_eq(_action.action, NatsumeAction.Action.NONE)
+
+
+## --- Playback Control ---
+
+func test_toggle_auto_play():
 	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	_action.action = NatsumeAction.Action.TOGGLE_AUTO_PLAY
 	var was_active = runtime.is_auto_playing()
 
-	var btn = Button.new()
-	var action = NatsumeAction.new()
-	action.action = NatsumeAction.Action.TOGGLE_AUTO_PLAY
-	btn.add_child(action)
-	add_child(btn)
-
-	btn.pressed.emit()
+	_btn.pressed.emit()
 	assert_ne(runtime.is_auto_playing(), was_active)
 
 	# Restore
 	runtime.toggle_auto_play()
-	btn.queue_free()
 
 
-func test_toggle_skip_action():
+func test_toggle_skip():
 	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	_action.action = NatsumeAction.Action.TOGGLE_SKIP
 	var was_active = runtime.is_skipping()
 
-	var btn = Button.new()
-	var action = NatsumeAction.new()
-	action.action = NatsumeAction.Action.TOGGLE_SKIP
-	btn.add_child(action)
-	add_child(btn)
-
-	btn.pressed.emit()
+	_btn.pressed.emit()
 	assert_ne(runtime.is_skipping(), was_active)
 
 	# Restore
 	runtime.toggle_skip()
-	btn.queue_free()
 
 
-func test_show_settings_action():
+## --- UI State ---
+
+func test_show_settings_transitions_state():
 	var runtime = get_tree().root.get_node("NatsumeRuntime")
 	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	_action.action = NatsumeAction.Action.SHOW_SETTINGS
 
-	var btn = Button.new()
-	var action = NatsumeAction.new()
-	action.action = NatsumeAction.Action.SHOW_SETTINGS
-	btn.add_child(action)
-	add_child(btn)
-
-	btn.pressed.emit()
+	_btn.pressed.emit()
 	assert_eq(runtime.game_state.current_state, GameStateMachine.State.SETTINGS)
 
-	runtime.close_overlay()
-	btn.queue_free()
+	# Clean up overlay
+	runtime._close_current_overlay()
+	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
 
 
-func test_show_save_load_action():
+func test_show_save_transitions_state():
 	var runtime = get_tree().root.get_node("NatsumeRuntime")
 	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	_action.action = NatsumeAction.Action.SHOW_SAVE
 
-	var btn = Button.new()
-	var action = NatsumeAction.new()
-	action.action = NatsumeAction.Action.SHOW_SAVE
-	btn.add_child(action)
-	add_child(btn)
-
-	btn.pressed.emit()
+	_btn.pressed.emit()
 	assert_eq(runtime.game_state.current_state, GameStateMachine.State.SAVE_LOAD)
 
-	runtime.close_overlay()
-	btn.queue_free()
+	runtime._close_current_overlay()
+	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
 
 
-func test_show_backlog_action():
+func test_show_load_transitions_state():
 	var runtime = get_tree().root.get_node("NatsumeRuntime")
 	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	_action.action = NatsumeAction.Action.SHOW_LOAD
 
-	var btn = Button.new()
-	var action = NatsumeAction.new()
-	action.action = NatsumeAction.Action.SHOW_BACKLOG
-	btn.add_child(action)
-	add_child(btn)
+	_btn.pressed.emit()
+	assert_eq(runtime.game_state.current_state, GameStateMachine.State.SAVE_LOAD)
 
-	btn.pressed.emit()
+	runtime._close_current_overlay()
+	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
+
+
+func test_show_backlog_transitions_state():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	_action.action = NatsumeAction.Action.SHOW_BACKLOG
+
+	_btn.pressed.emit()
 	assert_eq(runtime.game_state.current_state, GameStateMachine.State.BACKLOG)
 
-	runtime.close_overlay()
-	btn.queue_free()
+	runtime._close_current_overlay()
+	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
 
 
-func test_quit_action():
-	# Just verify it doesn't crash — can't actually test quit
-	var btn = Button.new()
-	var action = NatsumeAction.new()
-	action.action = NatsumeAction.Action.QUIT
-	btn.add_child(action)
-	add_child(btn)
+## --- Save/Load ---
 
-	assert_eq(action.action, NatsumeAction.Action.QUIT)
-	btn.queue_free()
+func test_quick_save_creates_save():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	_action.action = NatsumeAction.Action.QUICK_SAVE
+
+	_btn.pressed.emit()
+	assert_true(runtime.has_save(0))
+
+	# Clean up
+	runtime.delete_save(0)
+
+
+func test_none_action_does_nothing():
+	_action.action = NatsumeAction.Action.NONE
+	# Should not crash, just warn
+	_btn.pressed.emit()
+	assert_true(true)
