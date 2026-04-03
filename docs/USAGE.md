@@ -89,36 +89,77 @@ backlog = true
 save_slots = 8
 
 [overrides]
-title_scene = ""
-game_scene = ""
+title_scene = "res://scenes/my_title.tscn"
+game_scene = "res://scenes/my_game.tscn"
+settings_scene = ""
+save_load_scene = ""
+backlog_scene = ""
 ```
 
-### Step 4 — 运行
+### Step 4 — 搭建游戏场景
 
-按 F5 运行。引擎会自动加载内置标题画面和游戏场景，无需手动搭建场景树。
+参考 `examples/demo/` 的结构搭建自己的标题场景和游戏场景，然后在 `natsume.cfg` 的 `[overrides]` 中指向它们。
+
+游戏场景中使用插件的 Presenter 脚本（`BackgroundPresenter`、`CharacterPresenter` 等），通过 `NatsumeRuntime` 的 Facade API 控制游戏流程。
+
+如果不搭建自己的场景，引擎会使用内置的默认场景。
+
+### Step 5 — 运行
+
+按 F5 运行。
 
 ---
 
-## 三层定制体系
+## Facade API
 
-### Level 1：配置定制（natsume.cfg）
+`NatsumeRuntime` 提供简洁的 API，用户搭建自己的 UI 时只需要调用这些方法：
 
-适合大部分用户。通过配置文件控制游戏标题、素材路径、功能开关、存档槽位数等。
+### 游戏流程
 
-### Level 2：继承场景
-
-需要调整 UI 布局时，在编辑器中右键内置场景 → 新建继承场景 → 在 `natsume.cfg` 中指定覆盖：
-
-```ini
-[overrides]
-game_scene = "res://scenes/my_game.tscn"
+```gdscript
+NatsumeRuntime.start_game()           # 开始新游戏
+NatsumeRuntime.load_game(slot_id)     # 读档并进入游戏
+NatsumeRuntime.return_to_title()      # 返回标题
 ```
 
-### Level 3：完全自建
+### 存档/读档
 
-有 Godot 经验的开发者可以从零搭建场景、覆写引擎脚本、注册自定义命令。
+```gdscript
+NatsumeRuntime.quick_save()           # 快存（slot 0）
+NatsumeRuntime.quick_load()           # 快读（slot 0）
+NatsumeRuntime.save(slot_id)          # 存档到指定槽位
+NatsumeRuntime.has_save(slot_id)      # 检查槽位是否有存档
+NatsumeRuntime.delete_save(slot_id)   # 删除存档
+NatsumeRuntime.get_save_list()        # 获取所有有存档的槽位
+```
 
-详见 [ENGINE_DESIGN.md](ENGINE_DESIGN.md)。
+### 播放控制
+
+```gdscript
+NatsumeRuntime.toggle_auto_play()     # 开关自动播放
+NatsumeRuntime.toggle_skip()          # 开关快进
+NatsumeRuntime.is_auto_playing()      # 是否在自动播放
+NatsumeRuntime.is_skipping()          # 是否在快进
+```
+
+### UI 覆盖层
+
+```gdscript
+NatsumeRuntime.show_settings()        # 打开设置
+NatsumeRuntime.show_save_load()       # 打开存档/读档
+NatsumeRuntime.show_backlog()         # 打开回想记录
+NatsumeRuntime.close_overlay()        # 关闭当前覆盖层
+```
+
+### 设置
+
+```gdscript
+NatsumeRuntime.get_setting(key)       # 读取设置值
+NatsumeRuntime.set_setting(key, val)  # 修改设置值
+NatsumeRuntime.save_settings()        # 保存设置到磁盘
+```
+
+> 高级用户也可以直接访问子系统对象：`NatsumeRuntime.save_manager`、`NatsumeRuntime.settings_manager` 等。
 
 ---
 

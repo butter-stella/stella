@@ -1,5 +1,5 @@
 ## Backlog screen — displays dialogue history in a scrollable list.
-## Opened from toolbar, closed with ESC or click.
+## Loaded as overlay by NatsumeRuntime, closed with ESC or right-click.
 extends PanelContainer
 
 @onready var scroll: ScrollContainer = %BacklogScroll
@@ -7,35 +7,21 @@ extends PanelContainer
 
 
 func _ready():
-	NatsumeRuntime.game_state.state_changed.connect(_on_state_changed)
-	visible = false
-
-
-func _on_state_changed(_from: int, to: int):
-	if to == GameStateMachine.State.BACKLOG:
-		_show()
-	elif visible:
-		_hide_screen()
-
-
-func _show():
-	visible = true
 	_populate()
 	# Scroll to bottom
 	await get_tree().process_frame
 	scroll.scroll_vertical = scroll.get_v_scroll_bar().max_value
 
 
-func _hide_screen():
-	visible = false
-	NatsumeRuntime.game_state.return_to_previous()
+func _close():
+	NatsumeRuntime.close_overlay()
 
 
 func _populate():
 	for child in entries_container.get_children():
 		child.queue_free()
 
-	var entries = NatsumeRuntime.backlog_manager.get_entries()
+	var entries = NatsumeRuntime.get_backlog()
 	for entry in entries:
 		var hbox = HBoxContainer.new()
 		hbox.add_theme_constant_override("separation", 12)
@@ -66,15 +52,12 @@ func _populate():
 
 
 func _input(event: InputEvent) -> void:
-	if not visible:
-		return
-
 	if event is InputEventKey and event.pressed:
 		if event.keycode == KEY_ESCAPE:
-			_hide_screen()
+			_close()
 			get_viewport().set_input_as_handled()
 
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_RIGHT:
-			_hide_screen()
+			_close()
 			get_viewport().set_input_as_handled()

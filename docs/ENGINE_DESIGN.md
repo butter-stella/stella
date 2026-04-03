@@ -130,7 +130,7 @@ game_scene = "res://scenes/my_game.tscn"
 
 ### game.tscn — 游戏主场景
 
-引擎内置的游戏运行场景，包含完整的图层结构：
+引擎内置的游戏运行场景，包含演出和交互图层：
 
 ```
 Game (Node2D)
@@ -145,16 +145,26 @@ Game (Node2D)
 │   └── FadeOverlay (ColorRect)
 ├── UILayer (CanvasLayer, layer=3)
 │   ├── DialoguePanel — 对话框 + 工具栏
-│   ├── ChoicePanel — 选项面板
-│   ├── BacklogScreen — 回想记录
-│   ├── SaveLoadScreen — 存档/读档
-│   └── SettingsScreen — 设置
+│   └── ChoicePanel — 选项面板
 ├── InputHandler (Node)
 ├── ScreenEffects (Node)
 └── AudioPresenter (Node)
 ```
 
-用户不需要了解这个结构，除非想做 Level 2/3 的定制。
+### Overlay 画面（独立场景）
+
+设置、存档/读档、回想记录等 overlay 画面是独立场景文件，由 `NatsumeRuntime` 按需加载：
+
+| 场景 | 说明 |
+|------|------|
+| `settings.tscn` | 设置 overlay |
+| `save_load.tscn` | 存档/读档 overlay |
+| `backlog.tscn` | 回想记录 overlay |
+
+Overlay 通过 `NatsumeRuntime.show_settings()` 等 Facade API 打开，`close_overlay()` 关闭。
+加载时 `instantiate()` + `add_child()`，关闭时 `queue_free()`，不影响当前场景。
+
+用户可通过 `[overrides]` 替换任意 overlay 场景。
 
 ---
 

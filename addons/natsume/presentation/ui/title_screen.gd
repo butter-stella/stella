@@ -1,4 +1,4 @@
-## Title screen — game title with start/continue/quit buttons.
+## Title screen — game title with start/continue/settings/quit buttons.
 ## This is a standalone scene, NOT part of the game scene.
 ## Starting a game switches to the game scene via NatsumeRuntime.
 extends CanvasLayer
@@ -20,7 +20,8 @@ func _build_ui():
 
 	var buttons = [
 		{"text": "开始游戏", "callback": _on_start},
-		{"text": "继续游戏", "callback": _on_continue, "condition": NatsumeRuntime.save_manager.has_save(0)},
+		{"text": "继续游戏", "callback": _on_continue, "condition": NatsumeRuntime.has_save(0)},
+		{"text": "设置", "callback": _on_settings},
 		{"text": "退出", "callback": _on_quit},
 	]
 
@@ -42,6 +43,10 @@ func _on_start():
 
 func _on_continue():
 	NatsumeRuntime.load_game(0)
+
+
+func _on_settings():
+	NatsumeRuntime.show_settings()
 
 
 func _on_quit():

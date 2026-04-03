@@ -5,6 +5,9 @@ extends Node
 const CONFIG_PATH = "res://natsume.cfg"
 const DEFAULT_TITLE_SCENE = "res://addons/natsume/scenes/title.tscn"
 const DEFAULT_GAME_SCENE = "res://addons/natsume/scenes/game.tscn"
+const DEFAULT_SETTINGS_SCENE = "res://addons/natsume/scenes/settings.tscn"
+const DEFAULT_SAVE_LOAD_SCENE = "res://addons/natsume/scenes/save_load.tscn"
+const DEFAULT_BACKLOG_SCENE = "res://addons/natsume/scenes/backlog.tscn"
 
 var engine: ScenarioEngine
 var registry: CommandRegistry
@@ -32,6 +35,7 @@ var title_scene_path: String = ""
 
 ## Internal state
 var _last_scenario_path: String = ""
+var _current_overlay: Node = null
 
 
 func _ready():
@@ -115,6 +119,7 @@ func _get_game_scene_path() -> String:
 
 ## Start a new game — switch to game scene, then run scenario.
 func start_game(scenario_path: String = "", game_scene_path: String = "") -> void:
+	_close_current_overlay()
 	if scenario_path == "":
 		scenario_path = config.scenario_path
 	if game_scene_path == "":
@@ -131,6 +136,7 @@ func start_game(scenario_path: String = "", game_scene_path: String = "") -> voi
 
 ## Load a saved game — switch to game scene, restore state, run.
 func load_game(slot_id: int, scenario_path: String = "", game_scene_path: String = "") -> bool:
+	_close_current_overlay()
 	if not save_manager.has_save(slot_id):
 		return false
 	if scenario_path == "":
@@ -159,6 +165,7 @@ func continue_from_save(slot_id: int) -> bool:
 
 ## Return to title screen.
 func return_to_title() -> void:
+	_close_current_overlay()
 	backlog_manager.clear()
 	auto_play.stop()
 	skip_controller.stop()
@@ -200,3 +207,141 @@ func _on_scenario_ended(id: String) -> void:
 
 func _on_dialogue_for_backlog(character: String, text: String, voice: String, _mode: String):
 	backlog_manager.add_entry(character, text, voice)
+
+
+# ─── Facade API: Save/Load ───
+
+## Quick save to slot 0.
+func quick_save() -> void:
+	save_manager.save(0)
+
+
+## Quick load from slot 0.
+func quick_load() -> bool:
+	return continue_from_save(0)
+
+
+## Save to a specific slot.
+func save(slot_id: int) -> void:
+	save_manager.save(slot_id)
+
+
+## Check if a save exists in a slot.
+func has_save(slot_id: int) -> bool:
+	return save_manager.has_save(slot_id)
+
+
+## Delete a save slot.
+func delete_save(slot_id: int) -> void:
+	save_manager.delete_save(slot_id)
+
+
+## Get list of occupied save slot IDs.
+func get_save_list() -> Array:
+	return save_manager.get_save_list()
+
+
+# ─── Facade API: Playback Control ───
+
+## Toggle auto-play mode. Stops skip if activating auto-play.
+func toggle_auto_play() -> void:
+	auto_play.toggle()
+	if auto_play.is_active:
+		skip_controller.stop()
+
+
+## Toggle skip mode. Stops auto-play if activating skip.
+func toggle_skip() -> void:
+	skip_controller.toggle()
+	if skip_controller.is_active:
+		auto_play.stop()
+
+
+## Whether auto-play is currently active.
+func is_auto_playing() -> bool:
+	return auto_play.is_active
+
+
+## Whether skip mode is currently active.
+func is_skipping() -> bool:
+	return skip_controller.is_active
+
+
+# ─── Facade API: UI Overlays ───
+
+## Show the backlog overlay.
+func show_backlog() -> void:
+	var scene_path = config.backlog_scene if config.backlog_scene != "" else DEFAULT_BACKLOG_SCENE
+	_open_overlay(scene_path)
+	game_state.transition_to(GameStateMachine.State.BACKLOG)
+
+
+## Show the save/load overlay.
+func show_save_load(mode: String = "save") -> void:
+	var scene_path = config.save_load_scene if config.save_load_scene != "" else DEFAULT_SAVE_LOAD_SCENE
+	_open_overlay(scene_path)
+	if _current_overlay and _current_overlay.has_method("set_mode"):
+		_current_overlay.set_mode(mode)
+	game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
+
+
+## Show the settings overlay.
+func show_settings() -> void:
+	var scene_path = config.settings_scene if config.settings_scene != "" else DEFAULT_SETTINGS_SCENE
+	_open_overlay(scene_path)
+	game_state.transition_to(GameStateMachine.State.SETTINGS)
+
+
+## Close the current overlay and return to previous state.
+func close_overlay() -> void:
+	_close_current_overlay()
+	game_state.return_to_previous()
+
+
+func _open_overlay(scene_path: String) -> void:
+	if _current_overlay != null:
+		push_warning("NatsumeRuntime: opening overlay while another is active — closing previous")
+	_close_current_overlay()
+	var scene = load(scene_path) as PackedScene
+	if scene == null:
+		push_error("NatsumeRuntime: cannot load overlay scene %s" % scene_path)
+		return
+	_current_overlay = scene.instantiate()
+	# Add as CanvasLayer child so it renders above game content
+	var overlay_layer = CanvasLayer.new()
+	overlay_layer.layer = 10
+	overlay_layer.name = "OverlayLayer"
+	overlay_layer.add_child(_current_overlay)
+	add_child(overlay_layer)
+
+
+func _close_current_overlay() -> void:
+	if _current_overlay != null:
+		var layer = _current_overlay.get_parent()
+		_current_overlay = null
+		if layer != null:
+			layer.queue_free()
+
+
+# ─── Facade API: Backlog ───
+
+## Get dialogue history entries.
+func get_backlog() -> Array:
+	return backlog_manager.get_entries()
+
+
+# ─── Facade API: Settings ───
+
+## Get a setting value by key.
+func get_setting(key: String) -> Variant:
+	return settings_manager.settings.get(key)
+
+
+## Set a setting value by key.
+func set_setting(key: String, value: Variant) -> void:
+	settings_manager.set_value(key, value)
+
+
+## Persist settings to disk.
+func save_settings() -> void:
+	settings_manager.save()

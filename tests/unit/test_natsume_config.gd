@@ -132,12 +132,14 @@ func test_runtime_applies_config_paths():
 
 func test_runtime_preserves_paths_without_config():
 	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var orig_config = runtime.config
 
 	# Manually set a custom path (legacy bootstrap pattern)
 	var orig_bg = runtime.backgrounds_path
 	runtime.backgrounds_path = "res://legacy/bg/"
 
-	# Load a non-existent config — should NOT overwrite manual paths
+	# Fresh config with no file — should NOT overwrite manual paths
+	runtime.config = NatsumeConfig.new()
 	runtime.config.load_from_path("res://nonexistent.cfg")
 	runtime._apply_config()
 
@@ -145,19 +147,23 @@ func test_runtime_preserves_paths_without_config():
 		"Without config file, manually set paths should be preserved")
 
 	# Restore
+	runtime.config = orig_config
 	runtime.backgrounds_path = orig_bg
 
 
 func test_runtime_title_scene_defaults_to_builtin():
 	var runtime = get_tree().root.get_node("NatsumeRuntime")
 	var orig_title = runtime.title_scene_path
+	var orig_config = runtime.config
 
-	# No config file — title_scene should default to built-in
+	# Fresh config with no file — title_scene should default to built-in
+	runtime.config = NatsumeConfig.new()
 	runtime.config.load_from_path("res://nonexistent.cfg")
 	runtime._apply_config()
 
 	assert_eq(runtime.title_scene_path, "res://addons/natsume/scenes/title.tscn")
 
+	runtime.config = orig_config
 	runtime.title_scene_path = orig_title
 
 
