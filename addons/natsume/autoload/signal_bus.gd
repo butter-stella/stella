@@ -39,6 +39,9 @@ signal cg_hide(transition: String, duration: float)
 signal effect_requested(effect_type: String, params: Dictionary)
 signal fade_requested(direction: String, duration: float)
 
+# Input coordination
+signal toolbar_button_pressed()
+
 # System
 signal scenario_started_event(scenario_id: String)
 signal scenario_ended_event(scenario_id: String)

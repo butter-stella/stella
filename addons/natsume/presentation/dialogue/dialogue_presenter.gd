@@ -32,7 +32,6 @@ func _ready():
 	SignalBus.hide_dialogue.connect(func(): visible = false; _nvl_text = "")
 	SignalBus.scenario_ended_event.connect(func(_id): visible = false)
 	visible = false
-	_make_passthrough()
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
 	_setup_toolbar()
@@ -61,7 +60,11 @@ func _setup_toolbar():
 		btn.flat = true
 		btn.custom_minimum_size = Vector2(60, 30)
 		btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-		btn.pressed.connect(btn_info["callback"])
+		var callback = btn_info["callback"]
+		btn.pressed.connect(func():
+			SignalBus.toolbar_button_pressed.emit()
+			callback.call()
+		)
 		btn.mouse_entered.connect(func(): btn.modulate = Color(1.2, 1.2, 1.2) if not _is_toggle_active(btn_info["id"]) else btn.modulate)
 		btn.mouse_exited.connect(func(): _update_button_modulate(btn, btn_info["id"]))
 
@@ -252,22 +255,6 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 
 
 
-
-## Set IGNORE on self and the container chain up to toolbar/labels.
-## Only touches framework-owned layout nodes. Buttons keep STOP (default).
-## User-added Controls outside this chain are not affected.
-func _make_passthrough() -> void:
-	mouse_filter = Control.MOUSE_FILTER_IGNORE
-	name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	text_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	if toolbar:
-		toolbar.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	# Walk the container chain from name_label up to self
-	var node = name_label.get_parent()
-	while node != null and node != self:
-		if node is Control:
-			node.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		node = node.get_parent()
 
 
 func _apply_nvl_layout():
