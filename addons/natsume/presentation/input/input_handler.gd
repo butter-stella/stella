@@ -1,15 +1,9 @@
 ## Captures player input for dialogue advance.
-## Full-screen Control on the lowest CanvasLayer — catches all clicks not
-## consumed by higher-layer UI (dialogue box, overlays, toolbar buttons).
+## Full-screen transparent ColorRect in UILayer — sits behind DialoguePanel
+## and ChoicePanel so they get GUI priority. Catches all clicks that miss them.
+## Overlay at higher CanvasLayer naturally blocks everything.
 ## Keyboard advance uses _unhandled_input so overlays naturally block it.
 extends ColorRect
-
-
-func _ready():
-	# Full-screen transparent click catcher
-	mouse_filter = Control.MOUSE_FILTER_STOP
-	color = Color.TRANSPARENT
-	anchors_preset = Control.PRESET_FULL_RECT
 
 
 func _gui_input(event: InputEvent) -> void:

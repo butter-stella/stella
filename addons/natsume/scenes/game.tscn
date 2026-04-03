@@ -70,6 +70,15 @@ offset_bottom = -138.0
 [node name="UILayer" type="CanvasLayer" parent="." unique_id=25130991]
 layer = 3
 
+[node name="InputHandler" type="ColorRect" parent="UILayer" unique_id=181026061]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0, 0, 0, 0)
+script = ExtResource("5")
+
 [node name="DialoguePanel" type="PanelContainer" parent="UILayer" unique_id=1870871759]
 unique_name_in_owner = true
 anchors_preset = 12
@@ -157,18 +166,6 @@ grow_vertical = 2
 mouse_filter = 2
 color = Color(0, 0, 0, 1)
 script = ExtResource("7")
-
-[node name="InputLayer" type="CanvasLayer" parent="." unique_id=181026060]
-layer = -1
-
-[node name="InputHandler" type="ColorRect" parent="InputLayer" unique_id=181026061]
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
-color = Color(0, 0, 0, 0)
-script = ExtResource("5")
 
 [node name="ScreenEffects" type="Node" parent="." unique_id=191658614]
 script = ExtResource("8")
