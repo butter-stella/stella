@@ -32,9 +32,6 @@ func _ready():
 	SignalBus.hide_dialogue.connect(func(): visible = false; _nvl_text = "")
 	SignalBus.scenario_ended_event.connect(func(_id): visible = false)
 	visible = false
-	mouse_filter = Control.MOUSE_FILTER_STOP
-	name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	text_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
 	_setup_toolbar()
@@ -253,7 +250,15 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 			SignalBus.advance_requested.emit()
 
 
-func _gui_input(event: InputEvent) -> void:
+func _input(event: InputEvent) -> void:
+	if not NatsumeRuntime.game_state.is_playing():
+		return
+
+	# Ctrl key: skip while held
+	if event is InputEventKey:
+		if event.keycode == KEY_CTRL:
+			_ctrl_held = event.pressed
+
 	# Right-click: toggle UI visibility
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
 		if _ui_hidden:
@@ -262,31 +267,20 @@ func _gui_input(event: InputEvent) -> void:
 		elif visible and not _is_typing:
 			_ui_hidden = true
 			visible = false
-		accept_event()
 		return
 
-	# Left-click: complete typing or advance
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-		if _ui_hidden:
+	# Left-click during hidden: restore UI
+	if _ui_hidden and event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 			_ui_hidden = false
 			visible = true
-			accept_event()
 			return
-		if _is_typing:
+
+	# Left-click during typing: complete text
+	if _is_typing and event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 			_is_typing = false
 			text_label.visible_characters = -1
-			accept_event()
-			return
-		# Not typing — advance dialogue
-		SignalBus.advance_requested.emit()
-		accept_event()
-
-
-func _unhandled_input(event: InputEvent) -> void:
-	# Ctrl key: skip while held
-	if event is InputEventKey:
-		if event.keycode == KEY_CTRL:
-			_ctrl_held = event.pressed
 
 
 func _apply_nvl_layout():
