@@ -79,48 +79,43 @@ func _setup_toolbar():
 
 
 func _on_auto_pressed():
-	NatsumeRuntime.auto_play.toggle()
-	# Auto and skip are mutually exclusive
-	if NatsumeRuntime.auto_play.is_active:
-		NatsumeRuntime.skip_controller.stop()
+	NatsumeRuntime.toggle_auto_play()
 	_update_toggle_buttons()
 
 
 func _on_skip_pressed():
-	NatsumeRuntime.skip_controller.toggle()
-	if NatsumeRuntime.skip_controller.is_active:
-		NatsumeRuntime.auto_play.stop()
+	NatsumeRuntime.toggle_skip()
 	_update_toggle_buttons()
 
 
 func _on_backlog_pressed():
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.BACKLOG)
+	NatsumeRuntime.show_backlog()
 
 
 func _on_quick_save_pressed():
-	NatsumeRuntime.save_manager.save(0)
+	NatsumeRuntime.quick_save()
 
 
 func _on_quick_load_pressed():
-	NatsumeRuntime.continue_from_save(0)
+	NatsumeRuntime.quick_load()
 
 
 func _on_save_pressed():
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
+	NatsumeRuntime.show_save_load("save")
 
 
 func _on_load_pressed():
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
+	NatsumeRuntime.show_save_load("load")
 
 
 func _on_settings_pressed():
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.SETTINGS)
+	NatsumeRuntime.show_settings()
 
 
 func _is_toggle_active(btn_id: String) -> bool:
 	match btn_id:
-		"auto": return NatsumeRuntime.auto_play.is_active
-		"skip": return NatsumeRuntime.skip_controller.is_active
+		"auto": return NatsumeRuntime.is_auto_playing()
+		"skip": return NatsumeRuntime.is_skipping()
 	return false
 
 
@@ -142,7 +137,7 @@ func _update_toggle_buttons():
 
 
 func _is_skipping() -> bool:
-	return NatsumeRuntime.skip_controller.is_active or _ctrl_held
+	return NatsumeRuntime.is_skipping() or _ctrl_held
 
 
 func _on_show_dialogue(character: String, text: String, _voice: String, mode: String):
@@ -247,11 +242,11 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 	_is_typing = false
 
 	# Auto-play: wait delay then advance
-	if NatsumeRuntime.auto_play.is_active:
+	if NatsumeRuntime.is_auto_playing():
 		var delay = NatsumeRuntime.settings_manager.settings.auto_play_delay
 		await get_tree().create_timer(delay).timeout
 		# Only advance if auto-play is still active (user might have toggled off)
-		if NatsumeRuntime.auto_play.is_active:
+		if NatsumeRuntime.is_auto_playing():
 			SignalBus.advance_requested.emit()
 
 
