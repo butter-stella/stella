@@ -161,6 +161,8 @@ func load_game(slot_id: int, scenario_path: String = "", game_scene_path: String
 func continue_from_save(slot_id: int) -> bool:
 	if _last_scenario_path == "" or not save_manager.has_save(slot_id):
 		return false
+	if game_state.current_state != GameStateMachine.State.PLAYING:
+		return false
 	_reset_presentation()
 	_load_scenario_and_restore(_last_scenario_path, slot_id)
 	return true
@@ -221,6 +223,7 @@ func _reset_presentation() -> void:
 	SignalBus.char_hide.emit("all")
 	SignalBus.bgm_stop.emit(0.0)
 	SignalBus.hide_dialogue.emit()
+	presentation_state.clear()
 
 
 func _on_scenario_ended(id: String) -> void:
