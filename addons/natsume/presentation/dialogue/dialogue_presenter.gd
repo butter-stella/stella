@@ -250,34 +250,7 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 			SignalBus.advance_requested.emit()
 
 
-func _input(event: InputEvent) -> void:
-	# Ctrl key: skip while held
-	if event is InputEventKey:
-		if event.keycode == KEY_CTRL:
-			_ctrl_held = event.pressed
 
-	# Right-click: toggle UI visibility
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
-		if _ui_hidden:
-			_ui_hidden = false
-			visible = true
-		elif visible and not _is_typing:
-			_ui_hidden = true
-			visible = false
-		return
-
-	# Left-click during hidden: restore UI
-	if _ui_hidden and event is InputEventMouseButton:
-		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-			_ui_hidden = false
-			visible = true
-			return
-
-	# Left-click during typing: complete text
-	if _is_typing and event is InputEventMouseButton:
-		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-			_is_typing = false
-			text_label.visible_characters = -1
 
 
 func _apply_nvl_layout():

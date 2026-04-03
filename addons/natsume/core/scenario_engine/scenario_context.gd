@@ -39,6 +39,7 @@ func capture_snapshot() -> Dictionary:
 		"scene_index": current_scene_index,
 		"command_index": current_command_index,
 		"is_finished": is_finished,
+		"return_stack": return_stack.duplicate(true),
 	}
 
 
@@ -46,6 +47,10 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 	current_scene_index = int(snapshot.get("scene_index", 0))
 	current_command_index = int(snapshot.get("command_index", 0))
 	is_finished = snapshot.get("is_finished", false)
+	var stack = snapshot.get("return_stack", [])
+	return_stack.clear()
+	for entry in stack:
+		return_stack.append(entry)
 
 
 func advance() -> void:
