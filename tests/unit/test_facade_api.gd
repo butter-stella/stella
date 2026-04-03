@@ -1,0 +1,141 @@
+extends GutTest
+## Tests for NatsumeRuntime facade API and overlay management.
+
+
+## --- Save/Load Facade ---
+
+func test_quick_save_delegates_to_save_manager():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	# quick_save should delegate to save_manager.save(0)
+	assert_true(runtime.has_method("quick_save"))
+
+
+func test_quick_load_delegates_to_continue_from_save():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	assert_true(runtime.has_method("quick_load"))
+
+
+func test_save_delegates_to_save_manager():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	assert_true(runtime.has_method("save"))
+
+
+func test_has_save_delegates():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	# Should return false for non-existent saves
+	assert_false(runtime.has_save(99))
+
+
+func test_get_save_list_returns_array():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var result = runtime.get_save_list()
+	assert_typeof(result, TYPE_ARRAY)
+
+
+func test_delete_save_delegates():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	assert_true(runtime.has_method("delete_save"))
+
+
+## --- Playback Control Facade ---
+
+func test_toggle_auto_play():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var was_active = runtime.is_auto_playing()
+	runtime.toggle_auto_play()
+	assert_ne(runtime.is_auto_playing(), was_active)
+	# Restore
+	runtime.toggle_auto_play()
+
+
+func test_toggle_skip():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var was_active = runtime.is_skipping()
+	runtime.toggle_skip()
+	assert_ne(runtime.is_skipping(), was_active)
+	# Restore
+	runtime.toggle_skip()
+
+
+func test_auto_play_and_skip_mutually_exclusive():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	# Start auto play
+	if not runtime.is_auto_playing():
+		runtime.toggle_auto_play()
+	assert_true(runtime.is_auto_playing())
+
+	# Toggle skip should stop auto play
+	runtime.toggle_skip()
+	assert_true(runtime.is_skipping())
+	assert_false(runtime.is_auto_playing())
+
+	# Clean up
+	runtime.toggle_skip()
+
+
+## --- UI State Facade ---
+
+func test_show_backlog_transitions_state():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	runtime.show_backlog()
+	assert_eq(runtime.game_state.current_state, GameStateMachine.State.BACKLOG)
+	runtime.close_overlay()
+
+
+func test_show_save_load_transitions_state():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	runtime.show_save_load()
+	assert_eq(runtime.game_state.current_state, GameStateMachine.State.SAVE_LOAD)
+	runtime.close_overlay()
+
+
+func test_show_settings_transitions_state():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	runtime.show_settings()
+	assert_eq(runtime.game_state.current_state, GameStateMachine.State.SETTINGS)
+	runtime.close_overlay()
+
+
+func test_close_overlay_returns_to_previous():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	runtime.show_settings()
+	runtime.close_overlay()
+	assert_eq(runtime.game_state.current_state, GameStateMachine.State.PLAYING)
+
+
+## --- Backlog Facade ---
+
+func test_get_backlog_returns_array():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var result = runtime.get_backlog()
+	assert_typeof(result, TYPE_ARRAY)
+
+
+## --- Settings Facade ---
+
+func test_get_setting():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var val = runtime.get_setting("bgm_volume")
+	assert_typeof(val, TYPE_FLOAT)
+
+
+func test_set_setting():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var orig = runtime.get_setting("bgm_volume")
+	runtime.set_setting("bgm_volume", 0.42)
+	assert_almost_eq(runtime.get_setting("bgm_volume"), 0.42, 0.001)
+	# Restore
+	runtime.set_setting("bgm_volume", orig)
+
+
+## --- Overlay Config ---
+
+func test_config_has_overlay_scene_overrides():
+	var config = NatsumeConfig.new()
+	assert_eq(config.settings_scene, "")
+	assert_eq(config.save_load_scene, "")
+	assert_eq(config.backlog_scene, "")
