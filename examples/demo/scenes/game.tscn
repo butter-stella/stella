@@ -21,6 +21,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+mouse_filter = 2
 stretch_mode = 6
 
 [node name="BgBack" type="TextureRect" parent="BackgroundLayer"]
@@ -29,6 +30,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+mouse_filter = 2
 stretch_mode = 6
 
 [node name="CharacterLayer" type="CanvasLayer" parent="."]
@@ -44,6 +46,7 @@ offset_left = 287.0
 offset_top = -133.0
 offset_right = 287.0
 offset_bottom = -133.0
+mouse_filter = 2
 
 [node name="SlotCenter" type="Control" parent="CharacterLayer"]
 layout_mode = 3
@@ -55,6 +58,7 @@ offset_left = 2.0
 offset_top = -136.0
 offset_right = 2.0
 offset_bottom = -136.0
+mouse_filter = 2
 
 [node name="SlotRight" type="Control" parent="CharacterLayer"]
 layout_mode = 3
@@ -66,6 +70,7 @@ offset_left = -293.0
 offset_top = -138.0
 offset_right = -293.0
 offset_bottom = -138.0
+mouse_filter = 2
 
 [node name="UILayer" type="CanvasLayer" parent="."]
 layer = 3
