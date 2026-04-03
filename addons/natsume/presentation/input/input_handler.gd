@@ -1,51 +1,64 @@
-## Full-screen transparent click catcher in UILayer.
-## Sits behind DialoguePanel and ChoicePanel — catches all clicks
-## that aren't consumed by buttons or choices above it.
-extends ColorRect
-
-@onready var _dialogue: PanelContainer = %DialoguePanel
+## Handles dialogue advance and typing completion.
+## _input: intercepts clicks during typing to complete text (must preempt buttons).
+## _unhandled_input: advances dialogue when nothing else consumed the event.
+extends Node
 
 
-func _ready():
-	mouse_filter = Control.MOUSE_FILTER_STOP
-	color = Color.TRANSPARENT
-	anchors_preset = Control.PRESET_FULL_RECT
-
-
-func _gui_input(event: InputEvent) -> void:
+func _input(event: InputEvent) -> void:
 	if not event is InputEventMouseButton or not event.pressed:
 		return
-
-	if event.button_index == MOUSE_BUTTON_LEFT:
-		if _dialogue and _dialogue._is_typing:
-			_dialogue._is_typing = false
-			_dialogue.text_label.visible_characters = -1
-		elif _dialogue and _dialogue._ui_hidden:
-			_dialogue._ui_hidden = false
-			_dialogue.visible = true
-		else:
-			SignalBus.advance_requested.emit()
-		accept_event()
-
-	elif event.button_index == MOUSE_BUTTON_RIGHT:
-		if _dialogue:
-			if _dialogue._ui_hidden:
-				_dialogue._ui_hidden = false
-				_dialogue.visible = true
-			elif _dialogue.visible and not _dialogue._is_typing:
-				_dialogue._ui_hidden = true
-				_dialogue.visible = false
-		accept_event()
+	if event.button_index != MOUSE_BUTTON_LEFT:
+		return
+	var dialogue = _get_dialogue()
+	if dialogue == null:
+		return
+	# Click during typing: complete text, consume event (don't advance or trigger buttons)
+	if dialogue._is_typing:
+		dialogue._is_typing = false
+		dialogue.text_label.visible_characters = -1
+		get_viewport().set_input_as_handled()
+	# Click during UI hidden: restore, consume event
+	elif dialogue._ui_hidden:
+		dialogue._ui_hidden = false
+		dialogue.visible = true
+		get_viewport().set_input_as_handled()
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if not event is InputEventKey or not event.pressed or event.echo:
-		return
 	if not NatsumeRuntime.game_state.is_playing():
 		return
-	if event.keycode == KEY_SPACE or event.keycode == KEY_ENTER:
-		if _dialogue and _dialogue._is_typing:
-			_dialogue._is_typing = false
-			_dialogue.text_label.visible_characters = -1
-		else:
+
+	if event is InputEventMouseButton and event.pressed:
+		if event.button_index == MOUSE_BUTTON_LEFT:
 			SignalBus.advance_requested.emit()
+		elif event.button_index == MOUSE_BUTTON_RIGHT:
+			_toggle_ui_visibility()
+
+	elif event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_SPACE or event.keycode == KEY_ENTER:
+			var dialogue = _get_dialogue()
+			if dialogue and dialogue._is_typing:
+				dialogue._is_typing = false
+				dialogue.text_label.visible_characters = -1
+			else:
+				SignalBus.advance_requested.emit()
+		elif event.keycode == KEY_CTRL:
+			var dialogue = _get_dialogue()
+			if dialogue:
+				dialogue._ctrl_held = event.pressed
+
+
+func _toggle_ui_visibility() -> void:
+	var dialogue = _get_dialogue()
+	if dialogue == null:
+		return
+	if dialogue._ui_hidden:
+		dialogue._ui_hidden = false
+		dialogue.visible = true
+	elif dialogue.visible and not dialogue._is_typing:
+		dialogue._ui_hidden = true
+		dialogue.visible = false
+
+
+func _get_dialogue():
+	return get_node_or_null("%DialoguePanel")
