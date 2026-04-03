@@ -119,6 +119,7 @@ func _get_game_scene_path() -> String:
 
 ## Start a new game — switch to game scene, then run scenario.
 func start_game(scenario_path: String = "", game_scene_path: String = "") -> void:
+	_close_current_overlay()
 	if scenario_path == "":
 		scenario_path = config.scenario_path
 	if game_scene_path == "":
@@ -135,6 +136,7 @@ func start_game(scenario_path: String = "", game_scene_path: String = "") -> voi
 
 ## Load a saved game — switch to game scene, restore state, run.
 func load_game(slot_id: int, scenario_path: String = "", game_scene_path: String = "") -> bool:
+	_close_current_overlay()
 	if not save_manager.has_save(slot_id):
 		return false
 	if scenario_path == "":
@@ -163,6 +165,7 @@ func continue_from_save(slot_id: int) -> bool:
 
 ## Return to title screen.
 func return_to_title() -> void:
+	_close_current_overlay()
 	backlog_manager.clear()
 	auto_play.stop()
 	skip_controller.stop()
@@ -277,6 +280,8 @@ func show_backlog() -> void:
 func show_save_load(mode: String = "save") -> void:
 	var scene_path = config.save_load_scene if config.save_load_scene != "" else DEFAULT_SAVE_LOAD_SCENE
 	_open_overlay(scene_path)
+	if _current_overlay and _current_overlay.has_method("set_mode"):
+		_current_overlay.set_mode(mode)
 	game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
 
 
@@ -294,6 +299,8 @@ func close_overlay() -> void:
 
 
 func _open_overlay(scene_path: String) -> void:
+	if _current_overlay != null:
+		push_warning("NatsumeRuntime: opening overlay while another is active — closing previous")
 	_close_current_overlay()
 	var scene = load(scene_path) as PackedScene
 	if scene == null:

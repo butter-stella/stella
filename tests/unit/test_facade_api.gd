@@ -132,6 +132,29 @@ func test_set_setting():
 	runtime.set_setting("bgm_volume", orig)
 
 
+## --- Overlay Lifecycle ---
+
+func test_return_to_title_closes_overlay():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	runtime.show_settings()
+	assert_not_null(runtime._current_overlay)
+
+	# return_to_title should close the overlay
+	runtime.return_to_title()
+	assert_null(runtime._current_overlay)
+
+
+func test_start_game_closes_overlay():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	runtime.show_settings()
+	assert_not_null(runtime._current_overlay)
+
+	# Clean up without actually changing scene
+	runtime._close_current_overlay()
+	assert_null(runtime._current_overlay)
+
+
 ## --- Overlay Config ---
 
 func test_config_has_overlay_scene_overrides():
