@@ -12,8 +12,8 @@ func _ready():
 	# Build buttons
 	_add_button("开始游戏", func(): NatsumeRuntime.start_game())
 
-	if NatsumeRuntime.has_save(0):
-		_add_button("继续游戏", func(): NatsumeRuntime.load_game(0))
+	if NatsumeRuntime.has_quick_save():
+		_add_button("继续游戏", func(): NatsumeRuntime.quick_load())
 
 	_add_button("设置", func(): NatsumeRuntime.show_settings())
 	_add_button("退出", func(): get_tree().quit())

@@ -80,8 +80,61 @@ func get_save_list() -> Array:
 	return result
 
 
+## --- Quick Save (separate from manual slots) ---
+
+func quick_save() -> void:
+	_ensure_dir()
+	var data: Dictionary = {}
+	for provider in _providers:
+		data[provider.get_provider_id()] = provider.capture_snapshot()
+	data["timestamp"] = Time.get_unix_time_from_system()
+
+	var path = save_dir + "quicksave.json"
+	var file = FileAccess.open(path, FileAccess.WRITE)
+	if file:
+		file.store_string(JSON.stringify(data))
+
+
+func quick_load() -> bool:
+	var path = save_dir + "quicksave.json"
+	if not FileAccess.file_exists(path):
+		return false
+	var file = FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return false
+	var text = file.get_as_text()
+	var data = JSON.parse_string(text)
+	if data == null or not data is Dictionary:
+		return false
+	for provider in _providers:
+		var id = provider.get_provider_id()
+		if data.has(id):
+			provider.restore_snapshot(data[id])
+	return true
+
+
+func has_quick_save() -> bool:
+	return FileAccess.file_exists(save_dir + "quicksave.json")
+
+
+func delete_quick_save() -> void:
+	var path = save_dir + "quicksave.json"
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(path)
+
+
+func get_quick_save_metadata() -> Dictionary:
+	var path = save_dir + "quicksave.json"
+	return _read_metadata(path)
+
+
+## --- Metadata ---
+
 func get_save_metadata(slot_id: int) -> Dictionary:
-	var path = save_dir + "save_%d.json" % slot_id
+	return _read_metadata(save_dir + "save_%d.json" % slot_id)
+
+
+func _read_metadata(path: String) -> Dictionary:
 	if not FileAccess.file_exists(path):
 		return {}
 	var file = FileAccess.open(path, FileAccess.READ)
