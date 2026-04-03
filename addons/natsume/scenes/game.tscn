@@ -8,9 +8,6 @@
 [ext_resource type="Script" path="res://addons/natsume/presentation/effects/fade_presenter.gd" id="7"]
 [ext_resource type="Script" uid="uid://wkgv23f4gu6f" path="res://addons/natsume/presentation/effects/screen_effects.gd" id="8"]
 [ext_resource type="Script" uid="uid://bcborytacuhy0" path="res://addons/natsume/presentation/audio/audio_presenter.gd" id="9"]
-[ext_resource type="Script" path="res://addons/natsume/presentation/ui/backlog_screen.gd" id="10"]
-[ext_resource type="Script" uid="uid://c8motbbd1o85r" path="res://addons/natsume/presentation/ui/save_load_screen.gd" id="11"]
-[ext_resource type="Script" path="res://addons/natsume/presentation/ui/settings_screen.gd" id="12"]
 
 [node name="Game" type="Node2D" unique_id=2021434320]
 
@@ -145,93 +142,6 @@ theme_override_font_sizes/font_size = 20
 horizontal_alignment = 1
 
 [node name="OptionsContainer" type="VBoxContainer" parent="UILayer/ChoicePanel/MarginContainer/VBox" unique_id=1215023490]
-unique_name_in_owner = true
-layout_mode = 2
-
-[node name="BacklogScreen" type="PanelContainer" parent="UILayer" unique_id=1080862207]
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
-script = ExtResource("10")
-
-[node name="MarginContainer" type="MarginContainer" parent="UILayer/BacklogScreen" unique_id=1053304424]
-layout_mode = 2
-theme_override_constants/margin_left = 50
-theme_override_constants/margin_top = 50
-theme_override_constants/margin_right = 50
-theme_override_constants/margin_bottom = 50
-
-[node name="BacklogScroll" type="ScrollContainer" parent="UILayer/BacklogScreen/MarginContainer" unique_id=326670884]
-unique_name_in_owner = true
-layout_mode = 2
-
-[node name="BacklogEntries" type="VBoxContainer" parent="UILayer/BacklogScreen/MarginContainer/BacklogScroll" unique_id=1417175504]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 3
-
-[node name="SaveLoadScreen" type="PanelContainer" parent="UILayer" unique_id=1253440610]
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
-script = ExtResource("11")
-
-[node name="MarginContainer" type="MarginContainer" parent="UILayer/SaveLoadScreen" unique_id=1835583262]
-layout_mode = 2
-theme_override_constants/margin_left = 50
-theme_override_constants/margin_top = 50
-theme_override_constants/margin_right = 50
-theme_override_constants/margin_bottom = 50
-
-[node name="VBox" type="VBoxContainer" parent="UILayer/SaveLoadScreen/MarginContainer" unique_id=1691639511]
-layout_mode = 2
-
-[node name="Header" type="HBoxContainer" parent="UILayer/SaveLoadScreen/MarginContainer/VBox" unique_id=1283299740]
-layout_mode = 2
-
-[node name="SaveLoadTitle" type="Label" parent="UILayer/SaveLoadScreen/MarginContainer/VBox/Header" unique_id=517620077]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_font_sizes/font_size = 28
-text = "存档"
-
-[node name="SaveTab" type="Button" parent="UILayer/SaveLoadScreen/MarginContainer/VBox/Header" unique_id=1002993073]
-unique_name_in_owner = true
-layout_mode = 2
-text = "存档"
-
-[node name="LoadTab" type="Button" parent="UILayer/SaveLoadScreen/MarginContainer/VBox/Header" unique_id=1522690837]
-unique_name_in_owner = true
-layout_mode = 2
-text = "读档"
-
-[node name="SlotsContainer" type="GridContainer" parent="UILayer/SaveLoadScreen/MarginContainer/VBox" unique_id=1664010620]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_vertical = 3
-columns = 4
-
-[node name="SettingsScreen" type="PanelContainer" parent="UILayer" unique_id=146383114]
-anchors_preset = 15
-anchor_right = 1.0
-anchor_bottom = 1.0
-grow_horizontal = 2
-grow_vertical = 2
-script = ExtResource("12")
-
-[node name="MarginContainer" type="MarginContainer" parent="UILayer/SettingsScreen" unique_id=2067973000]
-layout_mode = 2
-theme_override_constants/margin_left = 100
-theme_override_constants/margin_top = 80
-theme_override_constants/margin_right = 100
-theme_override_constants/margin_bottom = 80
-
-[node name="SettingsContainer" type="VBoxContainer" parent="UILayer/SettingsScreen/MarginContainer" unique_id=1584004377]
 unique_name_in_owner = true
 layout_mode = 2
 
