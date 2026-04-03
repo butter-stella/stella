@@ -73,10 +73,15 @@ func _on_slot_pressed(slot_id: int):
 			push_warning("SaveLoadScreen: failed to load slot %d" % slot_id)
 
 
-func _input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed:
-		if event.keycode == KEY_ESCAPE:
-			_close()
+func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_RIGHT:
 			_close()
+		accept_event()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed:
+		if event.keycode == KEY_ESCAPE:
+			_close()
+			get_viewport().set_input_as_handled()

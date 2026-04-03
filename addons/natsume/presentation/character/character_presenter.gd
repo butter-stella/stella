@@ -27,6 +27,8 @@ func _ready():
 	SignalBus.char_move_requested.connect(_on_char_move)
 
 	for slot in [slot_left, slot_center, slot_right]:
+		# Decorative nodes must not consume mouse events
+		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_set_slot_state(slot, SlotState.EMPTY)
 
 
