@@ -5,6 +5,8 @@ extends Node
 
 
 func _input(event: InputEvent) -> void:
+	if not NatsumeRuntime.game_state.is_playing():
+		return
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 			SignalBus.advance_requested.emit()
