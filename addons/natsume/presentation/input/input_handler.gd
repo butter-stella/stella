@@ -1,12 +1,9 @@
 ## Converts player input (click, space, enter) into SignalBus.advance_requested.
-## Uses _input instead of _unhandled_input to ensure clicks are captured
-## even when fullscreen UI panels (NVL/overlay) cover the viewport.
+## Uses _unhandled_input so overlay scenes naturally block advance input.
 extends Node
 
 
-func _input(event: InputEvent) -> void:
-	if not NatsumeRuntime.game_state.is_playing():
-		return
+func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 			SignalBus.advance_requested.emit()

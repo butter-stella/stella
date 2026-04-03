@@ -32,6 +32,7 @@ func _ready():
 	SignalBus.hide_dialogue.connect(func(): visible = false; _nvl_text = "")
 	SignalBus.scenario_ended_event.connect(func(_id): visible = false)
 	visible = false
+	mouse_filter = Control.MOUSE_FILTER_PASS
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
 	_setup_toolbar()
