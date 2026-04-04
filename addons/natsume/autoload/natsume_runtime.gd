@@ -176,18 +176,22 @@ func continue_from_save(slot_id: int) -> bool:
 
 	# Determine if we're on the title screen (directly or via overlay opened from title)
 	var from_title = _is_on_title_screen()
-	_close_current_overlay()
 
 	if from_title:
-		# From title screen: switch to game scene first
+		# From title screen: switch to game scene first.
+		# Close overlay AFTER scene change — queue_free before change_scene_to_file
+		# causes tree_changed to fire from overlay removal instead of scene swap,
+		# so presenters aren't connected when restore signals emit.
 		game_state.transition_to(GameStateMachine.State.PLAYING)
 		get_tree().change_scene_to_file(_get_game_scene_path())
 		await get_tree().tree_changed
 		await get_tree().process_frame
+		_close_current_overlay()
 		_load_scenario_and_restore(scenario_path, slot_id)
 		return true
 
 	# In-game: reload in place
+	_close_current_overlay()
 	_reset_presentation()
 	game_state.transition_to(GameStateMachine.State.PLAYING)
 	_load_scenario_and_restore(scenario_path, slot_id)
