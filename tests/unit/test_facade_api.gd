@@ -309,6 +309,74 @@ func test_show_save_load_from_title():
 	runtime.close_overlay()
 
 
+## --- Load from title: overlay must not interfere with scene change ---
+
+func test_continue_from_save_overlay_not_closed_before_scene_change():
+	# Regression: _close_current_overlay() before change_scene_to_file caused
+	# tree_changed to fire from overlay removal, not scene change.
+	# Verify: calling continue_from_save does NOT synchronously close the overlay.
+	# The overlay must survive until after the first await (scene change).
+	#
+	# Note: We call continue_from_save WITHOUT await. It runs synchronously up to
+	# `await tree_changed`, then suspends. This also triggers a deferred
+	# change_scene_to_file which loads the game scene into the tree. We must
+	# await it to settle before the next test runs.
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var orig_path = runtime._last_scenario_path
+	runtime._last_scenario_path = runtime.config.scenario_path
+
+	# Create a save to load
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	runtime.save(60)
+
+	# Simulate: title → open save/load overlay → state=SAVE_LOAD, prev=TITLE
+	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
+	runtime.show_save_load("load")
+	assert_not_null(runtime._current_overlay, "overlay should exist before continue_from_save")
+
+	# Call continue_from_save WITHOUT await — it runs synchronously up to the
+	# first await (change_scene_to_file + tree_changed). At that suspend point,
+	# _current_overlay must still be alive (not yet closed).
+	runtime.continue_from_save(60)
+
+	# After the synchronous portion, the overlay must NOT have been closed yet.
+	# With the bug (old code), _current_overlay would already be null here.
+	assert_not_null(runtime._current_overlay,
+		"overlay must survive until after scene change — closing it before "
+		+ "change_scene_to_file causes tree_changed to fire prematurely")
+
+	# Clean up: abort pending engine, close overlay, restore state.
+	runtime.engine.stop()
+	runtime._close_current_overlay()
+	runtime.presentation_state.clear()
+	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
+	runtime._last_scenario_path = orig_path
+	runtime.delete_save(60)
+	# Let the deferred scene change settle — the game scene will load, which
+	# adds presenters that connect to SignalBus. Disconnect them to avoid
+	# contaminating later signal-based tests.
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_disconnect_game_presenters()
+
+
+## Helper: disconnect game scene presenters from SignalBus to prevent test contamination.
+func _disconnect_game_presenters():
+	for sig_name in ["bg_changed", "char_show", "char_hide",
+			"char_expression_changed", "char_anim_requested", "char_move_requested",
+			"bgm_play", "bgm_stop", "se_play", "se_stop", "voice_play",
+			"show_dialogue", "hide_dialogue", "choice_show",
+			"fade_requested", "effect_requested",
+			"scenario_ended_event"]:
+		var sig = SignalBus.get(sig_name)
+		if sig is Signal:
+			for conn in sig.get_connections():
+				var obj = conn["callable"].get_object()
+				if obj != null and not obj is GutTest and obj != NatsumeRuntime \
+						and obj != NatsumeRuntime.presentation_state:
+					sig.disconnect(conn["callable"])
+
+
 ## --- Overlay Config ---
 
 func test_config_has_overlay_scene_overrides():
