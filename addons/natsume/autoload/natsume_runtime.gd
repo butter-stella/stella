@@ -302,12 +302,13 @@ func quick_load() -> bool:
 	_last_scenario_path = scenario_path
 
 	# From title screen: need to switch to game scene first
+	# Close overlay AFTER scene ready — same reason as continue_from_save.
 	if game_state.current_state == GameStateMachine.State.TITLE:
-		_close_current_overlay()
 		game_state.transition_to(GameStateMachine.State.PLAYING)
 		get_tree().change_scene_to_file(_get_game_scene_path())
 		await get_tree().tree_changed
 		await get_tree().process_frame
+		_close_current_overlay()
 		_prepare_scenario(scenario_path)
 		var ok = save_manager.quick_load()
 		if ok:
@@ -372,12 +373,13 @@ func continue_game() -> bool:
 	_last_scenario_path = scenario_path
 
 	# From title screen: switch to game scene first
+	# Close overlay AFTER scene ready — same reason as continue_from_save.
 	if game_state.current_state == GameStateMachine.State.TITLE:
-		_close_current_overlay()
 		game_state.transition_to(GameStateMachine.State.PLAYING)
 		get_tree().change_scene_to_file(_get_game_scene_path())
 		await get_tree().tree_changed
 		await get_tree().process_frame
+		_close_current_overlay()
 		_prepare_scenario(scenario_path)
 		var ok = _load_continue(continue_type)
 		if ok:
