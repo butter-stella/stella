@@ -380,29 +380,42 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 
 	_current_character = character
 	var config = _config_loader.get_config(character)
-	var base_path = NatsumeRuntime.characters_path + "%s/" % character
-	var tex: Texture2D = null
 
-	# Priority 1: dedicated avatar from config
-	if config.has_avatars():
-		var avatar_file = config.get_avatar(expression)
-		if avatar_file != "":
-			var path = base_path + "%s.png" % avatar_file
-			if FileAccess.file_exists(path):
-				tex = load(path) as Texture2D
-
-	# Priority 2: fallback to avatar/ directory convention
-	if tex == null:
-		var path = base_path + "avatar/%s.png" % expression
-		if FileAccess.file_exists(path):
-			tex = load(path) as Texture2D
-
-	if tex:
-		avatar_texture.texture = tex
-		avatar_texture.visible = true
-	else:
+	if not config.has_avatar_rect():
 		avatar_texture.visible = false
 		avatar_texture.texture = null
+		return
+
+	# Load the character's expression sprite and crop via AtlasTexture
+	var base_path = NatsumeRuntime.characters_path + "%s/" % character
+	var sprite_path = _resolve_sprite_path(character, expression, config, base_path)
+	if sprite_path == "" or not FileAccess.file_exists(sprite_path):
+		avatar_texture.visible = false
+		avatar_texture.texture = null
+		return
+
+	var source_tex = load(sprite_path) as Texture2D
+	if source_tex == null:
+		avatar_texture.visible = false
+		avatar_texture.texture = null
+		return
+
+	var atlas = AtlasTexture.new()
+	atlas.atlas = source_tex
+	atlas.region = config.avatar_rect
+	avatar_texture.texture = atlas
+	avatar_texture.visible = true
+
+
+func _resolve_sprite_path(character: String, expression: String, config: CharacterConfig, base_path: String) -> String:
+	if config.is_layered():
+		# For layered mode, use the face sprite
+		var face_file = config.get_face(expression)
+		if face_file != "":
+			return base_path + "%s.png" % face_file
+		return ""
+	else:
+		return base_path + "%s.png" % expression
 
 
 func _on_avatar_expression_changed(character: String, expression: String) -> void:

@@ -18,74 +18,60 @@ func _get_avatar() -> TextureRect:
 	return _game_scene.get_node("UILayer/DialoguePanel/MarginContainer/HBox/AvatarTexture")
 
 
-# --- CharacterConfig avatar support ---
+# --- CharacterConfig avatar_rect support ---
 
-func test_config_get_avatar_returns_mapping():
+func test_config_avatar_rect_default_is_zero():
+	var config = CharacterConfig.new()
+	assert_eq(config.avatar_rect, Rect2())
+
+
+func test_config_avatar_rect_loaded_from_dict():
 	var config = CharacterConfig.new()
 	config.load_from_dict({
-		"render_mode": "sprite",
-		"avatars": {
-			"default": "avatar_default",
-			"smile": "avatar_smile",
-		}
+		"avatar_rect": {"x": 80, "y": 10, "w": 200, "h": 200}
 	})
-	assert_eq(config.get_avatar("default"), "avatar_default")
-	assert_eq(config.get_avatar("smile"), "avatar_smile")
+	assert_eq(config.avatar_rect, Rect2(80, 10, 200, 200))
 
 
-func test_config_get_avatar_fallback_to_default():
+func test_config_has_avatar_rect_true():
 	var config = CharacterConfig.new()
 	config.load_from_dict({
-		"render_mode": "sprite",
-		"avatars": {
-			"default": "avatar_default",
-			"smile": "avatar_smile",
-		}
+		"avatar_rect": {"x": 0, "y": 0, "w": 100, "h": 100}
 	})
-	assert_eq(config.get_avatar("nonexistent"), "avatar_default")
+	assert_true(config.has_avatar_rect())
 
 
-func test_config_get_avatar_empty_when_no_avatars():
+func test_config_has_avatar_rect_false_when_default():
 	var config = CharacterConfig.new()
-	assert_eq(config.get_avatar("smile"), "")
+	assert_false(config.has_avatar_rect())
 
 
-func test_config_has_avatars_true():
+func test_config_has_avatar_rect_false_when_zero_size():
 	var config = CharacterConfig.new()
 	config.load_from_dict({
-		"avatars": {"default": "avatar_default"}
+		"avatar_rect": {"x": 50, "y": 50, "w": 0, "h": 0}
 	})
-	assert_true(config.has_avatars())
+	assert_false(config.has_avatar_rect())
 
 
-func test_config_has_avatars_false_when_empty():
+func test_config_avatar_rect_partial_dict_uses_defaults():
 	var config = CharacterConfig.new()
-	assert_false(config.has_avatars())
+	config.load_from_dict({
+		"avatar_rect": {"x": 100, "h": 150}
+	})
+	assert_eq(config.avatar_rect, Rect2(100, 0, 0, 150))
 
 
-func test_config_has_avatars_false_when_dict_empty():
-	var config = CharacterConfig.new()
-	config.load_from_dict({"avatars": {}})
-	assert_false(config.has_avatars())
-
-
-func test_config_avatars_loaded_from_dict():
+func test_config_avatar_rect_coexists_with_layered():
 	var config = CharacterConfig.new()
 	config.load_from_dict({
 		"render_mode": "layered",
 		"default_body": "body_school",
 		"expressions": {"default": "face_default"},
-		"avatars": {
-			"default": "av_default",
-			"happy": "av_happy",
-			"sad": "av_sad",
-		}
+		"avatar_rect": {"x": 0, "y": 0, "w": 200, "h": 200}
 	})
-	assert_eq(config.avatars.size(), 3)
-	assert_eq(config.get_avatar("happy"), "av_happy")
-	# Layered + avatars coexist fine
 	assert_true(config.is_layered())
-	assert_true(config.has_avatars())
+	assert_true(config.has_avatar_rect())
 
 
 # --- Presenter avatar visibility ---
@@ -116,12 +102,13 @@ func test_avatar_hidden_for_narrator():
 	assert_false(avatar.visible, "avatar should be hidden for narrator (empty character)")
 
 
-func test_avatar_hidden_when_no_avatar_files():
-	# Character with no avatar files — avatar should stay hidden
+func test_avatar_hidden_when_no_avatar_rect():
+	# Character without avatar_rect config — avatar should stay hidden
 	SignalBus.show_dialogue.emit("nonexistent_char", "Hello", "", "adv")
 	await get_tree().process_frame
 	var avatar = _get_avatar()
-	assert_false(avatar.visible, "avatar should be hidden when no avatar files exist")
+	assert_false(avatar.visible, "avatar should be hidden when no avatar_rect configured")
+	assert_null(avatar.texture)
 
 
 func test_expression_tracking_via_char_show():
@@ -155,7 +142,6 @@ func test_expression_tracking_cleared_on_hide_all():
 func test_avatar_cleared_on_hide_dialogue():
 	var presenter = _get_presenter()
 	var avatar = _get_avatar()
-	# Simulate showing then hiding dialogue
 	presenter._current_character = "sakura"
 	SignalBus.hide_dialogue.emit()
 	assert_eq(presenter._current_character, "")
