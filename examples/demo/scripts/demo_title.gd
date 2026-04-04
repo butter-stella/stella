@@ -15,6 +15,7 @@ func _ready():
 	if NatsumeRuntime.has_continue_save():
 		_add_button("继续游戏", func(): NatsumeRuntime.continue_game())
 
+	_add_button("读档", func(): NatsumeRuntime.show_save_load("load"))
 	_add_button("设置", func(): NatsumeRuntime.show_settings())
 	_add_button("退出", func(): get_tree().quit())
 

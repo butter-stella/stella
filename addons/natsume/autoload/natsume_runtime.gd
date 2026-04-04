@@ -162,16 +162,35 @@ func load_game(slot_id: int, scenario_path: String = "", game_scene_path: String
 	return true
 
 
-## Continue from quick save (used by toolbar quick-load).
+## Continue from a manual save slot.
+## Works from both title screen (switches to game scene) and in-game (reloads in place).
 func continue_from_save(slot_id: int) -> bool:
-	if _last_scenario_path == "" or not save_manager.has_save(slot_id):
+	if not save_manager.has_save(slot_id):
 		return false
-	if game_state.current_state == GameStateMachine.State.TITLE:
+	var scenario_path = _last_scenario_path
+	if scenario_path == "":
+		scenario_path = config.scenario_path
+	if scenario_path == "":
 		return false
+	_last_scenario_path = scenario_path
+
+	# Determine if we're on the title screen (directly or via overlay opened from title)
+	var from_title = _is_on_title_screen()
 	_close_current_overlay()
+
+	if from_title:
+		# From title screen: switch to game scene first
+		game_state.transition_to(GameStateMachine.State.PLAYING)
+		get_tree().change_scene_to_file(_get_game_scene_path())
+		await get_tree().tree_changed
+		await get_tree().process_frame
+		_load_scenario_and_restore(scenario_path, slot_id)
+		return true
+
+	# In-game: reload in place
 	_reset_presentation()
 	game_state.transition_to(GameStateMachine.State.PLAYING)
-	_load_scenario_and_restore(_last_scenario_path, slot_id)
+	_load_scenario_and_restore(scenario_path, slot_id)
 	return true
 
 
@@ -224,6 +243,21 @@ func _load_scenario_and_restore(scenario_path: String, slot_id: int) -> void:
 	save_manager.load_save(slot_id)
 	presentation_state.emit_restore_signals()
 	engine.run()
+
+
+## Check if we're on the title screen — either directly or via an overlay opened from title.
+func _is_on_title_screen() -> bool:
+	if game_state.current_state == GameStateMachine.State.TITLE:
+		return true
+	# Overlay states opened from title: previous_state is TITLE
+	var overlay_states = [
+		GameStateMachine.State.SAVE_LOAD,
+		GameStateMachine.State.SETTINGS,
+		GameStateMachine.State.BACKLOG,
+	]
+	if game_state.current_state in overlay_states:
+		return game_state.previous_state == GameStateMachine.State.TITLE
+	return false
 
 
 ## Reset current presentation state (for in-scene reload).
