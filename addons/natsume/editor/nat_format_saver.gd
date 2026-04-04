@@ -20,4 +20,5 @@ func _save(resource: Resource, path: String, _flags: int) -> Error:
 	if file == null:
 		return FileAccess.get_open_error()
 	file.store_string(nat.source_code)
+	file.close()
 	return OK
