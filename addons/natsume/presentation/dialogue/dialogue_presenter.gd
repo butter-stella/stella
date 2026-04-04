@@ -388,12 +388,14 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 		var avatar_file = config.get_avatar(expression)
 		if avatar_file != "":
 			var path = base_path + "%s.png" % avatar_file
-			tex = load(path) as Texture2D
+			if FileAccess.file_exists(path):
+				tex = load(path) as Texture2D
 
-	# Priority 2: fallback to expression sprite
+	# Priority 2: fallback to avatar/ directory convention
 	if tex == null:
 		var path = base_path + "avatar/%s.png" % expression
-		tex = load(path) as Texture2D
+		if FileAccess.file_exists(path):
+			tex = load(path) as Texture2D
 
 	if tex:
 		avatar_texture.texture = tex
