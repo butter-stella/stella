@@ -480,6 +480,8 @@ func show_settings() -> void:
 
 ## Close the current overlay and return to previous state.
 func close_overlay() -> void:
+	if config.se_cancel != "":
+		SignalBus.system_se_play.emit(config.se_cancel)
 	_close_current_overlay()
 	game_state.return_to_previous()
 

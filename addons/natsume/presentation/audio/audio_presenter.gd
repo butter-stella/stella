@@ -97,7 +97,14 @@ func _on_bgm_play(asset: String, fade_duration: float):
 		push_warning("AudioPresenter: BGM not found: %s" % asset)
 		return
 
-	var target_db = _bgm_player.volume_db
+	var master = NatsumeRuntime.get_setting("master_volume")
+	if master == null:
+		master = 1.0
+	var bgm_vol = NatsumeRuntime.get_setting("bgm_volume")
+	if bgm_vol == null:
+		bgm_vol = 0.8
+	var target_db = _to_db(master * bgm_vol)
+
 	if fade_duration > 0 and _bgm_player.playing:
 		var tween = create_tween()
 		tween.tween_property(_bgm_player, "volume_db", -80.0, fade_duration)

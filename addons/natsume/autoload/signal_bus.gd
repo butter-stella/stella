@@ -25,7 +25,6 @@ signal se_stop(asset: String)
 signal voice_play(asset: String)
 signal system_se_play(asset: String)
 signal voice_started(character: String, asset: String)
-signal voice_progress(progress: float, current_time: float)
 signal voice_finished()
 
 # Choice

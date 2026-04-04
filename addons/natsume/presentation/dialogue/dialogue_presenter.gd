@@ -27,6 +27,8 @@ var toolbar_icons: Dictionary = {
 	"save": "", "load": "", "settings": "",
 }
 var _voice_replay_btn: Button
+var _auto_btn: Button
+var _skip_btn: Button
 
 
 func _ready():
@@ -83,6 +85,10 @@ func _setup_toolbar():
 		if btn_info["id"] == "voice_replay":
 			_voice_replay_btn = btn
 			btn.visible = false
+		elif btn_info["id"] == "auto":
+			_auto_btn = btn
+		elif btn_info["id"] == "skip":
+			_skip_btn = btn
 
 
 func _on_voice_replay_pressed():
@@ -136,16 +142,10 @@ func _update_button_modulate(btn: Button, btn_id: String):
 
 
 func _update_toggle_buttons():
-	if toolbar == null:
-		return
-	for i in range(toolbar.get_child_count()):
-		var btn = toolbar.get_child(i)
-		var btn_id = ""
-		match i:
-			0: btn_id = "auto"
-			1: btn_id = "skip"
-		if btn_id != "":
-			_update_button_modulate(btn, btn_id)
+	if _auto_btn:
+		_update_button_modulate(_auto_btn, "auto")
+	if _skip_btn:
+		_update_button_modulate(_skip_btn, "skip")
 
 
 func _is_skipping() -> bool:
