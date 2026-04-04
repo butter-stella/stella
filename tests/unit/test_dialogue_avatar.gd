@@ -15,7 +15,7 @@ func _get_presenter():
 
 
 func _get_avatar() -> TextureRect:
-	return _game_scene.get_node("UILayer/DialoguePanel/MarginContainer/HBox/AvatarTexture")
+	return _game_scene.get_node("UILayer/DialoguePanel/HBox/AvatarTexture")
 
 
 # --- CharacterConfig avatar_rect support ---
