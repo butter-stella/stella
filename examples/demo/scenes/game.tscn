@@ -71,6 +71,7 @@ layer = 3
 
 [node name="DialoguePanel" type="Control" parent="UILayer" unique_id=477075954]
 unique_name_in_owner = true
+layout_mode = 3
 anchors_preset = 12
 anchor_top = 1.0
 anchor_right = 1.0
@@ -81,13 +82,14 @@ grow_vertical = 0
 mouse_filter = 2
 script = ExtResource("3")
 
-[node name="DialogueBg" type="Panel" parent="UILayer/DialoguePanel"]
+[node name="DialogueBg" type="Panel" parent="UILayer/DialoguePanel" unique_id=2104429375]
 layout_mode = 1
 anchors_preset = 12
 anchor_top = 1.0
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_top = -200.0
+offset_top = -220.0
+offset_bottom = -3.0517578e-05
 grow_horizontal = 2
 grow_vertical = 0
 mouse_filter = 2
@@ -108,7 +110,7 @@ size_flags_vertical = 8
 theme_override_constants/margin_left = 20
 theme_override_constants/margin_top = 10
 theme_override_constants/margin_right = 20
-theme_override_constants/margin_bottom = 10
+theme_override_constants/margin_bottom = 0
 
 [node name="AvatarTexture" type="TextureRect" parent="UILayer/DialoguePanel/HBox/AvatarContainer" unique_id=604775556]
 custom_minimum_size = Vector2(240, 240)
@@ -116,14 +118,14 @@ layout_mode = 2
 expand_mode = 1
 stretch_mode = 4
 
-[node name="TextArea" type="VBoxContainer" parent="UILayer/DialoguePanel/HBox"]
+[node name="TextArea" type="VBoxContainer" parent="UILayer/DialoguePanel/HBox" unique_id=2012988622]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 8
 
 [node name="MarginContainer" type="MarginContainer" parent="UILayer/DialoguePanel/HBox/TextArea" unique_id=1142875097]
-layout_mode = 2
 custom_minimum_size = Vector2(0, 200)
+layout_mode = 2
 theme_override_constants/margin_left = 15
 theme_override_constants/margin_top = 15
 theme_override_constants/margin_right = 30
