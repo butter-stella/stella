@@ -372,10 +372,13 @@ func _disconnect_game_presenters():
 		var sig = SignalBus.get(sig_name)
 		if sig is Signal:
 			for conn in sig.get_connections():
-				var obj = conn["callable"].get_object()
+				var callable = conn["callable"]
+				if not callable.is_valid():
+					continue
+				var obj = callable.get_object()
 				if obj != null and not obj is GutTest and obj != NatsumeRuntime \
 						and obj != NatsumeRuntime.presentation_state:
-					sig.disconnect(conn["callable"])
+					sig.disconnect(callable)
 
 
 ## --- Overlay Config ---
