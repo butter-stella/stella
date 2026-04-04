@@ -14,10 +14,13 @@ func _ready() -> void:
 
 
 func _build_ui() -> void:
+	var vbox := VBoxContainer.new()
+	vbox.set_anchors_preset(PRESET_FULL_RECT)
+	add_child(vbox)
+
 	# Toolbar
 	var toolbar := HBoxContainer.new()
-	toolbar.set_anchors_preset(PRESET_TOP_WIDE)
-	add_child(toolbar)
+	vbox.add_child(toolbar)
 
 	_file_label = Label.new()
 	_file_label.text = "No file open"
@@ -32,8 +35,7 @@ func _build_ui() -> void:
 
 	# Code editor
 	_code_edit = CodeEdit.new()
-	_code_edit.set_anchors_preset(PRESET_FULL_RECT)
-	_code_edit.offset_top = 30
+	_code_edit.size_flags_vertical = SIZE_EXPAND_FILL
 	_code_edit.gutters_draw_line_numbers = true
 	_code_edit.minimap_draw = true
 	_code_edit.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
@@ -45,7 +47,7 @@ func _build_ui() -> void:
 	_code_edit.syntax_highlighter = _highlighter
 
 	_code_edit.text_changed.connect(_on_text_changed)
-	add_child(_code_edit)
+	vbox.add_child(_code_edit)
 
 
 func open_file(path: String) -> void:
@@ -55,6 +57,7 @@ func open_file(path: String) -> void:
 		return
 	_current_path = path
 	_code_edit.text = file.get_as_text()
+	file.close()
 	_file_label.text = path.get_file()
 	_save_button.disabled = true
 
@@ -80,12 +83,6 @@ func _on_save_pressed() -> void:
 	file.close()
 	_save_button.disabled = true
 	_file_label.text = _current_path.get_file()
-
-	# Update the resource if it's loaded
-	if ResourceLoader.exists(_current_path):
-		var res = ResourceLoader.load(_current_path, "NatScript", ResourceLoader.CACHE_MODE_IGNORE)
-		if res is NatScript:
-			res.source_code = _code_edit.text
 
 
 func _unhandled_key_input(event: InputEvent) -> void:

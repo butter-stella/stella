@@ -22,5 +22,5 @@ func _load(path: String, _original_path: String, _use_sub_threads: bool, _cache_
 		return FileAccess.get_open_error()
 	var res = NatScript.new()
 	res.source_code = file.get_as_text()
-	res.resource_path = path
+	file.close()
 	return res

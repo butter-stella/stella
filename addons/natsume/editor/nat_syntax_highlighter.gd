@@ -37,20 +37,20 @@ func _get_line_syntax_highlighting(line: int) -> Dictionary:
 	# @scene directive
 	if stripped.begins_with("@scene"):
 		result[0] = {"color": COLOR_SCENE}
-		_highlight_quoted_strings(text, result)
+		_highlight_quoted_strings(text, result, COLOR_SCENE)
 		return result
 
 	# @ commands
 	if stripped.begins_with("@"):
 		result[0] = {"color": COLOR_COMMAND}
-		_highlight_quoted_strings(text, result)
+		_highlight_quoted_strings(text, result, COLOR_COMMAND)
 		return result
 
 	# Choice option: - "text" -> target
 	if stripped.begins_with("- "):
 		var offset := text.find("- ")
 		result[offset] = {"color": COLOR_CHOICE_MARKER}
-		_highlight_quoted_strings(text, result)
+		_highlight_quoted_strings(text, result, COLOR_CHOICE_MARKER)
 		_highlight_arrow(text, result)
 		_highlight_braces(text, result)
 		return result
@@ -85,14 +85,14 @@ func _get_line_syntax_highlighting(line: int) -> Dictionary:
 	return result
 
 
-func _highlight_quoted_strings(text: String, result: Dictionary) -> void:
+func _highlight_quoted_strings(text: String, result: Dictionary, base_color: Color = COLOR_DEFAULT) -> void:
 	var i := 0
 	while i < text.length():
 		if text[i] == '"':
 			result[i] = {"color": COLOR_STRING}
 			var end := text.find('"', i + 1)
 			if end >= 0:
-				result[end + 1] = {"color": result.get(0, {"color": COLOR_DEFAULT})["color"]}
+				result[end + 1] = {"color": base_color}
 				i = end + 1
 			else:
 				break
@@ -101,18 +101,15 @@ func _highlight_quoted_strings(text: String, result: Dictionary) -> void:
 
 
 func _highlight_tags(text: String, result: Dictionary) -> void:
-	var i := 0
-	while i < text.length():
-		if text[i] == '#':
-			var end := i + 1
-			while end < text.length() and text[end] != ' ' and text[end] != '\t':
-				end += 1
-			result[i] = {"color": COLOR_TAG}
-			if end < text.length():
-				result[end] = {"color": COLOR_DIALOGUE}
-			i = end
-		else:
-			i += 1
+	var i := text.find("#")
+	while i >= 0:
+		var end := i + 1
+		while end < text.length() and text[end] != ' ' and text[end] != '\t':
+			end += 1
+		result[i] = {"color": COLOR_TAG}
+		if end < text.length():
+			result[end] = {"color": COLOR_DIALOGUE}
+		i = text.find("#", end)
 
 
 func _highlight_inline_effects(text: String, result: Dictionary) -> void:
