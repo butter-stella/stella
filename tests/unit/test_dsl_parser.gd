@@ -256,3 +256,11 @@ sakura「这样啊...」
 	assert_eq(data.scenes[3].id, "ending")
 	# Start scene should have: bg, char_show, dialogue, choice
 	assert_true(data.scenes[0].commands.size() >= 4)
+
+
+func test_voice_command():
+	var data = _parse("""@scene start
+@voice sakura_001""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.type, "voice")
+	assert_eq(cmd.get_string("asset"), "sakura_001")

@@ -14,6 +14,7 @@ var _nvl_text: String = ""  # accumulated NVL text (already shown)
 var _current_mode: String = "adv"
 var _ui_hidden: bool = false
 var _ctrl_held: bool = false  # Ctrl key skip
+var _current_voice: String = ""  # current dialogue voice asset
 
 # Store original anchors for switching between ADV and NVL layout
 var _adv_anchor_top: float
@@ -21,10 +22,11 @@ var _adv_offset_top: float
 
 ## Icon paths — set these to customize toolbar button icons.
 var toolbar_icons: Dictionary = {
-	"auto": "", "skip": "", "backlog": "",
+	"voice_replay": "", "auto": "", "skip": "", "backlog": "",
 	"quick_save": "", "quick_load": "",
 	"save": "", "load": "", "settings": "",
 }
+var _voice_replay_btn: Button
 
 
 func _ready():
@@ -42,6 +44,7 @@ func _setup_toolbar():
 		return
 
 	var buttons = [
+		{"id": "voice_replay", "text": "重听", "callback": _on_voice_replay_pressed},
 		{"id": "auto", "text": "自动", "callback": _on_auto_pressed},
 		{"id": "skip", "text": "快进", "callback": _on_skip_pressed},
 		{"id": "backlog", "text": "记录", "callback": _on_backlog_pressed},
@@ -76,6 +79,15 @@ func _setup_toolbar():
 			btn.text = btn_info["text"]
 
 		toolbar.add_child(btn)
+
+		if btn_info["id"] == "voice_replay":
+			_voice_replay_btn = btn
+			btn.visible = false
+
+
+func _on_voice_replay_pressed():
+	if _current_voice != "":
+		SignalBus.voice_play.emit(_current_voice)
 
 
 func _on_auto_pressed():
@@ -140,9 +152,19 @@ func _is_skipping() -> bool:
 	return NatsumeRuntime.is_skipping() or _ctrl_held
 
 
-func _on_show_dialogue(character: String, text: String, _voice: String, mode: String):
+func _on_show_dialogue(character: String, text: String, voice: String, mode: String):
 	if _ui_hidden:
 		return
+
+	# Trigger voice playback
+	if voice != "":
+		_current_voice = voice
+		SignalBus.voice_play.emit(voice)
+	else:
+		_current_voice = ""
+
+	if _voice_replay_btn:
+		_voice_replay_btn.visible = (_current_voice != "")
 
 	visible = true
 	_current_mode = mode

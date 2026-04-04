@@ -2,15 +2,16 @@
 
 @scene start "序章 — 樱花树下"
 
+@bgm bgm_spring
 @bg bg_school_gate fade 1.0
 @show sakura smile center
 
-sakura「你好！你就是新来的转校生吧？」
-sakura「我叫樱，二年级的。请多关照！」
+sakura「你好！你就是新来的转校生吧？」 #voice:sakura_001
+sakura「我叫樱，二年级的。请多关照！」 #voice:sakura_002
 
 @anim sakura bounce
 
-sakura「今天是你第一天，要不要我带你逛逛校园？」
+sakura「今天是你第一天，要不要我带你逛逛校园？」 #voice:sakura_003
 
 @choice "你该怎么回应？"
   - "好啊，拜托你了！" -> tour {affection += 5}
@@ -20,33 +21,33 @@ sakura「今天是你第一天，要不要我带你逛逛校园？」
 @scene tour "校园漫步"
 
 @expr sakura happy
-sakura「太好了！走吧走吧！」
+sakura「太好了！走吧走吧！」 #voice:sakura_004
 
 @hide sakura
 @bg bg_hallway fade 0.8
 @show sakura smile left
 
-sakura「这里是教学楼的走廊，我们教室在那边——」
+sakura「这里是教学楼的走廊，我们教室在那边——」 #voice:sakura_005
 
 @show senpai default right
 
-sakura「啊！学姐！」
+sakura「啊！学姐！」 #voice:sakura_006
 
 @expr senpai smile
-senpai「小樱，又在到处跑了。」
+senpai「小樱，又在到处跑了。」 #voice:senpai_001
 
-sakura「才没有！我在帮转校生参观呢。」
+sakura「才没有！我在帮转校生参观呢。」 #voice:sakura_007
 
-senpai「这样啊。」
+senpai「这样啊。」 #voice:senpai_002
 
 @expr senpai smile
-senpai「你好，我是三年级的。有什么不懂的可以来找我。」
+senpai「你好，我是三年级的。有什么不懂的可以来找我。」 #voice:senpai_003
 
 @expr sakura happy
-sakura「学姐人超好的哦！是学生会长！」
+sakura「学姐人超好的哦！是学生会长！」 #voice:sakura_008
 
 @expr senpai surprised
-senpai「小樱，别什么都说出来...」
+senpai「小樱，别什么都说出来...」 #voice:senpai_004
 
 @choice
   - "学姐好厉害！" -> praise_senpai {affection += 3}
@@ -78,6 +79,7 @@ sakura「学姐对谁都很温柔呢。」
 //========================================
 @scene cafe "放学后的咖啡店"
 
+@bgm bgm_cafe
 @bg bg_cafe dissolve 1.0
 @show sakura happy left
 @show senpai default right
@@ -137,6 +139,7 @@ sakura「教室在二楼最左边那间！」
 //========================================
 @scene ending "尾声"
 
+@bgm bgm_ending
 @bg bg_outside fade 1.0
 @hide all
 

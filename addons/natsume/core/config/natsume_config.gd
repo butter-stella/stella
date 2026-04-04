@@ -22,6 +22,11 @@ var cg_gallery: bool = false
 var backlog: bool = true
 var save_slots: int = 8
 
+# [system_se] — file names (without extension) for UI sound effects
+var se_click: String = ""       # dialogue advance / general click
+var se_select: String = ""      # choice / menu selection
+var se_cancel: String = ""      # cancel / close overlay
+
 # [overrides]
 var title_scene: String = ""
 var game_scene: String = ""
@@ -54,6 +59,11 @@ func load_from_path(path: String) -> void:
 	cg_gallery = cf.get_value("features", "cg_gallery", cg_gallery)
 	backlog = cf.get_value("features", "backlog", backlog)
 	save_slots = cf.get_value("features", "save_slots", save_slots)
+
+	# [system_se]
+	se_click = cf.get_value("system_se", "click", se_click)
+	se_select = cf.get_value("system_se", "select", se_select)
+	se_cancel = cf.get_value("system_se", "cancel", se_cancel)
 
 	# [overrides]
 	title_scene = cf.get_value("overrides", "title_scene", title_scene)

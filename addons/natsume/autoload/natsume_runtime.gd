@@ -107,6 +107,7 @@ func _register_handlers():
 	registry.register(ChoiceHandler.new())
 	registry.register(BgmHandler.new())
 	registry.register(SeHandler.new())
+	registry.register(VoiceHandler.new())
 	registry.register(FadeHandler.new())
 	registry.register(WaitHandler.new())
 	registry.register(AnimHandler.new())
@@ -538,6 +539,11 @@ func save_settings() -> void:
 ## Reset all settings to defaults.
 func reset_settings() -> void:
 	settings_manager.reset_to_default()
+
+
+## Play a system sound effect (UI clicks, confirmations, etc.)
+func play_system_se(asset: String) -> void:
+	SignalBus.system_se_play.emit(asset)
 
 
 ## Get save metadata for a slot (timestamp, etc). Returns empty dict if no save.
