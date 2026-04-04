@@ -15,6 +15,8 @@ var _current_mode: String = "adv"
 var _ui_hidden: bool = false
 var _ctrl_held: bool = false  # Ctrl key skip
 var _current_voice: String = ""  # current dialogue voice asset
+var _current_voice_character: String = ""
+var _voice_playing: bool = false
 
 # Store original anchors for switching between ADV and NVL layout
 var _adv_anchor_top: float
@@ -35,6 +37,8 @@ func _ready():
 	SignalBus.show_dialogue.connect(_on_show_dialogue)
 	SignalBus.hide_dialogue.connect(func(): visible = false; _nvl_text = "")
 	SignalBus.scenario_ended_event.connect(func(_id): visible = false)
+	SignalBus.voice_started.connect(func(_c, _a): _voice_playing = true)
+	SignalBus.voice_finished.connect(func(): _voice_playing = false)
 	visible = false
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
@@ -93,7 +97,7 @@ func _setup_toolbar():
 
 func _on_voice_replay_pressed():
 	if _current_voice != "":
-		SignalBus.voice_play.emit(_current_voice)
+		SignalBus.voice_play.emit(_current_voice, _current_voice_character)
 
 
 func _on_auto_pressed():
@@ -157,9 +161,10 @@ func _on_show_dialogue(character: String, text: String, voice: String, mode: Str
 		return
 
 	# Trigger voice playback
+	_current_voice_character = character
 	if voice != "":
 		_current_voice = voice
-		SignalBus.voice_play.emit(voice)
+		SignalBus.voice_play.emit(voice, character)
 	else:
 		_current_voice = ""
 
@@ -263,11 +268,12 @@ func _on_show_dialogue(character: String, text: String, voice: String, mode: Str
 	text_label.visible_characters = -1
 	_is_typing = false
 
-	# Auto-play: wait delay then advance
+	# Auto-play: wait for voice (if configured) then delay then advance
 	if NatsumeRuntime.is_auto_playing():
+		if NatsumeRuntime.get_setting("auto_play_wait_voice") and _voice_playing:
+			await SignalBus.voice_finished
 		var delay = NatsumeRuntime.get_setting("auto_play_delay")
 		await get_tree().create_timer(delay).timeout
-		# Only advance if auto-play is still active (user might have toggled off)
 		if NatsumeRuntime.is_auto_playing():
 			SignalBus.advance_requested.emit()
 

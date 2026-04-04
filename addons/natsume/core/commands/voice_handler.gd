@@ -8,4 +8,6 @@ func get_command_type() -> String:
 
 func execute(data: CommandData, _context: ScenarioContext) -> void:
 	var asset = data.get_string("asset", "")
-	SignalBus.voice_play.emit(asset)
+	if asset == "":
+		return
+	SignalBus.voice_play.emit(asset, "")

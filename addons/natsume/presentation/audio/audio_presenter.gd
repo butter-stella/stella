@@ -7,6 +7,7 @@ var _max_se_channels: int = 4
 var _voice_player: AudioStreamPlayer
 var _system_se_player: AudioStreamPlayer
 var _current_voice_character: String = ""
+var _bgm_tween: Tween
 
 
 func _ready():
@@ -39,7 +40,6 @@ func _ready():
 	SignalBus.se_play.connect(_on_se_play)
 	SignalBus.se_stop.connect(_on_se_stop)
 	SignalBus.voice_play.connect(_on_voice_play)
-	SignalBus.show_dialogue.connect(_on_show_dialogue)
 	SignalBus.advance_requested.connect(_on_advance_requested)
 	SignalBus.settings_changed.connect(_on_settings_changed)
 	SignalBus.system_se_play.connect(_on_system_se_play)
@@ -105,24 +105,30 @@ func _on_bgm_play(asset: String, fade_duration: float):
 		bgm_vol = 0.8
 	var target_db = _to_db(master * bgm_vol)
 
+	# Kill any running BGM tween to avoid concurrent coroutines
+	if _bgm_tween and _bgm_tween.is_valid():
+		_bgm_tween.kill()
+
 	if fade_duration > 0 and _bgm_player.playing:
-		var tween = create_tween()
-		tween.tween_property(_bgm_player, "volume_db", -80.0, fade_duration)
-		await tween.finished
+		_bgm_tween = create_tween()
+		_bgm_tween.tween_property(_bgm_player, "volume_db", -80.0, fade_duration)
+		await _bgm_tween.finished
 
 	_bgm_player.stream = stream
 	_bgm_player.volume_db = -80.0
 	_bgm_player.play()
-	var tween = create_tween()
-	tween.tween_property(_bgm_player, "volume_db", target_db, fade_duration)
+	_bgm_tween = create_tween()
+	_bgm_tween.tween_property(_bgm_player, "volume_db", target_db, fade_duration)
 
 
 func _on_bgm_stop(fade_duration: float):
 	if not _bgm_player.playing:
 		return
-	var tween = create_tween()
-	tween.tween_property(_bgm_player, "volume_db", -80.0, fade_duration)
-	tween.tween_callback(func(): _bgm_player.stop())
+	if _bgm_tween and _bgm_tween.is_valid():
+		_bgm_tween.kill()
+	_bgm_tween = create_tween()
+	_bgm_tween.tween_property(_bgm_player, "volume_db", -80.0, fade_duration)
+	_bgm_tween.tween_callback(func(): _bgm_player.stop())
 
 
 # ─── SE ───
@@ -151,11 +157,9 @@ func _on_se_stop(asset: String):
 
 # ─── Voice ───
 
-func _on_show_dialogue(character: String, _text: String, _voice: String, _mode: String):
+func _on_voice_play(asset: String, character: String = ""):
 	_current_voice_character = character
 
-
-func _on_voice_play(asset: String):
 	# Stop any currently playing voice
 	if _voice_player.playing:
 		_voice_player.stop()

@@ -45,13 +45,14 @@ func _populate():
 
 		# Voice replay button
 		var voice_asset = entry.get("voice", "")
+		var entry_char = entry.get("character", "")
 		if voice_asset != "" and NatsumeRuntime.get_setting("voice_replay_on_backlog") != false:
 			var replay_btn = Button.new()
 			replay_btn.text = "▶"
 			replay_btn.flat = true
 			replay_btn.custom_minimum_size = Vector2(32, 0)
 			replay_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-			replay_btn.pressed.connect(func(): SignalBus.voice_play.emit(voice_asset))
+			replay_btn.pressed.connect(func(): SignalBus.voice_play.emit(voice_asset, entry_char))
 			hbox.add_child(replay_btn)
 
 		entries_container.add_child(hbox)
