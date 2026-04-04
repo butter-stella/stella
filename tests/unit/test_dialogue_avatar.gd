@@ -14,8 +14,11 @@ func _get_presenter():
 	return _game_scene.get_node("UILayer/DialoguePanel")
 
 
+func _get_avatar_container() -> Control:
+	return _game_scene.get_node("UILayer/DialoguePanel/HBox/AvatarContainer")
+
 func _get_avatar() -> TextureRect:
-	return _game_scene.get_node("UILayer/DialoguePanel/HBox/AvatarTexture")
+	return _game_scene.get_node("UILayer/DialoguePanel/HBox/AvatarContainer/AvatarTexture")
 
 
 # --- CharacterConfig avatar_rect support ---
@@ -77,37 +80,38 @@ func test_config_avatar_rect_coexists_with_layered():
 # --- Presenter avatar visibility ---
 
 func test_avatar_hidden_initially():
-	var avatar = _get_avatar()
-	assert_false(avatar.visible, "avatar should be hidden initially")
+	var container = _get_avatar_container()
+	assert_false(container.visible, "avatar should be hidden initially")
 
 
 func test_avatar_hidden_in_nvl_mode():
 	SignalBus.show_dialogue.emit("sakura", "Hello", "", "nvl")
 	await get_tree().process_frame
-	var avatar = _get_avatar()
-	assert_false(avatar.visible, "avatar should be hidden in NVL mode")
+	var container = _get_avatar_container()
+	assert_false(container.visible, "avatar should be hidden in NVL mode")
 
 
 func test_avatar_hidden_in_overlay_mode():
 	SignalBus.show_dialogue.emit("sakura", "Hello", "", "overlay")
 	await get_tree().process_frame
-	var avatar = _get_avatar()
-	assert_false(avatar.visible, "avatar should be hidden in overlay mode")
+	var container = _get_avatar_container()
+	assert_false(container.visible, "avatar should be hidden in overlay mode")
 
 
 func test_avatar_hidden_for_narrator():
 	SignalBus.show_dialogue.emit("", "Narration text", "", "adv")
 	await get_tree().process_frame
-	var avatar = _get_avatar()
-	assert_false(avatar.visible, "avatar should be hidden for narrator (empty character)")
+	var container = _get_avatar_container()
+	assert_false(container.visible, "avatar should be hidden for narrator (empty character)")
 
 
 func test_avatar_hidden_when_no_avatar_rect():
 	# Character without avatar_rect config — avatar should stay hidden
 	SignalBus.show_dialogue.emit("nonexistent_char", "Hello", "", "adv")
 	await get_tree().process_frame
+	var container = _get_avatar_container()
 	var avatar = _get_avatar()
-	assert_false(avatar.visible, "avatar should be hidden when no avatar_rect configured")
+	assert_false(container.visible, "avatar should be hidden when no avatar_rect configured")
 	assert_null(avatar.texture)
 
 
@@ -141,9 +145,10 @@ func test_expression_tracking_cleared_on_hide_all():
 
 func test_avatar_cleared_on_hide_dialogue():
 	var presenter = _get_presenter()
+	var container = _get_avatar_container()
 	var avatar = _get_avatar()
 	presenter._current_character = "sakura"
 	SignalBus.hide_dialogue.emit()
 	assert_eq(presenter._current_character, "")
-	assert_false(avatar.visible)
+	assert_false(container.visible)
 	assert_null(avatar.texture)

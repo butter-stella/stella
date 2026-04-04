@@ -8,6 +8,7 @@ extends PanelContainer
 @onready var text_label: RichTextLabel = %TextLabel
 @onready var toolbar: HBoxContainer = %Toolbar
 var avatar_texture: TextureRect
+var _avatar_container: Control
 
 var _char_interval: float = 0.03  # seconds per character
 var _is_typing: bool = false
@@ -50,7 +51,9 @@ func _ready():
 		else: _known_expressions.erase(c)
 	)
 	_config_loader = NatsumeRuntime.character_config_loader
-	avatar_texture = get_node_or_null("%AvatarTexture")
+	_avatar_container = get_node_or_null("%AvatarContainer")
+	if _avatar_container:
+		avatar_texture = _avatar_container.get_node_or_null("AvatarTexture")
 	visible = false
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
@@ -364,18 +367,19 @@ func _on_hide_dialogue():
 	visible = false
 	_nvl_text = ""
 	_current_character = ""
-	if avatar_texture:
-		avatar_texture.visible = false
-		avatar_texture.texture = null
+	if _avatar_container:
+		_avatar_container.visible = false
+		if avatar_texture:
+			avatar_texture.texture = null
 
 
 func _update_avatar(character: String, expression: String, mode: String) -> void:
-	if avatar_texture == null:
+	if _avatar_container == null or avatar_texture == null:
 		return
 
 	# Only show avatar in ADV mode when a character is speaking
 	if mode != "adv" or character == "":
-		avatar_texture.visible = false
+		_avatar_container.visible = false
 		avatar_texture.texture = null
 		return
 
@@ -383,7 +387,7 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 
 	if not config.has_avatar_rect():
 		_current_character = ""
-		avatar_texture.visible = false
+		_avatar_container.visible = false
 		avatar_texture.texture = null
 		return
 
@@ -394,14 +398,14 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 		if sprite_path != "":
 			push_warning("DialoguePresenter: avatar sprite not found: %s" % sprite_path)
 		_current_character = ""
-		avatar_texture.visible = false
+		_avatar_container.visible = false
 		avatar_texture.texture = null
 		return
 
 	var source_tex = load(sprite_path) as Texture2D
 	if source_tex == null:
 		_current_character = ""
-		avatar_texture.visible = false
+		_avatar_container.visible = false
 		avatar_texture.texture = null
 		return
 
@@ -410,7 +414,7 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 	atlas.atlas = source_tex
 	atlas.region = config.avatar_rect
 	avatar_texture.texture = atlas
-	avatar_texture.visible = true
+	_avatar_container.visible = true
 
 
 func _resolve_sprite_path(character: String, expression: String, config: CharacterConfig, base_path: String) -> String:

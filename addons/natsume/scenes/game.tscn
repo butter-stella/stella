@@ -83,12 +83,19 @@ script = ExtResource("3")
 [node name="HBox" type="HBoxContainer" parent="UILayer/DialoguePanel"]
 layout_mode = 2
 
-[node name="AvatarTexture" type="TextureRect" parent="UILayer/DialoguePanel/HBox" unique_id=584482898]
+[node name="AvatarContainer" type="MarginContainer" parent="UILayer/DialoguePanel/HBox"]
 unique_name_in_owner = true
 visible = false
-custom_minimum_size = Vector2(160, 160)
 layout_mode = 2
 size_flags_vertical = 8
+theme_override_constants/margin_left = 10
+theme_override_constants/margin_right = 10
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_bottom = 10
+
+[node name="AvatarTexture" type="TextureRect" parent="UILayer/DialoguePanel/HBox/AvatarContainer" unique_id=584482898]
+custom_minimum_size = Vector2(160, 160)
+layout_mode = 2
 stretch_mode = 4
 expand_mode = 3
 
