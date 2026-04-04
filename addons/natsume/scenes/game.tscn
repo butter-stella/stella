@@ -69,8 +69,20 @@ offset_bottom = -138.0
 [node name="UILayer" type="CanvasLayer" parent="." unique_id=25130991]
 layer = 3
 
-[node name="DialoguePanel" type="PanelContainer" parent="UILayer" unique_id=1870871759]
+[node name="DialoguePanel" type="Control" parent="UILayer" unique_id=1870871759]
 unique_name_in_owner = true
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = -300.0
+grow_horizontal = 2
+grow_vertical = 0
+mouse_filter = 2
+script = ExtResource("3")
+
+[node name="DialogueBg" type="Panel" parent="UILayer/DialoguePanel"]
+layout_mode = 1
 anchors_preset = 12
 anchor_top = 1.0
 anchor_right = 1.0
@@ -78,45 +90,55 @@ anchor_bottom = 1.0
 offset_top = -200.0
 grow_horizontal = 2
 grow_vertical = 0
-script = ExtResource("3")
+mouse_filter = 2
 
 [node name="HBox" type="HBoxContainer" parent="UILayer/DialoguePanel"]
-layout_mode = 2
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
 
 [node name="AvatarContainer" type="MarginContainer" parent="UILayer/DialoguePanel/HBox"]
 unique_name_in_owner = true
 visible = false
 layout_mode = 2
 size_flags_vertical = 8
-theme_override_constants/margin_left = 10
-theme_override_constants/margin_right = 10
+theme_override_constants/margin_left = 20
 theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 20
 theme_override_constants/margin_bottom = 10
 
 [node name="AvatarTexture" type="TextureRect" parent="UILayer/DialoguePanel/HBox/AvatarContainer" unique_id=584482898]
-custom_minimum_size = Vector2(160, 160)
+custom_minimum_size = Vector2(240, 240)
 layout_mode = 2
+expand_mode = 1
 stretch_mode = 4
-expand_mode = 3
 
-[node name="MarginContainer" type="MarginContainer" parent="UILayer/DialoguePanel/HBox" unique_id=1524759950]
+[node name="TextArea" type="VBoxContainer" parent="UILayer/DialoguePanel/HBox"]
 layout_mode = 2
 size_flags_horizontal = 3
+size_flags_vertical = 8
+
+[node name="MarginContainer" type="MarginContainer" parent="UILayer/DialoguePanel/HBox/TextArea" unique_id=1524759950]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 200)
 theme_override_constants/margin_left = 15
 theme_override_constants/margin_top = 15
 theme_override_constants/margin_right = 30
 theme_override_constants/margin_bottom = 15
 
-[node name="VBox" type="VBoxContainer" parent="UILayer/DialoguePanel/HBox/MarginContainer"]
+[node name="VBox" type="VBoxContainer" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer"]
 layout_mode = 2
 
-[node name="NameLabel" type="Label" parent="UILayer/DialoguePanel/HBox/MarginContainer/VBox" unique_id=158493987]
+[node name="NameLabel" type="Label" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox" unique_id=158493987]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.72, 0.77, 1)
 theme_override_font_sizes/font_size = 24
 
-[node name="TextLabel" type="RichTextLabel" parent="UILayer/DialoguePanel/HBox/MarginContainer/VBox" unique_id=1270479636]
+[node name="TextLabel" type="RichTextLabel" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox" unique_id=1270479636]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 120)
 layout_mode = 2
@@ -125,7 +147,7 @@ bbcode_enabled = true
 fit_content = true
 visible_characters = 0
 
-[node name="Toolbar" type="HBoxContainer" parent="UILayer/DialoguePanel/HBox/MarginContainer/VBox" unique_id=946234756]
+[node name="Toolbar" type="HBoxContainer" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox" unique_id=946234756]
 unique_name_in_owner = true
 layout_mode = 2
 alignment = 2

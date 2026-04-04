@@ -1,20 +1,20 @@
-[gd_scene format=3]
+[gd_scene format=3 uid="uid://jqiu80nc2jkk"]
 
-[ext_resource type="Script" path="res://addons/natsume/presentation/background/background_presenter.gd" id="1"]
-[ext_resource type="Script" path="res://addons/natsume/presentation/character/character_presenter.gd" id="2"]
-[ext_resource type="Script" path="res://addons/natsume/presentation/dialogue/dialogue_presenter.gd" id="3"]
-[ext_resource type="Script" path="res://addons/natsume/presentation/choice/text_choice_presenter.gd" id="4"]
-[ext_resource type="Script" path="res://addons/natsume/presentation/input/input_handler.gd" id="5"]
+[ext_resource type="Script" uid="uid://r85pc74kv7i3" path="res://addons/natsume/presentation/background/background_presenter.gd" id="1"]
+[ext_resource type="Script" uid="uid://boya1orvodq01" path="res://addons/natsume/presentation/character/character_presenter.gd" id="2"]
+[ext_resource type="Script" uid="uid://dn3xiyn8tgmvf" path="res://addons/natsume/presentation/dialogue/dialogue_presenter.gd" id="3"]
+[ext_resource type="Script" uid="uid://blb0ko5o6p7ex" path="res://addons/natsume/presentation/choice/text_choice_presenter.gd" id="4"]
+[ext_resource type="Script" uid="uid://dsbqcj0usnsh2" path="res://addons/natsume/presentation/input/input_handler.gd" id="5"]
 [ext_resource type="Script" path="res://addons/natsume/presentation/effects/fade_presenter.gd" id="7"]
-[ext_resource type="Script" path="res://addons/natsume/presentation/effects/screen_effects.gd" id="8"]
+[ext_resource type="Script" uid="uid://wkgv23f4gu6f" path="res://addons/natsume/presentation/effects/screen_effects.gd" id="8"]
 
-[node name="Game" type="Node2D"]
+[node name="Game" type="Node2D" unique_id=45668777]
 
-[node name="BackgroundLayer" type="CanvasLayer" parent="."]
+[node name="BackgroundLayer" type="CanvasLayer" parent="." unique_id=140001289]
 layer = 0
 script = ExtResource("1")
 
-[node name="BgFront" type="TextureRect" parent="BackgroundLayer"]
+[node name="BgFront" type="TextureRect" parent="BackgroundLayer" unique_id=2141776069]
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
@@ -22,7 +22,7 @@ grow_horizontal = 2
 grow_vertical = 2
 stretch_mode = 6
 
-[node name="BgBack" type="TextureRect" parent="BackgroundLayer"]
+[node name="BgBack" type="TextureRect" parent="BackgroundLayer" unique_id=23962464]
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
@@ -30,10 +30,10 @@ grow_horizontal = 2
 grow_vertical = 2
 stretch_mode = 6
 
-[node name="CharacterLayer" type="CanvasLayer" parent="."]
+[node name="CharacterLayer" type="CanvasLayer" parent="." unique_id=1578607276]
 script = ExtResource("2")
 
-[node name="SlotLeft" type="Control" parent="CharacterLayer"]
+[node name="SlotLeft" type="Control" parent="CharacterLayer" unique_id=481418292]
 layout_mode = 3
 anchor_left = -0.2
 anchor_top = 0.2
@@ -44,7 +44,7 @@ offset_top = -133.0
 offset_right = 287.0
 offset_bottom = -133.0
 
-[node name="SlotCenter" type="Control" parent="CharacterLayer"]
+[node name="SlotCenter" type="Control" parent="CharacterLayer" unique_id=672468379]
 layout_mode = 3
 anchor_left = 0.1
 anchor_top = 0.2
@@ -55,7 +55,7 @@ offset_top = -136.0
 offset_right = 2.0
 offset_bottom = -136.0
 
-[node name="SlotRight" type="Control" parent="CharacterLayer"]
+[node name="SlotRight" type="Control" parent="CharacterLayer" unique_id=1691991501]
 layout_mode = 3
 anchor_left = 0.6
 anchor_top = 0.2
@@ -66,11 +66,23 @@ offset_top = -138.0
 offset_right = -293.0
 offset_bottom = -138.0
 
-[node name="UILayer" type="CanvasLayer" parent="."]
+[node name="UILayer" type="CanvasLayer" parent="." unique_id=441214566]
 layer = 3
 
-[node name="DialoguePanel" type="PanelContainer" parent="UILayer"]
+[node name="DialoguePanel" type="Control" parent="UILayer" unique_id=477075954]
 unique_name_in_owner = true
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = -300.0
+grow_horizontal = 2
+grow_vertical = 0
+mouse_filter = 2
+script = ExtResource("3")
+
+[node name="DialogueBg" type="Panel" parent="UILayer/DialoguePanel"]
+layout_mode = 1
 anchors_preset = 12
 anchor_top = 1.0
 anchor_right = 1.0
@@ -78,45 +90,55 @@ anchor_bottom = 1.0
 offset_top = -200.0
 grow_horizontal = 2
 grow_vertical = 0
-script = ExtResource("3")
+mouse_filter = 2
 
-[node name="HBox" type="HBoxContainer" parent="UILayer/DialoguePanel"]
-layout_mode = 2
+[node name="HBox" type="HBoxContainer" parent="UILayer/DialoguePanel" unique_id=497369499]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
 
-[node name="AvatarContainer" type="MarginContainer" parent="UILayer/DialoguePanel/HBox"]
+[node name="AvatarContainer" type="MarginContainer" parent="UILayer/DialoguePanel/HBox" unique_id=120143067]
 unique_name_in_owner = true
 visible = false
 layout_mode = 2
 size_flags_vertical = 8
-theme_override_constants/margin_left = 10
-theme_override_constants/margin_right = 10
+theme_override_constants/margin_left = 20
 theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 20
 theme_override_constants/margin_bottom = 10
 
-[node name="AvatarTexture" type="TextureRect" parent="UILayer/DialoguePanel/HBox/AvatarContainer"]
-custom_minimum_size = Vector2(160, 160)
+[node name="AvatarTexture" type="TextureRect" parent="UILayer/DialoguePanel/HBox/AvatarContainer" unique_id=604775556]
+custom_minimum_size = Vector2(240, 240)
 layout_mode = 2
+expand_mode = 1
 stretch_mode = 4
-expand_mode = 3
 
-[node name="MarginContainer" type="MarginContainer" parent="UILayer/DialoguePanel/HBox"]
+[node name="TextArea" type="VBoxContainer" parent="UILayer/DialoguePanel/HBox"]
 layout_mode = 2
 size_flags_horizontal = 3
+size_flags_vertical = 8
+
+[node name="MarginContainer" type="MarginContainer" parent="UILayer/DialoguePanel/HBox/TextArea" unique_id=1142875097]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 200)
 theme_override_constants/margin_left = 15
 theme_override_constants/margin_top = 15
 theme_override_constants/margin_right = 30
 theme_override_constants/margin_bottom = 15
 
-[node name="VBox" type="VBoxContainer" parent="UILayer/DialoguePanel/HBox/MarginContainer"]
+[node name="VBox" type="VBoxContainer" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer" unique_id=2072226572]
 layout_mode = 2
 
-[node name="NameLabel" type="Label" parent="UILayer/DialoguePanel/HBox/MarginContainer/VBox"]
+[node name="NameLabel" type="Label" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox" unique_id=434916363]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.72, 0.77, 1)
 theme_override_font_sizes/font_size = 24
 
-[node name="TextLabel" type="RichTextLabel" parent="UILayer/DialoguePanel/HBox/MarginContainer/VBox"]
+[node name="TextLabel" type="RichTextLabel" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox" unique_id=1853883713]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 120)
 layout_mode = 2
@@ -125,12 +147,12 @@ bbcode_enabled = true
 fit_content = true
 visible_characters = 0
 
-[node name="Toolbar" type="HBoxContainer" parent="UILayer/DialoguePanel/HBox/MarginContainer/VBox"]
+[node name="Toolbar" type="HBoxContainer" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox" unique_id=761869505]
 unique_name_in_owner = true
 layout_mode = 2
 alignment = 2
 
-[node name="ChoicePanel" type="PanelContainer" parent="UILayer"]
+[node name="ChoicePanel" type="PanelContainer" parent="UILayer" unique_id=947903029]
 anchors_preset = 8
 anchor_left = 0.5
 anchor_top = 0.5
@@ -144,30 +166,30 @@ grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("4")
 
-[node name="MarginContainer" type="MarginContainer" parent="UILayer/ChoicePanel"]
+[node name="MarginContainer" type="MarginContainer" parent="UILayer/ChoicePanel" unique_id=1286778033]
 layout_mode = 2
 theme_override_constants/margin_left = 20
 theme_override_constants/margin_top = 20
 theme_override_constants/margin_right = 20
 theme_override_constants/margin_bottom = 20
 
-[node name="VBox" type="VBoxContainer" parent="UILayer/ChoicePanel/MarginContainer"]
+[node name="VBox" type="VBoxContainer" parent="UILayer/ChoicePanel/MarginContainer" unique_id=1478972509]
 layout_mode = 2
 
-[node name="PromptLabel" type="Label" parent="UILayer/ChoicePanel/MarginContainer/VBox"]
+[node name="PromptLabel" type="Label" parent="UILayer/ChoicePanel/MarginContainer/VBox" unique_id=281022468]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 20
 horizontal_alignment = 1
 
-[node name="OptionsContainer" type="VBoxContainer" parent="UILayer/ChoicePanel/MarginContainer/VBox"]
+[node name="OptionsContainer" type="VBoxContainer" parent="UILayer/ChoicePanel/MarginContainer/VBox" unique_id=754683026]
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="FadeLayer" type="CanvasLayer" parent="."]
+[node name="FadeLayer" type="CanvasLayer" parent="." unique_id=1856398908]
 layer = 2
 
-[node name="FadeOverlay" type="ColorRect" parent="FadeLayer"]
+[node name="FadeOverlay" type="ColorRect" parent="FadeLayer" unique_id=922379537]
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
@@ -177,8 +199,8 @@ mouse_filter = 2
 color = Color(0, 0, 0, 1)
 script = ExtResource("7")
 
-[node name="InputHandler" type="Node" parent="."]
+[node name="InputHandler" type="Node" parent="." unique_id=1910812184]
 script = ExtResource("5")
 
-[node name="ScreenEffects" type="Node" parent="."]
+[node name="ScreenEffects" type="Node" parent="." unique_id=1602941451]
 script = ExtResource("8")

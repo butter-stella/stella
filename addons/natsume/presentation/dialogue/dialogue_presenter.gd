@@ -2,7 +2,7 @@
 ## Supports ADV (bottom box), NVL (fullscreen accumulate), overlay modes.
 ## Includes bottom toolbar for game controls.
 ## Handles skip (toolbar + Ctrl held) and auto-play.
-extends PanelContainer
+extends Control
 
 @onready var name_label: Label = %NameLabel
 @onready var text_label: RichTextLabel = %TextLabel
