@@ -133,6 +133,74 @@ func get_quick_save_metadata() -> Dictionary:
 	return _read_metadata(path)
 
 
+## --- Auto Save (triggered on game interruption) ---
+
+func auto_save() -> void:
+	_ensure_dir()
+	var data: Dictionary = {}
+	for provider in _providers:
+		data[provider.get_provider_id()] = provider.capture_snapshot()
+	data["timestamp"] = Time.get_unix_time_from_system()
+
+	var path = save_dir + "autosave.json"
+	var file = FileAccess.open(path, FileAccess.WRITE)
+	if file:
+		file.store_string(JSON.stringify(data))
+
+
+func auto_load() -> bool:
+	var path = save_dir + "autosave.json"
+	if not FileAccess.file_exists(path):
+		return false
+	var file = FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return false
+	var text = file.get_as_text()
+	var data = JSON.parse_string(text)
+	if data == null or not data is Dictionary:
+		return false
+	for provider in _providers:
+		var id = provider.get_provider_id()
+		if data.has(id):
+			provider.restore_snapshot(data[id])
+	return true
+
+
+func has_auto_save() -> bool:
+	return FileAccess.file_exists(save_dir + "autosave.json")
+
+
+func delete_auto_save() -> void:
+	var path = save_dir + "autosave.json"
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(path)
+
+
+func get_auto_save_metadata() -> Dictionary:
+	var path = save_dir + "autosave.json"
+	return _read_metadata(path)
+
+
+## Return "quick", "auto", or "" based on which continue save is newest.
+func get_latest_continue_type() -> String:
+	var has_quick = has_quick_save()
+	var has_auto = has_auto_save()
+	if not has_quick and not has_auto:
+		return ""
+	if has_quick and not has_auto:
+		return "quick"
+	if has_auto and not has_quick:
+		return "auto"
+	# Both exist — compare timestamps
+	var quick_meta = get_quick_save_metadata()
+	var auto_meta = get_auto_save_metadata()
+	var quick_ts: float = quick_meta.get("timestamp", 0.0)
+	var auto_ts: float = auto_meta.get("timestamp", 0.0)
+	if quick_ts >= auto_ts:
+		return "quick"
+	return "auto"
+
+
 ## --- Metadata ---
 
 func get_save_metadata(slot_id: int) -> Dictionary:
