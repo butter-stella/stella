@@ -42,6 +42,7 @@ var _current_overlay: Node = null
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		auto_save()
+		get_tree().quit()
 
 
 func _ready():
@@ -162,16 +163,32 @@ func load_game(slot_id: int, scenario_path: String = "", game_scene_path: String
 	return true
 
 
-## Continue from quick save (used by toolbar quick-load).
+## Continue from a manual save slot.
+## Works from both title screen (switches to game scene) and in-game (reloads in place).
 func continue_from_save(slot_id: int) -> bool:
-	if _last_scenario_path == "" or not save_manager.has_save(slot_id):
+	if not save_manager.has_save(slot_id):
 		return false
-	if game_state.current_state == GameStateMachine.State.TITLE:
+	var scenario_path = _last_scenario_path
+	if scenario_path == "":
+		scenario_path = config.scenario_path
+	if scenario_path == "":
 		return false
+	_last_scenario_path = scenario_path
 	_close_current_overlay()
+
+	# From title screen: switch to game scene first
+	if game_state.current_state == GameStateMachine.State.TITLE:
+		game_state.transition_to(GameStateMachine.State.PLAYING)
+		get_tree().change_scene_to_file(_get_game_scene_path())
+		await get_tree().tree_changed
+		await get_tree().process_frame
+		_load_scenario_and_restore(scenario_path, slot_id)
+		return true
+
+	# In-game: reload in place
 	_reset_presentation()
 	game_state.transition_to(GameStateMachine.State.PLAYING)
-	_load_scenario_and_restore(_last_scenario_path, slot_id)
+	_load_scenario_and_restore(scenario_path, slot_id)
 	return true
 
 

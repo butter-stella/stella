@@ -21,6 +21,7 @@ func _build_ui():
 	var buttons = [
 		{"text": "开始游戏", "callback": _on_start},
 		{"text": "继续游戏", "callback": _on_continue, "condition": NatsumeRuntime.has_continue_save()},
+		{"text": "读档", "callback": _on_load},
 		{"text": "设置", "callback": _on_settings},
 		{"text": "退出", "callback": _on_quit},
 	]
@@ -43,6 +44,10 @@ func _on_start():
 
 func _on_continue():
 	NatsumeRuntime.continue_game()
+
+
+func _on_load():
+	NatsumeRuntime.show_save_load("load")
 
 
 func _on_settings():
