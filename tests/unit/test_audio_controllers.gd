@@ -124,3 +124,39 @@ func test_fade_handler_emits_signal():
 func test_wait_handler_type():
 	var handler = WaitHandler.new()
 	assert_eq(handler.get_command_type(), "wait")
+
+
+# --- VoiceHandler ---
+
+func test_voice_handler_type():
+	var handler = VoiceHandler.new()
+	assert_eq(handler.get_command_type(), "voice")
+
+
+func test_voice_handler_emits_play_signal():
+	var received: Array = []
+	var bus = get_tree().root.get_node("SignalBus")
+	bus.voice_play.connect(func(a, c): received.append({"asset": a, "character": c}))
+
+	var handler = VoiceHandler.new()
+	var cmd = CommandData.new()
+	cmd.type = "voice"
+	cmd.params = {"asset": "sakura_001"}
+	await handler.execute(cmd, ScenarioContext.new())
+
+	assert_eq(received.size(), 1)
+	assert_eq(received[0]["asset"], "sakura_001")
+
+
+func test_voice_handler_empty_asset_does_not_emit():
+	var received: Array = []
+	var bus = get_tree().root.get_node("SignalBus")
+	bus.voice_play.connect(func(a, c): received.append(a))
+
+	var handler = VoiceHandler.new()
+	var cmd = CommandData.new()
+	cmd.type = "voice"
+	cmd.params = {"asset": ""}
+	await handler.execute(cmd, ScenarioContext.new())
+
+	assert_eq(received.size(), 0, "empty asset should not emit voice_play")

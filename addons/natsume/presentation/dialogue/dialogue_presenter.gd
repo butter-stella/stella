@@ -14,6 +14,9 @@ var _nvl_text: String = ""  # accumulated NVL text (already shown)
 var _current_mode: String = "adv"
 var _ui_hidden: bool = false
 var _ctrl_held: bool = false  # Ctrl key skip
+var _current_voice: String = ""  # current dialogue voice asset
+var _current_voice_character: String = ""
+var _voice_playing: bool = false
 
 # Store original anchors for switching between ADV and NVL layout
 var _adv_anchor_top: float
@@ -21,16 +24,21 @@ var _adv_offset_top: float
 
 ## Icon paths — set these to customize toolbar button icons.
 var toolbar_icons: Dictionary = {
-	"auto": "", "skip": "", "backlog": "",
+	"voice_replay": "", "auto": "", "skip": "", "backlog": "",
 	"quick_save": "", "quick_load": "",
 	"save": "", "load": "", "settings": "",
 }
+var _voice_replay_btn: Button
+var _auto_btn: Button
+var _skip_btn: Button
 
 
 func _ready():
 	SignalBus.show_dialogue.connect(_on_show_dialogue)
 	SignalBus.hide_dialogue.connect(func(): visible = false; _nvl_text = "")
 	SignalBus.scenario_ended_event.connect(func(_id): visible = false)
+	SignalBus.voice_started.connect(func(_c, _a): _voice_playing = true)
+	SignalBus.voice_finished.connect(func(): _voice_playing = false)
 	visible = false
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
@@ -42,6 +50,7 @@ func _setup_toolbar():
 		return
 
 	var buttons = [
+		{"id": "voice_replay", "text": "重听", "callback": _on_voice_replay_pressed},
 		{"id": "auto", "text": "自动", "callback": _on_auto_pressed},
 		{"id": "skip", "text": "快进", "callback": _on_skip_pressed},
 		{"id": "backlog", "text": "记录", "callback": _on_backlog_pressed},
@@ -76,6 +85,19 @@ func _setup_toolbar():
 			btn.text = btn_info["text"]
 
 		toolbar.add_child(btn)
+
+		if btn_info["id"] == "voice_replay":
+			_voice_replay_btn = btn
+			btn.visible = false
+		elif btn_info["id"] == "auto":
+			_auto_btn = btn
+		elif btn_info["id"] == "skip":
+			_skip_btn = btn
+
+
+func _on_voice_replay_pressed():
+	if _current_voice != "":
+		SignalBus.voice_play.emit(_current_voice, _current_voice_character)
 
 
 func _on_auto_pressed():
@@ -124,25 +146,30 @@ func _update_button_modulate(btn: Button, btn_id: String):
 
 
 func _update_toggle_buttons():
-	if toolbar == null:
-		return
-	for i in range(toolbar.get_child_count()):
-		var btn = toolbar.get_child(i)
-		var btn_id = ""
-		match i:
-			0: btn_id = "auto"
-			1: btn_id = "skip"
-		if btn_id != "":
-			_update_button_modulate(btn, btn_id)
+	if _auto_btn:
+		_update_button_modulate(_auto_btn, "auto")
+	if _skip_btn:
+		_update_button_modulate(_skip_btn, "skip")
 
 
 func _is_skipping() -> bool:
 	return NatsumeRuntime.is_skipping() or _ctrl_held
 
 
-func _on_show_dialogue(character: String, text: String, _voice: String, mode: String):
+func _on_show_dialogue(character: String, text: String, voice: String, mode: String):
 	if _ui_hidden:
 		return
+
+	# Trigger voice playback
+	_current_voice_character = character
+	if voice != "":
+		_current_voice = voice
+		SignalBus.voice_play.emit(voice, character)
+	else:
+		_current_voice = ""
+
+	if _voice_replay_btn:
+		_voice_replay_btn.visible = (_current_voice != "")
 
 	visible = true
 	_current_mode = mode
@@ -241,11 +268,12 @@ func _on_show_dialogue(character: String, text: String, _voice: String, mode: St
 	text_label.visible_characters = -1
 	_is_typing = false
 
-	# Auto-play: wait delay then advance
+	# Auto-play: wait for voice (if configured) then delay then advance
 	if NatsumeRuntime.is_auto_playing():
+		if NatsumeRuntime.get_setting("auto_play_wait_voice") and _voice_playing:
+			await SignalBus.voice_finished
 		var delay = NatsumeRuntime.get_setting("auto_play_delay")
 		await get_tree().create_timer(delay).timeout
-		# Only advance if auto-play is still active (user might have toggled off)
 		if NatsumeRuntime.is_auto_playing():
 			SignalBus.advance_requested.emit()
 
