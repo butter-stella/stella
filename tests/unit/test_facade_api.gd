@@ -211,6 +211,104 @@ func test_has_continue_save_with_auto_save():
 	runtime.delete_auto_save()
 
 
+## --- continue_from_save from TITLE state ---
+
+func test_continue_from_save_rejects_missing_save():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	runtime._last_scenario_path = runtime.config.scenario_path
+	# Missing save → false regardless of state
+	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
+	var result = await runtime.continue_from_save(99)
+	assert_false(result, "Should return false for missing save")
+
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	result = await runtime.continue_from_save(99)
+	assert_false(result, "Should return false for missing save in-game too")
+
+
+func test_continue_from_save_rejects_empty_scenario_path():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var orig_path = runtime._last_scenario_path
+	var orig_config = runtime.config.scenario_path
+	runtime._last_scenario_path = ""
+	runtime.config.scenario_path = ""
+
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	runtime.save(50)
+	var result = await runtime.continue_from_save(50)
+	assert_false(result, "Should return false when no scenario path available")
+
+	# Restore
+	runtime._last_scenario_path = orig_path
+	runtime.config.scenario_path = orig_config
+	runtime.delete_save(50)
+
+
+func test_is_on_title_screen_direct():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
+	assert_true(runtime._is_on_title_screen(), "Direct TITLE state")
+
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	assert_false(runtime._is_on_title_screen(), "PLAYING state")
+
+
+func test_is_on_title_screen_via_overlay():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	# Simulate: TITLE → show_save_load → state becomes SAVE_LOAD with previous_state = TITLE
+	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
+	runtime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
+	assert_eq(runtime.game_state.current_state, GameStateMachine.State.SAVE_LOAD)
+	assert_eq(runtime.game_state.previous_state, GameStateMachine.State.TITLE)
+	assert_true(runtime._is_on_title_screen(),
+		"SAVE_LOAD with previous=TITLE should be detected as title screen")
+
+
+func test_is_on_title_screen_in_game_overlay():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	# Simulate: PLAYING → show_save_load → state becomes SAVE_LOAD with previous_state = PLAYING
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	runtime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
+	assert_false(runtime._is_on_title_screen(),
+		"SAVE_LOAD with previous=PLAYING should NOT be title screen")
+
+
+func test_continue_from_save_returns_false_no_scenario_path():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var orig_path = runtime._last_scenario_path
+	var orig_config = runtime.config.scenario_path
+	runtime._last_scenario_path = ""
+	runtime.config.scenario_path = ""
+
+	# Even with a valid save, should fail if no scenario path
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	runtime.save(52)
+	var result = await runtime.continue_from_save(52)
+	assert_false(result, "Should return false when no scenario path available")
+
+	# Restore
+	runtime._last_scenario_path = orig_path
+	runtime.config.scenario_path = orig_config
+	runtime.delete_save(52)
+
+
+func test_continue_from_save_returns_false_without_save():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	runtime._last_scenario_path = runtime.config.scenario_path
+	var result = await runtime.continue_from_save(99)
+	assert_false(result, "continue_from_save should return false for non-existent slot")
+
+
+## --- show_save_load from TITLE ---
+
+func test_show_save_load_from_title():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
+	runtime.show_save_load("load")
+	assert_eq(runtime.game_state.current_state, GameStateMachine.State.SAVE_LOAD)
+	runtime.close_overlay()
+
+
 ## --- Overlay Config ---
 
 func test_config_has_overlay_scene_overrides():
