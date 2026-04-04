@@ -150,6 +150,67 @@ func test_start_game_closes_overlay():
 	assert_null(runtime._current_overlay)
 
 
+## --- Continue Game from Title ---
+
+func test_continue_game_returns_false_when_no_saves():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	runtime._last_scenario_path = ""
+	var orig_scenario = runtime.config.scenario_path
+	runtime.config.scenario_path = ""
+	runtime.delete_quick_save()
+	runtime.delete_auto_save()
+
+	# No saves, no scenario path → false
+	assert_false(runtime.continue_game())
+
+	# Restore
+	runtime.config.scenario_path = orig_scenario
+
+
+func test_continue_game_falls_back_to_config_scenario_path():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var orig_path = runtime._last_scenario_path
+	runtime._last_scenario_path = ""
+
+	assert_ne(runtime.config.scenario_path, "", "Config must have scenario_path for this test")
+
+	# Create a quick save so continue has something to load
+	runtime.quick_save()
+	var result = runtime.continue_game()
+	assert_ne(runtime._last_scenario_path, "", "continue_game should resolve scenario path from config")
+
+	# Clean up
+	runtime._last_scenario_path = orig_path
+	runtime.delete_quick_save()
+
+
+func test_has_continue_save_with_quick_save():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	runtime.delete_quick_save()
+	runtime.delete_auto_save()
+	assert_false(runtime.has_continue_save())
+
+	runtime.quick_save()
+	assert_true(runtime.has_continue_save())
+	runtime.delete_quick_save()
+
+
+func test_has_continue_save_with_auto_save():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	runtime.delete_quick_save()
+	runtime.delete_auto_save()
+	assert_false(runtime.has_continue_save())
+
+	# Force auto save by setting state to PLAYING
+	var orig_state = runtime.game_state.current_state
+	runtime.game_state.current_state = GameStateMachine.State.PLAYING
+	runtime.auto_save()
+	runtime.game_state.current_state = orig_state
+
+	assert_true(runtime.has_continue_save())
+	runtime.delete_auto_save()
+
+
 ## --- Overlay Config ---
 
 func test_config_has_overlay_scene_overrides():

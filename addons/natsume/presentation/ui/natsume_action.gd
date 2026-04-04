@@ -38,7 +38,7 @@ func _on_pressed() -> void:
 		Action.START_GAME:
 			NatsumeRuntime.start_game()
 		Action.CONTINUE_GAME:
-			NatsumeRuntime.quick_load()
+			NatsumeRuntime.continue_game()
 		Action.RETURN_TO_TITLE:
 			NatsumeRuntime.return_to_title()
 		Action.QUICK_SAVE:
