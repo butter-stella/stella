@@ -12,13 +12,13 @@ enum SlotState { EMPTY, SHOWING, VISIBLE, HIDING }
 var _character_positions: Dictionary = {}   # character_id -> position_name
 var _character_expressions: Dictionary = {} # character_id -> expression
 var _character_bodies: Dictionary = {}      # character_id -> body_name
-var _config_loader: CharacterConfigLoader = CharacterConfigLoader.new()
+var _config_loader: CharacterConfigLoader
 var _slot_states: Dictionary = {}           # slot -> SlotState
 var _slot_tweens: Dictionary = {}           # slot -> Tween
 
 
 func _ready():
-	_config_loader.set_base_path(NatsumeRuntime.characters_path)
+	_config_loader = NatsumeRuntime.character_config_loader
 
 	SignalBus.char_show.connect(_on_char_show)
 	SignalBus.char_hide.connect(_on_char_hide)

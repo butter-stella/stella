@@ -67,10 +67,11 @@ Launch a sub-agent (sonnet model, background) to review the PR:
 ### 7. Fix CR Feedback
 
 If the CR agent (or any previous CR) found issues:
-- Create a dedicated `fix/` branch
+- **直接在原 PR 分支上修复**，不要另开 fix/ 分支
 - Write tests that expose the bugs first (TDD)
 - Fix the bugs
-- Run tests, commit, PR, CR agent review + merge
+- Run tests, commit, push 更新原 PR
+- CR agent 重新 review
 
 ### 8. Next Task
 

@@ -23,6 +23,7 @@ var read_flags: ReadFlagManager
 var game_state: GameStateMachine
 var unlock_manager: UnlockManager
 var presentation_state: PresentationState
+var character_config_loader: CharacterConfigLoader
 
 ## Resource base paths — populated from config, can be overridden manually.
 var backgrounds_path: String = "res://art/backgrounds/"
@@ -62,6 +63,8 @@ func _ready():
 	unlock_manager = UnlockManager.new()
 	presentation_state = PresentationState.new()
 	presentation_state.connect_signals()
+	character_config_loader = CharacterConfigLoader.new()
+	character_config_loader.set_base_path(characters_path)
 
 	save_manager.register_provider(read_flags)
 	save_manager.register_provider(unlock_manager)

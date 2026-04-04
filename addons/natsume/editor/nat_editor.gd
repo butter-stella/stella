@@ -6,7 +6,7 @@ var _code_edit: CodeEdit
 var _file_label: Label
 var _save_button: Button
 var _current_path: String = ""
-var _highlighter: NatSyntaxHighlighter
+var _highlighter: CodeHighlighter
 
 
 func _ready() -> void:
@@ -43,7 +43,41 @@ func _build_ui() -> void:
 	_code_edit.highlight_current_line = true
 	_code_edit.scroll_smooth = true
 
-	_highlighter = NatSyntaxHighlighter.new()
+	_highlighter = CodeHighlighter.new()
+	_highlighter.number_color = Color(0.85, 0.85, 0.85)
+	_highlighter.function_color = Color(0.4, 0.7, 1.0)
+	_highlighter.member_variable_color = Color(0.85, 0.85, 0.85)
+	# Comments
+	_highlighter.add_color_region("//", "", Color(0.5, 0.5, 0.5), true)
+	# Dialogue brackets
+	_highlighter.add_color_region("\u300c", "\u300d", Color(1.0, 0.9, 0.6))
+	# Monologue brackets
+	_highlighter.add_color_region("\uff08", "\uff09", Color(0.8, 0.8, 0.9))
+	# Inline effects
+	_highlighter.add_color_region("{", "}", Color(0.7, 0.5, 0.9))
+	# Inline expression markers
+	_highlighter.add_color_region("[", "]", Color(0.7, 0.5, 0.9))
+	# Tags
+	_highlighter.add_color_region("#", " ", Color(0.7, 0.5, 0.9), true)
+	# @ commands
+	_highlighter.add_keyword_color("@show", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@hide", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@expr", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@bg", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@bgm", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@se", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@voice", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@anim", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@move", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@fade", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@scene", Color(0.9, 0.4, 0.4))
+	_highlighter.add_keyword_color("@nvl", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@overlay", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@choice", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@wait", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@end", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@cg", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@effect", Color(0.4, 0.7, 1.0))
 	_code_edit.syntax_highlighter = _highlighter
 
 	_code_edit.text_changed.connect(_on_text_changed)
