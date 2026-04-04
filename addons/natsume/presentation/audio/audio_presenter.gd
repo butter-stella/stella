@@ -110,9 +110,13 @@ func _on_bgm_play(asset: String, fade_duration: float):
 		_bgm_tween.kill()
 
 	if fade_duration > 0 and _bgm_player.playing:
-		_bgm_tween = create_tween()
-		_bgm_tween.tween_property(_bgm_player, "volume_db", -80.0, fade_duration)
-		await _bgm_tween.finished
+		var fade_out = create_tween()
+		_bgm_tween = fade_out
+		fade_out.tween_property(_bgm_player, "volume_db", -80.0, fade_duration)
+		await fade_out.finished
+		# If another bgm_play killed our tween, abort this coroutine
+		if _bgm_tween != fade_out:
+			return
 
 	_bgm_player.stream = stream
 	_bgm_player.volume_db = -80.0
