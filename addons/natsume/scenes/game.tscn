@@ -91,7 +91,7 @@ theme_override_constants/margin_bottom = 15
 layout_mode = 2
 theme_override_constants/separation = 15
 
-[node name="AvatarTexture" type="TextureRect" parent="UILayer/DialoguePanel/MarginContainer/HBox"]
+[node name="AvatarTexture" type="TextureRect" parent="UILayer/DialoguePanel/MarginContainer/HBox" unique_id=584482898]
 unique_name_in_owner = true
 visible = false
 custom_minimum_size = Vector2(140, 140)

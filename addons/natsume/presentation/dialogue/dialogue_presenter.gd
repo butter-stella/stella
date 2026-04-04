@@ -7,7 +7,7 @@ extends PanelContainer
 @onready var name_label: Label = %NameLabel
 @onready var text_label: RichTextLabel = %TextLabel
 @onready var toolbar: HBoxContainer = %Toolbar
-@onready var avatar_texture: TextureRect = %AvatarTexture
+var avatar_texture: TextureRect
 
 var _char_interval: float = 0.03  # seconds per character
 var _is_typing: bool = false
@@ -50,6 +50,7 @@ func _ready():
 		else: _known_expressions.erase(c)
 	)
 	_config_loader = NatsumeRuntime.character_config_loader
+	avatar_texture = get_node_or_null("%AvatarTexture")
 	visible = false
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
