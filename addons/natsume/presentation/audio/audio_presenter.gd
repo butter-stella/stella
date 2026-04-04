@@ -195,12 +195,6 @@ func _on_voice_playback_finished():
 
 
 func _on_advance_requested():
-	# Play click SE on manual advance (not skip/auto)
-	if not NatsumeRuntime.is_skipping() and not NatsumeRuntime.is_auto_playing():
-		var click_se = NatsumeRuntime.config.se_click
-		if click_se != "":
-			_on_system_se_play(click_se)
-
 	if _voice_player.playing:
 		var continue_on_advance = NatsumeRuntime.get_setting("voice_continue_on_advance")
 		if not continue_on_advance:

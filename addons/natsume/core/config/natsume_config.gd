@@ -24,7 +24,6 @@ var backlog: bool = true
 var save_slots: int = 8
 
 # [system_se] — file names (without extension) for UI sound effects
-var se_click: String = ""       # dialogue advance / general click
 var se_select: String = ""      # choice / menu selection
 var se_cancel: String = ""      # cancel / close overlay
 
@@ -63,7 +62,6 @@ func load_from_path(path: String) -> void:
 	save_slots = cf.get_value("features", "save_slots", save_slots)
 
 	# [system_se]
-	se_click = cf.get_value("system_se", "click", se_click)
 	se_select = cf.get_value("system_se", "select", se_select)
 	se_cancel = cf.get_value("system_se", "cancel", se_cancel)
 
