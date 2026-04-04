@@ -8,8 +8,9 @@ extends CanvasLayer
 
 func _ready():
 	title_label.text = NatsumeRuntime.config.game_title
-	# Deferred: ensure AudioPresenter is ready before emitting
-	SignalBus.bgm_play.emit.call_deferred("bgm_title", 1.0)
+	# Wait one frame to ensure AudioPresenter is ready
+	await get_tree().process_frame
+	SignalBus.bgm_play.emit("bgm_title", 1.0)
 
 	# Build buttons
 	_add_button("开始游戏", func(): NatsumeRuntime.start_game())
