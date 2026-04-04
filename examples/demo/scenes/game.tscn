@@ -87,16 +87,30 @@ theme_override_constants/margin_top = 15
 theme_override_constants/margin_right = 30
 theme_override_constants/margin_bottom = 15
 
-[node name="VBox" type="VBoxContainer" parent="UILayer/DialoguePanel/MarginContainer"]
+[node name="HBox" type="HBoxContainer" parent="UILayer/DialoguePanel/MarginContainer"]
 layout_mode = 2
+theme_override_constants/separation = 15
 
-[node name="NameLabel" type="Label" parent="UILayer/DialoguePanel/MarginContainer/VBox"]
+[node name="AvatarTexture" type="TextureRect" parent="UILayer/DialoguePanel/MarginContainer/HBox"]
+unique_name_in_owner = true
+visible = false
+custom_minimum_size = Vector2(140, 140)
+layout_mode = 2
+size_flags_vertical = 4
+stretch_mode = 4
+expand_mode = 3
+
+[node name="VBox" type="VBoxContainer" parent="UILayer/DialoguePanel/MarginContainer/HBox"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="NameLabel" type="Label" parent="UILayer/DialoguePanel/MarginContainer/HBox/VBox"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.72, 0.77, 1)
 theme_override_font_sizes/font_size = 24
 
-[node name="TextLabel" type="RichTextLabel" parent="UILayer/DialoguePanel/MarginContainer/VBox"]
+[node name="TextLabel" type="RichTextLabel" parent="UILayer/DialoguePanel/MarginContainer/HBox/VBox"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 120)
 layout_mode = 2
@@ -105,7 +119,7 @@ bbcode_enabled = true
 fit_content = true
 visible_characters = 0
 
-[node name="Toolbar" type="HBoxContainer" parent="UILayer/DialoguePanel/MarginContainer/VBox"]
+[node name="Toolbar" type="HBoxContainer" parent="UILayer/DialoguePanel/MarginContainer/HBox/VBox"]
 unique_name_in_owner = true
 layout_mode = 2
 alignment = 2

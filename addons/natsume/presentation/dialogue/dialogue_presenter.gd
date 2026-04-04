@@ -379,10 +379,10 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 		avatar_texture.texture = null
 		return
 
-	_current_character = character
 	var config = _config_loader.get_config(character)
 
 	if not config.has_avatar_rect():
+		_current_character = ""
 		avatar_texture.visible = false
 		avatar_texture.texture = null
 		return
@@ -393,16 +393,19 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 	if sprite_path == "" or not FileAccess.file_exists(sprite_path):
 		if sprite_path != "":
 			push_warning("DialoguePresenter: avatar sprite not found: %s" % sprite_path)
+		_current_character = ""
 		avatar_texture.visible = false
 		avatar_texture.texture = null
 		return
 
 	var source_tex = load(sprite_path) as Texture2D
 	if source_tex == null:
+		_current_character = ""
 		avatar_texture.visible = false
 		avatar_texture.texture = null
 		return
 
+	_current_character = character
 	var atlas = AtlasTexture.new()
 	atlas.atlas = source_tex
 	atlas.region = config.avatar_rect
