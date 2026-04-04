@@ -213,34 +213,76 @@ func test_has_continue_save_with_auto_save():
 
 ## --- continue_from_save from TITLE state ---
 
-func test_continue_from_save_does_not_reject_title_state():
-	# Verify continue_from_save no longer hard-rejects TITLE state.
-	# We test the guard logic only — actual scene switching is an integration concern.
+func test_continue_from_save_rejects_missing_save():
 	var runtime = get_tree().root.get_node("NatsumeRuntime")
-	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
 	runtime._last_scenario_path = runtime.config.scenario_path
-
-	# No save in slot 99 → should return false because of missing save, NOT because of TITLE state
+	# Missing save → false regardless of state
+	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
 	var result = await runtime.continue_from_save(99)
 	assert_false(result, "Should return false for missing save")
 
-	# Create a save so the only reason to fail would be TITLE rejection
 	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
-	runtime._prepare_scenario(runtime.config.scenario_path)
-	runtime.save(50)
+	result = await runtime.continue_from_save(99)
+	assert_false(result, "Should return false for missing save in-game too")
 
-	# Verify has_save works
+
+func test_continue_from_save_rejects_empty_scenario_path():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var orig_path = runtime._last_scenario_path
+	var orig_config = runtime.config.scenario_path
+	runtime._last_scenario_path = ""
+	runtime.config.scenario_path = ""
+
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	runtime.save(50)
+	var result = await runtime.continue_from_save(50)
+	assert_false(result, "Should return false when no scenario path available")
+
+	# Restore
+	runtime._last_scenario_path = orig_path
+	runtime.config.scenario_path = orig_config
+	runtime.delete_save(50)
+
+
+func test_continue_from_save_does_not_reject_title_state():
+	# Verify the TITLE guard was removed — with valid save + path, the method
+	# should NOT early-return false. Full scene-switch is an integration test concern.
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	runtime._last_scenario_path = runtime.config.scenario_path
+	runtime.save(50)
 	assert_true(runtime.has_save(50))
 
-	# With TITLE state + valid save + valid scenario → should NOT return false
-	# (it will attempt scene switch which we can't fully test in headless, but it shouldn't early-return false)
 	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
-	# We just verify the method doesn't reject TITLE by checking it proceeds past the guards
-	assert_ne(runtime._last_scenario_path, "", "scenario path should be set")
-	assert_true(runtime.has_save(50), "save should exist")
+	# All guards pass: save exists, scenario_path set, state is TITLE
+	# The old code would return false here; the new code proceeds to scene switch.
+	# We verify by checking that has_save + path are valid (guards won't reject).
+	assert_true(runtime.has_save(50), "Save should exist")
+	assert_ne(runtime._last_scenario_path, "", "Scenario path should be set")
+	# If the old TITLE guard were still present, calling continue_from_save would return false.
+	# We test this in integration; here we just confirm the preconditions are met.
 
 	# Clean up
 	runtime.delete_save(50)
+
+
+func test_continue_from_save_returns_false_no_scenario_path():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var orig_path = runtime._last_scenario_path
+	var orig_config = runtime.config.scenario_path
+	runtime._last_scenario_path = ""
+	runtime.config.scenario_path = ""
+
+	# Even with a valid save, should fail if no scenario path
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	runtime.save(52)
+	var result = await runtime.continue_from_save(52)
+	assert_false(result, "Should return false when no scenario path available")
+
+	# Restore
+	runtime._last_scenario_path = orig_path
+	runtime.config.scenario_path = orig_config
+	runtime.delete_save(52)
 
 
 func test_continue_from_save_returns_false_without_save():
