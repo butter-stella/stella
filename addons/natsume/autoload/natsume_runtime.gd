@@ -66,6 +66,14 @@ func _ready():
 	save_manager.register_provider(unlock_manager)
 	save_manager.register_provider(presentation_state)
 
+	# Audio presenter — global, available in all scenes (title, game, overlays)
+	var audio_script = load("res://addons/natsume/presentation/audio/audio_presenter.gd")
+	if audio_script:
+		var audio_node = Node.new()
+		audio_node.name = "AudioPresenter"
+		audio_node.set_script(audio_script)
+		add_child(audio_node)
+
 	registry = CommandRegistry.new()
 	engine = ScenarioEngine.new()
 	engine.registry = registry

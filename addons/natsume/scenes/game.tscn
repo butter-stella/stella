@@ -7,7 +7,6 @@
 [ext_resource type="Script" uid="uid://dsbqcj0usnsh2" path="res://addons/natsume/presentation/input/input_handler.gd" id="5"]
 [ext_resource type="Script" path="res://addons/natsume/presentation/effects/fade_presenter.gd" id="7"]
 [ext_resource type="Script" uid="uid://wkgv23f4gu6f" path="res://addons/natsume/presentation/effects/screen_effects.gd" id="8"]
-[ext_resource type="Script" uid="uid://bcborytacuhy0" path="res://addons/natsume/presentation/audio/audio_presenter.gd" id="9"]
 
 [node name="Game" type="Node2D" unique_id=2021434320]
 
@@ -163,6 +162,3 @@ script = ExtResource("5")
 
 [node name="ScreenEffects" type="Node" parent="." unique_id=191658614]
 script = ExtResource("8")
-
-[node name="AudioPresenter" type="Node" parent="." unique_id=141497012]
-script = ExtResource("9")
