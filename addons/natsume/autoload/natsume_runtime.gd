@@ -53,6 +53,7 @@ func _ready():
 	save_manager = SaveManager.new()
 	settings_manager = SettingsManager.new()
 	settings_manager.load_settings()
+	settings_manager.settings_changed.connect(func(key, val): SignalBus.settings_changed.emit(key, val))
 	backlog_manager = BacklogManager.new()
 	auto_play = AutoPlayController.new()
 	skip_controller = SkipController.new()
