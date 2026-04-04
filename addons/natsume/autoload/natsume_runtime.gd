@@ -39,6 +39,11 @@ var _last_scenario_path: String = ""
 var _current_overlay: Node = null
 
 
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		auto_save()
+
+
 func _ready():
 	# Load project config
 	config = NatsumeConfig.new()
@@ -172,6 +177,7 @@ func continue_from_save(slot_id: int) -> bool:
 
 ## Return to title screen.
 func return_to_title() -> void:
+	auto_save()
 	_close_current_overlay()
 	backlog_manager.clear()
 	auto_play.stop()
@@ -246,11 +252,34 @@ func quick_save() -> void:
 
 
 ## Quick load (separate from manual save slots).
+## Works from both title screen (switches to game scene) and in-game (reloads in place).
 func quick_load() -> bool:
-	if not save_manager.has_quick_save() or _last_scenario_path == "":
+	if not save_manager.has_quick_save():
 		return false
+	var scenario_path = _last_scenario_path
+	if scenario_path == "":
+		scenario_path = config.scenario_path
+	if scenario_path == "":
+		return false
+	_last_scenario_path = scenario_path
+
+	# From title screen: need to switch to game scene first
+	if game_state.current_state == GameStateMachine.State.TITLE:
+		_close_current_overlay()
+		game_state.transition_to(GameStateMachine.State.PLAYING)
+		get_tree().change_scene_to_file(_get_game_scene_path())
+		await get_tree().tree_changed
+		await get_tree().process_frame
+		_prepare_scenario(scenario_path)
+		var ok = save_manager.quick_load()
+		if ok:
+			presentation_state.emit_restore_signals()
+			engine.run()
+		return ok
+
+	# In-game: reload in place
 	_reset_presentation()
-	_prepare_scenario(_last_scenario_path)
+	_prepare_scenario(scenario_path)
 	var ok = save_manager.quick_load()
 	if ok:
 		presentation_state.emit_restore_signals()
@@ -266,6 +295,75 @@ func has_quick_save() -> bool:
 ## Delete the quick save.
 func delete_quick_save() -> void:
 	save_manager.delete_quick_save()
+
+
+## Auto save (triggered on game interruption — return to title, app close).
+func auto_save() -> void:
+	if game_state.current_state != GameStateMachine.State.PLAYING:
+		return
+	save_manager.auto_save()
+
+
+## Whether an auto save exists.
+func has_auto_save() -> bool:
+	return save_manager.has_auto_save()
+
+
+## Delete the auto save.
+func delete_auto_save() -> void:
+	save_manager.delete_auto_save()
+
+
+## Whether any continue save (quick or auto) exists.
+func has_continue_save() -> bool:
+	return save_manager.has_quick_save() or save_manager.has_auto_save()
+
+
+## Continue game — load the newest save between quick save and auto save.
+## Works from title screen (switches scene) and in-game (reloads in place).
+func continue_game() -> bool:
+	var continue_type = save_manager.get_latest_continue_type()
+	if continue_type == "":
+		return false
+
+	var scenario_path = _last_scenario_path
+	if scenario_path == "":
+		scenario_path = config.scenario_path
+	if scenario_path == "":
+		return false
+	_last_scenario_path = scenario_path
+
+	# From title screen: switch to game scene first
+	if game_state.current_state == GameStateMachine.State.TITLE:
+		_close_current_overlay()
+		game_state.transition_to(GameStateMachine.State.PLAYING)
+		get_tree().change_scene_to_file(_get_game_scene_path())
+		await get_tree().tree_changed
+		await get_tree().process_frame
+		_prepare_scenario(scenario_path)
+		var ok = _load_continue(continue_type)
+		if ok:
+			presentation_state.emit_restore_signals()
+			engine.run()
+		return ok
+
+	# In-game: reload in place
+	_reset_presentation()
+	_prepare_scenario(scenario_path)
+	var ok = _load_continue(continue_type)
+	if ok:
+		presentation_state.emit_restore_signals()
+		engine.run()
+	return ok
+
+
+## Load from the appropriate continue save type.
+func _load_continue(continue_type: String) -> bool:
+	if continue_type == "quick":
+		return save_manager.quick_load()
+	elif continue_type == "auto":
+		return save_manager.auto_load()
+	return false
 
 
 ## Save to a specific slot.
