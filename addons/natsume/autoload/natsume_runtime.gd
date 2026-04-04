@@ -174,9 +174,12 @@ func continue_from_save(slot_id: int) -> bool:
 		return false
 	_last_scenario_path = scenario_path
 
-	# From title screen: switch to game scene first
-	if game_state.current_state == GameStateMachine.State.TITLE:
-		_close_current_overlay()
+	# Determine if we're on the title screen (directly or via overlay opened from title)
+	var from_title = _is_on_title_screen()
+	_close_current_overlay()
+
+	if from_title:
+		# From title screen: switch to game scene first
 		game_state.transition_to(GameStateMachine.State.PLAYING)
 		get_tree().change_scene_to_file(_get_game_scene_path())
 		await get_tree().tree_changed
@@ -185,7 +188,6 @@ func continue_from_save(slot_id: int) -> bool:
 		return true
 
 	# In-game: reload in place
-	_close_current_overlay()
 	_reset_presentation()
 	game_state.transition_to(GameStateMachine.State.PLAYING)
 	_load_scenario_and_restore(scenario_path, slot_id)
@@ -241,6 +243,21 @@ func _load_scenario_and_restore(scenario_path: String, slot_id: int) -> void:
 	save_manager.load_save(slot_id)
 	presentation_state.emit_restore_signals()
 	engine.run()
+
+
+## Check if we're on the title screen — either directly or via an overlay opened from title.
+func _is_on_title_screen() -> bool:
+	if game_state.current_state == GameStateMachine.State.TITLE:
+		return true
+	# Overlay states opened from title: previous_state is TITLE
+	var overlay_states = [
+		GameStateMachine.State.SAVE_LOAD,
+		GameStateMachine.State.SETTINGS,
+		GameStateMachine.State.BACKLOG,
+	]
+	if game_state.current_state in overlay_states:
+		return game_state.previous_state == GameStateMachine.State.TITLE
+	return false
 
 
 ## Reset current presentation state (for in-scene reload).

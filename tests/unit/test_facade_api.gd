@@ -244,26 +244,33 @@ func test_continue_from_save_rejects_empty_scenario_path():
 	runtime.delete_save(50)
 
 
-func test_continue_from_save_does_not_reject_title_state():
-	# Verify the TITLE guard was removed — with valid save + path, the method
-	# should NOT early-return false. Full scene-switch is an integration test concern.
+func test_is_on_title_screen_direct():
 	var runtime = get_tree().root.get_node("NatsumeRuntime")
-	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
-	runtime._last_scenario_path = runtime.config.scenario_path
-	runtime.save(50)
-	assert_true(runtime.has_save(50))
-
 	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
-	# All guards pass: save exists, scenario_path set, state is TITLE
-	# The old code would return false here; the new code proceeds to scene switch.
-	# We verify by checking that has_save + path are valid (guards won't reject).
-	assert_true(runtime.has_save(50), "Save should exist")
-	assert_ne(runtime._last_scenario_path, "", "Scenario path should be set")
-	# If the old TITLE guard were still present, calling continue_from_save would return false.
-	# We test this in integration; here we just confirm the preconditions are met.
+	assert_true(runtime._is_on_title_screen(), "Direct TITLE state")
 
-	# Clean up
-	runtime.delete_save(50)
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	assert_false(runtime._is_on_title_screen(), "PLAYING state")
+
+
+func test_is_on_title_screen_via_overlay():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	# Simulate: TITLE → show_save_load → state becomes SAVE_LOAD with previous_state = TITLE
+	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
+	runtime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
+	assert_eq(runtime.game_state.current_state, GameStateMachine.State.SAVE_LOAD)
+	assert_eq(runtime.game_state.previous_state, GameStateMachine.State.TITLE)
+	assert_true(runtime._is_on_title_screen(),
+		"SAVE_LOAD with previous=TITLE should be detected as title screen")
+
+
+func test_is_on_title_screen_in_game_overlay():
+	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	# Simulate: PLAYING → show_save_load → state becomes SAVE_LOAD with previous_state = PLAYING
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	runtime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
+	assert_false(runtime._is_on_title_screen(),
+		"SAVE_LOAD with previous=PLAYING should NOT be title screen")
 
 
 func test_continue_from_save_returns_false_no_scenario_path():
