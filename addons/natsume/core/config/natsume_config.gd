@@ -9,6 +9,7 @@ var has_config_file: bool = false
 # [game]
 var game_title: String = "Natsume"
 var scenario_path: String = "res://scenarios/main.nat"
+var title_bgm: String = ""  # BGM asset name for title screen
 
 # [paths]
 var backgrounds_path: String = "res://art/backgrounds/"
@@ -47,6 +48,7 @@ func load_from_path(path: String) -> void:
 	# [game]
 	game_title = cf.get_value("game", "title", game_title)
 	scenario_path = cf.get_value("game", "scenario", scenario_path)
+	title_bgm = cf.get_value("game", "title_bgm", title_bgm)
 
 	# [paths]
 	backgrounds_path = cf.get_value("paths", "backgrounds", backgrounds_path)

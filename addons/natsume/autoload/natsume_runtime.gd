@@ -87,6 +87,10 @@ func _ready():
 	# Wire dialogue to backlog
 	SignalBus.show_dialogue.connect(_on_dialogue_for_backlog)
 
+	# Play title BGM after AudioPresenter is ready
+	if config.title_bgm != "":
+		_play_title_bgm.call_deferred()
+
 
 ## Apply config values to runtime paths.
 func _apply_config() -> void:
@@ -217,6 +221,8 @@ func return_to_title() -> void:
 	game_state.transition_to(GameStateMachine.State.TITLE)
 	if title_scene_path != "":
 		get_tree().change_scene_to_file(title_scene_path)
+	if config.title_bgm != "":
+		_play_title_bgm()
 
 
 ## Legacy API — starts scenario in current scene (for testing).
@@ -549,6 +555,10 @@ func save_settings() -> void:
 ## Reset all settings to defaults.
 func reset_settings() -> void:
 	settings_manager.reset_to_default()
+
+
+func _play_title_bgm() -> void:
+	SignalBus.bgm_play.emit(config.title_bgm, 1.0)
 
 
 ## Play a system sound effect (UI clicks, confirmations, etc.)
