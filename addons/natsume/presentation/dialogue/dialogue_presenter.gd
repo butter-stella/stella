@@ -19,7 +19,7 @@ var _current_voice: String = ""  # current dialogue voice asset
 var _current_voice_character: String = ""
 var _voice_playing: bool = false
 var _current_character: String = ""  # current speaking character for avatar
-var _config_loader: CharacterConfigLoader = CharacterConfigLoader.new()
+var _config_loader: CharacterConfigLoader
 var _known_expressions: Dictionary = {}  # character_id -> current expression
 
 # Store original anchors for switching between ADV and NVL layout
@@ -49,7 +49,7 @@ func _ready():
 		if c == "all": _known_expressions.clear()
 		else: _known_expressions.erase(c)
 	)
-	_config_loader.set_base_path(NatsumeRuntime.characters_path)
+	_config_loader = NatsumeRuntime.character_config_loader
 	visible = false
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
@@ -390,6 +390,8 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 	var base_path = NatsumeRuntime.characters_path + "%s/" % character
 	var sprite_path = _resolve_sprite_path(character, expression, config, base_path)
 	if sprite_path == "" or not FileAccess.file_exists(sprite_path):
+		if sprite_path != "":
+			push_warning("DialoguePresenter: avatar sprite not found: %s" % sprite_path)
 		avatar_texture.visible = false
 		avatar_texture.texture = null
 		return
