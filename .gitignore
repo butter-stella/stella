@@ -18,5 +18,9 @@ export/
 *.pck
 *.zip
 
+# Demo BGM (copyrighted, local use only)
+examples/demo/audio/bgm/*.mp3
+examples/demo/audio/bgm/*.ogg
+
 # Test results
 .gut_editor_config.json
