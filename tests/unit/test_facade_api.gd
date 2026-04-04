@@ -364,8 +364,9 @@ func test_continue_from_save_overlay_not_closed_before_scene_change():
 func _disconnect_game_presenters():
 	for sig_name in ["bg_changed", "char_show", "char_hide",
 			"char_expression_changed", "char_anim_requested", "char_move_requested",
-			"bgm_play", "bgm_stop", "se_play", "se_stop", "voice_play",
-			"show_dialogue", "hide_dialogue", "choice_show",
+			"bgm_play", "bgm_stop", "se_play", "se_stop",
+			"voice_play", "system_se_play",
+			"show_dialogue", "hide_dialogue", "choice_show", "choice_selected",
 			"fade_requested", "effect_requested",
 			"scenario_ended_event"]:
 		var sig = SignalBus.get(sig_name)

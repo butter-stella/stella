@@ -245,6 +245,10 @@ static func _parse_at_command(token: DslToken) -> CommandData:
 				"asset": parts[0] if parts.size() > 0 else "",
 				"loop": parts[1] == "loop" if parts.size() > 1 else false,
 			})
+		"voice":
+			return _make_cmd("voice", {
+				"asset": parts[0] if parts.size() > 0 else "",
+			})
 		"fade":
 			return _make_cmd("fade", {
 				"direction": parts[0] if parts.size() > 0 else "out",

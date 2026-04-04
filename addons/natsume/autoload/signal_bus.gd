@@ -22,9 +22,9 @@ signal bgm_play(asset: String, fade_duration: float)
 signal bgm_stop(fade_duration: float)
 signal se_play(asset: String, loop: bool)
 signal se_stop(asset: String)
-signal voice_play(asset: String)
+signal voice_play(asset: String, character: String)
+signal system_se_play(asset: String)
 signal voice_started(character: String, asset: String)
-signal voice_progress(progress: float, current_time: float)
 signal voice_finished()
 
 # Choice

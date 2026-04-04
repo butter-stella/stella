@@ -53,6 +53,7 @@ func _ready():
 	save_manager = SaveManager.new()
 	settings_manager = SettingsManager.new()
 	settings_manager.load_settings()
+	settings_manager.settings_changed.connect(func(key, val): SignalBus.settings_changed.emit(key, val))
 	backlog_manager = BacklogManager.new()
 	auto_play = AutoPlayController.new()
 	skip_controller = SkipController.new()
@@ -66,6 +67,14 @@ func _ready():
 	save_manager.register_provider(unlock_manager)
 	save_manager.register_provider(presentation_state)
 
+	# Audio presenter — global, available in all scenes (title, game, overlays)
+	var audio_script = load("res://addons/natsume/presentation/audio/audio_presenter.gd")
+	if audio_script:
+		var audio_node = Node.new()
+		audio_node.name = "AudioPresenter"
+		audio_node.set_script(audio_script)
+		add_child(audio_node)
+
 	registry = CommandRegistry.new()
 	engine = ScenarioEngine.new()
 	engine.registry = registry
@@ -78,6 +87,10 @@ func _ready():
 
 	# Wire dialogue to backlog
 	SignalBus.show_dialogue.connect(_on_dialogue_for_backlog)
+
+	# Play title BGM after AudioPresenter is ready
+	if config.title_bgm != "":
+		_play_title_bgm.call_deferred()
 
 
 ## Apply config values to runtime paths.
@@ -107,6 +120,7 @@ func _register_handlers():
 	registry.register(ChoiceHandler.new())
 	registry.register(BgmHandler.new())
 	registry.register(SeHandler.new())
+	registry.register(VoiceHandler.new())
 	registry.register(FadeHandler.new())
 	registry.register(WaitHandler.new())
 	registry.register(AnimHandler.new())
@@ -208,6 +222,8 @@ func return_to_title() -> void:
 	game_state.transition_to(GameStateMachine.State.TITLE)
 	if title_scene_path != "":
 		get_tree().change_scene_to_file(title_scene_path)
+	if config.title_bgm != "":
+		_play_title_bgm()
 
 
 ## Legacy API — starts scenario in current scene (for testing).
@@ -479,6 +495,8 @@ func show_settings() -> void:
 
 ## Close the current overlay and return to previous state.
 func close_overlay() -> void:
+	if config.se_cancel != "":
+		SignalBus.system_se_play.emit(config.se_cancel)
 	_close_current_overlay()
 	game_state.return_to_previous()
 
@@ -538,6 +556,15 @@ func save_settings() -> void:
 ## Reset all settings to defaults.
 func reset_settings() -> void:
 	settings_manager.reset_to_default()
+
+
+func _play_title_bgm() -> void:
+	SignalBus.bgm_play.emit(config.title_bgm, 1.0)
+
+
+## Play a system sound effect (UI clicks, confirmations, etc.)
+func play_system_se(asset: String) -> void:
+	SignalBus.system_se_play.emit(asset)
 
 
 ## Get save metadata for a slot (timestamp, etc). Returns empty dict if no save.

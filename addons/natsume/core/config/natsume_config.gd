@@ -9,6 +9,7 @@ var has_config_file: bool = false
 # [game]
 var game_title: String = "Natsume"
 var scenario_path: String = "res://scenarios/main.nat"
+var title_bgm: String = ""  # BGM asset name for title screen
 
 # [paths]
 var backgrounds_path: String = "res://art/backgrounds/"
@@ -21,6 +22,10 @@ var voice_path: String = "res://audio/voice/"
 var cg_gallery: bool = false
 var backlog: bool = true
 var save_slots: int = 8
+
+# [system_se] — file names (without extension) for UI sound effects
+var se_select: String = ""      # choice / menu selection
+var se_cancel: String = ""      # cancel / close overlay
 
 # [overrides]
 var title_scene: String = ""
@@ -42,6 +47,7 @@ func load_from_path(path: String) -> void:
 	# [game]
 	game_title = cf.get_value("game", "title", game_title)
 	scenario_path = cf.get_value("game", "scenario", scenario_path)
+	title_bgm = cf.get_value("game", "title_bgm", title_bgm)
 
 	# [paths]
 	backgrounds_path = cf.get_value("paths", "backgrounds", backgrounds_path)
@@ -54,6 +60,10 @@ func load_from_path(path: String) -> void:
 	cg_gallery = cf.get_value("features", "cg_gallery", cg_gallery)
 	backlog = cf.get_value("features", "backlog", backlog)
 	save_slots = cf.get_value("features", "save_slots", save_slots)
+
+	# [system_se]
+	se_select = cf.get_value("system_se", "select", se_select)
+	se_cancel = cf.get_value("system_se", "cancel", se_cancel)
 
 	# [overrides]
 	title_scene = cf.get_value("overrides", "title_scene", title_scene)
