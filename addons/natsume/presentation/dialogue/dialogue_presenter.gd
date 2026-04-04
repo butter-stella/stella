@@ -7,6 +7,7 @@ extends PanelContainer
 @onready var name_label: Label = %NameLabel
 @onready var text_label: RichTextLabel = %TextLabel
 @onready var toolbar: HBoxContainer = %Toolbar
+@onready var avatar_texture: TextureRect = %AvatarTexture
 
 var _char_interval: float = 0.03  # seconds per character
 var _is_typing: bool = false
@@ -17,6 +18,9 @@ var _ctrl_held: bool = false  # Ctrl key skip
 var _current_voice: String = ""  # current dialogue voice asset
 var _current_voice_character: String = ""
 var _voice_playing: bool = false
+var _current_character: String = ""  # current speaking character for avatar
+var _config_loader: CharacterConfigLoader = CharacterConfigLoader.new()
+var _known_expressions: Dictionary = {}  # character_id -> current expression
 
 # Store original anchors for switching between ADV and NVL layout
 var _adv_anchor_top: float
@@ -35,10 +39,17 @@ var _skip_btn: Button
 
 func _ready():
 	SignalBus.show_dialogue.connect(_on_show_dialogue)
-	SignalBus.hide_dialogue.connect(func(): visible = false; _nvl_text = "")
+	SignalBus.hide_dialogue.connect(_on_hide_dialogue)
 	SignalBus.scenario_ended_event.connect(func(_id): visible = false)
 	SignalBus.voice_started.connect(func(_c, _a): _voice_playing = true)
 	SignalBus.voice_finished.connect(func(): _voice_playing = false)
+	SignalBus.char_show.connect(func(c, e, _p): _known_expressions[c] = e)
+	SignalBus.char_expression_changed.connect(_on_avatar_expression_changed)
+	SignalBus.char_hide.connect(func(c):
+		if c == "all": _known_expressions.clear()
+		else: _known_expressions.erase(c)
+	)
+	_config_loader.set_base_path(NatsumeRuntime.characters_path)
 	visible = false
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
@@ -224,6 +235,10 @@ func _on_show_dialogue(character: String, text: String, voice: String, mode: Str
 		text_label.text = clean_text
 		text_label.visible_characters = 0
 
+	# Update avatar for the speaking character
+	var expression = _known_expressions.get(character, "default")
+	_update_avatar(character, expression, mode)
+
 	await get_tree().process_frame
 	_is_typing = true
 
@@ -342,3 +357,53 @@ func _process_inline_effects(text: String) -> Dictionary:
 		i += 1
 
 	return {"text": clean, "effects": effects}
+
+
+func _on_hide_dialogue():
+	visible = false
+	_nvl_text = ""
+	_current_character = ""
+	if avatar_texture:
+		avatar_texture.visible = false
+		avatar_texture.texture = null
+
+
+func _update_avatar(character: String, expression: String, mode: String) -> void:
+	if avatar_texture == null:
+		return
+
+	# Only show avatar in ADV mode when a character is speaking
+	if mode != "adv" or character == "":
+		avatar_texture.visible = false
+		avatar_texture.texture = null
+		return
+
+	_current_character = character
+	var config = _config_loader.get_config(character)
+	var base_path = NatsumeRuntime.characters_path + "%s/" % character
+	var tex: Texture2D = null
+
+	# Priority 1: dedicated avatar from config
+	if config.has_avatars():
+		var avatar_file = config.get_avatar(expression)
+		if avatar_file != "":
+			var path = base_path + "%s.png" % avatar_file
+			tex = load(path) as Texture2D
+
+	# Priority 2: fallback to expression sprite
+	if tex == null:
+		var path = base_path + "avatar/%s.png" % expression
+		tex = load(path) as Texture2D
+
+	if tex:
+		avatar_texture.texture = tex
+		avatar_texture.visible = true
+	else:
+		avatar_texture.visible = false
+		avatar_texture.texture = null
+
+
+func _on_avatar_expression_changed(character: String, expression: String) -> void:
+	_known_expressions[character] = expression
+	if character == _current_character and _current_mode == "adv":
+		_update_avatar(character, expression, "adv")
