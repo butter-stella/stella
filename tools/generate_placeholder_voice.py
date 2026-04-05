@@ -172,7 +172,9 @@ def main():
             text_to_wav(d["text"], wav_path)
             generated += 1
 
-    if not args.dry_run:
+    if args.dry_run:
+        print(f"(dry run — no files written)")
+    else:
         print(f"Generated {generated} WAV files in {args.voice_dir}")
 
     if not args.no_update_nat and not args.dry_run:

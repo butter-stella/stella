@@ -407,6 +407,7 @@ func _on_hide_dialogue():
 	visible = false
 	_nvl_text = ""
 	_current_character = ""
+	_voice_playing = false
 	if _avatar_container:
 		_avatar_container.visible = false
 		if _avatar_texture:
