@@ -62,10 +62,14 @@ func _build_ui():
 	# Fullscreen toggle
 	_add_toggle("全屏", NatsumeRuntime.get_setting("fullscreen"), func(toggled):
 		NatsumeRuntime.set_setting("fullscreen", toggled)
-		if toggled:
-			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
-		else:
-			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+		DisplayHelper.apply(NatsumeRuntime.settings_manager.settings)
+	)
+
+	# Resolution selector
+	_add_option("分辨率", DisplayHelper.get_preset_labels(), DisplayHelper.get_preset_keys().find(NatsumeRuntime.get_setting("resolution")), func(index):
+		var key = DisplayHelper.get_preset_keys()[index]
+		NatsumeRuntime.set_setting("resolution", key)
+		DisplayHelper.apply(NatsumeRuntime.settings_manager.settings)
 	)
 
 	settings_container.add_child(HSeparator.new())
@@ -104,6 +108,25 @@ func _add_slider(label_text: String, current_value: float, min_val: float, max_v
 	value_label.custom_minimum_size = Vector2(50, 0)
 	slider.value_changed.connect(func(val): value_label.text = str(int(val)))
 	hbox.add_child(value_label)
+
+	settings_container.add_child(hbox)
+
+
+func _add_option(label_text: String, options: Array, current_index: int, on_change: Callable):
+	var hbox = HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", 20)
+
+	var label = Label.new()
+	label.text = label_text
+	label.custom_minimum_size = Vector2(200, 0)
+	hbox.add_child(label)
+
+	var option_btn = OptionButton.new()
+	for opt in options:
+		option_btn.add_item(opt)
+	option_btn.selected = max(current_index, 0)
+	option_btn.item_selected.connect(on_change)
+	hbox.add_child(option_btn)
 
 	settings_container.add_child(hbox)
 
