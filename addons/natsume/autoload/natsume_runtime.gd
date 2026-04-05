@@ -54,6 +54,7 @@ func _ready():
 	save_manager = SaveManager.new()
 	settings_manager = SettingsManager.new()
 	settings_manager.load_settings()
+	DisplayHelper.apply(settings_manager.settings)
 	settings_manager.settings_changed.connect(func(key, val): SignalBus.settings_changed.emit(key, val))
 	backlog_manager = BacklogManager.new()
 	auto_play = AutoPlayController.new()
@@ -567,6 +568,7 @@ func save_settings() -> void:
 ## Reset all settings to defaults.
 func reset_settings() -> void:
 	settings_manager.reset_to_default()
+	DisplayHelper.apply(settings_manager.settings)
 
 
 func _play_title_bgm() -> void:
