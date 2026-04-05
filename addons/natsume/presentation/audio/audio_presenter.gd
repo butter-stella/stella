@@ -48,6 +48,13 @@ func _ready():
 	_apply_volumes()
 
 
+func _process(_delta: float) -> void:
+	if _voice_player.playing and _voice_player.stream:
+		var pos = _voice_player.get_playback_position()
+		var dur = _voice_player.stream.get_length()
+		SignalBus.voice_progress.emit(pos, dur)
+
+
 # ─── Volume ───
 
 func _apply_volumes():
