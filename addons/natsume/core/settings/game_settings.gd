@@ -35,6 +35,7 @@ var voice_replay_on_backlog: bool = true
 
 # --- Display ---
 var fullscreen: bool = false
+var resolution: String = "1920x1080"
 var effect_enabled: bool = true
 
 
@@ -62,6 +63,7 @@ func to_dict() -> Dictionary:
 		"voice_continue_on_advance": voice_continue_on_advance,
 		"voice_replay_on_backlog": voice_replay_on_backlog,
 		"fullscreen": fullscreen,
+		"resolution": resolution,
 		"effect_enabled": effect_enabled,
 	}
 
