@@ -308,10 +308,10 @@ func _on_show_dialogue(character: String, text: String, voice: String, mode: Str
 
 
 func _apply_nvl_layout():
-	anchor_left = 0.1
-	anchor_top = 0.1
-	anchor_right = 0.9
-	anchor_bottom = 0.9
+	anchor_left = 0.0
+	anchor_top = 0.0
+	anchor_right = 1.0
+	anchor_bottom = 1.0
 	offset_left = 0
 	offset_top = 0
 	offset_right = 0
