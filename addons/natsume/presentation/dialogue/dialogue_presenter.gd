@@ -38,6 +38,10 @@ var toolbar_icons: Dictionary = {
 var _voice_replay_btn: Button
 var _auto_btn: Button
 var _skip_btn: Button
+var _beep_player: AudioStreamPlayer
+var _beep_stream: AudioStreamWAV
+
+var _punctuation_chars := "。，、！？；：\u201c\u201d\u2018\u2019（）【】…—·.,!?;: \u0022\u0027()-\u3000 "
 
 
 func _ready():
@@ -58,6 +62,7 @@ func _ready():
 		_avatar_texture = _avatar_container.get_node_or_null("AvatarTexture")
 	_dialogue_bg = get_node_or_null("DialogueBg")
 	_text_area = get_node_or_null("HBox/TextArea")
+	_setup_beep()
 	visible = false
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
@@ -285,7 +290,15 @@ func _on_show_dialogue(character: String, text: String, voice: String, mode: Str
 		if expr != "" and character != "":
 			SignalBus.char_expression_changed.emit(character, expr)
 
+		var ch = new_line_text[i]
 		var delay = _char_interval
+		if _punctuation_chars.find(ch) != -1:
+			# Punctuation: pause, no beep
+			delay = NatsumeRuntime.get_setting("punctuation_pause") / 1000.0
+		else:
+			# Normal character: play beep
+			_play_beep()
+
 		for effect in effects:
 			if effect["pos"] == i:
 				if effect["type"] == "wait":
@@ -462,3 +475,42 @@ func _on_avatar_expression_changed(character: String, expression: String) -> voi
 	_known_expressions[character] = expression
 	if character == _current_character and _current_mode == "adv":
 		_update_avatar(character, expression, "adv")
+
+
+func _setup_beep():
+	_beep_player = AudioStreamPlayer.new()
+	_beep_player.bus = "Master"
+	add_child(_beep_player)
+	_beep_stream = _generate_beep(440.0, 0.06)
+	_beep_player.stream = _beep_stream
+
+
+func _play_beep():
+	if _beep_player and _beep_stream:
+		_beep_player.play()
+
+
+func _generate_beep(frequency: float, duration: float) -> AudioStreamWAV:
+	var rate = 22050
+	var num_samples = int(rate * duration)
+	var data = PackedByteArray()
+	data.resize(num_samples * 2)
+	var fade = mini(num_samples / 4, 200)
+
+	for i in range(num_samples):
+		var t = float(i) / rate
+		var sample = sin(TAU * frequency * t)
+		var env = 1.0
+		if i < fade:
+			env = float(i) / fade
+		elif i > num_samples - fade:
+			env = float(num_samples - i) / fade
+		var val = int(sample * env * 16384)
+		data[i * 2] = val & 0xFF
+		data[i * 2 + 1] = (val >> 8) & 0xFF
+
+	var stream = AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = rate
+	stream.data = data
+	return stream
