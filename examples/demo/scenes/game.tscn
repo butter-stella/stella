@@ -7,6 +7,7 @@
 [ext_resource type="Script" uid="uid://dsbqcj0usnsh2" path="res://addons/natsume/presentation/input/input_handler.gd" id="5"]
 [ext_resource type="Script" path="res://addons/natsume/presentation/effects/fade_presenter.gd" id="7"]
 [ext_resource type="Script" uid="uid://wkgv23f4gu6f" path="res://addons/natsume/presentation/effects/screen_effects.gd" id="8"]
+[ext_resource type="Script" path="res://examples/demo/scripts/voice_progress_bar.gd" id="9"]
 
 [node name="Game" type="Node2D" unique_id=45668777]
 
@@ -148,6 +149,12 @@ theme_override_font_sizes/normal_font_size = 22
 bbcode_enabled = true
 fit_content = true
 visible_characters = 0
+
+[node name="VoiceProgressBar" type="ProgressBar" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 4)
+show_percentage = false
+script = ExtResource("9")
 
 [node name="Toolbar" type="HBoxContainer" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox" unique_id=761869505]
 unique_name_in_owner = true
