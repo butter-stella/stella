@@ -118,11 +118,17 @@ func _on_voice_replay_pressed():
 func _on_auto_pressed():
 	NatsumeRuntime.toggle_auto_play()
 	_update_toggle_buttons()
+	# If auto-play just activated and text is fully shown, advance immediately
+	if NatsumeRuntime.is_auto_playing() and not _is_typing:
+		SignalBus.advance_requested.emit()
 
 
 func _on_skip_pressed():
 	NatsumeRuntime.toggle_skip()
 	_update_toggle_buttons()
+	# If skip just activated and text is fully shown, advance immediately
+	if NatsumeRuntime.is_skipping() and not _is_typing:
+		SignalBus.advance_requested.emit()
 
 
 func _on_backlog_pressed():

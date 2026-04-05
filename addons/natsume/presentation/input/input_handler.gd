@@ -53,6 +53,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		var dialogue = _get_dialogue()
 		if dialogue:
 			dialogue._ctrl_held = event.pressed
+			# Ctrl pressed while text fully shown: advance immediately to start skipping
+			if event.pressed and not dialogue._is_typing:
+				SignalBus.advance_requested.emit()
 		return
 	if not event.pressed or event.echo:
 		return
