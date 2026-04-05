@@ -26,6 +26,8 @@ var _known_expressions: Dictionary = {}  # character_id -> current expression
 # Store original anchors for switching between ADV and NVL layout
 var _adv_anchor_top: float
 var _adv_offset_top: float
+var _dialogue_bg: Panel
+var _text_area: VBoxContainer
 
 ## Icon paths — set these to customize toolbar button icons.
 var toolbar_icons: Dictionary = {
@@ -54,6 +56,8 @@ func _ready():
 	_avatar_container = get_node_or_null("%AvatarContainer")
 	if _avatar_container:
 		_avatar_texture = _avatar_container.get_node_or_null("AvatarTexture")
+	_dialogue_bg = get_node_or_null("DialogueBg")
+	_text_area = get_node_or_null("HBox/TextArea")
 	visible = false
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
@@ -317,6 +321,13 @@ func _apply_nvl_layout():
 	offset_right = 0
 	offset_bottom = 0
 	modulate.a = 0.9
+	# DialogueBg: cover full area (ADV mode anchors it to bottom only)
+	if _dialogue_bg:
+		_dialogue_bg.anchor_top = 0.0
+		_dialogue_bg.offset_top = 0
+	# TextArea: align to top (ADV uses shrink-end = bottom)
+	if _text_area:
+		_text_area.size_flags_vertical = Control.SIZE_FILL
 
 
 func _apply_overlay_layout():
@@ -329,6 +340,11 @@ func _apply_overlay_layout():
 	offset_right = 0
 	offset_bottom = 0
 	modulate.a = 0.7
+	if _dialogue_bg:
+		_dialogue_bg.anchor_top = 0.0
+		_dialogue_bg.offset_top = 0
+	if _text_area:
+		_text_area.size_flags_vertical = Control.SIZE_FILL
 
 
 func _apply_adv_layout():
@@ -341,6 +357,13 @@ func _apply_adv_layout():
 	offset_right = 0
 	offset_bottom = 0
 	modulate.a = 1.0
+	# Restore DialogueBg to bottom strip
+	if _dialogue_bg:
+		_dialogue_bg.anchor_top = 1.0
+		_dialogue_bg.offset_top = -220
+	# Restore TextArea to bottom alignment
+	if _text_area:
+		_text_area.size_flags_vertical = Control.SIZE_SHRINK_END
 
 
 func _process_inline_effects(text: String) -> Dictionary:
