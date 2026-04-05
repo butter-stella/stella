@@ -57,11 +57,11 @@ senpai「小樱，别什么都说出来...」 #voice:senpai_004
 @scene praise_senpai
 
 @expr senpai happy
-senpai「没有什么厉害的，只是做该做的事而已。」
+senpai「没有什么厉害的，只是做该做的事而已。」 #voice:senpai_005
 
 @anim sakura jump
 @expr sakura happy
-sakura「学姐又在谦虚了！」
+sakura「学姐又在谦虚了！」 #voice:sakura_009
 
 @jump cafe
 
@@ -69,10 +69,10 @@ sakura「学姐又在谦虚了！」
 @scene thank_senpai
 
 @expr senpai smile
-senpai「不客气。有困难随时来找我。」
+senpai「不客气。有困难随时来找我。」 #voice:senpai_006
 
 @expr sakura smile
-sakura「学姐对谁都很温柔呢。」
+sakura「学姐对谁都很温柔呢。」 #voice:sakura_010
 
 @jump cafe
 
@@ -84,34 +84,34 @@ sakura「学姐对谁都很温柔呢。」
 @show sakura happy left
 @show senpai default right
 
-sakura「这里的蛋糕超好吃的！学姐，你要尝尝吗？」
+sakura「这里的蛋糕超好吃的！学姐，你要尝尝吗？」 #voice:sakura_011
 
 @anim sakura bounce
 
 @expr senpai smile
-senpai「好啊，那就来一份吧。」
+senpai「好啊，那就来一份吧。」 #voice:senpai_007
 
-sakura「因为好吃嘛！{wait:300}对了...」
+sakura「因为好吃嘛！{wait:300}对了...」 #voice:sakura_012
 
 @expr sakura sad
-sakura「我本来很开心的...[surprised]但是听说下周要期中考...[sad]我数学肯定完蛋了。」
+sakura「我本来很开心的...[surprised]但是听说下周要期中考...[sad]我数学肯定完蛋了。」 #voice:sakura_013
 
 @expr senpai smile
-senpai「要不我帮你补习？我数学还算可以。」
+senpai「要不我帮你补习？我数学还算可以。」 #voice:senpai_008
 
 @expr sakura happy
 @anim sakura jump
-sakura「真的吗！学姐最好了！」
+sakura「真的吗！学姐最好了！」 #voice:sakura_014
 
 @expr senpai happy
-senpai「看你开心就好。」
+senpai「看你开心就好。」 #voice:senpai_009
 
 @hide all
 
 @nvl
-「那天之后，放学后三个人去咖啡店成了惯例。」
-「学姐帮我们补习，樱负责活跃气氛。」
-「虽然只是平凡的日常，却让人格外珍惜。」
+「那天之后，放学后三个人去咖啡店成了惯例。」 #voice:narration_001
+「学姐帮我们补习，樱负责活跃气氛。」 #voice:narration_002
+「虽然只是平凡的日常，却让人格外珍惜。」 #voice:narration_003
 @nvl off
 
 @jump ending
@@ -122,17 +122,17 @@ senpai「看你开心就好。」
 @expr sakura sad
 @anim sakura shake light
 
-sakura「啊...这样啊。{wait:500}那、那也好。」
+sakura「啊...这样啊。{wait:500}那、那也好。」 #voice:sakura_015
 
 @wait 0.5
 
 @overlay
-「（她看起来有些失落...也许我太冷淡了。）」
+「（她看起来有些失落...也许我太冷淡了。）」 #voice:narration_004
 @overlay off
 
 @expr sakura smile
-sakura「那以后有什么不明白的，随时来找我哦！」
-sakura「教室在二楼最左边那间！」
+sakura「那以后有什么不明白的，随时来找我哦！」 #voice:sakura_016
+sakura「教室在二楼最左边那间！」 #voice:sakura_017
 
 @jump ending
 
@@ -144,10 +144,10 @@ sakura「教室在二楼最左边那间！」
 @hide all
 
 @nvl
-「（就这样，在这所新学校的第一天结束了。）」
-「（热情的同级生，温柔的学姐。）」
-「（也许转学来这里，是一个正确的选择。）」
-「（这段故事...才刚刚开始。）」
+「（就这样，在这所新学校的第一天结束了。）」 #voice:narration_005
+「（热情的同级生，温柔的学姐。）」 #voice:narration_006
+「（也许转学来这里，是一个正确的选择。）」 #voice:narration_007
+「（这段故事...才刚刚开始。）」 #voice:narration_008
 @nvl off
 
 @wait 1.0
@@ -156,7 +156,7 @@ sakura「教室在二楼最左边那间！」
 @bg bg_black fade 0.0
 @fade in 0.5
 
-「—— 序章 完 ——」
+「—— 序章 完 ——」 #voice:narration_009
 
 @wait 2.0
 @end

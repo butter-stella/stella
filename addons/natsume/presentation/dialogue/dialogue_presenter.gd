@@ -38,9 +38,6 @@ var toolbar_icons: Dictionary = {
 var _voice_replay_btn: Button
 var _auto_btn: Button
 var _skip_btn: Button
-var _beep_player: AudioStreamPlayer
-
-var _punctuation_chars := "。，、！？；：\u201c\u201d\u2018\u2019（）【】…—·.,!?;: \u0022\u0027()-\u3000 "
 
 
 func _ready():
@@ -61,7 +58,6 @@ func _ready():
 		_avatar_texture = _avatar_container.get_node_or_null("AvatarTexture")
 	_dialogue_bg = get_node_or_null("DialogueBg")
 	_text_area = get_node_or_null("HBox/TextArea")
-	_setup_beep()
 	visible = false
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
@@ -289,15 +285,7 @@ func _on_show_dialogue(character: String, text: String, voice: String, mode: Str
 		if expr != "" and character != "":
 			SignalBus.char_expression_changed.emit(character, expr)
 
-		var ch = new_line_text[i]
 		var delay = _char_interval
-		if _punctuation_chars.find(ch) != -1:
-			# Punctuation: pause, no beep
-			delay = NatsumeRuntime.get_setting("punctuation_pause") / 1000.0
-		else:
-			# Normal character: play beep
-			_play_beep()
-
 		for effect in effects:
 			if effect["pos"] == i:
 				if effect["type"] == "wait":
@@ -476,15 +464,3 @@ func _on_avatar_expression_changed(character: String, expression: String) -> voi
 		_update_avatar(character, expression, "adv")
 
 
-func _setup_beep():
-	_beep_player = AudioStreamPlayer.new()
-	_beep_player.bus = "Master"
-	add_child(_beep_player)
-	var stream = load(NatsumeRuntime.se_path + "se_beep.wav")
-	if stream:
-		_beep_player.stream = stream
-
-
-func _play_beep():
-	if _beep_player and _beep_player.stream:
-		_beep_player.play()
