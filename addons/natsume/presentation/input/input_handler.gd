@@ -42,14 +42,15 @@ func _input(event: InputEvent) -> void:
 				# Setting disabled: ignore clicks entirely during auto
 				get_viewport().set_input_as_handled()
 				return
+			# Setting enabled: stop auto mode
+			NatsumeRuntime.auto_play.stop()
+			if dialogue:
+				dialogue._update_toggle_buttons()
 			if dialogue and dialogue._is_typing:
-				# During typing: complete text, auto-play handles the rest
-				# (wait voice + delay, then auto-advance)
 				dialogue._is_typing = false
 				dialogue.text_label.visible_characters = -1
 				get_viewport().set_input_as_handled()
 				return
-			# After typing: advance immediately (gen counter prevents double-advance)
 			SignalBus.advance_requested.emit()
 			get_viewport().set_input_as_handled()
 			return
