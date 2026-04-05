@@ -39,7 +39,6 @@ var _voice_replay_btn: Button
 var _auto_btn: Button
 var _skip_btn: Button
 var _beep_player: AudioStreamPlayer
-var _beep_stream: AudioStreamWAV
 
 var _punctuation_chars := "。，、！？；：\u201c\u201d\u2018\u2019（）【】…—·.,!?;: \u0022\u0027()-\u3000 "
 
@@ -481,36 +480,11 @@ func _setup_beep():
 	_beep_player = AudioStreamPlayer.new()
 	_beep_player.bus = "Master"
 	add_child(_beep_player)
-	_beep_stream = _generate_beep(440.0, 0.06)
-	_beep_player.stream = _beep_stream
+	var stream = load(NatsumeRuntime.se_path + "se_beep.wav")
+	if stream:
+		_beep_player.stream = stream
 
 
 func _play_beep():
-	if _beep_player and _beep_stream:
+	if _beep_player and _beep_player.stream:
 		_beep_player.play()
-
-
-func _generate_beep(frequency: float, duration: float) -> AudioStreamWAV:
-	var rate = 22050
-	var num_samples = int(rate * duration)
-	var data = PackedByteArray()
-	data.resize(num_samples * 2)
-	var fade = mini(num_samples / 4, 200)
-
-	for i in range(num_samples):
-		var t = float(i) / rate
-		var sample = sin(TAU * frequency * t)
-		var env = 1.0
-		if i < fade:
-			env = float(i) / fade
-		elif i > num_samples - fade:
-			env = float(num_samples - i) / fade
-		var val = int(sample * env * 16384)
-		data[i * 2] = val & 0xFF
-		data[i * 2 + 1] = (val >> 8) & 0xFF
-
-	var stream = AudioStreamWAV.new()
-	stream.format = AudioStreamWAV.FORMAT_16_BITS
-	stream.mix_rate = rate
-	stream.data = data
-	return stream
