@@ -64,10 +64,10 @@ func test_fullscreen_roundtrip_via_manager():
 # --- DisplayHelper ---
 
 func test_display_helper_resolution_presets():
-	var presets = DisplayHelper.RESOLUTION_PRESETS
+	var presets = DisplayHelper.PRESETS
 	assert_true(presets.size() >= 2, "Should have at least 2 presets")
-	assert_true(presets.has("1920x1080"))
-	assert_true(presets.has("1280x720"))
+	assert_eq(presets[0]["key"], "1920x1080")
+	assert_eq(presets[1]["key"], "1280x720")
 
 
 func test_display_helper_parse_resolution():
