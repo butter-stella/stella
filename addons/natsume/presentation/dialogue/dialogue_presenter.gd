@@ -175,16 +175,17 @@ func _on_show_dialogue(character: String, text: String, voice: String, mode: Str
 	if _ui_hidden:
 		return
 
-	# Trigger voice playback
+	# Trigger voice playback (suppress during skip — no point playing voice
+	# for lines that are shown for only ~50ms)
 	_current_voice_character = character
-	if voice != "":
+	if voice != "" and not _is_skipping():
 		_current_voice = voice
 		SignalBus.voice_play.emit(voice, character)
 	else:
-		_current_voice = ""
+		_current_voice = voice if voice != "" else ""
 
 	if _voice_replay_btn:
-		_voice_replay_btn.visible = (_current_voice != "")
+		_voice_replay_btn.visible = (voice != "")
 
 	visible = true
 	_current_mode = mode
