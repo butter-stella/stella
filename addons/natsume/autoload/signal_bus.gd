@@ -26,6 +26,7 @@ signal voice_play(asset: String, character: String)
 signal system_se_play(asset: String)
 signal voice_started(character: String, asset: String)
 signal voice_finished()
+signal voice_progress(position: float, duration: float)
 
 # Choice
 signal choice_show(prompt: String, options: Array)
