@@ -52,6 +52,11 @@ func _build_ui():
 		NatsumeRuntime.set_setting("voice_volume", val / 100.0)
 	)
 
+	# Auto play click interrupt
+	_add_toggle("左键打断自动模式", NatsumeRuntime.get_setting("auto_play_click_interrupt"), func(toggled):
+		NatsumeRuntime.set_setting("auto_play_click_interrupt", toggled)
+	)
+
 	settings_container.add_child(HSeparator.new())
 
 	# Fullscreen toggle

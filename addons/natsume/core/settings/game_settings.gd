@@ -12,6 +12,7 @@ var text_window_opacity: float = 0.8
 var auto_play_delay: float = 1.5       # seconds after text completes
 var auto_play_wait_voice: bool = true
 var auto_play_pause_on_choice: bool = true
+var auto_play_click_interrupt: bool = true  # left click can interrupt auto-play
 
 # --- Skip ---
 var skip_interval: int = 50            # ms per dialogue in skip mode
@@ -46,6 +47,7 @@ func to_dict() -> Dictionary:
 		"auto_play_delay": auto_play_delay,
 		"auto_play_wait_voice": auto_play_wait_voice,
 		"auto_play_pause_on_choice": auto_play_pause_on_choice,
+		"auto_play_click_interrupt": auto_play_click_interrupt,
 		"skip_interval": skip_interval,
 		"skip_only_read": skip_only_read,
 		"skip_unread_confirm": skip_unread_confirm,
