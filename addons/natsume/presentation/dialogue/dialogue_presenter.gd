@@ -26,6 +26,8 @@ var _known_expressions: Dictionary = {}  # character_id -> current expression
 # Store original anchors for switching between ADV and NVL layout
 var _adv_anchor_top: float
 var _adv_offset_top: float
+var _dialogue_bg: Panel
+var _text_area: VBoxContainer
 
 ## Icon paths — set these to customize toolbar button icons.
 var toolbar_icons: Dictionary = {
@@ -36,6 +38,7 @@ var toolbar_icons: Dictionary = {
 var _voice_replay_btn: Button
 var _auto_btn: Button
 var _skip_btn: Button
+var _dialogue_gen: int = 0  # increments on each new dialogue, stale coroutines check this
 
 
 func _ready():
@@ -54,6 +57,8 @@ func _ready():
 	_avatar_container = get_node_or_null("%AvatarContainer")
 	if _avatar_container:
 		_avatar_texture = _avatar_container.get_node_or_null("AvatarTexture")
+	_dialogue_bg = get_node_or_null("DialogueBg")
+	_text_area = get_node_or_null("HBox/TextArea")
 	visible = false
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
@@ -118,11 +123,17 @@ func _on_voice_replay_pressed():
 func _on_auto_pressed():
 	NatsumeRuntime.toggle_auto_play()
 	_update_toggle_buttons()
+	# If auto-play just activated and text is fully shown, advance immediately
+	if NatsumeRuntime.is_auto_playing() and not _is_typing:
+		SignalBus.advance_requested.emit()
 
 
 func _on_skip_pressed():
 	NatsumeRuntime.toggle_skip()
 	_update_toggle_buttons()
+	# If skip just activated and text is fully shown, advance immediately
+	if NatsumeRuntime.is_skipping() and not _is_typing:
+		SignalBus.advance_requested.emit()
 
 
 func _on_backlog_pressed():
@@ -175,16 +186,20 @@ func _on_show_dialogue(character: String, text: String, voice: String, mode: Str
 	if _ui_hidden:
 		return
 
-	# Trigger voice playback
+	_dialogue_gen += 1
+	var gen = _dialogue_gen
+
+	# Trigger voice playback (suppress during skip — no point playing voice
+	# for lines that are shown for only ~50ms)
 	_current_voice_character = character
-	if voice != "":
+	if voice != "" and not _is_skipping():
 		_current_voice = voice
 		SignalBus.voice_play.emit(voice, character)
 	else:
-		_current_voice = ""
+		_current_voice = voice if voice != "" else ""
 
 	if _voice_replay_btn:
-		_voice_replay_btn.visible = (_current_voice != "")
+		_voice_replay_btn.visible = (voice != "")
 
 	visible = true
 	_current_mode = mode
@@ -287,12 +302,18 @@ func _on_show_dialogue(character: String, text: String, voice: String, mode: Str
 	text_label.visible_characters = -1
 	_is_typing = false
 
-	# Auto-play: wait for voice (if configured) then delay then advance
+	# Auto-play: wait for voice (if configured) then delay then advance.
+	# gen check: if a manual click advanced to the next dialogue while we
+	# were waiting, _dialogue_gen will have changed — abort this coroutine.
 	if NatsumeRuntime.is_auto_playing():
 		if NatsumeRuntime.get_setting("auto_play_wait_voice") and _voice_playing:
 			await SignalBus.voice_finished
+			if gen != _dialogue_gen:
+				return
 		var delay = NatsumeRuntime.get_setting("auto_play_delay")
 		await get_tree().create_timer(delay).timeout
+		if gen != _dialogue_gen:
+			return
 		if NatsumeRuntime.is_auto_playing():
 			SignalBus.advance_requested.emit()
 
@@ -301,15 +322,22 @@ func _on_show_dialogue(character: String, text: String, voice: String, mode: Str
 
 
 func _apply_nvl_layout():
-	anchor_left = 0.1
-	anchor_top = 0.1
-	anchor_right = 0.9
-	anchor_bottom = 0.9
+	anchor_left = 0.0
+	anchor_top = 0.0
+	anchor_right = 1.0
+	anchor_bottom = 1.0
 	offset_left = 0
 	offset_top = 0
 	offset_right = 0
 	offset_bottom = 0
 	modulate.a = 0.9
+	# DialogueBg: cover full area (ADV mode anchors it to bottom only)
+	if _dialogue_bg:
+		_dialogue_bg.anchor_top = 0.0
+		_dialogue_bg.offset_top = 0
+	# TextArea: align to top (ADV uses shrink-end = bottom)
+	if _text_area:
+		_text_area.size_flags_vertical = Control.SIZE_FILL
 
 
 func _apply_overlay_layout():
@@ -322,6 +350,11 @@ func _apply_overlay_layout():
 	offset_right = 0
 	offset_bottom = 0
 	modulate.a = 0.7
+	if _dialogue_bg:
+		_dialogue_bg.anchor_top = 0.0
+		_dialogue_bg.offset_top = 0
+	if _text_area:
+		_text_area.size_flags_vertical = Control.SIZE_FILL
 
 
 func _apply_adv_layout():
@@ -334,6 +367,13 @@ func _apply_adv_layout():
 	offset_right = 0
 	offset_bottom = 0
 	modulate.a = 1.0
+	# Restore DialogueBg to bottom strip
+	if _dialogue_bg:
+		_dialogue_bg.anchor_top = 1.0
+		_dialogue_bg.offset_top = -220
+	# Restore TextArea to bottom alignment
+	if _text_area:
+		_text_area.size_flags_vertical = Control.SIZE_SHRINK_END
 
 
 func _process_inline_effects(text: String) -> Dictionary:
@@ -367,6 +407,7 @@ func _on_hide_dialogue():
 	visible = false
 	_nvl_text = ""
 	_current_character = ""
+	_voice_playing = false
 	if _avatar_container:
 		_avatar_container.visible = false
 		if _avatar_texture:
@@ -432,3 +473,5 @@ func _on_avatar_expression_changed(character: String, expression: String) -> voi
 	_known_expressions[character] = expression
 	if character == _current_character and _current_mode == "adv":
 		_update_avatar(character, expression, "adv")
+
+

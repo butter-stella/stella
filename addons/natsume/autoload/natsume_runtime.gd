@@ -60,6 +60,7 @@ func _ready():
 	skip_controller = SkipController.new()
 	read_flags = ReadFlagManager.new()
 	game_state = GameStateMachine.new()
+	game_state.state_changed.connect(_on_state_changed)
 	unlock_manager = UnlockManager.new()
 	presentation_state = PresentationState.new()
 	presentation_state.connect_signals()
@@ -289,6 +290,13 @@ func _reset_presentation() -> void:
 	SignalBus.bgm_stop.emit(0.0)
 	SignalBus.hide_dialogue.emit()
 	presentation_state.clear()
+
+
+func _on_state_changed(from_state: int, _to_state: int) -> void:
+	# Leaving PLAYING state: stop auto-play and skip
+	if from_state == GameStateMachine.State.PLAYING:
+		auto_play.stop()
+		skip_controller.stop()
 
 
 func _on_scenario_ended(id: String) -> void:

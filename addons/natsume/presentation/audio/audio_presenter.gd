@@ -207,6 +207,10 @@ func _on_advance_requested():
 		var continue_on_advance = NatsumeRuntime.get_setting("voice_continue_on_advance")
 		if not continue_on_advance:
 			_voice_player.stop()
+			# AudioStreamPlayer.stop() does NOT emit finished signal.
+			# Manually emit voice_finished so _voice_playing flag gets cleared
+			# and auto-play doesn't hang on await voice_finished.
+			SignalBus.voice_finished.emit()
 
 
 # ─── System SE ───
