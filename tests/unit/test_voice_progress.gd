@@ -3,11 +3,21 @@ extends GutTest
 
 
 var _audio_presenter: Node
+var _progress_cb: Callable
+var _progress_emissions: Array
 
 
 func before_each():
 	_audio_presenter = _create_audio_presenter()
 	add_child_autoqfree(_audio_presenter)
+	_progress_emissions = []
+	_progress_cb = func(pos, dur): _progress_emissions.append({"pos": pos, "dur": dur})
+	SignalBus.voice_progress.connect(_progress_cb)
+
+
+func after_each():
+	if SignalBus.voice_progress.is_connected(_progress_cb):
+		SignalBus.voice_progress.disconnect(_progress_cb)
 
 
 func _create_audio_presenter() -> Node:
@@ -27,13 +37,8 @@ func test_signal_bus_has_voice_progress_signal():
 # --- Emission logic ---
 
 func test_no_progress_emitted_when_no_voice_playing():
-	var emissions: Array = []
-	SignalBus.voice_progress.connect(func(pos, dur): emissions.append({"pos": pos, "dur": dur}))
-
-	# Simulate one frame
 	_audio_presenter._process(0.016)
-
-	assert_eq(emissions.size(), 0, "Should not emit when no voice is playing")
+	assert_eq(_progress_emissions.size(), 0, "Should not emit when no voice is playing")
 
 
 func test_progress_emitted_during_voice_playback():
@@ -46,22 +51,20 @@ func test_progress_emitted_during_voice_playback():
 # --- Signal shape ---
 
 func test_voice_progress_signal_can_be_emitted():
-	var received: Array = []
-	SignalBus.voice_progress.connect(func(pos, dur): received.append([pos, dur]))
-
 	SignalBus.voice_progress.emit(1.5, 3.0)
 
-	assert_eq(received.size(), 1)
-	assert_almost_eq(received[0][0], 1.5, 0.01)
-	assert_almost_eq(received[0][1], 3.0, 0.01)
+	assert_eq(_progress_emissions.size(), 1)
+	assert_almost_eq(float(_progress_emissions[0]["pos"]), 1.5, 0.01)
+	assert_almost_eq(float(_progress_emissions[0]["dur"]), 3.0, 0.01)
 
 
-func test_voice_finished_stops_progress():
-	# After voice_finished, _process should not emit voice_progress
-	var emissions: Array = []
-	SignalBus.voice_progress.connect(func(pos, dur): emissions.append(true))
+# --- Guard: _process only emits when _voice_player.playing is true ---
 
-	SignalBus.voice_finished.emit()
+func test_process_does_not_emit_when_player_not_playing():
+	# In headless mode, _voice_player has no stream loaded and is not playing.
+	# This verifies the guard: _voice_player.playing && _voice_player.stream
 	_audio_presenter._process(0.016)
-
-	assert_eq(emissions.size(), 0, "No progress after voice_finished")
+	_audio_presenter._process(0.016)
+	_audio_presenter._process(0.016)
+	assert_eq(_progress_emissions.size(), 0,
+		"_process must not emit voice_progress when player is not playing")
