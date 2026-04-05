@@ -135,11 +135,22 @@ theme_override_constants/margin_bottom = 15
 [node name="VBox" type="VBoxContainer" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer" unique_id=2072226572]
 layout_mode = 2
 
-[node name="NameLabel" type="Label" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox" unique_id=434916363]
+[node name="NameRow" type="HBoxContainer" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 12
+
+[node name="NameLabel" type="Label" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox/NameRow" unique_id=434916363]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.72, 0.77, 1)
 theme_override_font_sizes/font_size = 24
+
+[node name="VoiceProgressBar" type="ProgressBar" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox/NameRow"]
+layout_mode = 2
+size_flags_vertical = 1
+custom_minimum_size = Vector2(120, 4)
+show_percentage = false
+script = ExtResource("9")
 
 [node name="TextLabel" type="RichTextLabel" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox" unique_id=1853883713]
 unique_name_in_owner = true
@@ -149,12 +160,6 @@ theme_override_font_sizes/normal_font_size = 22
 bbcode_enabled = true
 fit_content = true
 visible_characters = 0
-
-[node name="VoiceProgressBar" type="ProgressBar" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox"]
-layout_mode = 2
-custom_minimum_size = Vector2(0, 4)
-show_percentage = false
-script = ExtResource("9")
 
 [node name="Toolbar" type="HBoxContainer" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox" unique_id=761869505]
 unique_name_in_owner = true
