@@ -9,6 +9,24 @@
 [ext_resource type="Script" uid="uid://wkgv23f4gu6f" path="res://addons/natsume/presentation/effects/screen_effects.gd" id="8"]
 [ext_resource type="Script" path="res://examples/demo/scripts/voice_progress_bar.gd" id="9"]
 
+[sub_resource type="StyleBoxFlat" id="voice_bar_fill"]
+bg_color = Color(1, 0.72, 0.77, 0.8)
+content_margin_top = 0.0
+content_margin_bottom = 0.0
+corner_radius_top_left = 1
+corner_radius_top_right = 1
+corner_radius_bottom_right = 1
+corner_radius_bottom_left = 1
+
+[sub_resource type="StyleBoxFlat" id="voice_bar_bg"]
+bg_color = Color(1, 1, 1, 0.15)
+content_margin_top = 0.0
+content_margin_bottom = 0.0
+corner_radius_top_left = 1
+corner_radius_top_right = 1
+corner_radius_bottom_right = 1
+corner_radius_bottom_left = 1
+
 [node name="Game" type="Node2D" unique_id=45668777]
 
 [node name="BackgroundLayer" type="CanvasLayer" parent="." unique_id=140001289]
@@ -147,9 +165,11 @@ theme_override_font_sizes/font_size = 24
 
 [node name="VoiceProgressBar" type="ProgressBar" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox/NameRow"]
 layout_mode = 2
-size_flags_vertical = 1
-custom_minimum_size = Vector2(120, 4)
+size_flags_vertical = 4
+custom_minimum_size = Vector2(120, 2)
 show_percentage = false
+theme_override_styles/fill = SubResource("voice_bar_fill")
+theme_override_styles/background = SubResource("voice_bar_bg")
 script = ExtResource("9")
 
 [node name="TextLabel" type="RichTextLabel" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox" unique_id=1853883713]
