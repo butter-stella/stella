@@ -13,12 +13,6 @@ func _input(event: InputEvent) -> void:
 	var dialogue = _get_dialogue()
 
 	if event.button_index == MOUSE_BUTTON_LEFT:
-		# Typing: complete text immediately, consume event (block buttons too)
-		if dialogue and dialogue._is_typing:
-			dialogue._is_typing = false
-			dialogue.text_label.visible_characters = -1
-			get_viewport().set_input_as_handled()
-			return
 		# UI hidden: restore
 		if dialogue and dialogue._ui_hidden:
 			dialogue._ui_hidden = false
@@ -29,9 +23,45 @@ func _input(event: InputEvent) -> void:
 		var hovered = get_viewport().gui_get_hovered_control()
 		if hovered is Button or hovered is Slider:
 			return
-		# Advance dialogue
-		if NatsumeRuntime.game_state.is_playing():
+
+		if not NatsumeRuntime.game_state.is_playing():
+			return
+
+		# Skip mode: click stops skip
+		if NatsumeRuntime.is_skipping():
+			NatsumeRuntime.skip_controller.stop()
+			if dialogue:
+				dialogue._ctrl_held = false
+				dialogue._update_toggle_buttons()
+			get_viewport().set_input_as_handled()
+			return
+
+		# Auto mode: special click handling
+		if NatsumeRuntime.is_auto_playing():
+			if not NatsumeRuntime.get_setting("auto_play_click_interrupt"):
+				# Setting disabled: ignore clicks entirely during auto
+				get_viewport().set_input_as_handled()
+				return
+			if dialogue and dialogue._is_typing:
+				# During typing: complete text, auto-play handles the rest
+				# (wait voice + delay, then auto-advance)
+				dialogue._is_typing = false
+				dialogue.text_label.visible_characters = -1
+				get_viewport().set_input_as_handled()
+				return
+			# After typing: advance immediately (gen counter prevents double-advance)
 			SignalBus.advance_requested.emit()
+			get_viewport().set_input_as_handled()
+			return
+
+		# Normal mode
+		if dialogue and dialogue._is_typing:
+			dialogue._is_typing = false
+			dialogue.text_label.visible_characters = -1
+			get_viewport().set_input_as_handled()
+			return
+
+		SignalBus.advance_requested.emit()
 
 	elif event.button_index == MOUSE_BUTTON_RIGHT:
 		if not NatsumeRuntime.game_state.is_playing():

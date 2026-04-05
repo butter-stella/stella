@@ -38,6 +38,7 @@ var toolbar_icons: Dictionary = {
 var _voice_replay_btn: Button
 var _auto_btn: Button
 var _skip_btn: Button
+var _dialogue_gen: int = 0  # increments on each new dialogue, stale coroutines check this
 
 
 func _ready():
@@ -185,6 +186,9 @@ func _on_show_dialogue(character: String, text: String, voice: String, mode: Str
 	if _ui_hidden:
 		return
 
+	_dialogue_gen += 1
+	var gen = _dialogue_gen
+
 	# Trigger voice playback (suppress during skip — no point playing voice
 	# for lines that are shown for only ~50ms)
 	_current_voice_character = character
@@ -298,12 +302,18 @@ func _on_show_dialogue(character: String, text: String, voice: String, mode: Str
 	text_label.visible_characters = -1
 	_is_typing = false
 
-	# Auto-play: wait for voice (if configured) then delay then advance
+	# Auto-play: wait for voice (if configured) then delay then advance.
+	# gen check: if a manual click advanced to the next dialogue while we
+	# were waiting, _dialogue_gen will have changed — abort this coroutine.
 	if NatsumeRuntime.is_auto_playing():
 		if NatsumeRuntime.get_setting("auto_play_wait_voice") and _voice_playing:
 			await SignalBus.voice_finished
+			if gen != _dialogue_gen:
+				return
 		var delay = NatsumeRuntime.get_setting("auto_play_delay")
 		await get_tree().create_timer(delay).timeout
+		if gen != _dialogue_gen:
+			return
 		if NatsumeRuntime.is_auto_playing():
 			SignalBus.advance_requested.emit()
 
