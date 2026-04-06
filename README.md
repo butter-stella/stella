@@ -5,27 +5,27 @@ Godot AVG / Galgame framework — the first open-source Godot framework with com
 ## Features
 
 - **Custom DSL** (`.stla`) — writer-friendly scripting with smart defaults
-- **Scenario Engine** — command-pattern architecture, fully extensible
-- **Dialogue System** — typewriter effect, ADV/NVL/overlay modes, inline expression switching
-- **Character System** — show/hide/move/animate, expression switching, position presets
-- **Background System** — double-buffered with fade transitions
-- **Audio System** — BGM/SE/voice with per-character volume control
-- **CG System** — fullscreen/SD/animated/differential CG
+- **Scenario Engine** — command-pattern architecture, fully extensible (22 built-in handlers)
+- **Dialogue System** — typewriter, ADV/NVL/overlay modes, inline `[expression]` and `{wait}/{speed}` markers
+- **`@combine` blocks** — group multiple voice + expression segments into one logical dialogue with a continuous typewriter and a single shared progress bar
+- **Character System** — show/hide/move/animate, sprite + layered (body+face) rendering, position presets, dialogue avatar from `avatar_rect` crop
+- **Background System** — double-buffered fade / dissolve / wipe transitions
+- **Audio System** — BGM/SE/voice with per-character volume, sequential voice queue, replay, voice progress signal
+- **CG System** — fullscreen / SD / animated CG
 - **Choice System** — abstract presenter, supports custom UI styles
-- **Variable System** — 3 scopes (global/scenario/temp), expression evaluator
-- **Save System** — snapshot-based save/load with multiple slots
+- **Variable System** — 3 scopes (global / scenario / temp), expression evaluator
+- **Save System** — snapshot-based save/load with multiple slots, auto-save, quick-save, continue
 - **Settings System** — text speed, auto-play, skip, volume, per-character voice
-- **Playback Control** — auto-play, skip (read-only), read flag tracking, backlog
-- **Game State Machine** — title/playing/paused/save-load/backlog/settings
-- **Expression Timeline** — voice/text-driven expression switching
+- **Playback Control** — auto-play, skip (read-only), read-flag tracking, backlog with sequential voice replay
+- **Game State Machine** — title / playing / save-load / backlog / settings overlays
 - **Voice Bookmarks** — collect and replay voice lines
-- **Gallery System** — CG/BGM/scene unlock tracking
+- **Gallery System** — CG / BGM / scene unlock tracking
 - **Localization** — multi-locale key-value translation
 
 ## Tech Stack
 
 - Godot 4.6+, GDScript
-- GUT for testing (267+ tests)
+- GUT for testing (439 tests, all green)
 - Rust via gdext (for performance extensions, when needed)
 
 ## Quick Start
@@ -46,7 +46,7 @@ addons/stella/                        ← 框架插件（一般不需要修改�
 │   ├── data/                          ← 数据模型（CommandData, ScenarioData 等）
 │   ├── script_parser/                 ← DSL 解析器（.stla → 内部数据结构）
 │   ├── scenario_engine/               ← 剧情引擎（主循环、上下文、等待控制）
-│   ├── commands/                      ← 21 个命令处理器（对话/背景/立绘/音频/特效...）
+│   ├── commands/                      ← 22 个命令处理器（对话/背景/立绘/音频/特效...）
 │   ├── variable_system/               ← 变量系统 + 表达式求值
 │   ├── save_system/                   ← 存档/读档
 │   ├── settings/                      ← 游戏设置
@@ -73,7 +73,7 @@ examples/demo/                         ← 示例项目
 ├── scenarios/                         ← .stla 剧本
 └── art/                               ← 素材（背景/立绘）
 
-tests/                                 ← GUT 测试（267+ 测试用例）
+tests/                                 ← GUT 测试（439 个测试用例，全绿）
 ├── unit/                              ← 单元测试
 └── integration/                       ← 端到端集成测试
 ```
@@ -82,10 +82,10 @@ tests/                                 ← GUT 测试（267+ 测试用例）
 
 ## Docs
 
-- [Usage Guide](docs/USAGE.md) — 安装、快速上手、配置文件、自定义扩展
-- [Engine Design](docs/ENGINE_DESIGN.md) — 引擎化设计方案、三层定制体系
-- [DSL Design](docs/DSL.md) — DSL 语法详细设计、智能默认值、完整示例
-- [Architecture & Plan](docs/PLAN.md) — 架构设计、技术选型、开发路线图
+- [Usage Guide](docs/USAGE.md) — 安装、快速上手、配置文件、Facade API、自定义扩展
+- [DSL Reference](docs/DSL.md) — DSL 语法、智能默认值、`@combine` 合并对话、完整示例
+- [Architecture](docs/PLAN.md) — 三层架构、命令处理器、状态机
+- [Input System Design](docs/INPUT_DESIGN.md) — 鼠标推进 + 工具栏按钮共存的输入路由方案
 - [Research](docs/RESEARCH.md) — 竞品调研、语法对比
 
 ## License

@@ -230,6 +230,16 @@ sakura（内心独白）
   @bg bg_sunset dissolve 1.0
   @show sakura smile center
 @end
+
+// 多段语音 + 表情合并为一句对话
+@combine
+@expr sakura sad
+sakura「我本来很开心的...」 #voice:sakura_013
+@expr sakura surprised
+sakura「但是听说下周要期中考...」 #voice:sakura_018
+@expr sakura sad
+sakura「我数学肯定完蛋了。」 #voice:sakura_019
+@end
 ```
 
 ---
