@@ -34,18 +34,35 @@ func test_read_flag_snapshot():
 
 # --- BacklogManager ---
 
+func _seg(text: String, voice: String = "") -> Dictionary:
+	return {"text": text, "voice": voice, "expression": ""}
+
+
 func test_backlog_add_entry():
 	var blm = BacklogManager.new()
-	blm.add_entry("sakura", "Hello!", "voice_001")
+	blm.add_entry("sakura", [_seg("Hello!", "voice_001")])
 	assert_eq(blm.get_entries().size(), 1)
 	assert_eq(blm.get_entries()[0]["character"], "sakura")
 	assert_eq(blm.get_entries()[0]["text"], "Hello!")
+	assert_eq(blm.get_entries()[0]["voices"], ["voice_001"])
+
+
+func test_backlog_combined_entry_concatenates_voices():
+	var blm = BacklogManager.new()
+	blm.add_entry("sakura", [
+		_seg("一", "v1"),
+		_seg("二", "v2"),
+		_seg("三", "v3"),
+	])
+	var entry = blm.get_entries()[0]
+	assert_eq(entry["text"], "一二三")
+	assert_eq(entry["voices"], ["v1", "v2", "v3"])
 
 
 func test_backlog_order():
 	var blm = BacklogManager.new()
-	blm.add_entry("sakura", "First", "")
-	blm.add_entry("kaito", "Second", "")
+	blm.add_entry("sakura", [_seg("First")])
+	blm.add_entry("kaito", [_seg("Second")])
 	var entries = blm.get_entries()
 	assert_eq(entries[0]["text"], "First")
 	assert_eq(entries[1]["text"], "Second")
@@ -55,14 +72,14 @@ func test_backlog_max_capacity():
 	var blm = BacklogManager.new()
 	blm.max_entries = 3
 	for i in range(5):
-		blm.add_entry("char", "msg_%d" % i, "")
+		blm.add_entry("char", [_seg("msg_%d" % i)])
 	assert_eq(blm.get_entries().size(), 3)
 	assert_eq(blm.get_entries()[0]["text"], "msg_2")  # oldest dropped
 
 
 func test_backlog_clear():
 	var blm = BacklogManager.new()
-	blm.add_entry("sakura", "Hello", "")
+	blm.add_entry("sakura", [_seg("Hello")])
 	blm.clear()
 	assert_eq(blm.get_entries().size(), 0)
 

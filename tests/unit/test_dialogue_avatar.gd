@@ -85,21 +85,21 @@ func test_avatar_hidden_initially():
 
 
 func test_avatar_hidden_in_nvl_mode():
-	SignalBus.show_dialogue.emit("sakura", "Hello", "", "nvl")
+	SignalBus.show_dialogue.emit("sakura", [{"text": "Hello", "voice": "", "expression": ""}], "nvl")
 	await get_tree().process_frame
 	var container = _get_avatar_container()
 	assert_false(container.visible, "avatar should be hidden in NVL mode")
 
 
 func test_avatar_hidden_in_overlay_mode():
-	SignalBus.show_dialogue.emit("sakura", "Hello", "", "overlay")
+	SignalBus.show_dialogue.emit("sakura", [{"text": "Hello", "voice": "", "expression": ""}], "overlay")
 	await get_tree().process_frame
 	var container = _get_avatar_container()
 	assert_false(container.visible, "avatar should be hidden in overlay mode")
 
 
 func test_avatar_hidden_for_narrator():
-	SignalBus.show_dialogue.emit("", "Narration text", "", "adv")
+	SignalBus.show_dialogue.emit("", [{"text": "Narration text", "voice": "", "expression": ""}], "adv")
 	await get_tree().process_frame
 	var container = _get_avatar_container()
 	assert_false(container.visible, "avatar should be hidden for narrator (empty character)")
@@ -107,7 +107,7 @@ func test_avatar_hidden_for_narrator():
 
 func test_avatar_hidden_when_no_avatar_rect():
 	# Character without avatar_rect config — avatar should stay hidden
-	SignalBus.show_dialogue.emit("nonexistent_char", "Hello", "", "adv")
+	SignalBus.show_dialogue.emit("nonexistent_char", [{"text": "Hello", "voice": "", "expression": ""}], "adv")
 	await get_tree().process_frame
 	var container = _get_avatar_container()
 	var avatar = _get_avatar()

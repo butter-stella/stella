@@ -32,7 +32,9 @@ func _build_cmd(type: String, params: Dictionary = {}) -> CommandData:
 func test_dialogue_handler_emits_signal():
 	var handler = DialogueHandler.new()
 	var received: Array = []
-	_bus.show_dialogue.connect(func(c, t, v, m): received.append({"character": c, "text": t, "voice": v, "mode": m}))
+	_bus.show_dialogue.connect(func(c, segs, m):
+		received.append({"character": c, "segments": segs, "mode": m})
+	)
 
 	var cmd = _build_cmd("dialogue", {
 		"character": "sakura",
@@ -47,14 +49,17 @@ func test_dialogue_handler_emits_signal():
 
 	assert_eq(received.size(), 1)
 	assert_eq(received[0]["character"], "sakura")
-	assert_eq(received[0]["text"], "Hello!")
-	assert_eq(received[0]["voice"], "voice_001")
+	assert_eq(received[0]["segments"].size(), 1)
+	assert_eq(received[0]["segments"][0]["text"], "Hello!")
+	assert_eq(received[0]["segments"][0]["voice"], "voice_001")
 
 
 func test_dialogue_handler_defaults():
 	var handler = DialogueHandler.new()
 	var received: Array = []
-	_bus.show_dialogue.connect(func(c, t, v, m): received.append({"mode": m, "voice": v}))
+	_bus.show_dialogue.connect(func(_c, segs, m):
+		received.append({"mode": m, "voice": segs[0]["voice"]})
+	)
 
 	var cmd = _build_cmd("dialogue", {"text": "Narration"})
 	_bus.advance_requested.emit.call_deferred()
@@ -62,6 +67,32 @@ func test_dialogue_handler_defaults():
 
 	assert_eq(received[0]["mode"], "adv")
 	assert_eq(received[0]["voice"], "")
+
+
+func test_dialogue_handler_passes_segments_through():
+	var handler = DialogueHandler.new()
+	var received: Array = []
+	_bus.show_dialogue.connect(func(_c, segs, _m): received.append(segs))
+
+	var segments = [
+		{"text": "一", "voice": "v1", "expression": "sad"},
+		{"text": "二", "voice": "v2", "expression": "happy"},
+	]
+	var cmd = _build_cmd("dialogue", {
+		"character": "sakura",
+		"text": "一二",
+		"voice": "v1",
+		"mode": "adv",
+		"segments": segments,
+	})
+
+	_bus.advance_requested.emit.call_deferred()
+	await handler.execute(cmd, _context)
+
+	assert_eq(received.size(), 1)
+	assert_eq(received[0].size(), 2)
+	assert_eq(received[0][0]["voice"], "v1")
+	assert_eq(received[0][1]["expression"], "happy")
 
 
 # --- BgHandler ---
