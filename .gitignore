@@ -1,6 +1,8 @@
-# Godot
+# Godot — local editor cache + imported binary blobs (auto-regenerated).
+# Note: do NOT ignore *.import sidecar files — they hold the resource UID and
+# import settings that all collaborators must share, otherwise UID-referencing
+# scenes break when re-imported on a fresh clone.
 .godot/
-*.import
 
 # IDE
 .idea/
