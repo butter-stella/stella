@@ -4,6 +4,12 @@ extends Node
 
 # Dialogue
 signal show_dialogue(character: String, text: String, voice: String, mode: String)
+## Multi-segment dialogue from @combine block.
+## segments: Array of {text: String, voice: String, expression: String}
+## Typewriter displays concatenated text; voices play sequentially, expression
+## switches at each segment boundary. Treated as one dialogue unit for
+## advance/skip/backlog purposes.
+signal show_dialogue_combined(character: String, segments: Array, mode: String)
 signal hide_dialogue()
 signal advance_requested()
 

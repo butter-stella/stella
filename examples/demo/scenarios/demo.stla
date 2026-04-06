@@ -93,8 +93,14 @@ senpai「好啊，那就来一份吧。」 #voice:senpai_007
 
 sakura「因为好吃嘛！{wait:300}对了...」 #voice:sakura_012
 
+@combine
 @expr sakura sad
-sakura「我本来很开心的...[surprised]但是听说下周要期中考...[sad]我数学肯定完蛋了。」 #voice:sakura_013
+sakura「我本来很开心的...」 #voice:sakura_013
+@expr sakura surprised
+sakura「但是听说下周要期中考...」 #voice:sakura_018
+@expr sakura sad
+sakura「我数学肯定完蛋了。」 #voice:sakura_019
+@end
 
 @expr senpai smile
 senpai「要不我帮你补习？我数学还算可以。」 #voice:senpai_008

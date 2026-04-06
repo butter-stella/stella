@@ -39,10 +39,12 @@ var _voice_replay_btn: Button
 var _auto_btn: Button
 var _skip_btn: Button
 var _dialogue_gen: int = 0  # increments on each new dialogue, stale coroutines check this
+var _combine_aborted: bool = false  # set when user clicks to skip a combine typewriter
 
 
 func _ready():
 	SignalBus.show_dialogue.connect(_on_show_dialogue)
+	SignalBus.show_dialogue_combined.connect(_on_show_dialogue_combined)
 	SignalBus.hide_dialogue.connect(_on_hide_dialogue)
 	SignalBus.scenario_ended_event.connect(func(_id): visible = false)
 	SignalBus.voice_started.connect(func(_c, _a): _voice_playing = true)
@@ -318,6 +320,159 @@ func _on_show_dialogue(character: String, text: String, voice: String, mode: Str
 			SignalBus.advance_requested.emit()
 
 
+## Combined dialogue from @combine block.
+## Typewriter runs continuously over concatenated text; voices play sequentially;
+## expression switches at each segment boundary (driven by voice_finished).
+## Click during typewriter: abort typewriter + voice queue, snap to final segment's expression.
+func _on_show_dialogue_combined(character: String, segments: Array, mode: String) -> void:
+	if _ui_hidden or segments.size() == 0:
+		return
+
+	_dialogue_gen += 1
+	var gen = _dialogue_gen
+	_combine_aborted = false
+
+	# Pre-compute concatenated text and per-char → segment-index mapping
+	var full_text := ""
+	var seg_end_char: Array = []  # cumulative char count after each segment
+	for seg in segments:
+		full_text += String(seg.get("text", ""))
+		seg_end_char.append(full_text.length())
+
+	_current_voice_character = character
+	var first_voice := String(segments[0].get("voice", ""))
+	_current_voice = first_voice
+	if first_voice != "" and not _is_skipping():
+		SignalBus.voice_play.emit(first_voice, character)
+	if _voice_replay_btn:
+		_voice_replay_btn.visible = (first_voice != "")
+
+	visible = true
+	_current_mode = mode
+
+	if toolbar:
+		toolbar.visible = (mode == "adv")
+
+	# Combined dialogue: ADV mode only (fall through for other modes using concat text)
+	if mode == "nvl":
+		_apply_nvl_layout()
+		name_label.visible = false
+		var line_text: String = (character + "：" + full_text) if character != "" else full_text
+		var combined = _nvl_text + line_text
+		text_label.text = combined
+		text_label.visible_characters = _nvl_text.length()
+		_nvl_text = combined + "\n"
+	elif mode == "overlay":
+		_apply_overlay_layout()
+		name_label.visible = false
+		text_label.text = full_text
+		text_label.visible_characters = 0
+	else:  # adv
+		_apply_adv_layout()
+		_nvl_text = ""
+		if character != "":
+			name_label.text = character
+			name_label.visible = true
+		else:
+			name_label.visible = false
+		text_label.text = full_text
+		text_label.visible_characters = 0
+
+	# Apply first segment's expression (and update avatar)
+	var first_expr := String(segments[0].get("expression", ""))
+	if first_expr != "" and character != "":
+		SignalBus.char_expression_changed.emit(character, first_expr)
+	var avatar_expr = _known_expressions.get(character, "default")
+	_update_avatar(character, avatar_expr, mode)
+
+	# Launch the voice-queue coroutine (fires expression changes between segments)
+	_run_combine_voice_queue(character, segments, gen)
+
+	await get_tree().process_frame
+	_is_typing = true
+
+	# Skip mode: show all text immediately and snap to final state
+	if _is_skipping():
+		text_label.visible_characters = -1
+		_is_typing = false
+		_finalize_combine(character, segments)
+		await get_tree().create_timer(StellaRuntime.get_setting("skip_interval") / 1000.0).timeout
+		SignalBus.advance_requested.emit()
+		return
+
+	# Typewriter over concatenated text
+	var start_visible = text_label.visible_characters
+	var total_chars = full_text.length() - start_visible
+	for i in range(total_chars):
+		if not _is_typing:
+			break
+		if _is_skipping():
+			text_label.visible_characters = -1
+			_is_typing = false
+			_finalize_combine(character, segments)
+			await get_tree().create_timer(StellaRuntime.get_setting("skip_interval") / 1000.0).timeout
+			SignalBus.advance_requested.emit()
+			return
+		text_label.visible_characters = start_visible + i + 1
+		await get_tree().create_timer(_char_interval).timeout
+		if gen != _dialogue_gen:
+			return
+
+	# If typewriter was aborted by user click (input_handler sets _is_typing = false
+	# and visible_characters = -1), snap to final segment state.
+	if _combine_aborted == false and not _is_typing and text_label.visible_characters == -1:
+		_finalize_combine(character, segments)
+
+	text_label.visible_characters = -1
+	_is_typing = false
+
+	# Auto-play: wait for all segment voices to finish, then advance
+	if StellaRuntime.is_auto_playing():
+		if StellaRuntime.get_setting("auto_play_wait_voice"):
+			# Wait until voice queue coroutine has finished all segments
+			while not _combine_aborted and _voice_playing:
+				await SignalBus.voice_finished
+				if gen != _dialogue_gen:
+					return
+		var delay = StellaRuntime.get_setting("auto_play_delay")
+		await get_tree().create_timer(delay).timeout
+		if gen != _dialogue_gen:
+			return
+		if StellaRuntime.is_auto_playing():
+			SignalBus.advance_requested.emit()
+
+
+func _run_combine_voice_queue(character: String, segments: Array, gen: int) -> void:
+	# For i = 1..N-1: wait for previous voice to finish, then apply segment[i]'s
+	# expression and start segment[i]'s voice.
+	for i in range(1, segments.size()):
+		await SignalBus.voice_finished
+		if gen != _dialogue_gen or _combine_aborted:
+			return
+		var seg = segments[i]
+		var expr := String(seg.get("expression", ""))
+		if expr != "" and character != "":
+			SignalBus.char_expression_changed.emit(character, expr)
+			if _current_mode == "adv":
+				_update_avatar(character, expr, "adv")
+		var voice := String(seg.get("voice", ""))
+		if voice != "" and not _is_skipping():
+			_current_voice = voice
+			SignalBus.voice_play.emit(voice, character)
+
+
+func _finalize_combine(character: String, segments: Array) -> void:
+	# User aborted typewriter (or skip mode) — snap expression to the final segment
+	# and cancel the voice queue progression.
+	_combine_aborted = true
+	if segments.size() == 0:
+		return
+	var last_seg = segments[segments.size() - 1]
+	var last_expr := String(last_seg.get("expression", ""))
+	if last_expr != "" and character != "":
+		SignalBus.char_expression_changed.emit(character, last_expr)
+		if _current_mode == "adv":
+			_update_avatar(character, last_expr, "adv")
 
 
 
