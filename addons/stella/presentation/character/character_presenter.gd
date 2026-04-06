@@ -280,7 +280,13 @@ func _show_layered(slot: Control, character: String, config: CharacterConfig, ex
 
 
 func _clear_slot(slot: Control):
+	# remove_child is synchronous; queue_free defers deletion. Without removing
+	# first, an immediately-following add_child("Sprite") would collide on name
+	# with the still-in-tree old sprite, get auto-renamed by Godot, and a later
+	# get_node_or_null("Sprite") would return the OLD (about-to-be-freed) node
+	# instead of the new one — silently dropping any texture updates.
 	for child in slot.get_children():
+		slot.remove_child(child)
 		child.queue_free()
 
 

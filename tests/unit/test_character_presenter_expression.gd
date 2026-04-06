@@ -228,3 +228,46 @@ func test_dialogue_voice_progress_relays_cumulative_position():
 		"cumulative position should be played(1.0) + clip_pos(0.5) = 1.5")
 	assert_almost_eq(float(received[0][1]), 3.0, 0.001,
 		"total duration should be the precomputed combined total")
+
+
+func test_char_show_then_expression_change_uses_new_sprite():
+	# Regression: _clear_slot used queue_free, leaving the old "Sprite" node in
+	# the tree. add_child("Sprite") would auto-rename due to name collision,
+	# and get_node_or_null("Sprite") would return the old (about-to-be-freed)
+	# node, silently dropping the texture update. This is the same root cause
+	# as the load-from-combine bug where stage立绘 wouldn't update.
+	SignalBus.char_show.emit("sakura", "happy", "left")
+	await get_tree().process_frame
+	# Now show the same character again at a different expression — simulates
+	# what presentation_state.emit_restore_signals() does on a load.
+	SignalBus.char_show.emit("sakura", "happy", "left")
+	# Immediately fire char_expression_changed (no frame elapsed yet, so any
+	# queue_freed-but-still-in-tree node is the actual hazard)
+	SignalBus.char_expression_changed.emit("sakura", "sad")
+	await get_tree().process_frame
+
+	var slot = _get_slot_left()
+	var sprite = slot.get_node_or_null("Sprite")
+	assert_not_null(sprite, "the live Sprite node must be findable by name")
+	assert_true(sprite.texture.resource_path.ends_with("sad.png"),
+		"texture should reflect the post-show expression change, got: %s"
+			% sprite.texture.resource_path)
+
+
+func test_voice_replay_re_emits_dialogue_voice_started():
+	# Bug: replay button restarted the voice queue but never re-fired
+	# dialogue_voice_started, so the demo progress bar stayed hidden.
+	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
+	var segments = [
+		{"text": "一", "voice": "sakura_013", "expression": ""},
+		{"text": "二", "voice": "sakura_018", "expression": ""},
+	]
+	SignalBus.show_dialogue.emit("sakura", segments, "adv")
+	await get_tree().process_frame
+
+	var started_count := [0]
+	SignalBus.dialogue_voice_started.connect(func(_d): started_count[0] += 1)
+
+	dialogue._on_voice_replay_pressed()
+	assert_eq(started_count[0], 1,
+		"replay should fire dialogue_voice_started so the progress bar shows again")

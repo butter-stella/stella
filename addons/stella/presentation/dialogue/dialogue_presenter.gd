@@ -129,6 +129,10 @@ func _on_voice_replay_pressed():
 	if _current_combine_segments.size() == 0:
 		return
 	_combine_aborted = false
+	_combine_played_duration = 0.0
+	if _combine_total_duration > 0.0:
+		# Re-fire dialogue_voice_started so the progress bar shows again from 0.
+		SignalBus.dialogue_voice_started.emit(_combine_total_duration)
 	_run_voice_queue(_current_voice_character, _current_combine_segments, _dialogue_gen)
 
 
