@@ -319,3 +319,18 @@ func test_dialogue_voice_finished_waits_for_last_segment():
 	await get_tree().process_frame
 	assert_eq(finished_count[0], 1,
 		"dialogue_voice_finished must fire only after the last segment ends")
+
+
+func test_reset_presentation_clears_backlog():
+	# Bug: load reuses _reset_presentation() but it didn't clear the backlog,
+	# so the previous run's entries leaked into the loaded game.
+	StellaRuntime.backlog_manager.clear()
+	StellaRuntime.backlog_manager.add_entry(
+		"sakura", [{"text": "old run", "voice": "", "expression": ""}]
+	)
+	assert_eq(StellaRuntime.backlog_manager.get_entries().size(), 1,
+		"sanity: entry was added")
+
+	StellaRuntime._reset_presentation()
+	assert_eq(StellaRuntime.backlog_manager.get_entries().size(), 0,
+		"_reset_presentation must clear the backlog")
