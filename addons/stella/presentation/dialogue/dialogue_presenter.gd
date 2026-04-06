@@ -47,7 +47,6 @@ var _current_combine_segments: Array = []  # snapshot for replay button
 
 func _ready():
 	SignalBus.show_dialogue.connect(_on_show_dialogue)
-	SignalBus.show_dialogue_combined.connect(_on_show_dialogue_combined)
 	SignalBus.hide_dialogue.connect(_on_hide_dialogue)
 	SignalBus.scenario_ended_event.connect(func(_id): visible = false)
 	SignalBus.voice_started.connect(func(_c, _a): _voice_playing = true)
@@ -121,18 +120,12 @@ func _setup_toolbar():
 
 
 func _on_voice_replay_pressed():
-	if _current_combine_segments.size() > 0:
-		_replay_combine_voices()
-	elif _current_voice != "":
-		SignalBus.voice_play.emit(_current_voice, _current_voice_character)
-
-
-func _replay_combine_voices() -> void:
-	# Restart the voice queue with the stored segments. _run_combine_voice_queue
-	# bumps its own internal generation to cancel any in-flight queue coroutine,
-	# leaving _dialogue_gen (and any auto-play/advance await) untouched.
+	# Always re-run the voice queue with whatever segments the current dialogue has.
+	# Single-segment case is just a 1-iteration replay of one voice.
+	if _current_combine_segments.size() == 0:
+		return
 	_combine_aborted = false
-	_run_combine_voice_queue(_current_voice_character, _current_combine_segments, _dialogue_gen)
+	_run_voice_queue(_current_voice_character, _current_combine_segments, _dialogue_gen)
 
 
 func _on_auto_pressed():
@@ -197,148 +190,15 @@ func _is_skipping() -> bool:
 	return StellaRuntime.is_skipping() or _ctrl_held
 
 
-func _on_show_dialogue(character: String, text: String, voice: String, mode: String):
-	if _ui_hidden:
-		return
-
-	_dialogue_gen += 1
-	var gen = _dialogue_gen
-	_current_combine_segments = []  # clear combine state when a normal dialogue starts
-
-	# Trigger voice playback (suppress during skip — no point playing voice
-	# for lines that are shown for only ~50ms)
-	_current_voice_character = character
-	if voice != "" and not _is_skipping():
-		_current_voice = voice
-		SignalBus.voice_play.emit(voice, character)
-	else:
-		_current_voice = voice if voice != "" else ""
-
-	if _voice_replay_btn:
-		_voice_replay_btn.visible = (voice != "")
-
-	visible = true
-	_current_mode = mode
-
-	if toolbar:
-		toolbar.visible = (mode == "adv")
-
-	# Extract inline expression markers
-	var timeline = ExpressionTimeline.new()
-	var result = timeline.extract_from_text(text)
-	var clean_text: String = result["clean_text"]
-	timeline.markers = result["markers"]
-
-	# Handle inline effects
-	var processed = _process_inline_effects(clean_text)
-	clean_text = processed["text"]
-	var effects = processed["effects"]
-
-	# Prepare display based on mode
-	var new_line_text: String = ""
-
-	if mode == "nvl":
-		_apply_nvl_layout()
-		name_label.visible = false
-		if character != "":
-			new_line_text = "%s：%s" % [character, clean_text]
-		else:
-			new_line_text = clean_text
-		var full_text = _nvl_text + new_line_text
-		text_label.text = full_text
-		var old_char_count = _nvl_text.length()
-		text_label.visible_characters = old_char_count
-		_nvl_text = full_text + "\n"
-
-	elif mode == "overlay":
-		_apply_overlay_layout()
-		name_label.visible = false
-		new_line_text = clean_text
-		text_label.text = clean_text
-		text_label.visible_characters = 0
-
-	else:  # adv
-		_apply_adv_layout()
-		_nvl_text = ""
-		new_line_text = clean_text
-		if character != "":
-			name_label.text = character
-			name_label.visible = true
-		else:
-			name_label.text = ""
-			name_label.visible = false
-		text_label.text = clean_text
-		text_label.visible_characters = 0
-
-	# Update avatar for the speaking character
-	var expression = _known_expressions.get(character, "default")
-	_update_avatar(character, expression, mode)
-
-	await get_tree().process_frame
-	_is_typing = true
-
-	# Skip mode: show all text immediately
-	if _is_skipping():
-		text_label.visible_characters = -1
-		_is_typing = false
-		await get_tree().create_timer(StellaRuntime.get_setting("skip_interval") / 1000.0).timeout
-		SignalBus.advance_requested.emit()
-		return
-
-	# Typewriter effect
-	var start_visible = text_label.visible_characters
-	var total_new_chars = new_line_text.length()
-	for i in range(total_new_chars):
-		if not _is_typing:
-			break
-		# Check if skip activated mid-typewriter
-		if _is_skipping():
-			text_label.visible_characters = -1
-			_is_typing = false
-			await get_tree().create_timer(StellaRuntime.get_setting("skip_interval") / 1000.0).timeout
-			SignalBus.advance_requested.emit()
-			return
-
-		text_label.visible_characters = start_visible + i + 1
-
-		var expr = timeline.get_expression_at_char(i)
-		if expr != "" and character != "":
-			SignalBus.char_expression_changed.emit(character, expr)
-
-		var delay = _char_interval
-		for effect in effects:
-			if effect["pos"] == i:
-				if effect["type"] == "wait":
-					await get_tree().create_timer(effect["value"] / 1000.0).timeout
-				elif effect["type"] == "speed":
-					delay = effect["value"] / 1000.0
-
-		await get_tree().create_timer(delay).timeout
-
-	text_label.visible_characters = -1
-	_is_typing = false
-
-	# Auto-play: wait for voice (if configured) then delay then advance.
-	# gen check: if a manual click advanced to the next dialogue while we
-	# were waiting, _dialogue_gen will have changed — abort this coroutine.
-	if StellaRuntime.is_auto_playing():
-		if StellaRuntime.get_setting("auto_play_wait_voice") and _voice_playing:
-			await SignalBus.voice_finished
-			if gen != _dialogue_gen:
-				return
-		var delay = StellaRuntime.get_setting("auto_play_delay")
-		await get_tree().create_timer(delay).timeout
-		if gen != _dialogue_gen:
-			return
-		if StellaRuntime.is_auto_playing():
-			SignalBus.advance_requested.emit()
-
-
-## Combined dialogue from @combine block.
-## Typewriter runs continuously over concatenated text; voices play sequentially;
-## expression switches at each segment boundary (driven by voice_finished).
-## Click during typewriter: abort typewriter + voice queue, snap to final segment's expression.
-func _on_show_dialogue_combined(character: String, segments: Array, mode: String) -> void:
+## Unified dialogue handler.
+## Both normal single-line dialogue and @combine multi-segment dialogue flow
+## through here. A normal dialogue is just segments.size() == 1.
+## - Voices play sequentially via _run_voice_queue (works for 1 or N segments)
+## - Typewriter runs continuously over concatenated text
+## - Inline `[expr]` markers and `{wait/speed}` effects from each segment's text
+##   are merged into global timelines with offset adjustment
+## - Click-to-finish: snap text to end + cancel voice queue + apply final expression
+func _on_show_dialogue(character: String, segments: Array, mode: String) -> void:
 	if _ui_hidden or segments.size() == 0:
 		return
 
@@ -347,10 +207,33 @@ func _on_show_dialogue_combined(character: String, segments: Array, mode: String
 	_combine_aborted = false
 	_current_combine_segments = segments.duplicate(true)
 
-	# Pre-compute concatenated text for typewriter / backlog
+	# Process all segments: concat text, merge inline markers + effects with offsets
 	var full_text := ""
+	var all_effects: Array = []
+	var timeline := ExpressionTimeline.new()
+	var all_markers: Array = []
 	for seg in segments:
-		full_text += String(seg.get("text", ""))
+		var seg_text := String(seg.get("text", ""))
+		var offset := full_text.length()
+		# Inline `[expr]` markers
+		var tl_result = ExpressionTimeline.new().extract_from_text(seg_text)
+		var seg_clean: String = tl_result["clean_text"]
+		for m in tl_result["markers"]:
+			all_markers.append({
+				"expression": m["expression"],
+				"at_char": int(m["at_char"]) + offset,
+			})
+		# Inline `{wait/speed}` effects
+		var processed = _process_inline_effects(seg_clean)
+		seg_clean = processed["text"]
+		for ef in processed["effects"]:
+			all_effects.append({
+				"type": ef["type"],
+				"value": ef["value"],
+				"pos": int(ef["pos"]) + offset,
+			})
+		full_text += seg_clean
+	timeline.markers = all_markers
 
 	_current_voice_character = character
 	var first_voice := String(segments[0].get("voice", ""))
@@ -364,40 +247,46 @@ func _on_show_dialogue_combined(character: String, segments: Array, mode: String
 	if toolbar:
 		toolbar.visible = (mode == "adv")
 
-	# Combined dialogue: ADV mode only (fall through for other modes using concat text)
+	# Mode-specific text setup
+	var new_line_text: String = ""
 	if mode == "nvl":
 		_apply_nvl_layout()
 		name_label.visible = false
-		var line_text: String = (character + "：" + full_text) if character != "" else full_text
-		var combined = _nvl_text + line_text
+		if character != "":
+			new_line_text = "%s：%s" % [character, full_text]
+		else:
+			new_line_text = full_text
+		var combined = _nvl_text + new_line_text
 		text_label.text = combined
-		text_label.visible_characters = _nvl_text.length()
+		var old_char_count = _nvl_text.length()
+		text_label.visible_characters = old_char_count
 		_nvl_text = combined + "\n"
 	elif mode == "overlay":
 		_apply_overlay_layout()
 		name_label.visible = false
+		new_line_text = full_text
 		text_label.text = full_text
 		text_label.visible_characters = 0
 	else:  # adv
 		_apply_adv_layout()
 		_nvl_text = ""
+		new_line_text = full_text
 		if character != "":
 			name_label.text = character
 			name_label.visible = true
 		else:
+			name_label.text = ""
 			name_label.visible = false
 		text_label.text = full_text
 		text_label.visible_characters = 0
 
-	# Update avatar based on first segment's expression (will be set by queue),
-	# otherwise fall back to current known expression.
+	# Avatar: first segment's explicit expression takes priority, else current known
 	var first_expr := String(segments[0].get("expression", ""))
 	var avatar_expr = first_expr if first_expr != "" else String(_known_expressions.get(character, "default"))
 	_update_avatar(character, avatar_expr, mode)
 
-	# Launch voice-queue coroutine. It owns ALL segment voice playback and expression
-	# switching (including segment 0) so empty-voice segments can't hang the queue.
-	_run_combine_voice_queue(character, segments, gen)
+	# Launch voice queue (handles single-segment as a 1-iteration loop)
+	_run_voice_queue(character, segments, gen)
 
 	await get_tree().process_frame
 	_is_typing = true
@@ -406,62 +295,74 @@ func _on_show_dialogue_combined(character: String, segments: Array, mode: String
 	if _is_skipping():
 		text_label.visible_characters = -1
 		_is_typing = false
-		_finalize_combine(character, segments)
+		_finalize_dialogue(character, segments)
 		await get_tree().create_timer(StellaRuntime.get_setting("skip_interval") / 1000.0).timeout
 		SignalBus.advance_requested.emit()
 		return
 
-	# Typewriter over concatenated text
+	# Typewriter
 	var start_visible = text_label.visible_characters
-	var total_chars = full_text.length() - start_visible
-	for i in range(total_chars):
+	var total_new_chars = new_line_text.length()
+	for i in range(total_new_chars):
 		if not _is_typing:
 			break
 		if _is_skipping():
 			text_label.visible_characters = -1
 			_is_typing = false
-			_finalize_combine(character, segments)
+			_finalize_dialogue(character, segments)
 			await get_tree().create_timer(StellaRuntime.get_setting("skip_interval") / 1000.0).timeout
 			SignalBus.advance_requested.emit()
 			return
+
 		text_label.visible_characters = start_visible + i + 1
-		await get_tree().create_timer(_char_interval).timeout
+
+		var expr = timeline.get_expression_at_char(i)
+		if expr != "" and character != "":
+			SignalBus.char_expression_changed.emit(character, expr)
+
+		var delay = _char_interval
+		for effect in all_effects:
+			if effect["pos"] == i:
+				if effect["type"] == "wait":
+					await get_tree().create_timer(effect["value"] / 1000.0).timeout
+				elif effect["type"] == "speed":
+					delay = effect["value"] / 1000.0
+
+		await get_tree().create_timer(delay).timeout
 		if gen != _dialogue_gen:
 			return
 
-	# If typewriter was aborted by user click (input_handler sets _is_typing = false
-	# and visible_characters = -1), snap to final segment state.
-	if _combine_aborted == false and not _is_typing and text_label.visible_characters == -1:
-		_finalize_combine(character, segments)
+	# Click-to-finish detection: input_handler sets _is_typing=false and visible=-1
+	if not _combine_aborted and not _is_typing and text_label.visible_characters == -1:
+		_finalize_dialogue(character, segments)
 
 	text_label.visible_characters = -1
 	_is_typing = false
 
-	# Auto-play: wait for all segment voices to finish, then advance
+	# Auto-play: wait for the voice queue to drain all segments, then advance
 	if StellaRuntime.is_auto_playing():
 		if StellaRuntime.get_setting("auto_play_wait_voice"):
-			# Wait until the voice queue coroutine has drained all segments
 			while _combine_queue_active and not _combine_aborted:
 				await get_tree().process_frame
 				if gen != _dialogue_gen:
 					return
-			# And wait for the current (final) voice to finish naturally
 			if _voice_playing:
 				await SignalBus.voice_finished
 				if gen != _dialogue_gen:
 					return
-		var delay = StellaRuntime.get_setting("auto_play_delay")
-		await get_tree().create_timer(delay).timeout
+		var ap_delay = StellaRuntime.get_setting("auto_play_delay")
+		await get_tree().create_timer(ap_delay).timeout
 		if gen != _dialogue_gen:
 			return
 		if StellaRuntime.is_auto_playing():
 			SignalBus.advance_requested.emit()
 
 
-func _run_combine_voice_queue(character: String, segments: Array, gen: int) -> void:
-	# Plays all segment voices sequentially. Owns seg[0] too so a missing/empty
-	# voice on any segment can't hang the queue. Between segments, awaits
-	# voice_finished iff the previous segment actually played a voice.
+func _run_voice_queue(character: String, segments: Array, gen: int) -> void:
+	# Plays all segment voices sequentially. Owns every segment so a missing/empty
+	# voice can't hang the queue. Between segments, awaits voice_finished iff the
+	# previous segment actually played a voice. Works identically for single- and
+	# multi-segment dialogues.
 	_combine_queue_gen += 1
 	var q_gen = _combine_queue_gen
 	_combine_queue_active = true
@@ -488,9 +389,10 @@ func _run_combine_voice_queue(character: String, segments: Array, gen: int) -> v
 		_combine_queue_active = false
 
 
-func _finalize_combine(character: String, segments: Array) -> void:
-	# User aborted typewriter (or skip mode) — snap expression to the final segment
-	# and cancel the voice queue progression.
+func _finalize_dialogue(character: String, segments: Array) -> void:
+	# User aborted typewriter (or skip mode) — cancel the voice queue progression
+	# and snap expression to the final segment's expression. For a single-segment
+	# dialogue with empty expression this is a no-op.
 	_combine_aborted = true
 	if segments.size() == 0:
 		return

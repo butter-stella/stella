@@ -92,7 +92,6 @@ func _ready():
 
 	# Wire dialogue to backlog
 	SignalBus.show_dialogue.connect(_on_dialogue_for_backlog)
-	SignalBus.show_dialogue_combined.connect(_on_combined_dialogue_for_backlog)
 
 	# Play title BGM after AudioPresenter is ready
 	if config.title_bgm != "":
@@ -307,19 +306,8 @@ func _on_scenario_ended(id: String) -> void:
 	return_to_title()
 
 
-func _on_dialogue_for_backlog(character: String, text: String, voice: String, _mode: String):
-	backlog_manager.add_entry(character, text, voice)
-
-
-func _on_combined_dialogue_for_backlog(character: String, segments: Array, _mode: String):
-	# Combined dialogue is logged as one entry: concatenated text + first-segment voice
-	var full_text := ""
-	for seg in segments:
-		full_text += String(seg.get("text", ""))
-	var first_voice := ""
-	if segments.size() > 0:
-		first_voice = String(segments[0].get("voice", ""))
-	backlog_manager.add_entry(character, full_text, first_voice)
+func _on_dialogue_for_backlog(character: String, segments: Array, _mode: String):
+	backlog_manager.add_entry(character, segments)
 
 
 # ─── Facade API: Save/Load ───

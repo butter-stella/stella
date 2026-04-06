@@ -71,9 +71,11 @@ func test_inline_expression_during_typewriter_updates_stage_sprite():
 		"After @expr sakura sad, sprite should be sad.png, got: %s" % sad_path)
 
 	# Now trigger dialogue which should fire inline markers during typewriter
-	SignalBus.show_dialogue.emit("sakura",
-		"我本来很开心的...[surprised]但是听说下周要期中考...[sad]我数学肯定完蛋了。",
-		"", "adv")
+	SignalBus.show_dialogue.emit("sakura", [{
+		"text": "我本来很开心的...[surprised]但是听说下周要期中考...[sad]我数学肯定完蛋了。",
+		"voice": "",
+		"expression": "",
+	}], "adv")
 
 	# Wait for typewriter to process inline markers
 	# The dialogue has ~30 chars total, 0.03s per char = ~0.9s, plus {wait} etc
@@ -117,7 +119,7 @@ func test_combined_dialogue_plays_segments_sequentially():
 		{"text": "但是听说下周要期中考...", "voice": "sakura_018", "expression": "surprised"},
 		{"text": "我数学肯定完蛋了。", "voice": "sakura_019", "expression": "sad"},
 	]
-	SignalBus.show_dialogue_combined.emit("sakura", segments, "adv")
+	SignalBus.show_dialogue.emit("sakura", segments, "adv")
 	await get_tree().process_frame
 
 	# Initial segment's expression should be applied
@@ -140,7 +142,7 @@ func test_combine_voice_replay_restarts_from_first_segment():
 	]
 
 	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
-	SignalBus.show_dialogue_combined.emit("sakura", segments, "adv")
+	SignalBus.show_dialogue.emit("sakura", segments, "adv")
 	await get_tree().process_frame
 
 	# Segments should be stored for replay
@@ -150,19 +152,21 @@ func test_combine_voice_replay_restarts_from_first_segment():
 	# Simulate replay — should not crash and should kick off the queue again
 	var voice_play_count := [0]
 	SignalBus.voice_play.connect(func(_a, _c): voice_play_count[0] += 1)
-	dialogue._replay_combine_voices()
+	dialogue._on_voice_replay_pressed()
 	await get_tree().process_frame
 	assert_true(voice_play_count[0] >= 1,
 		"replay should emit at least one voice_play for segment 0")
 
 
-func test_normal_dialogue_clears_combine_segments():
+func test_single_segment_dialogue_stores_one_segment():
+	# Normal single-line dialogue should also populate _current_combine_segments
+	# (size 1) so the unified replay path works.
 	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
-	dialogue._current_combine_segments = [{"text": "stale"}]
-	SignalBus.show_dialogue.emit("sakura", "hello", "", "adv")
+	SignalBus.show_dialogue.emit("sakura",
+		[{"text": "hello", "voice": "v1", "expression": ""}], "adv")
 	await get_tree().process_frame
-	assert_eq(dialogue._current_combine_segments.size(), 0,
-		"single-dialogue path should clear stale combine state")
+	assert_eq(dialogue._current_combine_segments.size(), 1,
+		"single-segment dialogue should snapshot a 1-element segments array")
 
 
 func test_combine_with_empty_voices_does_not_hang():
@@ -172,7 +176,7 @@ func test_combine_with_empty_voices_does_not_hang():
 		{"text": "二", "voice": "", "expression": ""},
 	]
 	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
-	SignalBus.show_dialogue_combined.emit("sakura", segments, "adv")
+	SignalBus.show_dialogue.emit("sakura", segments, "adv")
 	await get_tree().process_frame
 	# After one frame the queue should already be inactive (nothing to await)
 	assert_false(dialogue._combine_queue_active,
