@@ -152,7 +152,7 @@ backlog_scene = ""
 
 ```
 examples/demo/
-├── scenarios/demo.stl
+├── scenarios/demo.stla
 └── art/...
 ```
 
@@ -162,7 +162,7 @@ demo 依赖插件内置的 title.tscn 和 game.tscn，用户看不到"怎么搭�
 
 ```
 examples/demo/
-├── scenarios/demo.stl
+├── scenarios/demo.stla
 ├── art/...
 ├── scenes/
 │   ├── title.tscn           ← 用户自建的标题场景

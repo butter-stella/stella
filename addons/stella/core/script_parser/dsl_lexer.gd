@@ -1,4 +1,4 @@
-## Tokenizes .stl source text into a list of DslTokens.
+## Tokenizes .stla source text into a list of DslTokens.
 class_name DslLexer extends RefCounted
 
 

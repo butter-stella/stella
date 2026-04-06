@@ -8,7 +8,7 @@ var has_config_file: bool = false
 
 # [game]
 var game_title: String = "Stella"
-var scenario_path: String = "res://scenarios/main.stl"
+var scenario_path: String = "res://scenarios/main.stla"
 var title_bgm: String = ""  # BGM asset name for title screen
 
 # [paths]
