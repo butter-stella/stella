@@ -3,13 +3,13 @@ extends GutTest
 
 
 func test_scenario_ended_bridges_to_signal_bus():
-	# NatsumeRuntime should bridge engine.scenario_ended to SignalBus
+	# StellaRuntime should bridge engine.scenario_ended to SignalBus
 	var received: Array = []
 	var bus = get_tree().root.get_node("SignalBus")
 	bus.scenario_ended_event.connect(func(id): received.append(id))
 
 	# Simulate engine scenario_ended
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	runtime.engine.scenario_ended.emit("test_scenario")
 
 	assert_eq(received, ["test_scenario"])

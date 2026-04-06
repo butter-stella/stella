@@ -1,21 +1,21 @@
-# Natsume API 驱动 UI 设计方案
+# Stella API 驱动 UI 设计方案
 
 > 状态：设计中
 > 日期：2026-04-03
 
 ## 背景
 
-当前表现层（Presentation Layer）直接深入 NatsumeRuntime 的子系统对象调用方法：
+当前表现层（Presentation Layer）直接深入 StellaRuntime 的子系统对象调用方法：
 
 ```gdscript
 # 用户要写这样的代码来实现一个快存按钮
-NatsumeRuntime.save_manager.save(0)
+StellaRuntime.save_manager.save(0)
 
 # 切换到存档画面
-NatsumeRuntime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
+StellaRuntime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
 
 # 开关自动播放
-NatsumeRuntime.auto_play.toggle()
+StellaRuntime.auto_play.toggle()
 ```
 
 问题：
@@ -25,7 +25,7 @@ NatsumeRuntime.auto_play.toggle()
 
 ## 设计目标
 
-1. **NatsumeRuntime 提供简洁的 Facade API** — 用户只需要知道一个对象
+1. **StellaRuntime 提供简洁的 Facade API** — 用户只需要知道一个对象
 2. **demo 用用户模式运行** — 自建游戏场景 + 调用 API，作为用户的项目模板
 3. **内置场景降级为参考实现** — 仍然保留，但 demo 不依赖它
 
@@ -33,61 +33,61 @@ NatsumeRuntime.auto_play.toggle()
 
 ## Facade API 设计
 
-在 NatsumeRuntime 上封装面向用户的便捷方法：
+在 StellaRuntime 上封装面向用户的便捷方法：
 
 ### 游戏流程
 
 ```gdscript
 # 已有，保持不变
-NatsumeRuntime.start_game()
-NatsumeRuntime.load_game(slot_id)
-NatsumeRuntime.return_to_title()
+StellaRuntime.start_game()
+StellaRuntime.load_game(slot_id)
+StellaRuntime.return_to_title()
 ```
 
 ### 存档/读档
 
 ```gdscript
-NatsumeRuntime.save(slot_id: int) -> void
-NatsumeRuntime.load(slot_id: int) -> bool
-NatsumeRuntime.has_save(slot_id: int) -> bool
-NatsumeRuntime.delete_save(slot_id: int) -> void
-NatsumeRuntime.get_save_list() -> Array
-NatsumeRuntime.quick_save() -> void           # 独立存档（quicksave.json）
-NatsumeRuntime.quick_load() -> bool           # 读取快存
-NatsumeRuntime.has_quick_save() -> bool       # 是否有快存
-NatsumeRuntime.delete_quick_save() -> void    # 删除快存
+StellaRuntime.save(slot_id: int) -> void
+StellaRuntime.load(slot_id: int) -> bool
+StellaRuntime.has_save(slot_id: int) -> bool
+StellaRuntime.delete_save(slot_id: int) -> void
+StellaRuntime.get_save_list() -> Array
+StellaRuntime.quick_save() -> void           # 独立存档（quicksave.json）
+StellaRuntime.quick_load() -> bool           # 读取快存
+StellaRuntime.has_quick_save() -> bool       # 是否有快存
+StellaRuntime.delete_quick_save() -> void    # 删除快存
 ```
 
 ### 播放控制
 
 ```gdscript
-NatsumeRuntime.toggle_auto_play() -> void
-NatsumeRuntime.toggle_skip() -> void
-NatsumeRuntime.is_auto_playing() -> bool
-NatsumeRuntime.is_skipping() -> bool
+StellaRuntime.toggle_auto_play() -> void
+StellaRuntime.toggle_skip() -> void
+StellaRuntime.is_auto_playing() -> bool
+StellaRuntime.is_skipping() -> bool
 ```
 
 ### UI 状态切换
 
 ```gdscript
-NatsumeRuntime.show_backlog() -> void
-NatsumeRuntime.show_save_load(mode: String = "save") -> void
-NatsumeRuntime.show_settings() -> void
-NatsumeRuntime.close_overlay() -> void        # return_to_previous
+StellaRuntime.show_backlog() -> void
+StellaRuntime.show_save_load(mode: String = "save") -> void
+StellaRuntime.show_settings() -> void
+StellaRuntime.close_overlay() -> void        # return_to_previous
 ```
 
 ### 回想记录
 
 ```gdscript
-NatsumeRuntime.get_backlog() -> Array
+StellaRuntime.get_backlog() -> Array
 ```
 
 ### 设置
 
 ```gdscript
-NatsumeRuntime.get_setting(key: String) -> Variant
-NatsumeRuntime.set_setting(key: String, value: Variant) -> void
-NatsumeRuntime.save_settings() -> void
+StellaRuntime.get_setting(key: String) -> Variant
+StellaRuntime.set_setting(key: String, value: Variant) -> void
+StellaRuntime.save_settings() -> void
 ```
 
 > 子系统对象（save_manager、settings_manager 等）仍然公开，高级用户可以直接使用。
@@ -103,23 +103,23 @@ NatsumeRuntime.save_settings() -> void
 ### 设计
 
 - Overlay 画面是**独立场景文件**（`settings.tscn`、`save_load.tscn` 等）
-- NatsumeRuntime 管理 overlay 生命周期：打开时 `instantiate()` + `add_child()`，关闭时 `queue_free()`
-- overlay 加到 NatsumeRuntime 自身（Autoload 节点），不依赖当前场景
+- StellaRuntime 管理 overlay 生命周期：打开时 `instantiate()` + `add_child()`，关闭时 `queue_free()`
+- overlay 加到 StellaRuntime 自身（Autoload 节点），不依赖当前场景
 - 用户可通过 `[overrides]` 替换任意 overlay 场景
 
 ### Facade API
 
 ```gdscript
-NatsumeRuntime.show_settings()      # 加载 settings overlay
-NatsumeRuntime.show_save_load()     # 加载存档/读档 overlay
-NatsumeRuntime.show_backlog()       # 加载 backlog overlay
-NatsumeRuntime.close_overlay()      # 关闭当前 overlay
+StellaRuntime.show_settings()      # 加载 settings overlay
+StellaRuntime.show_save_load()     # 加载存档/读档 overlay
+StellaRuntime.show_backlog()       # 加载 backlog overlay
+StellaRuntime.close_overlay()      # 关闭当前 overlay
 ```
 
 ### 内置 overlay 场景
 
 ```
-addons/natsume/scenes/
+addons/stella/scenes/
 ├── title.tscn                ← 内置标题（参考实现）
 ├── game.tscn                 ← 内置游戏（参考实现）
 ├── settings.tscn             ← 内置设置 overlay
@@ -127,7 +127,7 @@ addons/natsume/scenes/
 └── backlog.tscn              ← 内置 backlog overlay
 ```
 
-### natsume.cfg 覆盖
+### stella.cfg 覆盖
 
 ```ini
 [overrides]
@@ -152,7 +152,7 @@ backlog_scene = ""
 
 ```
 examples/demo/
-├── scenarios/demo.nat
+├── scenarios/demo.stl
 └── art/...
 ```
 
@@ -162,17 +162,17 @@ demo 依赖插件内置的 title.tscn 和 game.tscn，用户看不到"怎么搭�
 
 ```
 examples/demo/
-├── scenarios/demo.nat
+├── scenarios/demo.stl
 ├── art/...
 ├── scenes/
 │   ├── title.tscn           ← 用户自建的标题场景
 │   └── game.tscn            ← 用户自建的游戏场景
 └── scripts/
-    ├── title_screen.gd      ← 标题画面逻辑（调用 NatsumeRuntime API）
+    ├── title_screen.gd      ← 标题画面逻辑（调用 StellaRuntime API）
     └── game_screen.gd       ← 游戏画面逻辑（连接 SignalBus 信号）
 ```
 
-`natsume.cfg` 通过 `[overrides]` 指定 demo 自建的场景：
+`stella.cfg` 通过 `[overrides]` 指定 demo 自建的场景：
 
 ```ini
 [overrides]
@@ -184,17 +184,17 @@ game_scene = "res://examples/demo/scenes/game.tscn"
 
 **title.tscn** — 标题画面：
 - 自己搭 UI（标题、按钮）
-- 按钮回调调用 `NatsumeRuntime.start_game()` / `NatsumeRuntime.load_game()`
+- 按钮回调调用 `StellaRuntime.start_game()` / `StellaRuntime.load_game()`
 
 **game.tscn** — 游戏场景：
 - 节点树包含对话框、立绘槽位、背景等（用 Godot 编辑器搭建）
 - 挂载插件的 Presenter 脚本（BackgroundPresenter、CharacterPresenter 等）
-- 工具栏按钮调用 Facade API（`NatsumeRuntime.quick_save()` 等）
+- 工具栏按钮调用 Facade API（`StellaRuntime.quick_save()` 等）
 - UI overlay（存档/设置/Backlog）监听 `game_state.state_changed` 信号控制显隐
 
 ### 关键原则
 
-demo 的场景和脚本**不在 `addons/natsume/` 内**，和真实用户项目完全一致。
+demo 的场景和脚本**不在 `addons/stella/` 内**，和真实用户项目完全一致。
 用户可以直接复制 `examples/demo/` 作为新项目的起点。
 
 ---
@@ -205,18 +205,18 @@ demo 的场景和脚本**不在 `addons/natsume/` 内**，和真实用户项目�
 
 | 文件 | 说明 |
 |------|------|
-| `natsume_runtime.gd` | 添加 Facade 方法 + overlay 生命周期管理 |
-| `natsume_config.gd` | 添加 overlay 场景覆盖配置 |
+| `stella_runtime.gd` | 添加 Facade 方法 + overlay 生命周期管理 |
+| `stella_config.gd` | 添加 overlay 场景覆盖配置 |
 | `tests/unit/test_facade_api.gd` | Facade API 测试 |
 
 ### Phase 2：Overlay 场景拆分
 
 | 文件 | 说明 |
 |------|------|
-| `addons/natsume/scenes/settings.tscn` | 从 game.tscn 拆出设置 overlay |
-| `addons/natsume/scenes/save_load.tscn` | 从 game.tscn 拆出存档/读档 overlay |
-| `addons/natsume/scenes/backlog.tscn` | 从 game.tscn 拆出 backlog overlay |
-| `addons/natsume/scenes/game.tscn` | 移除内嵌的 overlay 节点 |
+| `addons/stella/scenes/settings.tscn` | 从 game.tscn 拆出设置 overlay |
+| `addons/stella/scenes/save_load.tscn` | 从 game.tscn 拆出存档/读档 overlay |
+| `addons/stella/scenes/backlog.tscn` | 从 game.tscn 拆出 backlog overlay |
+| `addons/stella/scenes/game.tscn` | 移除内嵌的 overlay 节点 |
 
 ### Phase 3：内置场景改用 Facade API
 
@@ -235,7 +235,7 @@ demo 的场景和脚本**不在 `addons/natsume/` 内**，和真实用户项目�
 | `examples/demo/scenes/title.tscn` | 用户自建标题场景 |
 | `examples/demo/scenes/game.tscn` | 用户自建游戏场景 |
 | `examples/demo/scripts/title_screen.gd` | 标题画面脚本（调用 Facade API） |
-| `natsume.cfg` | 添加 overrides 指向 demo 场景 |
+| `stella.cfg` | 添加 overrides 指向 demo 场景 |
 
 ### Phase 5：文档
 

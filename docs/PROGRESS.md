@@ -1,4 +1,4 @@
-# Natsume — 开发进度
+# Stella — 开发进度
 
 > 最后更新：2026-03-30
 
@@ -64,7 +64,7 @@
 | 项目 | 说明 |
 |------|------|
 | 场景分离 | title.tscn + game.tscn，游戏组件按需加载 |
-| 资源路径可配置 | NatsumeRuntime.*_path |
+| 资源路径可配置 | StellaRuntime.*_path |
 | 插件化发布 | EditorPlugin 自动注册 Autoload |
 | FadeLayer 独立 | 不遮挡 UI（layer 2，UI 在 layer 3） |
 | 立绘状态机 | 消除 tween 竞态（EMPTY/SHOWING/VISIBLE/HIDING） |

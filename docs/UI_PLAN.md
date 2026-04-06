@@ -1,4 +1,4 @@
-# Natsume — 用户交互 UI 实现计划
+# Stella — 用户交互 UI 实现计划
 
 ## Context
 
@@ -119,7 +119,7 @@ Main (Node2D)
 1. **工具栏是对话框的一部分**，不是独立面板
 2. **GameStateMachine 驱动 UI 切换**：PLAYING ↔ BACKLOG / SAVE_LOAD / SETTINGS
 3. **所有 overlay UI（Backlog/存档/设置）暂停引擎**，关闭时恢复
-4. **NatsumeRuntime 集中初始化子系统**：SaveManager、SettingsManager、BacklogManager
+4. **StellaRuntime 集中初始化子系统**：SaveManager、SettingsManager、BacklogManager
 5. **UI 是框架默认实现**，用户可替换
 
 ## Demo 实装
@@ -127,8 +127,8 @@ Main (Node2D)
 所有 UI 功能完成后，必须在 `examples/demo/` 中完整实装：
 
 - 内置 `game.tscn` + `title.tscn` 场景树包含所有 UI 节点（Toolbar、Backlog、存档/读档、设置、标题画面）
-- `natsume.cfg` 配置文件指定素材路径和功能开关
-- `demo.nat` 确保包含足够的对话量以测试 Backlog 和存档/读档
+- `stella.cfg` 配置文件指定素材路径和功能开关
+- `demo.stl` 确保包含足够的对话量以测试 Backlog 和存档/读档
 - F5 运行即可体验完整游戏循环
 
 ## 验证标准

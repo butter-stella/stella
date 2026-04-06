@@ -1,5 +1,5 @@
 extends GutTest
-## Tests for DslLexer — tokenizing .nat source text.
+## Tests for DslLexer — tokenizing .stl source text.
 
 
 func test_empty_source():

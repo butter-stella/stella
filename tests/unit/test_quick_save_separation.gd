@@ -84,7 +84,7 @@ func test_get_quick_save_metadata_empty_without_save():
 ## --- Facade integration ---
 
 func test_runtime_quick_save_uses_separate_slot():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	runtime.quick_save()
 	assert_true(runtime.has_quick_save())
 
@@ -96,7 +96,7 @@ func test_runtime_quick_save_uses_separate_slot():
 
 
 func test_runtime_has_quick_save():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	assert_false(runtime.has_quick_save())
 	runtime.quick_save()
 	assert_true(runtime.has_quick_save())
@@ -227,7 +227,7 @@ func test_get_latest_continue_type_none():
 ## --- Runtime auto save facade ---
 
 func test_runtime_auto_save():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	runtime.delete_auto_save()
 	assert_false(runtime.has_auto_save())
 
@@ -242,7 +242,7 @@ func test_runtime_auto_save():
 
 
 func test_runtime_auto_save_skips_when_not_playing():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	runtime.delete_auto_save()
 	runtime.game_state.current_state = GameStateMachine.State.TITLE
 	runtime.auto_save()
