@@ -73,13 +73,21 @@ func _make_visible(visible: bool) -> void:
 
 
 func _register_stla_extension() -> void:
-	var editor_settings := get_editor_interface().get_editor_settings()
 	const SETTING := "docks/filesystem/textfile_extensions"
-	if not editor_settings.has_setting(SETTING):
-		return
-	var raw: String = editor_settings.get_setting(SETTING)
-	var exts := raw.split(",", false)
-	if "stla" in exts:
-		return
-	exts.append("stla")
-	editor_settings.set_setting(SETTING, ",".join(exts))
+	var editor_settings := get_editor_interface().get_editor_settings()
+	var raw := ""
+	if editor_settings.has_setting(SETTING):
+		var v = editor_settings.get_setting(SETTING)
+		if v is String:
+			raw = v
+	# Check if "stla" is already present (whitespace-tolerant).
+	for ext in raw.split(",", false):
+		if ext.strip_edges() == "stla":
+			print("[Stella] .stla already registered in %s" % SETTING)
+			return
+	var new_value := raw
+	if new_value != "" and not new_value.ends_with(","):
+		new_value += ","
+	new_value += "stla"
+	editor_settings.set_setting(SETTING, new_value)
+	print("[Stella] Registered .stla extension. %s = %s" % [SETTING, new_value])
