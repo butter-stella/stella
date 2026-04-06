@@ -334,3 +334,69 @@ func test_reset_presentation_clears_backlog():
 	StellaRuntime._reset_presentation()
 	assert_eq(StellaRuntime.backlog_manager.get_entries().size(), 0,
 		"_reset_presentation must clear the backlog")
+
+
+func test_replay_button_visible_when_only_later_segment_has_voice():
+	# Latent bug: replay button visibility was based on segments[0].voice only.
+	# A combine where seg[0] is voice-less but seg[1] has a voice would hide
+	# the button even though replay would play the later voice.
+	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
+	# Create the replay button via the toolbar setup the presenter expects
+	if dialogue._voice_replay_btn == null:
+		dialogue._voice_replay_btn = Button.new()
+		add_child_autoqfree(dialogue._voice_replay_btn)
+
+	var segments = [
+		{"text": "一", "voice": "", "expression": ""},
+		{"text": "二", "voice": "sakura_018", "expression": ""},
+	]
+	SignalBus.show_dialogue.emit("sakura", segments, "adv")
+	await get_tree().process_frame
+
+	assert_true(dialogue._voice_replay_btn.visible,
+		"replay button should show whenever ANY segment has a voice")
+
+
+func test_backlog_replay_request_drives_dialogue_presenter_queue():
+	# The backlog ▶ button should fire dialogue_voice_replay_requested, and the
+	# DialoguePresenter should pick it up + run the voice queue (so the progress
+	# bar and queue state are shared with in-game replay).
+	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
+
+	var voice_play_count := [0]
+	SignalBus.voice_play.connect(func(_a, _c): voice_play_count[0] += 1)
+	var started_count := [0]
+	SignalBus.dialogue_voice_started.connect(func(_d): started_count[0] += 1)
+
+	SignalBus.dialogue_voice_replay_requested.emit(
+		["sakura_013", "sakura_018", "sakura_019"], "sakura"
+	)
+	await get_tree().process_frame
+
+	assert_true(voice_play_count[0] >= 1,
+		"at least segment 0's voice_play should fire from the replay request")
+	assert_eq(started_count[0], 1,
+		"dialogue_voice_started should fire once so the progress bar shows")
+	assert_eq(dialogue._current_combine_segments.size(), 3,
+		"presenter state should reflect the replay segments")
+
+
+func test_backlog_replay_does_not_change_stage_expression():
+	# Replay from backlog should NOT mutate the stage character立绘 (segments
+	# from old entries would carry stale expressions). _on_dialogue_voice_replay_requested
+	# builds synthetic segments with empty expression so char_expression_changed
+	# is never fired by the queue.
+	SignalBus.char_show.emit("sakura", "happy", "left")
+	await get_tree().process_frame
+	var slot = _get_slot_left()
+	var sprite = slot.get_node_or_null("Sprite")
+	assert_not_null(sprite)
+	var initial_path = sprite.texture.resource_path
+
+	# Fire a replay request — voices only, no expression metadata
+	SignalBus.dialogue_voice_replay_requested.emit(["sakura_013"], "sakura")
+	await get_tree().process_frame
+
+	# Stage texture must be unchanged
+	assert_eq(sprite.texture.resource_path, initial_path,
+		"backlog replay must not touch stage立绘")

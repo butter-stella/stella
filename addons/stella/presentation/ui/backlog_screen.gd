@@ -43,7 +43,10 @@ func _populate():
 		text_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		hbox.add_child(text_label)
 
-		# Voice replay button — plays all segment voices of the entry in sequence
+		# Voice replay button — delegates to DialoguePresenter via SignalBus so
+		# the playback uses the same voice queue + progress bar as the in-game
+		# toolbar replay, AND the playback state lives in the always-present
+		# DialoguePresenter (closing the backlog overlay does NOT cancel audio).
 		var entry_voices: Array = entry.get("voices", [])
 		var entry_char = entry.get("character", "")
 		if entry_voices.size() > 0 and StellaRuntime.get_setting("voice_replay_on_backlog") != false:
@@ -53,7 +56,9 @@ func _populate():
 			replay_btn.custom_minimum_size = Vector2(32, 0)
 			replay_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 			var voices_snapshot = entry_voices.duplicate()
-			replay_btn.pressed.connect(func(): _replay_entry_voices(voices_snapshot, entry_char))
+			replay_btn.pressed.connect(func():
+				SignalBus.dialogue_voice_replay_requested.emit(voices_snapshot, entry_char)
+			)
 			hbox.add_child(replay_btn)
 
 		entries_container.add_child(hbox)
@@ -76,15 +81,3 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.keycode == KEY_ESCAPE:
 			_close()
 			get_viewport().set_input_as_handled()
-
-
-## Replay the voices of one backlog entry in order. Awaits voice_finished
-## between segments so each voice plays fully before the next starts.
-func _replay_entry_voices(voices: Array, character: String) -> void:
-	for i in range(voices.size()):
-		SignalBus.voice_play.emit(String(voices[i]), character)
-		if i < voices.size() - 1:
-			await SignalBus.voice_finished
-			# Bail out if the backlog screen was closed mid-playback
-			if not is_inside_tree():
-				return

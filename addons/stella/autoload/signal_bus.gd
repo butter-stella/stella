@@ -42,6 +42,16 @@ signal dialogue_voice_started(total_duration: float)
 signal dialogue_voice_progress(position: float, total_duration: float)
 signal dialogue_voice_finished()
 
+## Request that DialoguePresenter replay an arbitrary list of voice assets as
+## one logical dialogue (uses the same voice queue + progress bar machinery as
+## the in-game replay button). Used by the backlog screen so that:
+##   - the progress bar reflects the full combined duration
+##   - playback state lives in the always-present DialoguePresenter, so closing
+##     the backlog overlay does NOT cancel the audio
+##   - advancing to the next in-game dialogue cleanly cancels any in-flight
+##     replay via the same _dialogue_gen mechanism
+signal dialogue_voice_replay_requested(voices: Array, character: String)
+
 # Choice
 signal choice_show(prompt: String, options: Array)
 signal choice_selected(option_id: String)

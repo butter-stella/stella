@@ -52,6 +52,7 @@ func _ready():
 	SignalBus.show_dialogue.connect(_on_show_dialogue)
 	SignalBus.hide_dialogue.connect(_on_hide_dialogue)
 	SignalBus.voice_progress.connect(_on_voice_progress_relay)
+	SignalBus.dialogue_voice_replay_requested.connect(_on_dialogue_voice_replay_requested)
 	SignalBus.scenario_ended_event.connect(func(_id): visible = false)
 	SignalBus.voice_started.connect(func(_c, _a): _voice_playing = true)
 	SignalBus.voice_finished.connect(func(): _voice_playing = false)
@@ -128,12 +129,49 @@ func _on_voice_replay_pressed():
 	# Single-segment case is just a 1-iteration replay of one voice.
 	if _current_combine_segments.size() == 0:
 		return
+	_start_voice_playback(_current_voice_character, _current_combine_segments)
+
+
+## External entry point for the backlog (or any other UI) to request replaying
+## a list of voice assets as one logical dialogue. Builds synthetic segments
+## with empty text + empty expression so playback only affects audio + the
+## progress bar — never the stage character立绘.
+func _on_dialogue_voice_replay_requested(voices: Array, character: String) -> void:
+	if voices.is_empty():
+		return
+	var segments: Array = []
+	for v in voices:
+		segments.append({
+			"text": "",
+			"voice": String(v),
+			"expression": "",
+		})
+	_start_voice_playback(character, segments)
+
+
+## Shared replay-init: snapshots segments, recomputes durations, fires the
+## dialogue_voice_started signal, and kicks off _run_voice_queue. Used by both
+## the in-game toolbar replay button and external (backlog) replay requests so
+## they share state with each other and with the live dialogue.
+func _start_voice_playback(character: String, segments: Array) -> void:
+	_current_combine_segments = segments.duplicate(true)
+	_current_voice_character = character
 	_combine_aborted = false
 	_combine_played_duration = 0.0
+	_combine_segment_durations.clear()
+	_combine_total_duration = 0.0
+	for seg in segments:
+		var v := String(seg.get("voice", ""))
+		var dur := 0.0
+		if v != "":
+			var stream = _load_voice_stream(v)
+			if stream:
+				dur = stream.get_length()
+		_combine_segment_durations.append(dur)
+		_combine_total_duration += dur
 	if _combine_total_duration > 0.0:
-		# Re-fire dialogue_voice_started so the progress bar shows again from 0.
 		SignalBus.dialogue_voice_started.emit(_combine_total_duration)
-	_run_voice_queue(_current_voice_character, _current_combine_segments, _dialogue_gen)
+	_run_voice_queue(character, _current_combine_segments, _dialogue_gen)
 
 
 func _on_auto_pressed():
@@ -265,7 +303,10 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 	var first_voice := String(segments[0].get("voice", ""))
 	_current_voice = first_voice
 	if _voice_replay_btn:
-		_voice_replay_btn.visible = (first_voice != "")
+		# Show the replay button as long as ANY segment has a voice — not just
+		# segment 0. Otherwise a combine block whose first segment is empty-voice
+		# would falsely hide the button even though later segments would replay.
+		_voice_replay_btn.visible = (_combine_total_duration > 0.0)
 
 	visible = true
 	_current_mode = mode
