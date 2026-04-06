@@ -1,7 +1,7 @@
-# Natsume — Godot AVG / Galgame 框架架构设计
+# Stella — Godot AVG / Galgame 框架架构设计
 
-> 框架名称：**Natsume（夏目）**
-> 仓库：`github.com/MadCcc/Natsume`
+> 框架名称：**Stella（夏目）**
+> 仓库：`github.com/butter-stella/stella`
 > 引擎：Godot 4 + GDScript
 
 ## Context
@@ -10,7 +10,7 @@
 
 ## 已确认的决策
 
-- **脚本格式**：自定义 DSL（`.nat`），引擎直接解析为内部数据结构
+- **脚本格式**：自定义 DSL（`.stl`），引擎直接解析为内部数据结构
 - **架构**：三层分离（Core / Presentation / Plugin），Core 层尽量与 Godot API 解耦
 - **语言**：GDScript 为主，性能敏感部分可用 Rust（gdext）扩展
 - **开发范围**：完整规划，按优先级分步执行
@@ -543,10 +543,10 @@ var voice_asset_id: String
 ## 五、项目目录结构
 
 ```
-natsume/
+stella/
 ├── project.godot
 ├── addons/
-│   └── natsume/                        -- 框架（Godot Plugin）
+│   └── stella/                        -- 框架（Godot Plugin）
 │       ├── plugin.cfg
 │       ├── core/                       -- 核心层
 │       │   ├── script_parser/
@@ -630,13 +630,13 @@ natsume/
 │       │       └── game_state_machine.gd
 │       ├── autoload/
 │       │   ├── signal_bus.gd
-│       │   └── natsume_runtime.gd          -- 框架入口，初始化所有子系统
+│       │   └── stella_runtime.gd          -- 框架入口，初始化所有子系统
 │       └── editor/                         -- 编辑器插件
 │           ├── scenario_editor.gd
 │           ├── graph_view/
 │           └── inspectors/
 ├── game/                                   -- 游戏内容（示例/模板）
-│   ├── scenarios/                          -- .nat 剧本
+│   ├── scenarios/                          -- .stl 剧本
 │   ├── characters/                         -- 角色配置
 │   ├── art/
 │   │   ├── backgrounds/
@@ -665,8 +665,8 @@ natsume/
     │   ├── test_save_load.gd
     │   └── test_full_scenario.gd
     └── fixtures/
-        ├── test_basic.nat
-        └── test_all_commands.nat
+        ├── test_basic.stl
+        └── test_all_commands.stl
 ```
 
 ---
@@ -706,7 +706,7 @@ natsume/
 
 | 任务 | 产出 |
 |------|------|
-| Godot 项目脚手架：addons/natsume 目录结构、plugin.cfg、GUT 配置 | 可运行的空项目 |
+| Godot 项目脚手架：addons/stella 目录结构、plugin.cfg、GUT 配置 | 可运行的空项目 |
 | SignalBus（Autoload）+ 核心数据模型（ScenarioData/SceneData/CommandData/ChoiceData） | 所有模块的对接契约 |
 | CommandHandler 基类 + CommandRegistry | 命令系统基础 |
 
@@ -732,7 +732,7 @@ natsume/
 
 | 任务 | 依赖 |
 |------|------|
-| DslLexer — 词法分析（.nat → Token 流） | Sprint 1 数据模型 |
+| DslLexer — 词法分析（.stl → Token 流） | Sprint 1 数据模型 |
 | DslParser — 语法解析（Token 流 → ScenarioData） | DslLexer |
 | DslScenarioLoader + DSL → Engine 集成测试 | DslParser + Sprint 2 |
 
@@ -746,7 +746,7 @@ natsume/
 
 | 任务 | 依赖 |
 |------|------|
-| NatsumeRuntime（Autoload 入口） | Sprint 2 |
+| StellaRuntime（Autoload 入口） | Sprint 2 |
 | DialoguePresenter（对话框 + 打字机效果） | Sprint 2 |
 | BackgroundPresenter（背景显示 + fade 转场） | Sprint 2 |
 | CharacterPresenter（立绘显示/隐藏/表情切换） | Sprint 2 |

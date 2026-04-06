@@ -6,7 +6,7 @@ extends GutTest
 
 func test_left_click_advances_when_playing():
 	var handler = _make_handler()
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	var received := []
 	var cb = func(): received.append(true)
 	SignalBus.advance_requested.connect(cb)
@@ -24,7 +24,7 @@ func test_left_click_advances_when_playing():
 
 func test_left_click_blocked_when_not_playing():
 	var handler = _make_handler()
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
 	var received := []
 	var cb = func(): received.append(true)
 	SignalBus.advance_requested.connect(cb)
@@ -43,7 +43,7 @@ func test_left_click_blocked_when_not_playing():
 
 func test_space_advances_when_playing():
 	var handler = _make_handler()
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	var received := []
 	var cb = func(): received.append(true)
 	SignalBus.advance_requested.connect(cb)
@@ -60,7 +60,7 @@ func test_space_advances_when_playing():
 
 func test_enter_advances_when_playing():
 	var handler = _make_handler()
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	var received := []
 	var cb = func(): received.append(true)
 	SignalBus.advance_requested.connect(cb)
@@ -77,7 +77,7 @@ func test_enter_advances_when_playing():
 
 func test_keyboard_blocked_when_not_playing():
 	var handler = _make_handler()
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
 	var received := []
 	var cb = func(): received.append(true)
 	SignalBus.advance_requested.connect(cb)
@@ -94,7 +94,7 @@ func test_keyboard_blocked_when_not_playing():
 
 func test_key_echo_ignored():
 	var handler = _make_handler()
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	var received := []
 	var cb = func(): received.append(true)
 	SignalBus.advance_requested.connect(cb)
@@ -116,7 +116,7 @@ func test_ctrl_press_sets_held():
 	var scene = _make_scene_with_dialogue()
 	var handler = scene.get_node("InputHandler")
 	var dialogue = scene.get_node("%DialoguePanel")
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
 
 	var press = InputEventKey.new()
 	press.keycode = KEY_CTRL
@@ -132,7 +132,7 @@ func test_ctrl_release_clears_held():
 	var handler = scene.get_node("InputHandler")
 	var dialogue = scene.get_node("%DialoguePanel")
 	dialogue._ctrl_held = true
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
 
 	var release = InputEventKey.new()
 	release.keycode = KEY_CTRL
@@ -147,12 +147,12 @@ func test_ctrl_release_clears_held():
 
 
 func _make_handler() -> Node:
-	var handler = preload("res://addons/natsume/presentation/input/input_handler.gd").new()
+	var handler = preload("res://addons/stella/presentation/input/input_handler.gd").new()
 	add_child(handler)
 	return handler
 
 
 func _make_scene_with_dialogue() -> Node:
-	var scene = preload("res://addons/natsume/scenes/game.tscn").instantiate()
+	var scene = preload("res://addons/stella/scenes/game.tscn").instantiate()
 	add_child(scene)
 	return scene

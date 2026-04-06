@@ -16,7 +16,7 @@
 
 ### 1. VoiceHandler（Core 层）
 
-新建 `addons/natsume/core/commands/voice_handler.gd`：
+新建 `addons/stella/core/commands/voice_handler.gd`：
 
 ```gdscript
 class_name VoiceHandler extends CommandHandler
@@ -29,7 +29,7 @@ func execute(data: CommandData, _context: ScenarioContext) -> void:
     SignalBus.voice_play.emit(asset)
 ```
 
-在 `natsume_runtime.gd:_register_handlers()` 中注册。
+在 `stella_runtime.gd:_register_handlers()` 中注册。
 
 ### 2. DSL 解析器 — `@voice` 命令
 
@@ -90,27 +90,27 @@ func execute(data: CommandData, _context: ScenarioContext) -> void:
 
 新建/编辑系统 SE 播放逻辑：
 
-- 提供一个全局可调用的系统 SE 播放方法（如 `NatsumeRuntime.play_system_se(asset: String)`）
+- 提供一个全局可调用的系统 SE 播放方法（如 `StellaRuntime.play_system_se(asset: String)`）
 - 常见触发点：
   - 对话推进（点击/Enter）
   - 按钮悬停、点击
   - 选项确认
   - 存档/读档操作
-- 音效资源路径：`NatsumeRuntime.se_path` 下的系统音效文件
+- 音效资源路径：`StellaRuntime.se_path` 下的系统音效文件
 - 独立音量控制：受 `system_se_volume` 设置
-- 可配置：通过 `natsume.cfg` 或代码指定各事件对应的音效文件名
+- 可配置：通过 `stella.cfg` 或代码指定各事件对应的音效文件名
 
 ## 涉及文件
 
 | 文件 | 操作 |
 |------|------|
-| `addons/natsume/core/commands/voice_handler.gd` | 新建 |
-| `addons/natsume/core/script_parser/dsl_parser.gd` | 添加 @voice 命令 |
-| `addons/natsume/presentation/dialogue/dialogue_presenter.gd` | 接入语音信号 |
-| `addons/natsume/presentation/audio/audio_presenter.gd` | 语音播放 + 音量 + SE loop |
-| `addons/natsume/autoload/natsume_runtime.gd` | 注册 VoiceHandler |
+| `addons/stella/core/commands/voice_handler.gd` | 新建 |
+| `addons/stella/core/script_parser/dsl_parser.gd` | 添加 @voice 命令 |
+| `addons/stella/presentation/dialogue/dialogue_presenter.gd` | 接入语音信号 |
+| `addons/stella/presentation/audio/audio_presenter.gd` | 语音播放 + 音量 + SE loop |
+| `addons/stella/autoload/stella_runtime.gd` | 注册 VoiceHandler |
 | `tests/unit/test_audio_controllers.gd` | 语音测试 |
-| `addons/natsume/presentation/ui/backlog_screen.gd` | 语音重播按钮 |
+| `addons/stella/presentation/ui/backlog_screen.gd` | 语音重播按钮 |
 | `tests/unit/test_dsl_parser.gd` | @voice 解析测试 |
 
 ## TDD 流程

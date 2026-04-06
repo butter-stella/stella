@@ -1,4 +1,4 @@
-# Natsume DSL 详细设计
+# Stella DSL 详细设计
 
 > **设计理念：脚本即演出。** 编剧写完 DSL 脚本就能完成 90% 的演出效果，程序员只负责特殊定制。
 > DSL 与 YAML 双向等价转换，DSL 是编剧的书写层，YAML 是框架的存储层/IR。
@@ -12,7 +12,7 @@
 
 ## 2. 文件格式
 
-- 扩展名：`.nat`
+- 扩展名：`.stl`
 - 编码：UTF-8
 - 注释：`//` 行注释
 - 一个文件 = 一个剧本（scenario），可包含多个场景
@@ -284,7 +284,7 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
 ## 4. 完整示例
 
 ```
-// demo.nat
+// demo.stl
 @scene start "序章"
 
 // 背景和角色登场
@@ -416,13 +416,13 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 
 ## 7. 解析器架构
 
-DSL 是唯一的脚本格式，引擎直接解析 `.nat` 为内部数据结构（ScenarioData）。
+DSL 是唯一的脚本格式，引擎直接解析 `.stl` 为内部数据结构（ScenarioData）。
 
 ```
 ScriptParser/
-├── DslLexer.cs                -- 词法分析：将 .nat 文本分割为 Token 流
+├── DslLexer.cs                -- 词法分析：将 .stl 文本分割为 Token 流
 ├── DslParser.cs               -- 语法分析：Token 流 → ScenarioData（填充默认值、展开简写）
-├── DslScenarioLoader.cs       -- IScenarioLoader 实现：读取 .nat 文件
+├── DslScenarioLoader.cs       -- IScenarioLoader 实现：读取 .stl 文件
 ├── DslParseException.cs       -- 解析错误（携带行号信息）
 ├── DslValidator.cs            -- 静态检查：未定义的角色/场景引用、死路检测
 └── DslToken.cs                -- Token 类型定义

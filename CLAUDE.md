@@ -1,4 +1,4 @@
-# Natsume — Development Guidelines
+# Stella — Development Guidelines
 
 ## Project
 
@@ -8,7 +8,7 @@ Godot AVG / Galgame framework. Architecture docs in `docs/PLAN.md`, DSL design i
 
 - Godot 4.6+, GDScript (primary)
 - Rust via gdext (for performance-critical extensions, when needed)
-- Custom DSL (.nat) for scenario scripting
+- Custom DSL (.stl) for scenario scripting
 - GUT 9.6+ for testing
 
 ## Development Workflow
@@ -138,10 +138,10 @@ CR sub-agents should check:
 
 ## Repo Conventions
 
-- Code organized as a Godot project under `addons/natsume/`
-- Core layer: `addons/natsume/core/` (engine-independent logic)
-- Presentation layer: `addons/natsume/presentation/` (Godot UI/rendering)
-- Autoloads: `addons/natsume/autoload/` (SignalBus, NatsumeRuntime)
+- Code organized as a Godot project under `addons/stella/`
+- Core layer: `addons/stella/core/` (engine-independent logic)
+- Presentation layer: `addons/stella/presentation/` (Godot UI/rendering)
+- Autoloads: `addons/stella/autoload/` (SignalBus, StellaRuntime)
 - Tests: `tests/unit/` and `tests/integration/` (GUT framework)
 - Game content: `game/` (scenarios, art, audio, scenes)
 - Docs: `docs/`

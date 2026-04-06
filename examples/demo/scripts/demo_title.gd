@@ -7,16 +7,16 @@ extends CanvasLayer
 
 
 func _ready():
-	title_label.text = NatsumeRuntime.config.game_title
+	title_label.text = StellaRuntime.config.game_title
 
 	# Build buttons
-	_add_button("开始游戏", func(): NatsumeRuntime.start_game())
+	_add_button("开始游戏", func(): StellaRuntime.start_game())
 
-	if NatsumeRuntime.has_continue_save():
-		_add_button("继续游戏", func(): NatsumeRuntime.continue_game())
+	if StellaRuntime.has_continue_save():
+		_add_button("继续游戏", func(): StellaRuntime.continue_game())
 
-	_add_button("读档", func(): NatsumeRuntime.show_save_load("load"))
-	_add_button("设置", func(): NatsumeRuntime.show_settings())
+	_add_button("读档", func(): StellaRuntime.show_save_load("load"))
+	_add_button("设置", func(): StellaRuntime.show_settings())
 	_add_button("退出", func(): get_tree().quit())
 
 
