@@ -19,6 +19,14 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 	var in_parallel: bool = false
 	var parallel_commands: Array = []
 
+	# @combine state — groups multiple dialogue lines with per-segment voice/expression
+	# into a single dialogue command with a `segments` array.
+	var in_combine: bool = false
+	var combine_segments: Array = []
+	var combine_character: String = ""
+	var combine_character_set: bool = false
+	var combine_pending_expr: String = ""
+
 	var i = 0
 	while i < tokens.size():
 		var token: DslToken = tokens[i]
@@ -66,7 +74,16 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 					if if_stack.size() > 0:
 						if_stack[-1]["branch"] = "else"
 				elif cmd_name == "end":
-					if in_parallel:
+					if in_combine:
+						var combine_cmd = _build_combine_command(combine_character, combine_segments, current_mode)
+						combine_segments = []
+						combine_character = ""
+						combine_character_set = false
+						combine_pending_expr = ""
+						in_combine = false
+						if combine_cmd and current_scene:
+							_add_command(combine_cmd, current_scene, if_stack)
+					elif in_parallel:
 						var parallel_cmd = _make_cmd("parallel", {"commands": parallel_commands.duplicate()})
 						parallel_commands.clear()
 						in_parallel = false
@@ -92,10 +109,22 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				elif cmd_name == "parallel":
 					in_parallel = true
 					parallel_commands.clear()
+				elif cmd_name == "combine":
+					in_combine = true
+					combine_segments = []
+					combine_character = ""
+					combine_character_set = false
+					combine_pending_expr = ""
 				else:
 					var cmd = _parse_at_command(token)
 					if cmd and current_scene:
-						if in_parallel:
+						if in_combine:
+							# Inside @combine, only @expr is allowed and it binds to the next segment.
+							if cmd.type == "char_expr":
+								combine_pending_expr = cmd.get_string("expression", "")
+							else:
+								push_warning("DslParser: @%s is not allowed inside @combine block (line %d)" % [cmd_name, token.line])
+						elif in_parallel:
 							parallel_commands.append(cmd)
 						else:
 							_add_command(cmd, current_scene, if_stack)
@@ -106,7 +135,21 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				pending_options = []
 				var cmd = _parse_dialogue(token, current_mode)
 				if cmd and current_scene:
-					_add_command(cmd, current_scene, if_stack)
+					if in_combine:
+						var char_name = cmd.get_string("character", "")
+						if not combine_character_set:
+							combine_character = char_name
+							combine_character_set = true
+						elif char_name != combine_character:
+							push_warning("DslParser: @combine block mixes characters '%s' and '%s' (line %d)" % [combine_character, char_name, token.line])
+						combine_segments.append({
+							"text": cmd.get_string("text", ""),
+							"voice": cmd.get_string("voice", ""),
+							"expression": combine_pending_expr,
+						})
+						combine_pending_expr = ""
+					else:
+						_add_command(cmd, current_scene, if_stack)
 
 			DslToken.Type.NARRATION:
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
@@ -114,7 +157,20 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				pending_options = []
 				var cmd = _parse_narration(token, current_mode)
 				if cmd and current_scene:
-					_add_command(cmd, current_scene, if_stack)
+					if in_combine:
+						if not combine_character_set:
+							combine_character = ""
+							combine_character_set = true
+						elif combine_character != "":
+							push_warning("DslParser: @combine block mixes narration and character '%s' (line %d)" % [combine_character, token.line])
+						combine_segments.append({
+							"text": cmd.get_string("text", ""),
+							"voice": cmd.get_string("voice", ""),
+							"expression": combine_pending_expr,
+						})
+						combine_pending_expr = ""
+					else:
+						_add_command(cmd, current_scene, if_stack)
 
 			DslToken.Type.MONOLOGUE:
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
@@ -539,6 +595,24 @@ static func _close_if_block(ctx: Dictionary, data: ScenarioData) -> SceneData:
 
 
 # --- Helpers ---
+
+static func _build_combine_command(character: String, segments: Array, mode: String) -> CommandData:
+	if segments.size() == 0:
+		return null
+	# Concatenate segment text for typewriter display / backlog
+	var full_text := ""
+	for seg in segments:
+		full_text += String(seg.get("text", ""))
+	# Primary voice = first segment's voice (used by #voice: field / replay button)
+	var primary_voice := String(segments[0].get("voice", ""))
+	return _make_cmd("dialogue", {
+		"character": character,
+		"text": full_text,
+		"voice": primary_voice,
+		"mode": mode,
+		"segments": segments.duplicate(true),
+	})
+
 
 static func _make_cmd(type: String, params: Dictionary) -> CommandData:
 	var cmd = CommandData.new()

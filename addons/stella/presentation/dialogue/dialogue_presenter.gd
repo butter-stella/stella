@@ -40,10 +40,34 @@ var _auto_btn: Button
 var _skip_btn: Button
 var _dialogue_gen: int = 0  # increments on each new dialogue, stale coroutines check this
 
+# Dialogue state — owned by the currently visible/active dialogue. Only updated
+# by _on_show_dialogue and cleared by _on_hide_dialogue. The toolbar 重听 button
+# reads these so an in-flight backlog replay never corrupts what the toolbar
+# would replay for the current dialogue.
+var _dialogue_segments: Array = []
+var _dialogue_voice_character: String = ""
+var _dialogue_total_duration: float = 0.0
+
+# Playback session state — owned by whichever voice queue is currently running
+# (could be the dialogue's own initial playback, a toolbar replay, or a backlog
+# replay request). Reset on every _start_voice_playback call.
+var _playback_aborted: bool = false  # user clicked to skip the dialogue typewriter
+var _playback_queue_active: bool = false  # voice queue coroutine is alive
+var _playback_queue_gen: int = 0  # bumped to cancel any in-flight queue
+var _playback_total_duration: float = 0.0  # sum of all segment voice durations
+var _playback_played_duration: float = 0.0  # cumulative duration of finished segments
+var _playback_segment_durations: Array = []  # per-segment voice durations (0 if empty)
+# When false, the in-flight playback is for the backlog (or other external UI):
+# the queue + audio still run, but the dialogue_voice_* signals (which drive the
+# in-game progress bar) are suppressed so the dialogue toolbar bar stays quiet.
+var _playback_is_dialogue: bool = true
+
 
 func _ready():
 	SignalBus.show_dialogue.connect(_on_show_dialogue)
 	SignalBus.hide_dialogue.connect(_on_hide_dialogue)
+	SignalBus.voice_progress.connect(_on_voice_progress_relay)
+	SignalBus.dialogue_voice_replay_requested.connect(_on_dialogue_voice_replay_requested)
 	SignalBus.scenario_ended_event.connect(func(_id): visible = false)
 	SignalBus.voice_started.connect(func(_c, _a): _voice_playing = true)
 	SignalBus.voice_finished.connect(func(): _voice_playing = false)
@@ -116,8 +140,58 @@ func _setup_toolbar():
 
 
 func _on_voice_replay_pressed():
-	if _current_voice != "":
-		SignalBus.voice_play.emit(_current_voice, _current_voice_character)
+	# Replay the CURRENT dialogue's segments (read from dialogue state, never
+	# from playback state — so an in-flight backlog replay can't corrupt this).
+	if _dialogue_segments.size() == 0:
+		return
+	_start_voice_playback(_dialogue_voice_character, _dialogue_segments)
+
+
+## External entry point for the backlog (or any other UI) to request replaying
+## a list of voice assets. Plays via the same queue + audio path as the dialogue,
+## but with `is_dialogue_playback = false` so the in-game progress bar / toolbar
+## stays quiet (the backlog overlay has its own UI for feedback).
+func _on_dialogue_voice_replay_requested(voices: Array, character: String) -> void:
+	if voices.is_empty():
+		return
+	var segments: Array = []
+	for v in voices:
+		segments.append({
+			"text": "",
+			"voice": String(v),
+			"expression": "",
+		})
+	_start_voice_playback(character, segments, false)
+
+
+## Shared playback-init for the queue. Writes ONLY _playback_* state — never
+## _dialogue_*. Used by:
+##   - _on_show_dialogue (dialogue's own playback, is_dialogue_playback = true)
+##   - _on_voice_replay_pressed (toolbar 重听, is_dialogue_playback = true)
+##   - _on_dialogue_voice_replay_requested (backlog ▶, is_dialogue_playback = false)
+##
+## When is_dialogue_playback is false, dialogue_voice_started/progress/finished
+## are NOT emitted — the audio still plays, but the dialogue's in-game progress
+## bar doesn't react. Used so backlog playback shares queue machinery without
+## hijacking the dialogue's UI.
+func _start_voice_playback(character: String, segments: Array, is_dialogue_playback: bool = true) -> void:
+	_playback_is_dialogue = is_dialogue_playback
+	_playback_aborted = false
+	_playback_played_duration = 0.0
+	_playback_segment_durations.clear()
+	_playback_total_duration = 0.0
+	for seg in segments:
+		var v := String(seg.get("voice", ""))
+		var dur := 0.0
+		if v != "":
+			var stream = _load_voice_stream(v)
+			if stream:
+				dur = stream.get_length()
+		_playback_segment_durations.append(dur)
+		_playback_total_duration += dur
+	if _playback_total_duration > 0.0 and _playback_is_dialogue:
+		SignalBus.dialogue_voice_started.emit(_playback_total_duration)
+	_run_voice_queue(character, segments, _dialogue_gen)
 
 
 func _on_auto_pressed():
@@ -182,24 +256,68 @@ func _is_skipping() -> bool:
 	return StellaRuntime.is_skipping() or _ctrl_held
 
 
-func _on_show_dialogue(character: String, text: String, voice: String, mode: String):
-	if _ui_hidden:
+## Unified dialogue handler.
+## Both normal single-line dialogue and @combine multi-segment dialogue flow
+## through here. A normal dialogue is just segments.size() == 1.
+## - Voices play sequentially via _run_voice_queue (works for 1 or N segments)
+## - Typewriter runs continuously over concatenated text
+## - Inline `[expr]` markers and `{wait/speed}` effects from each segment's text
+##   are merged into global timelines with offset adjustment
+## - Click-to-finish: snap text to end + cancel voice queue + apply final expression
+func _on_show_dialogue(character: String, segments: Array, mode: String) -> void:
+	if _ui_hidden or segments.size() == 0:
 		return
 
 	_dialogue_gen += 1
 	var gen = _dialogue_gen
 
-	# Trigger voice playback (suppress during skip — no point playing voice
-	# for lines that are shown for only ~50ms)
-	_current_voice_character = character
-	if voice != "" and not _is_skipping():
-		_current_voice = voice
-		SignalBus.voice_play.emit(voice, character)
-	else:
-		_current_voice = voice if voice != "" else ""
+	# Snapshot dialogue state. _start_voice_playback later writes _playback_*
+	# but never touches _dialogue_*, so a backlog replay can run in parallel
+	# without corrupting what the toolbar 重听 button will play.
+	_dialogue_segments = segments.duplicate(true)
+	_dialogue_voice_character = character
+	# Kick off the dialogue's own playback. This computes _playback_total_duration.
+	_start_voice_playback(character, segments)
+	# Now snapshot the freshly-computed total as the dialogue's total — used
+	# by the toolbar replay button visibility check (cheap, no reload).
+	_dialogue_total_duration = _playback_total_duration
 
+	# Process all segments: concat text, merge inline markers + effects with offsets
+	var full_text := ""
+	var all_effects: Array = []
+	var timeline := ExpressionTimeline.new()
+	var all_markers: Array = []
+	for seg in segments:
+		var seg_text := String(seg.get("text", ""))
+		var offset := full_text.length()
+		# Inline `[expr]` markers
+		var tl_result = ExpressionTimeline.new().extract_from_text(seg_text)
+		var seg_clean: String = tl_result["clean_text"]
+		for m in tl_result["markers"]:
+			all_markers.append({
+				"expression": m["expression"],
+				"at_char": int(m["at_char"]) + offset,
+			})
+		# Inline `{wait/speed}` effects
+		var processed = _process_inline_effects(seg_clean)
+		seg_clean = processed["text"]
+		for ef in processed["effects"]:
+			all_effects.append({
+				"type": ef["type"],
+				"value": ef["value"],
+				"pos": int(ef["pos"]) + offset,
+			})
+		full_text += seg_clean
+	timeline.markers = all_markers
+
+	_current_voice_character = character
+	var first_voice := String(segments[0].get("voice", ""))
+	_current_voice = first_voice
 	if _voice_replay_btn:
-		_voice_replay_btn.visible = (voice != "")
+		# Show the replay button as long as ANY segment has a voice — read from
+		# DIALOGUE state (not playback state) so a backlog replay running in the
+		# background can't accidentally hide the button.
+		_voice_replay_btn.visible = (_dialogue_total_duration > 0.0)
 
 	visible = true
 	_current_mode = mode
@@ -207,78 +325,69 @@ func _on_show_dialogue(character: String, text: String, voice: String, mode: Str
 	if toolbar:
 		toolbar.visible = (mode == "adv")
 
-	# Extract inline expression markers
-	var timeline = ExpressionTimeline.new()
-	var result = timeline.extract_from_text(text)
-	var clean_text: String = result["clean_text"]
-	timeline.markers = result["markers"]
-
-	# Handle inline effects
-	var processed = _process_inline_effects(clean_text)
-	clean_text = processed["text"]
-	var effects = processed["effects"]
-
-	# Prepare display based on mode
+	# Mode-specific text setup
 	var new_line_text: String = ""
-
 	if mode == "nvl":
 		_apply_nvl_layout()
 		name_label.visible = false
 		if character != "":
-			new_line_text = "%s：%s" % [character, clean_text]
+			new_line_text = "%s：%s" % [character, full_text]
 		else:
-			new_line_text = clean_text
-		var full_text = _nvl_text + new_line_text
-		text_label.text = full_text
+			new_line_text = full_text
+		var combined = _nvl_text + new_line_text
+		text_label.text = combined
 		var old_char_count = _nvl_text.length()
 		text_label.visible_characters = old_char_count
-		_nvl_text = full_text + "\n"
-
+		_nvl_text = combined + "\n"
 	elif mode == "overlay":
 		_apply_overlay_layout()
 		name_label.visible = false
-		new_line_text = clean_text
-		text_label.text = clean_text
+		new_line_text = full_text
+		text_label.text = full_text
 		text_label.visible_characters = 0
-
 	else:  # adv
 		_apply_adv_layout()
 		_nvl_text = ""
-		new_line_text = clean_text
+		new_line_text = full_text
 		if character != "":
 			name_label.text = character
 			name_label.visible = true
 		else:
 			name_label.text = ""
 			name_label.visible = false
-		text_label.text = clean_text
+		text_label.text = full_text
 		text_label.visible_characters = 0
 
-	# Update avatar for the speaking character
-	var expression = _known_expressions.get(character, "default")
-	_update_avatar(character, expression, mode)
+	# Avatar: first segment's explicit expression takes priority, else current known
+	var first_expr := String(segments[0].get("expression", ""))
+	var avatar_expr = first_expr if first_expr != "" else String(_known_expressions.get(character, "default"))
+	_update_avatar(character, avatar_expr, mode)
+
+	# (Voice queue was already kicked off above by _start_voice_playback —
+	# do not start another one here.)
 
 	await get_tree().process_frame
 	_is_typing = true
 
-	# Skip mode: show all text immediately
+	# Skip mode: show all text immediately and snap to final state
 	if _is_skipping():
 		text_label.visible_characters = -1
 		_is_typing = false
+		_finalize_dialogue(character, segments)
 		await get_tree().create_timer(StellaRuntime.get_setting("skip_interval") / 1000.0).timeout
 		SignalBus.advance_requested.emit()
 		return
 
-	# Typewriter effect
+	# Typewriter
 	var start_visible = text_label.visible_characters
 	var total_new_chars = new_line_text.length()
 	for i in range(total_new_chars):
 		if not _is_typing:
 			break
-		# Check if skip activated mid-typewriter
 		if _is_skipping():
 			text_label.visible_characters = -1
 			_is_typing = false
+			_finalize_dialogue(character, segments)
 			await get_tree().create_timer(StellaRuntime.get_setting("skip_interval") / 1000.0).timeout
 			SignalBus.advance_requested.emit()
 			return
@@ -290,7 +399,7 @@ func _on_show_dialogue(character: String, text: String, voice: String, mode: Str
 			SignalBus.char_expression_changed.emit(character, expr)
 
 		var delay = _char_interval
-		for effect in effects:
+		for effect in all_effects:
 			if effect["pos"] == i:
 				if effect["type"] == "wait":
 					await get_tree().create_timer(effect["value"] / 1000.0).timeout
@@ -298,26 +407,120 @@ func _on_show_dialogue(character: String, text: String, voice: String, mode: Str
 					delay = effect["value"] / 1000.0
 
 		await get_tree().create_timer(delay).timeout
+		if gen != _dialogue_gen:
+			return
+
+	# Click-to-finish detection: input_handler sets _is_typing=false and visible=-1
+	if not _playback_aborted and not _is_typing and text_label.visible_characters == -1:
+		_finalize_dialogue(character, segments)
 
 	text_label.visible_characters = -1
 	_is_typing = false
 
-	# Auto-play: wait for voice (if configured) then delay then advance.
-	# gen check: if a manual click advanced to the next dialogue while we
-	# were waiting, _dialogue_gen will have changed — abort this coroutine.
+	# Auto-play: wait for the voice queue to drain all segments, then advance
 	if StellaRuntime.is_auto_playing():
-		if StellaRuntime.get_setting("auto_play_wait_voice") and _voice_playing:
-			await SignalBus.voice_finished
-			if gen != _dialogue_gen:
-				return
-		var delay = StellaRuntime.get_setting("auto_play_delay")
-		await get_tree().create_timer(delay).timeout
+		if StellaRuntime.get_setting("auto_play_wait_voice"):
+			while _playback_queue_active and not _playback_aborted:
+				await get_tree().process_frame
+				if gen != _dialogue_gen:
+					return
+			if _voice_playing:
+				await SignalBus.voice_finished
+				if gen != _dialogue_gen:
+					return
+		var ap_delay = StellaRuntime.get_setting("auto_play_delay")
+		await get_tree().create_timer(ap_delay).timeout
 		if gen != _dialogue_gen:
 			return
 		if StellaRuntime.is_auto_playing():
 			SignalBus.advance_requested.emit()
 
 
+func _run_voice_queue(character: String, segments: Array, gen: int) -> void:
+	# Plays all segment voices sequentially. Owns every segment so a missing/empty
+	# voice can't hang the queue. Between segments, awaits voice_finished iff the
+	# previous segment actually played a voice. Works identically for single- and
+	# multi-segment dialogues.
+	_playback_queue_gen += 1
+	var q_gen = _playback_queue_gen
+	_playback_queue_active = true
+	var prev_had_voice := false
+	for i in range(segments.size()):
+		if prev_had_voice:
+			await SignalBus.voice_finished
+			if q_gen != _playback_queue_gen or gen != _dialogue_gen or _playback_aborted:
+				if q_gen == _playback_queue_gen:
+					_playback_queue_active = false
+				return
+			# Just-finished segment was index i-1; accumulate its duration so the
+			# combined progress signal can report cumulative position correctly.
+			if i - 1 < _playback_segment_durations.size():
+				_playback_played_duration += float(_playback_segment_durations[i - 1])
+		var seg = segments[i]
+		var expr := String(seg.get("expression", ""))
+		if expr != "" and character != "":
+			SignalBus.char_expression_changed.emit(character, expr)
+			if _current_mode == "adv":
+				_update_avatar(character, expr, "adv")
+		var voice := String(seg.get("voice", ""))
+		prev_had_voice = (voice != "")
+		if voice != "" and not _is_skipping():
+			_current_voice = voice
+			SignalBus.voice_play.emit(voice, character)
+
+	# Wait for the LAST segment's voice to actually finish before declaring the
+	# whole dialogue voice playback done. Otherwise dialogue_voice_finished
+	# would fire the instant the last segment STARTS playing, hiding the
+	# progress bar before the user has heard most of the final clip.
+	if prev_had_voice:
+		await SignalBus.voice_finished
+		if q_gen != _playback_queue_gen or gen != _dialogue_gen or _playback_aborted:
+			if q_gen == _playback_queue_gen:
+				_playback_queue_active = false
+			return
+		var last_idx = segments.size() - 1
+		if last_idx >= 0 and last_idx < _playback_segment_durations.size():
+			_playback_played_duration += float(_playback_segment_durations[last_idx])
+
+	if q_gen == _playback_queue_gen:
+		_playback_queue_active = false
+		if _playback_total_duration > 0.0 and _playback_is_dialogue:
+			SignalBus.dialogue_voice_finished.emit()
+
+
+func _finalize_dialogue(character: String, segments: Array) -> void:
+	# User aborted typewriter (or skip mode) — cancel the voice queue progression
+	# and snap expression to the final segment's expression. For a single-segment
+	# dialogue with empty expression this is a no-op.
+	_playback_aborted = true
+	if _playback_total_duration > 0.0 and _playback_is_dialogue:
+		SignalBus.dialogue_voice_finished.emit()
+	if segments.size() == 0:
+		return
+	var last_seg = segments[segments.size() - 1]
+	var last_expr := String(last_seg.get("expression", ""))
+	if last_expr != "" and character != "":
+		SignalBus.char_expression_changed.emit(character, last_expr)
+		if _current_mode == "adv":
+			_update_avatar(character, last_expr, "adv")
+
+
+## Relays low-level voice_progress (per-clip) into dialogue_voice_progress
+## (per-dialogue), adding the cumulative duration of already-finished segments.
+## Only relays during DIALOGUE playback — backlog/external replays don't drive
+## the in-game progress bar.
+func _on_voice_progress_relay(position: float, _duration: float) -> void:
+	if _playback_total_duration > 0.0 and _playback_is_dialogue:
+		var total_pos = _playback_played_duration + position
+		SignalBus.dialogue_voice_progress.emit(total_pos, _playback_total_duration)
+
+
+func _load_voice_stream(asset: String) -> AudioStream:
+	for ext in ["ogg", "wav"]:
+		var path = StellaRuntime.voice_path + "%s.%s" % [asset, ext]
+		if ResourceLoader.exists(path):
+			return load(path) as AudioStream
+	return null
 
 
 
@@ -408,6 +611,20 @@ func _on_hide_dialogue():
 	_nvl_text = ""
 	_current_character = ""
 	_voice_playing = false
+	# Dialogue state — clear so the toolbar replay button hides
+	_dialogue_segments = []
+	_dialogue_voice_character = ""
+	_dialogue_total_duration = 0.0
+	# Playback session state — also reset. Bump the queue gen so any in-flight
+	# voice queue coroutine (e.g. a backlog replay still running) sees the
+	# mismatch on its next iteration and exits cleanly instead of leaking into
+	# the next dialogue.
+	_playback_queue_gen += 1
+	_playback_queue_active = false
+	_playback_aborted = false
+	_playback_total_duration = 0.0
+	_playback_played_duration = 0.0
+	_playback_segment_durations.clear()
 	if _avatar_container:
 		_avatar_container.visible = false
 		if _avatar_texture:

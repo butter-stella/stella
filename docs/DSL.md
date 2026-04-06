@@ -272,7 +272,37 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
 
 编剧只有在需要"多件事同时发生"时才用 `@parallel`，日常演出不需要。
 
-### 3.14 等待
+### 3.14 合并对话（@combine）
+
+一句台词在演出上是一整句，但声优录音被拆成了多段，每段之间还要切表情：
+
+```
+@combine
+@expr sakura sad
+sakura「我本来很开心的...」 #voice:sakura_013
+@expr sakura surprised
+sakura「但是听说下周要期中考...」 #voice:sakura_018
+@expr sakura sad
+sakura「我数学肯定完蛋了。」 #voice:sakura_019
+@end
+```
+
+**语义：**
+
+- 块内所有 dialogue 行合并为**一句对话**，玩家视角上打字机从头连续打到尾
+- 块内 `@expr` 绑定到紧随其后的 segment，在该段语音开始播放时触发
+- 语音按顺序排队：第 1 段播完 → 第 2 段立即接上 + 切立绘/头像 → ...
+- 左键点击：整句结束（文本全显、立绘定格在最后一段表情）
+- 快进模式：整段作为一句跳过
+- Backlog：记为一条
+
+**限制：**
+
+- 块内只允许 `@expr` 和 dialogue 行（角色名必须一致，或全为旁白）
+- 其它指令（`@bg`、`@anim` 等）不允许出现在块内
+- 不支持 NVL / overlay 模式下的特殊行为（按普通合并处理）
+
+### 3.15 等待
 
 ```
 @wait 1.5                   // 等待 1.5 秒
@@ -393,6 +423,7 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | 条件 | `@if ... @elif ... @else ... @end` | — |
 | 跳转 | `@jump scene_id` | — |
 | 并行 | `@parallel ... @end` | — |
+| 合并 | `@combine ... @end` | 多段语音+表情合并为一句对话 |
 | 等待 | `@wait duration/click` | — |
 | 场景 | `@scene id "title"` | `@scene id` |
 

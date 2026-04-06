@@ -264,3 +264,131 @@ func test_voice_command():
 	var cmd = data.scenes[0].commands[0]
 	assert_eq(cmd.type, "voice")
 	assert_eq(cmd.get_string("asset"), "sakura_001")
+
+
+# --- @combine / @end block ---
+
+func test_combine_basic_single_segment():
+	var data = _parse("""@scene start
+@combine
+@expr sakura sad
+sakura「第一句。」 #voice:v1
+@end""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.type, "dialogue")
+	assert_eq(cmd.get_string("character"), "sakura")
+	var segments = cmd.params.get("segments", [])
+	assert_eq(segments.size(), 1)
+	assert_eq(segments[0]["text"], "第一句。")
+	assert_eq(segments[0]["voice"], "v1")
+	assert_eq(segments[0]["expression"], "sad")
+
+
+func test_combine_multiple_segments():
+	var data = _parse("""@scene start
+@combine
+@expr sakura sad
+sakura「第一句。」 #voice:v1
+@expr sakura surprised
+sakura「第二句。」 #voice:v2
+@expr sakura happy
+sakura「第三句。」 #voice:v3
+@end""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.type, "dialogue")
+	assert_eq(cmd.get_string("character"), "sakura")
+	var segments = cmd.params.get("segments", [])
+	assert_eq(segments.size(), 3)
+	assert_eq(segments[0]["text"], "第一句。")
+	assert_eq(segments[0]["voice"], "v1")
+	assert_eq(segments[0]["expression"], "sad")
+	assert_eq(segments[1]["text"], "第二句。")
+	assert_eq(segments[1]["voice"], "v2")
+	assert_eq(segments[1]["expression"], "surprised")
+	assert_eq(segments[2]["text"], "第三句。")
+	assert_eq(segments[2]["voice"], "v3")
+	assert_eq(segments[2]["expression"], "happy")
+
+
+func test_combine_concatenated_text_for_backlog():
+	# Parser should also expose concatenated text for backlog/typewriter
+	var data = _parse("""@scene start
+@combine
+@expr sakura sad
+sakura「我本来很开心的...」 #voice:v1
+@expr sakura surprised
+sakura「但是听说下周要期中考...」 #voice:v2
+@end""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_string("text"),
+		"我本来很开心的...但是听说下周要期中考...",
+		"combined text should be concatenation of all segments")
+
+
+func test_combine_segment_without_expr_has_empty_expression():
+	# If no @expr precedes a segment, expression field should be empty (means "keep current")
+	var data = _parse("""@scene start
+@combine
+sakura「第一句。」 #voice:v1
+sakura「第二句。」 #voice:v2
+@end""")
+	var cmd = data.scenes[0].commands[0]
+	var segments = cmd.params.get("segments", [])
+	assert_eq(segments.size(), 2)
+	assert_eq(segments[0]["expression"], "")
+	assert_eq(segments[1]["expression"], "")
+
+
+func test_combine_only_produces_one_command():
+	var data = _parse("""@scene start
+@combine
+@expr sakura sad
+sakura「一。」 #voice:v1
+@expr sakura happy
+sakura「二。」 #voice:v2
+@end
+sakura「之后的话。」 #voice:v3""")
+	# Should have: 1 combine dialogue + 1 normal dialogue = 2 commands
+	assert_eq(data.scenes[0].commands.size(), 2)
+	assert_eq(data.scenes[0].commands[0].type, "dialogue")
+	assert_eq(data.scenes[0].commands[0].params.get("segments", []).size(), 2)
+	assert_eq(data.scenes[0].commands[1].type, "dialogue")
+	assert_false(data.scenes[0].commands[1].params.has("segments"),
+		"normal dialogue should not have segments field")
+
+
+func test_combine_narration_segments():
+	# Narration (no character) should also work
+	var data = _parse("""@scene start
+@combine
+「第一段旁白。」 #voice:n1
+「第二段旁白。」 #voice:n2
+@end""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_string("character"), "")
+	var segments = cmd.params.get("segments", [])
+	assert_eq(segments.size(), 2)
+	assert_eq(segments[0]["text"], "第一段旁白。")
+	assert_eq(segments[1]["text"], "第二段旁白。")
+
+
+func test_combine_inside_existing_scenario():
+	# Should work alongside other commands
+	var data = _parse("""@scene start
+@bg bg_school
+@show sakura smile
+sakura「开始。」 #voice:v0
+@combine
+@expr sakura sad
+sakura「一。」 #voice:v1
+@expr sakura happy
+sakura「二。」 #voice:v2
+@end
+sakura「结束。」 #voice:v3""")
+	assert_eq(data.scenes[0].commands.size(), 5)
+	assert_eq(data.scenes[0].commands[0].type, "bg")
+	assert_eq(data.scenes[0].commands[1].type, "char_show")
+	assert_eq(data.scenes[0].commands[2].type, "dialogue")
+	assert_eq(data.scenes[0].commands[3].type, "dialogue")
+	assert_eq(data.scenes[0].commands[3].params.get("segments", []).size(), 2)
+	assert_eq(data.scenes[0].commands[4].type, "dialogue")

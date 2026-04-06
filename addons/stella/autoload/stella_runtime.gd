@@ -291,6 +291,9 @@ func _reset_presentation() -> void:
 	SignalBus.bgm_stop.emit(0.0)
 	SignalBus.hide_dialogue.emit()
 	presentation_state.clear()
+	# Backlog is runtime-only state (not in save snapshots) — clear it on
+	# load/restart so the previous run's history doesn't bleed into the new one.
+	backlog_manager.clear()
 
 
 func _on_state_changed(from_state: int, _to_state: int) -> void:
@@ -306,8 +309,8 @@ func _on_scenario_ended(id: String) -> void:
 	return_to_title()
 
 
-func _on_dialogue_for_backlog(character: String, text: String, voice: String, _mode: String):
-	backlog_manager.add_entry(character, text, voice)
+func _on_dialogue_for_backlog(character: String, segments: Array, _mode: String):
+	backlog_manager.add_entry(character, segments)
 
 
 # ─── Facade API: Save/Load ───

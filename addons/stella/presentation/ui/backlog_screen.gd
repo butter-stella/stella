@@ -43,16 +43,22 @@ func _populate():
 		text_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		hbox.add_child(text_label)
 
-		# Voice replay button
-		var voice_asset = entry.get("voice", "")
+		# Voice replay button — delegates to DialoguePresenter via SignalBus so
+		# the playback uses the same voice queue + progress bar as the in-game
+		# toolbar replay, AND the playback state lives in the always-present
+		# DialoguePresenter (closing the backlog overlay does NOT cancel audio).
+		var entry_voices: Array = entry.get("voices", [])
 		var entry_char = entry.get("character", "")
-		if voice_asset != "" and StellaRuntime.get_setting("voice_replay_on_backlog") != false:
+		if entry_voices.size() > 0 and StellaRuntime.get_setting("voice_replay_on_backlog") != false:
 			var replay_btn = Button.new()
 			replay_btn.text = "▶"
 			replay_btn.flat = true
 			replay_btn.custom_minimum_size = Vector2(32, 0)
 			replay_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-			replay_btn.pressed.connect(func(): SignalBus.voice_play.emit(voice_asset, entry_char))
+			var voices_snapshot = entry_voices.duplicate()
+			replay_btn.pressed.connect(func():
+				SignalBus.dialogue_voice_replay_requested.emit(voices_snapshot, entry_char)
+			)
 			hbox.add_child(replay_btn)
 
 		entries_container.add_child(hbox)

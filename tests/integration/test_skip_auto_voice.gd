@@ -6,6 +6,7 @@ extends GutTest
 
 
 var _bus: Node
+var _game_scene: Node
 
 
 func before_each():
@@ -13,6 +14,10 @@ func before_each():
 	StellaRuntime.skip_controller.is_active = false
 	StellaRuntime.auto_play.is_active = false
 	StellaRuntime.game_state.current_state = GameStateMachine.State.PLAYING
+	# Load the game scene so DialoguePanel is available for tests that poke at it.
+	_game_scene = load("res://addons/stella/scenes/game.tscn").instantiate()
+	add_child_autoqfree(_game_scene)
+	await get_tree().process_frame
 
 
 # --- Skip mode should NOT play voice ---
@@ -26,7 +31,7 @@ func test_skip_mode_suppresses_voice_play():
 	StellaRuntime.skip_controller.is_active = true
 	assert_true(StellaRuntime.is_skipping())
 
-	_bus.show_dialogue.emit("sakura", "Hello", "sakura_001", "adv")
+	_bus.show_dialogue.emit("sakura", [{"text": "Hello", "voice": "sakura_001", "expression": ""}], "adv")
 	await get_tree().create_timer(0.2).timeout
 
 	assert_eq(voice_received.size(), 0, "voice should NOT play during skip mode")
@@ -109,7 +114,7 @@ func test_dialogue_gen_increments_on_show_dialogue():
 		return
 
 	var gen_before = dialogue._dialogue_gen
-	_bus.show_dialogue.emit("sakura", "Hello", "", "adv")
+	_bus.show_dialogue.emit("sakura", [{"text": "Hello", "voice": "", "expression": ""}], "adv")
 	await get_tree().process_frame
 
 	assert_gt(dialogue._dialogue_gen, gen_before, "_dialogue_gen should increment on each show_dialogue")
@@ -122,11 +127,11 @@ func test_dialogue_gen_changes_on_successive_dialogues():
 		pending("DialoguePanel not available in test scene")
 		return
 
-	_bus.show_dialogue.emit("sakura", "First", "", "adv")
+	_bus.show_dialogue.emit("sakura", [{"text": "First", "voice": "", "expression": ""}], "adv")
 	await get_tree().process_frame
 	var gen1 = dialogue._dialogue_gen
 
-	_bus.show_dialogue.emit("sakura", "Second", "", "adv")
+	_bus.show_dialogue.emit("sakura", [{"text": "Second", "voice": "", "expression": ""}], "adv")
 	await get_tree().process_frame
 	var gen2 = dialogue._dialogue_gen
 
