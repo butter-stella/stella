@@ -104,6 +104,10 @@ func _on_bgm_play(asset: String, fade_duration: float):
 		push_warning("AudioPresenter: BGM not found: %s" % asset)
 		return
 
+	# Enable looping — AudioStreamOggVorbis / AudioStreamMP3 default to loop=false.
+	if "loop" in stream:
+		stream.loop = true
+
 	var master = NatsumeRuntime.get_setting("master_volume")
 	if master == null:
 		master = 1.0
