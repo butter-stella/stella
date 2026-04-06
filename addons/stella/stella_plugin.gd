@@ -23,6 +23,10 @@ func _enter_tree():
 		ProjectSettings.set_setting("application/run/main_scene", DEFAULT_MAIN_SCENE)
 		ProjectSettings.save()
 
+	# Register .stla as a recognized text file extension so the FileSystem dock
+	# shows it. Without this, Godot hides unknown text extensions.
+	_register_stla_extension()
+
 	# Add main screen editor for .stla files
 	_stla_editor = _stla_editor_script.new()
 	_stla_editor.name = "StlaEditor"
@@ -66,3 +70,16 @@ func _on_file_double_clicked(path: String) -> void:
 func _make_visible(visible: bool) -> void:
 	if _stla_editor:
 		_stla_editor.visible = visible
+
+
+func _register_stla_extension() -> void:
+	var editor_settings := get_editor_interface().get_editor_settings()
+	const SETTING := "docks/filesystem/textfile_extensions"
+	if not editor_settings.has_setting(SETTING):
+		return
+	var raw: String = editor_settings.get_setting(SETTING)
+	var exts := raw.split(",", false)
+	if "stla" in exts:
+		return
+	exts.append("stla")
+	editor_settings.set_setting(SETTING, ",".join(exts))
