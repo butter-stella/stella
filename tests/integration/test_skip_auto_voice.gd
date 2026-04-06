@@ -6,6 +6,7 @@ extends GutTest
 
 
 var _bus: Node
+var _game_scene: Node
 
 
 func before_each():
@@ -13,6 +14,10 @@ func before_each():
 	StellaRuntime.skip_controller.is_active = false
 	StellaRuntime.auto_play.is_active = false
 	StellaRuntime.game_state.current_state = GameStateMachine.State.PLAYING
+	# Load the game scene so DialoguePanel is available for tests that poke at it.
+	_game_scene = load("res://addons/stella/scenes/game.tscn").instantiate()
+	add_child_autoqfree(_game_scene)
+	await get_tree().process_frame
 
 
 # --- Skip mode should NOT play voice ---
