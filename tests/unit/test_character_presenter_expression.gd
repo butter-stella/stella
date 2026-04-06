@@ -271,3 +271,51 @@ func test_voice_replay_re_emits_dialogue_voice_started():
 	dialogue._on_voice_replay_pressed()
 	assert_eq(started_count[0], 1,
 		"replay should fire dialogue_voice_started so the progress bar shows again")
+
+
+func test_dialogue_voice_finished_waits_for_last_segment():
+	# Bug: dialogue_voice_finished fired the moment the last segment STARTED
+	# playing (loop exited after kicking it off). The progress bar would
+	# disappear at the start of the final segment instead of at its end.
+	var segments = [
+		{"text": "一", "voice": "v1", "expression": ""},
+		{"text": "二", "voice": "v2", "expression": ""},
+		{"text": "三", "voice": "v3", "expression": ""},
+	]
+
+	var finished_count := [0]
+	SignalBus.dialogue_voice_finished.connect(func(): finished_count[0] += 1)
+
+	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
+	# Stub the queue with our segments + non-zero total so the started/finished
+	# signals are wired up. Run the queue directly so we control exactly when
+	# voice_finished is delivered.
+	dialogue._current_combine_segments = segments
+	dialogue._combine_total_duration = 3.0
+	dialogue._combine_played_duration = 0.0
+	dialogue._combine_segment_durations = [1.0, 1.0, 1.0]
+	dialogue._combine_aborted = false
+
+	dialogue._run_voice_queue("sakura", segments, dialogue._dialogue_gen)
+	await get_tree().process_frame
+
+	# After kickoff: seg[0]'s voice is "playing"; queue is awaiting voice_finished.
+	# dialogue_voice_finished must NOT have fired yet.
+	assert_eq(finished_count[0], 0, "must not finish before any segment ends")
+
+	# Simulate seg[0] ending → queue advances to seg[1]
+	SignalBus.voice_finished.emit()
+	await get_tree().process_frame
+	assert_eq(finished_count[0], 0, "must not finish after seg[0] ends")
+
+	# seg[1] ends → queue advances to seg[2]
+	SignalBus.voice_finished.emit()
+	await get_tree().process_frame
+	assert_eq(finished_count[0], 0,
+		"must not finish when LAST segment merely STARTS — wait for its end")
+
+	# seg[2] (last) ends → queue should now emit dialogue_voice_finished
+	SignalBus.voice_finished.emit()
+	await get_tree().process_frame
+	assert_eq(finished_count[0], 1,
+		"dialogue_voice_finished must fire only after the last segment ends")

@@ -415,6 +415,21 @@ func _run_voice_queue(character: String, segments: Array, gen: int) -> void:
 		if voice != "" and not _is_skipping():
 			_current_voice = voice
 			SignalBus.voice_play.emit(voice, character)
+
+	# Wait for the LAST segment's voice to actually finish before declaring the
+	# whole dialogue voice playback done. Otherwise dialogue_voice_finished
+	# would fire the instant the last segment STARTS playing, hiding the
+	# progress bar before the user has heard most of the final clip.
+	if prev_had_voice:
+		await SignalBus.voice_finished
+		if q_gen != _combine_queue_gen or gen != _dialogue_gen or _combine_aborted:
+			if q_gen == _combine_queue_gen:
+				_combine_queue_active = false
+			return
+		var last_idx = segments.size() - 1
+		if last_idx >= 0 and last_idx < _combine_segment_durations.size():
+			_combine_played_duration += float(_combine_segment_durations[last_idx])
+
 	if q_gen == _combine_queue_gen:
 		_combine_queue_active = false
 		if _combine_total_duration > 0.0:
