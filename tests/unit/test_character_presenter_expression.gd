@@ -146,7 +146,7 @@ func test_combine_voice_replay_restarts_from_first_segment():
 	await get_tree().process_frame
 
 	# Segments should be stored for replay
-	assert_eq(dialogue._current_combine_segments.size(), 3,
+	assert_eq(dialogue._dialogue_segments.size(), 3,
 		"segments should be snapshotted for replay")
 
 	# Simulate replay — should not crash and should kick off the queue again
@@ -159,13 +159,13 @@ func test_combine_voice_replay_restarts_from_first_segment():
 
 
 func test_single_segment_dialogue_stores_one_segment():
-	# Normal single-line dialogue should also populate _current_combine_segments
+	# Normal single-line dialogue should also populate _dialogue_segments
 	# (size 1) so the unified replay path works.
 	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
 	SignalBus.show_dialogue.emit("sakura",
 		[{"text": "hello", "voice": "v1", "expression": ""}], "adv")
 	await get_tree().process_frame
-	assert_eq(dialogue._current_combine_segments.size(), 1,
+	assert_eq(dialogue._dialogue_segments.size(), 1,
 		"single-segment dialogue should snapshot a 1-element segments array")
 
 
@@ -179,7 +179,7 @@ func test_combine_with_empty_voices_does_not_hang():
 	SignalBus.show_dialogue.emit("sakura", segments, "adv")
 	await get_tree().process_frame
 	# After one frame the queue should already be inactive (nothing to await)
-	assert_false(dialogue._combine_queue_active,
+	assert_false(dialogue._playback_queue_active,
 		"queue must not stall when all segments have empty voices")
 
 
@@ -209,8 +209,8 @@ func test_dialogue_voice_progress_relays_cumulative_position():
 	# cumulative position = played_duration + current_clip_position.
 	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
 	# Pretend we are in a combined dialogue with 1.0s already played
-	dialogue._combine_total_duration = 3.0
-	dialogue._combine_played_duration = 1.0
+	dialogue._playback_total_duration = 3.0
+	dialogue._playback_played_duration = 1.0
 
 	var received: Array = []
 	var conn = func(pos, total): received.append([pos, total])
@@ -290,11 +290,11 @@ func test_dialogue_voice_finished_waits_for_last_segment():
 	# Stub the queue with our segments + non-zero total so the started/finished
 	# signals are wired up. Run the queue directly so we control exactly when
 	# voice_finished is delivered.
-	dialogue._current_combine_segments = segments
-	dialogue._combine_total_duration = 3.0
-	dialogue._combine_played_duration = 0.0
-	dialogue._combine_segment_durations = [1.0, 1.0, 1.0]
-	dialogue._combine_aborted = false
+	dialogue._dialogue_segments = segments
+	dialogue._playback_total_duration = 3.0
+	dialogue._playback_played_duration = 0.0
+	dialogue._playback_segment_durations = [1.0, 1.0, 1.0]
+	dialogue._playback_aborted = false
 
 	dialogue._run_voice_queue("sakura", segments, dialogue._dialogue_gen)
 	await get_tree().process_frame
@@ -360,9 +360,7 @@ func test_replay_button_visible_when_only_later_segment_has_voice():
 func test_backlog_replay_request_drives_dialogue_presenter_queue():
 	# The backlog ▶ button should fire dialogue_voice_replay_requested, and the
 	# DialoguePresenter should pick it up + run the voice queue (so the progress
-	# bar and queue state are shared with in-game replay).
-	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
-
+	# bar uses the shared machinery).
 	var voice_play_count := [0]
 	SignalBus.voice_play.connect(func(_a, _c): voice_play_count[0] += 1)
 	var started_count := [0]
@@ -377,8 +375,36 @@ func test_backlog_replay_request_drives_dialogue_presenter_queue():
 		"at least segment 0's voice_play should fire from the replay request")
 	assert_eq(started_count[0], 1,
 		"dialogue_voice_started should fire once so the progress bar shows")
-	assert_eq(dialogue._current_combine_segments.size(), 3,
-		"presenter state should reflect the replay segments")
+
+
+func test_backlog_replay_does_not_corrupt_dialogue_state():
+	# Critical: a backlog replay (which carries arbitrary old segments) must NOT
+	# overwrite the current dialogue's _dialogue_segments — otherwise the toolbar
+	# 重听 button afterwards would replay the backlog entry instead of the
+	# current dialogue.
+	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
+
+	# Set up a "current dialogue" with two segments (the toolbar replay target)
+	var dialogue_segments = [
+		{"text": "current一", "voice": "sakura_011", "expression": ""},
+		{"text": "current二", "voice": "sakura_012", "expression": ""},
+	]
+	SignalBus.show_dialogue.emit("sakura", dialogue_segments, "adv")
+	await get_tree().process_frame
+	assert_eq(dialogue._dialogue_segments.size(), 2,
+		"sanity: current dialogue snapshot has 2 segments")
+
+	# Fire a backlog replay with a DIFFERENT (3-segment) entry
+	SignalBus.dialogue_voice_replay_requested.emit(
+		["sakura_013", "sakura_018", "sakura_019"], "sakura"
+	)
+	await get_tree().process_frame
+
+	# _dialogue_segments must still be the original 2 — not the backlog's 3
+	assert_eq(dialogue._dialogue_segments.size(), 2,
+		"backlog replay must NOT overwrite _dialogue_segments")
+	assert_eq(dialogue._dialogue_segments[0]["voice"], "sakura_011",
+		"first segment should still be the current dialogue's, not the backlog's")
 
 
 func test_backlog_replay_does_not_change_stage_expression():
