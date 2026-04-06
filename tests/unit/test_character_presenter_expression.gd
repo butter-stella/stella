@@ -359,12 +359,11 @@ func test_replay_button_visible_when_only_later_segment_has_voice():
 
 func test_backlog_replay_request_drives_dialogue_presenter_queue():
 	# The backlog ▶ button should fire dialogue_voice_replay_requested, and the
-	# DialoguePresenter should pick it up + run the voice queue (so the progress
-	# bar uses the shared machinery).
+	# DialoguePresenter should pick it up + run the voice queue. (Whether the
+	# in-game progress bar lights up is checked by a separate test —
+	# test_backlog_replay_does_not_emit_dialogue_voice_signals.)
 	var voice_play_count := [0]
 	SignalBus.voice_play.connect(func(_a, _c): voice_play_count[0] += 1)
-	var started_count := [0]
-	SignalBus.dialogue_voice_started.connect(func(_d): started_count[0] += 1)
 
 	SignalBus.dialogue_voice_replay_requested.emit(
 		["sakura_013", "sakura_018", "sakura_019"], "sakura"
@@ -373,8 +372,6 @@ func test_backlog_replay_request_drives_dialogue_presenter_queue():
 
 	assert_true(voice_play_count[0] >= 1,
 		"at least segment 0's voice_play should fire from the replay request")
-	assert_eq(started_count[0], 1,
-		"dialogue_voice_started should fire once so the progress bar shows")
 
 
 func test_backlog_replay_does_not_corrupt_dialogue_state():
@@ -426,3 +423,27 @@ func test_backlog_replay_does_not_change_stage_expression():
 	# Stage texture must be unchanged
 	assert_eq(sprite.texture.resource_path, initial_path,
 		"backlog replay must not touch stage立绘")
+
+
+func test_backlog_replay_does_not_emit_dialogue_voice_signals():
+	# The backlog ▶ button reuses the voice queue but should NOT light up the
+	# in-game progress bar — that bar belongs to the dialogue toolbar and should
+	# only react to the current dialogue's playback.
+	var started_count := [0]
+	var progress_count := [0]
+	var finished_count := [0]
+	SignalBus.dialogue_voice_started.connect(func(_d): started_count[0] += 1)
+	SignalBus.dialogue_voice_progress.connect(func(_p, _t): progress_count[0] += 1)
+	SignalBus.dialogue_voice_finished.connect(func(): finished_count[0] += 1)
+
+	SignalBus.dialogue_voice_replay_requested.emit(["sakura_013"], "sakura")
+	await get_tree().process_frame
+	# Tick a low-level voice_progress to verify the relay is gated too
+	SignalBus.voice_progress.emit(0.5, 1.0)
+
+	assert_eq(started_count[0], 0,
+		"backlog replay must not emit dialogue_voice_started")
+	assert_eq(progress_count[0], 0,
+		"backlog replay must not emit dialogue_voice_progress")
+	assert_eq(finished_count[0], 0,
+		"backlog replay must not emit dialogue_voice_finished")

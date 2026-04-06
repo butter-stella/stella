@@ -57,6 +57,10 @@ var _playback_queue_gen: int = 0  # bumped to cancel any in-flight queue
 var _playback_total_duration: float = 0.0  # sum of all segment voice durations
 var _playback_played_duration: float = 0.0  # cumulative duration of finished segments
 var _playback_segment_durations: Array = []  # per-segment voice durations (0 if empty)
+# When false, the in-flight playback is for the backlog (or other external UI):
+# the queue + audio still run, but the dialogue_voice_* signals (which drive the
+# in-game progress bar) are suppressed so the dialogue toolbar bar stays quiet.
+var _playback_is_dialogue: bool = true
 
 
 func _ready():
@@ -144,11 +148,9 @@ func _on_voice_replay_pressed():
 
 
 ## External entry point for the backlog (or any other UI) to request replaying
-## a list of voice assets as one logical dialogue. Builds synthetic segments
-## with empty text + empty expression so playback only affects audio + the
-## progress bar — never the stage character立绘 — and crucially does NOT touch
-## the _dialogue_* state, so the in-game toolbar replay still plays the
-## current dialogue afterwards.
+## a list of voice assets. Plays via the same queue + audio path as the dialogue,
+## but with `is_dialogue_playback = false` so the in-game progress bar / toolbar
+## stays quiet (the backlog overlay has its own UI for feedback).
 func _on_dialogue_voice_replay_requested(voices: Array, character: String) -> void:
 	if voices.is_empty():
 		return
@@ -159,15 +161,21 @@ func _on_dialogue_voice_replay_requested(voices: Array, character: String) -> vo
 			"voice": String(v),
 			"expression": "",
 		})
-	_start_voice_playback(character, segments)
+	_start_voice_playback(character, segments, false)
 
 
 ## Shared playback-init for the queue. Writes ONLY _playback_* state — never
 ## _dialogue_*. Used by:
-##   - _on_show_dialogue (for the dialogue's own initial playback)
-##   - _on_voice_replay_pressed (toolbar 重听 — pass _dialogue_segments)
-##   - _on_dialogue_voice_replay_requested (backlog ▶ — pass synthetic segments)
-func _start_voice_playback(character: String, segments: Array) -> void:
+##   - _on_show_dialogue (dialogue's own playback, is_dialogue_playback = true)
+##   - _on_voice_replay_pressed (toolbar 重听, is_dialogue_playback = true)
+##   - _on_dialogue_voice_replay_requested (backlog ▶, is_dialogue_playback = false)
+##
+## When is_dialogue_playback is false, dialogue_voice_started/progress/finished
+## are NOT emitted — the audio still plays, but the dialogue's in-game progress
+## bar doesn't react. Used so backlog playback shares queue machinery without
+## hijacking the dialogue's UI.
+func _start_voice_playback(character: String, segments: Array, is_dialogue_playback: bool = true) -> void:
+	_playback_is_dialogue = is_dialogue_playback
 	_playback_aborted = false
 	_playback_played_duration = 0.0
 	_playback_segment_durations.clear()
@@ -181,7 +189,7 @@ func _start_voice_playback(character: String, segments: Array) -> void:
 				dur = stream.get_length()
 		_playback_segment_durations.append(dur)
 		_playback_total_duration += dur
-	if _playback_total_duration > 0.0:
+	if _playback_total_duration > 0.0 and _playback_is_dialogue:
 		SignalBus.dialogue_voice_started.emit(_playback_total_duration)
 	_run_voice_queue(character, segments, _dialogue_gen)
 
@@ -476,7 +484,7 @@ func _run_voice_queue(character: String, segments: Array, gen: int) -> void:
 
 	if q_gen == _playback_queue_gen:
 		_playback_queue_active = false
-		if _playback_total_duration > 0.0:
+		if _playback_total_duration > 0.0 and _playback_is_dialogue:
 			SignalBus.dialogue_voice_finished.emit()
 
 
@@ -485,7 +493,7 @@ func _finalize_dialogue(character: String, segments: Array) -> void:
 	# and snap expression to the final segment's expression. For a single-segment
 	# dialogue with empty expression this is a no-op.
 	_playback_aborted = true
-	if _playback_total_duration > 0.0:
+	if _playback_total_duration > 0.0 and _playback_is_dialogue:
 		SignalBus.dialogue_voice_finished.emit()
 	if segments.size() == 0:
 		return
@@ -499,9 +507,10 @@ func _finalize_dialogue(character: String, segments: Array) -> void:
 
 ## Relays low-level voice_progress (per-clip) into dialogue_voice_progress
 ## (per-dialogue), adding the cumulative duration of already-finished segments.
-## For a single-segment dialogue this is just an identity relay.
+## Only relays during DIALOGUE playback — backlog/external replays don't drive
+## the in-game progress bar.
 func _on_voice_progress_relay(position: float, _duration: float) -> void:
-	if _playback_total_duration > 0.0:
+	if _playback_total_duration > 0.0 and _playback_is_dialogue:
 		var total_pos = _playback_played_duration + position
 		SignalBus.dialogue_voice_progress.emit(total_pos, _playback_total_duration)
 
