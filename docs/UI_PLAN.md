@@ -128,7 +128,7 @@ Main (Node2D)
 
 - 内置 `game.tscn` + `title.tscn` 场景树包含所有 UI 节点（Toolbar、Backlog、存档/读档、设置、标题画面）
 - `stella.cfg` 配置文件指定素材路径和功能开关
-- `demo.stl` 确保包含足够的对话量以测试 Backlog 和存档/读档
+- `demo.stla` 确保包含足够的对话量以测试 Backlog 和存档/读档
 - F5 运行即可体验完整游戏循环
 
 ## 验证标准

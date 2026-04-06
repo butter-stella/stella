@@ -12,7 +12,7 @@ func test_defaults_when_no_file():
 	config.load_from_path("res://nonexistent.cfg")
 
 	assert_eq(config.game_title, "Stella")
-	assert_eq(config.scenario_path, "res://scenarios/main.stl")
+	assert_eq(config.scenario_path, "res://scenarios/main.stla")
 
 	assert_eq(config.backgrounds_path, "res://art/backgrounds/")
 	assert_eq(config.characters_path, "res://art/characters/")
@@ -33,7 +33,7 @@ func test_load_from_config_file():
 	var path = "user://test_stella.cfg"
 	var cf = ConfigFile.new()
 	cf.set_value("game", "title", "My VN")
-	cf.set_value("game", "scenario", "res://my_scenario.stl")
+	cf.set_value("game", "scenario", "res://my_scenario.stla")
 	cf.set_value("paths", "backgrounds", "res://my/bg/")
 	cf.set_value("paths", "characters", "res://my/chars/")
 	cf.set_value("features", "cg_gallery", true)
@@ -44,7 +44,7 @@ func test_load_from_config_file():
 	config.load_from_path(path)
 
 	assert_eq(config.game_title, "My VN")
-	assert_eq(config.scenario_path, "res://my_scenario.stl")
+	assert_eq(config.scenario_path, "res://my_scenario.stla")
 	assert_eq(config.backgrounds_path, "res://my/bg/")
 	assert_eq(config.characters_path, "res://my/chars/")
 	assert_eq(config.cg_gallery, true)
@@ -70,7 +70,7 @@ func test_partial_config_uses_defaults_for_missing():
 
 	assert_eq(config.game_title, "Partial")
 	# Everything else should be default
-	assert_eq(config.scenario_path, "res://scenarios/main.stl")
+	assert_eq(config.scenario_path, "res://scenarios/main.stla")
 	assert_eq(config.save_slots, 8)
 
 	DirAccess.remove_absolute(path)

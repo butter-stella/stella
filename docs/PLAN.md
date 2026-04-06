@@ -10,7 +10,7 @@
 
 ## 已确认的决策
 
-- **脚本格式**：自定义 DSL（`.stl`），引擎直接解析为内部数据结构
+- **脚本格式**：自定义 DSL（`.stla`），引擎直接解析为内部数据结构
 - **架构**：三层分离（Core / Presentation / Plugin），Core 层尽量与 Godot API 解耦
 - **语言**：GDScript 为主，性能敏感部分可用 Rust（gdext）扩展
 - **开发范围**：完整规划，按优先级分步执行
@@ -636,7 +636,7 @@ stella/
 │           ├── graph_view/
 │           └── inspectors/
 ├── game/                                   -- 游戏内容（示例/模板）
-│   ├── scenarios/                          -- .stl 剧本
+│   ├── scenarios/                          -- .stla 剧本
 │   ├── characters/                         -- 角色配置
 │   ├── art/
 │   │   ├── backgrounds/
@@ -665,8 +665,8 @@ stella/
     │   ├── test_save_load.gd
     │   └── test_full_scenario.gd
     └── fixtures/
-        ├── test_basic.stl
-        └── test_all_commands.stl
+        ├── test_basic.stla
+        └── test_all_commands.stla
 ```
 
 ---
@@ -732,7 +732,7 @@ stella/
 
 | 任务 | 依赖 |
 |------|------|
-| DslLexer — 词法分析（.stl → Token 流） | Sprint 1 数据模型 |
+| DslLexer — 词法分析（.stla → Token 流） | Sprint 1 数据模型 |
 | DslParser — 语法解析（Token 流 → ScenarioData） | DslLexer |
 | DslScenarioLoader + DSL → Engine 集成测试 | DslParser + Sprint 2 |
 

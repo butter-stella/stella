@@ -37,7 +37,7 @@ my_game/
 │   ├── se/                  ← 音效
 │   └── voice/               ← 配音
 ├── scenarios/
-│   └── main.stl             ← 剧本
+│   └── main.stla             ← 剧本
 └── stella.cfg              ← 配置文件
 ```
 
@@ -46,7 +46,7 @@ my_game/
 ```ini
 [game]
 title = "我的视觉小说"
-scenario = "res://scenarios/main.stl"
+scenario = "res://scenarios/main.stla"
 
 [paths]
 backgrounds = "res://art/backgrounds/"
@@ -70,7 +70,7 @@ game_scene = ""
 ```ini
 [game]
 title = "我的视觉小说"
-scenario = "res://scenarios/main.stl"
+scenario = "res://scenarios/main.stla"
 ```
 
 ---
@@ -176,7 +176,7 @@ Overlay 通过 `StellaRuntime.show_settings()` 等 Facade API 打开，`close_ov
 
 1. 在 `characters/` 下创建以角色名命名的目录
 2. 放入表情立绘（`default.png`, `happy.png`, `sad.png` 等）
-3. 在 `.stl` 剧本中直接使用：
+3. 在 `.stla` 剧本中直接使用：
 
 ```
 @show sakura center
@@ -216,7 +216,7 @@ Godot 启动
   → 用户点击「开始游戏」
       → StellaRuntime.start_game()
       → 切换到 game.tscn
-      → 解析并运行 .stl 剧本
+      → 解析并运行 .stla 剧本
 ```
 
 ---

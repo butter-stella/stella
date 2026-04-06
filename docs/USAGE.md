@@ -35,13 +35,13 @@ your_project/
 ├── audio/
 │   ├── bgm/               ← BGM (ogg/mp3)
 │   └── se/                ← 音效 (ogg/wav)
-├── scenarios/             ← .stl 剧本
+├── scenarios/             ← .stla 剧本
 └── stella.cfg            ← 配置文件
 ```
 
 ### Step 2 — 写一段剧本
 
-创建 `scenarios/demo.stl`：
+创建 `scenarios/demo.stla`：
 
 ```
 @scene start "开始"
@@ -64,7 +64,7 @@ sakura「这是一个最小的示例。」
 ```ini
 [game]
 title = "我的视觉小说"
-scenario = "res://scenarios/demo.stl"
+scenario = "res://scenarios/demo.stla"
 ```
 
 如果你的目录结构遵循默认约定（`art/backgrounds/`、`art/characters/` 等），只需要这两行配置。
@@ -74,7 +74,7 @@ scenario = "res://scenarios/demo.stl"
 ```ini
 [game]
 title = "我的视觉小说"
-scenario = "res://scenarios/main.stl"
+scenario = "res://scenarios/main.stla"
 
 [paths]
 backgrounds = "res://art/backgrounds/"
