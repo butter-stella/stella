@@ -480,3 +480,21 @@ func test_hide_dialogue_cancels_in_flight_voice_queue():
 		"hide_dialogue must bump _playback_queue_gen so any in-flight queue exits")
 	assert_false(dialogue._playback_queue_active,
 		"_playback_queue_active must be cleared on hide_dialogue")
+
+
+func test_single_segment_dialogue_emits_voice_play_exactly_once():
+	# Regression for the double-queue bug (commit 5c95349):
+	# _on_show_dialogue used to call _run_voice_queue twice — once via
+	# _start_voice_playback and once directly — causing seg[0]'s voice_play
+	# to fire twice in the same frame. This test guards against that
+	# regressing silently.
+	var counts := [0]
+	var conn = func(_a, _c): counts[0] += 1
+	SignalBus.voice_play.connect(conn)
+
+	SignalBus.show_dialogue.emit("sakura",
+		[{"text": "hi", "voice": "sakura_011", "expression": ""}], "adv")
+	await get_tree().process_frame
+
+	SignalBus.voice_play.disconnect(conn)
+	assert_eq(counts[0], 1, "voice_play must fire exactly once per dialogue")
