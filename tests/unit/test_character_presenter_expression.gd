@@ -126,3 +126,54 @@ func test_combined_dialogue_plays_segments_sequentially():
 	assert_not_null(sprite)
 	assert_true(sprite.texture.resource_path.ends_with("sad.png"),
 		"initial expression from segment[0] should be applied")
+
+
+func test_combine_voice_replay_restarts_from_first_segment():
+	# Setup: play a combined dialogue, let the queue run, then click replay
+	SignalBus.char_show.emit("sakura", "smile", "left")
+	await get_tree().process_frame
+
+	var segments = [
+		{"text": "一", "voice": "sakura_013", "expression": "sad"},
+		{"text": "二", "voice": "sakura_018", "expression": "surprised"},
+		{"text": "三", "voice": "sakura_019", "expression": "sad"},
+	]
+
+	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
+	SignalBus.show_dialogue_combined.emit("sakura", segments, "adv")
+	await get_tree().process_frame
+
+	# Segments should be stored for replay
+	assert_eq(dialogue._current_combine_segments.size(), 3,
+		"segments should be snapshotted for replay")
+
+	# Simulate replay — should not crash and should kick off the queue again
+	var voice_play_count := [0]
+	SignalBus.voice_play.connect(func(_a, _c): voice_play_count[0] += 1)
+	dialogue._replay_combine_voices()
+	await get_tree().process_frame
+	assert_true(voice_play_count[0] >= 1,
+		"replay should emit at least one voice_play for segment 0")
+
+
+func test_normal_dialogue_clears_combine_segments():
+	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
+	dialogue._current_combine_segments = [{"text": "stale"}]
+	SignalBus.show_dialogue.emit("sakura", "hello", "", "adv")
+	await get_tree().process_frame
+	assert_eq(dialogue._current_combine_segments.size(), 0,
+		"single-dialogue path should clear stale combine state")
+
+
+func test_combine_with_empty_voices_does_not_hang():
+	# All segments have empty voice — queue should drain synchronously without hanging
+	var segments = [
+		{"text": "一", "voice": "", "expression": ""},
+		{"text": "二", "voice": "", "expression": ""},
+	]
+	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
+	SignalBus.show_dialogue_combined.emit("sakura", segments, "adv")
+	await get_tree().process_frame
+	# After one frame the queue should already be inactive (nothing to await)
+	assert_false(dialogue._combine_queue_active,
+		"queue must not stall when all segments have empty voices")

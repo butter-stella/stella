@@ -40,6 +40,9 @@ var _auto_btn: Button
 var _skip_btn: Button
 var _dialogue_gen: int = 0  # increments on each new dialogue, stale coroutines check this
 var _combine_aborted: bool = false  # set when user clicks to skip a combine typewriter
+var _combine_queue_active: bool = false  # true while the combine voice-queue coroutine is running
+var _combine_queue_gen: int = 0  # bumped to cancel an in-flight queue (e.g. replay restart)
+var _current_combine_segments: Array = []  # snapshot for replay button
 
 
 func _ready():
@@ -118,8 +121,18 @@ func _setup_toolbar():
 
 
 func _on_voice_replay_pressed():
-	if _current_voice != "":
+	if _current_combine_segments.size() > 0:
+		_replay_combine_voices()
+	elif _current_voice != "":
 		SignalBus.voice_play.emit(_current_voice, _current_voice_character)
+
+
+func _replay_combine_voices() -> void:
+	# Restart the voice queue with the stored segments. _run_combine_voice_queue
+	# bumps its own internal generation to cancel any in-flight queue coroutine,
+	# leaving _dialogue_gen (and any auto-play/advance await) untouched.
+	_combine_aborted = false
+	_run_combine_voice_queue(_current_voice_character, _current_combine_segments, _dialogue_gen)
 
 
 func _on_auto_pressed():
@@ -190,6 +203,7 @@ func _on_show_dialogue(character: String, text: String, voice: String, mode: Str
 
 	_dialogue_gen += 1
 	var gen = _dialogue_gen
+	_current_combine_segments = []  # clear combine state when a normal dialogue starts
 
 	# Trigger voice playback (suppress during skip — no point playing voice
 	# for lines that are shown for only ~50ms)
@@ -331,19 +345,16 @@ func _on_show_dialogue_combined(character: String, segments: Array, mode: String
 	_dialogue_gen += 1
 	var gen = _dialogue_gen
 	_combine_aborted = false
+	_current_combine_segments = segments.duplicate(true)
 
-	# Pre-compute concatenated text and per-char → segment-index mapping
+	# Pre-compute concatenated text for typewriter / backlog
 	var full_text := ""
-	var seg_end_char: Array = []  # cumulative char count after each segment
 	for seg in segments:
 		full_text += String(seg.get("text", ""))
-		seg_end_char.append(full_text.length())
 
 	_current_voice_character = character
 	var first_voice := String(segments[0].get("voice", ""))
 	_current_voice = first_voice
-	if first_voice != "" and not _is_skipping():
-		SignalBus.voice_play.emit(first_voice, character)
 	if _voice_replay_btn:
 		_voice_replay_btn.visible = (first_voice != "")
 
@@ -378,14 +389,14 @@ func _on_show_dialogue_combined(character: String, segments: Array, mode: String
 		text_label.text = full_text
 		text_label.visible_characters = 0
 
-	# Apply first segment's expression (and update avatar)
+	# Update avatar based on first segment's expression (will be set by queue),
+	# otherwise fall back to current known expression.
 	var first_expr := String(segments[0].get("expression", ""))
-	if first_expr != "" and character != "":
-		SignalBus.char_expression_changed.emit(character, first_expr)
-	var avatar_expr = _known_expressions.get(character, "default")
+	var avatar_expr = first_expr if first_expr != "" else String(_known_expressions.get(character, "default"))
 	_update_avatar(character, avatar_expr, mode)
 
-	# Launch the voice-queue coroutine (fires expression changes between segments)
+	# Launch voice-queue coroutine. It owns ALL segment voice playback and expression
+	# switching (including segment 0) so empty-voice segments can't hang the queue.
 	_run_combine_voice_queue(character, segments, gen)
 
 	await get_tree().process_frame
@@ -429,8 +440,13 @@ func _on_show_dialogue_combined(character: String, segments: Array, mode: String
 	# Auto-play: wait for all segment voices to finish, then advance
 	if StellaRuntime.is_auto_playing():
 		if StellaRuntime.get_setting("auto_play_wait_voice"):
-			# Wait until voice queue coroutine has finished all segments
-			while not _combine_aborted and _voice_playing:
+			# Wait until the voice queue coroutine has drained all segments
+			while _combine_queue_active and not _combine_aborted:
+				await get_tree().process_frame
+				if gen != _dialogue_gen:
+					return
+			# And wait for the current (final) voice to finish naturally
+			if _voice_playing:
 				await SignalBus.voice_finished
 				if gen != _dialogue_gen:
 					return
@@ -443,12 +459,20 @@ func _on_show_dialogue_combined(character: String, segments: Array, mode: String
 
 
 func _run_combine_voice_queue(character: String, segments: Array, gen: int) -> void:
-	# For i = 1..N-1: wait for previous voice to finish, then apply segment[i]'s
-	# expression and start segment[i]'s voice.
-	for i in range(1, segments.size()):
-		await SignalBus.voice_finished
-		if gen != _dialogue_gen or _combine_aborted:
-			return
+	# Plays all segment voices sequentially. Owns seg[0] too so a missing/empty
+	# voice on any segment can't hang the queue. Between segments, awaits
+	# voice_finished iff the previous segment actually played a voice.
+	_combine_queue_gen += 1
+	var q_gen = _combine_queue_gen
+	_combine_queue_active = true
+	var prev_had_voice := false
+	for i in range(segments.size()):
+		if prev_had_voice:
+			await SignalBus.voice_finished
+			if q_gen != _combine_queue_gen or gen != _dialogue_gen or _combine_aborted:
+				if q_gen == _combine_queue_gen:
+					_combine_queue_active = false
+				return
 		var seg = segments[i]
 		var expr := String(seg.get("expression", ""))
 		if expr != "" and character != "":
@@ -456,9 +480,12 @@ func _run_combine_voice_queue(character: String, segments: Array, gen: int) -> v
 			if _current_mode == "adv":
 				_update_avatar(character, expr, "adv")
 		var voice := String(seg.get("voice", ""))
+		prev_had_voice = (voice != "")
 		if voice != "" and not _is_skipping():
 			_current_voice = voice
 			SignalBus.voice_play.emit(voice, character)
+	if q_gen == _combine_queue_gen:
+		_combine_queue_active = false
 
 
 func _finalize_combine(character: String, segments: Array) -> void:
@@ -563,6 +590,8 @@ func _on_hide_dialogue():
 	_nvl_text = ""
 	_current_character = ""
 	_voice_playing = false
+	_current_combine_segments = []
+	_combine_aborted = false
 	if _avatar_container:
 		_avatar_container.visible = false
 		if _avatar_texture:
