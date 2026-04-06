@@ -8,7 +8,7 @@ Godot AVG / Galgame framework. Architecture docs in `docs/PLAN.md`, DSL design i
 
 - Godot 4.6+, GDScript (primary)
 - Rust via gdext (for performance-critical extensions, when needed)
-- Custom DSL (.stl) for scenario scripting
+- Custom DSL (.stla) for scenario scripting
 - GUT 9.6+ for testing
 
 ## Development Workflow

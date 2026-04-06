@@ -1,4 +1,4 @@
-## Token produced by DslLexer from .stl source text.
+## Token produced by DslLexer from .stla source text.
 class_name DslToken extends RefCounted
 
 enum Type {

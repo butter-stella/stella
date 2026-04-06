@@ -4,7 +4,7 @@ Godot AVG / Galgame framework — the first open-source Godot framework with com
 
 ## Features
 
-- **Custom DSL** (`.stl`) — writer-friendly scripting with smart defaults
+- **Custom DSL** (`.stla`) — writer-friendly scripting with smart defaults
 - **Scenario Engine** — command-pattern architecture, fully extensible
 - **Dialogue System** — typewriter effect, ADV/NVL/overlay modes, inline expression switching
 - **Character System** — show/hide/move/animate, expression switching, position presets
@@ -44,7 +44,7 @@ addons/stella/                        ← 框架插件（一般不需要修改�
 ├── core/                              ← 核心层（纯逻辑，不依赖 Godot 渲染）
 │   ├── config/                        ← 项目配置加载（stella.cfg）
 │   ├── data/                          ← 数据模型（CommandData, ScenarioData 等）
-│   ├── script_parser/                 ← DSL 解析器（.stl → 内部数据结构）
+│   ├── script_parser/                 ← DSL 解析器（.stla → 内部数据结构）
 │   ├── scenario_engine/               ← 剧情引擎（主循环、上下文、等待控制）
 │   ├── commands/                      ← 21 个命令处理器（对话/背景/立绘/音频/特效...）
 │   ├── variable_system/               ← 变量系统 + 表达式求值
@@ -70,7 +70,7 @@ addons/stella/                        ← 框架插件（一般不需要修改�
 
 stella.cfg                            ← 项目配置文件（标题/路径/功能开关）
 examples/demo/                         ← 示例项目
-├── scenarios/                         ← .stl 剧本
+├── scenarios/                         ← .stla 剧本
 └── art/                               ← 素材（背景/立绘）
 
 tests/                                 ← GUT 测试（267+ 测试用例）
@@ -78,7 +78,7 @@ tests/                                 ← GUT 测试（267+ 测试用例）
 └── integration/                       ← 端到端集成测试
 ```
 
-**日常工作流：** 写 `.stl` 剧本 + 放素材 + 编辑 `stella.cfg` → F5 运行。
+**日常工作流：** 写 `.stla` 剧本 + 放素材 + 编辑 `stella.cfg` → F5 运行。
 
 ## Docs
 

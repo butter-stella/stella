@@ -1,4 +1,4 @@
-## Main screen editor for .stl scenario files.
+## Main screen editor for .stla scenario files.
 @tool
 extends Control
 
@@ -87,7 +87,7 @@ func _build_ui() -> void:
 func open_file(path: String) -> void:
 	var file := FileAccess.open(path, FileAccess.READ)
 	if file == null:
-		push_warning("StlEditor: Cannot open file: %s" % path)
+		push_warning("StlaEditor: Cannot open file: %s" % path)
 		return
 	_current_path = path
 	_code_edit.text = file.get_as_text()
@@ -111,7 +111,7 @@ func _on_save_pressed() -> void:
 		return
 	var file := FileAccess.open(_current_path, FileAccess.WRITE)
 	if file == null:
-		push_warning("StlEditor: Cannot save file: %s" % _current_path)
+		push_warning("StlaEditor: Cannot save file: %s" % _current_path)
 		return
 	file.store_string(_code_edit.text)
 	file.close()
