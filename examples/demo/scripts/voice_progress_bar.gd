@@ -1,6 +1,7 @@
-## Example voice progress bar — listens to SignalBus.voice_progress to show playback position.
-## Attach to any ProgressBar node. The framework emits voice_progress(position, duration) each frame
-## while voice is playing. Game developers can use this as-is or build their own UI.
+## Example voice progress bar — listens to the high-level dialogue_voice_*
+## signals so a @combine multi-segment dialogue shows as ONE continuous bar
+## spanning the total combined duration, instead of resetting per segment.
+## Attach to any ProgressBar node.
 extends ProgressBar
 
 
@@ -9,21 +10,21 @@ func _ready():
 	min_value = 0.0
 	max_value = 1.0
 	step = 0.001
-	SignalBus.voice_started.connect(_on_voice_started)
-	SignalBus.voice_finished.connect(_on_voice_finished)
-	SignalBus.voice_progress.connect(_on_voice_progress)
+	SignalBus.dialogue_voice_started.connect(_on_dialogue_voice_started)
+	SignalBus.dialogue_voice_progress.connect(_on_dialogue_voice_progress)
+	SignalBus.dialogue_voice_finished.connect(_on_dialogue_voice_finished)
 	SignalBus.hide_dialogue.connect(func(): visible = false)
 
 
-func _on_voice_started(_character: String, _asset: String):
+func _on_dialogue_voice_started(_total_duration: float):
 	value = 0.0
 	visible = true
 
 
-func _on_voice_finished():
+func _on_dialogue_voice_finished():
 	visible = false
 
 
-func _on_voice_progress(position: float, duration: float):
-	if duration > 0:
-		value = position / duration
+func _on_dialogue_voice_progress(position: float, total_duration: float):
+	if total_duration > 0:
+		value = position / total_duration

@@ -43,11 +43,15 @@ var _combine_aborted: bool = false  # set when user clicks to skip a combine typ
 var _combine_queue_active: bool = false  # true while the combine voice-queue coroutine is running
 var _combine_queue_gen: int = 0  # bumped to cancel an in-flight queue (e.g. replay restart)
 var _current_combine_segments: Array = []  # snapshot for replay button
+var _combine_total_duration: float = 0.0  # sum of all segment voice durations
+var _combine_played_duration: float = 0.0  # cumulative duration of finished segments
+var _combine_segment_durations: Array = []  # per-segment voice durations (0 if no voice)
 
 
 func _ready():
 	SignalBus.show_dialogue.connect(_on_show_dialogue)
 	SignalBus.hide_dialogue.connect(_on_hide_dialogue)
+	SignalBus.voice_progress.connect(_on_voice_progress_relay)
 	SignalBus.scenario_ended_event.connect(func(_id): visible = false)
 	SignalBus.voice_started.connect(func(_c, _a): _voice_playing = true)
 	SignalBus.voice_finished.connect(func(): _voice_playing = false)
@@ -206,6 +210,24 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 	var gen = _dialogue_gen
 	_combine_aborted = false
 	_current_combine_segments = segments.duplicate(true)
+
+	# Precompute per-segment voice durations + total — used by the high-level
+	# dialogue_voice_progress signal so a multi-segment dialogue shows as a single
+	# continuous progress bar instead of one bar per segment.
+	_combine_segment_durations.clear()
+	_combine_total_duration = 0.0
+	_combine_played_duration = 0.0
+	for seg in segments:
+		var v := String(seg.get("voice", ""))
+		var dur := 0.0
+		if v != "":
+			var stream = _load_voice_stream(v)
+			if stream:
+				dur = stream.get_length()
+		_combine_segment_durations.append(dur)
+		_combine_total_duration += dur
+	if _combine_total_duration > 0.0:
+		SignalBus.dialogue_voice_started.emit(_combine_total_duration)
 
 	# Process all segments: concat text, merge inline markers + effects with offsets
 	var full_text := ""
@@ -374,6 +396,10 @@ func _run_voice_queue(character: String, segments: Array, gen: int) -> void:
 				if q_gen == _combine_queue_gen:
 					_combine_queue_active = false
 				return
+			# Just-finished segment was index i-1; accumulate its duration so the
+			# combined progress signal can report cumulative position correctly.
+			if i - 1 < _combine_segment_durations.size():
+				_combine_played_duration += float(_combine_segment_durations[i - 1])
 		var seg = segments[i]
 		var expr := String(seg.get("expression", ""))
 		if expr != "" and character != "":
@@ -387,6 +413,8 @@ func _run_voice_queue(character: String, segments: Array, gen: int) -> void:
 			SignalBus.voice_play.emit(voice, character)
 	if q_gen == _combine_queue_gen:
 		_combine_queue_active = false
+		if _combine_total_duration > 0.0:
+			SignalBus.dialogue_voice_finished.emit()
 
 
 func _finalize_dialogue(character: String, segments: Array) -> void:
@@ -394,6 +422,8 @@ func _finalize_dialogue(character: String, segments: Array) -> void:
 	# and snap expression to the final segment's expression. For a single-segment
 	# dialogue with empty expression this is a no-op.
 	_combine_aborted = true
+	if _combine_total_duration > 0.0:
+		SignalBus.dialogue_voice_finished.emit()
 	if segments.size() == 0:
 		return
 	var last_seg = segments[segments.size() - 1]
@@ -402,6 +432,23 @@ func _finalize_dialogue(character: String, segments: Array) -> void:
 		SignalBus.char_expression_changed.emit(character, last_expr)
 		if _current_mode == "adv":
 			_update_avatar(character, last_expr, "adv")
+
+
+## Relays low-level voice_progress (per-clip) into dialogue_voice_progress
+## (per-dialogue), adding the cumulative duration of already-finished segments.
+## For a single-segment dialogue this is just an identity relay.
+func _on_voice_progress_relay(position: float, _duration: float) -> void:
+	if _combine_total_duration > 0.0:
+		var total_pos = _combine_played_duration + position
+		SignalBus.dialogue_voice_progress.emit(total_pos, _combine_total_duration)
+
+
+func _load_voice_stream(asset: String) -> AudioStream:
+	for ext in ["ogg", "wav"]:
+		var path = StellaRuntime.voice_path + "%s.%s" % [asset, ext]
+		if ResourceLoader.exists(path):
+			return load(path) as AudioStream
+	return null
 
 
 
@@ -494,6 +541,9 @@ func _on_hide_dialogue():
 	_voice_playing = false
 	_current_combine_segments = []
 	_combine_aborted = false
+	_combine_total_duration = 0.0
+	_combine_played_duration = 0.0
+	_combine_segment_durations.clear()
 	if _avatar_container:
 		_avatar_container.visible = false
 		if _avatar_texture:

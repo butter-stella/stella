@@ -181,3 +181,50 @@ func test_combine_with_empty_voices_does_not_hang():
 	# After one frame the queue should already be inactive (nothing to await)
 	assert_false(dialogue._combine_queue_active,
 		"queue must not stall when all segments have empty voices")
+
+
+func test_dialogue_voice_progress_emits_with_total_duration():
+	# A combined dialogue should emit dialogue_voice_started exactly once with
+	# the SUM of all segment voice durations (not per-segment).
+	var started_payloads: Array = []
+	SignalBus.dialogue_voice_started.connect(func(d): started_payloads.append(d))
+
+	var segments = [
+		{"text": "一", "voice": "sakura_013", "expression": ""},
+		{"text": "二", "voice": "sakura_018", "expression": ""},
+		{"text": "三", "voice": "sakura_019", "expression": ""},
+	]
+	SignalBus.show_dialogue.emit("sakura", segments, "adv")
+	await get_tree().process_frame
+
+	assert_eq(started_payloads.size(), 1,
+		"dialogue_voice_started should fire exactly once for a combined dialogue")
+	# Total should be > 0 and equal sum of three real wav durations
+	assert_gt(started_payloads[0], 0.0,
+		"total duration should be positive (sum of segment voice lengths)")
+
+
+func test_dialogue_voice_progress_relays_cumulative_position():
+	# Manually drive voice_progress and verify dialogue_voice_progress reports
+	# cumulative position = played_duration + current_clip_position.
+	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
+	# Pretend we are in a combined dialogue with 1.0s already played
+	dialogue._combine_total_duration = 3.0
+	dialogue._combine_played_duration = 1.0
+
+	var received: Array = []
+	var conn = func(pos, total): received.append([pos, total])
+	SignalBus.dialogue_voice_progress.connect(conn)
+
+	SignalBus.voice_progress.emit(0.5, 2.0)  # 0.5s into current clip
+
+	# Synchronous emission — relay should have fired exactly once for our emit.
+	# We don't await a frame here because the audio_presenter _process tick can
+	# emit additional voice_progress events that pollute the count.
+	SignalBus.dialogue_voice_progress.disconnect(conn)
+
+	assert_eq(received.size(), 1)
+	assert_almost_eq(float(received[0][0]), 1.5, 0.001,
+		"cumulative position should be played(1.0) + clip_pos(0.5) = 1.5")
+	assert_almost_eq(float(received[0][1]), 3.0, 0.001,
+		"total duration should be the precomputed combined total")

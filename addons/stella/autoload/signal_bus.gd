@@ -33,6 +33,15 @@ signal voice_started(character: String, asset: String)
 signal voice_finished()
 signal voice_progress(position: float, duration: float)
 
+## High-level dialogue voice signals — emitted by DialoguePresenter so that
+## a @combine block (or any dialogue with multiple segment voices) is treated
+## as one logical playback for UI purposes (e.g. a single continuous progress
+## bar instead of one bar per segment). For a normal single-voice dialogue
+## these mirror voice_started / voice_progress / voice_finished 1:1.
+signal dialogue_voice_started(total_duration: float)
+signal dialogue_voice_progress(position: float, total_duration: float)
+signal dialogue_voice_finished()
+
 # Choice
 signal choice_show(prompt: String, options: Array)
 signal choice_selected(option_id: String)
