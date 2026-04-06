@@ -7,5 +7,5 @@ func test_gut_works():
 
 
 func test_signal_bus_exists():
-	var bus = load("res://addons/natsume/autoload/signal_bus.gd")
+	var bus = load("res://addons/stella/autoload/signal_bus.gd")
 	assert_not_null(bus, "SignalBus script should be loadable")

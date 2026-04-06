@@ -14,16 +14,16 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
 [application]
 
-config/name="Natsume"
+config/name="Stella"
 config/description="Godot AVG / Galgame Framework"
 config/version="0.1.0"
-run/main_scene="res://addons/natsume/scenes/title.tscn"
+run/main_scene="res://addons/stella/scenes/title.tscn"
 config/features=PackedStringArray("4.6")
 
 [autoload]
 
-SignalBus="*res://addons/natsume/autoload/signal_bus.gd"
-NatsumeRuntime="*res://addons/natsume/autoload/natsume_runtime.gd"
+SignalBus="*res://addons/stella/autoload/signal_bus.gd"
+StellaRuntime="*res://addons/stella/autoload/stella_runtime.gd"
 
 [display]
 

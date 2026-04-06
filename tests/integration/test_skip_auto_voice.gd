@@ -10,9 +10,9 @@ var _bus: Node
 
 func before_each():
 	_bus = get_tree().root.get_node("SignalBus")
-	NatsumeRuntime.skip_controller.is_active = false
-	NatsumeRuntime.auto_play.is_active = false
-	NatsumeRuntime.game_state.current_state = GameStateMachine.State.PLAYING
+	StellaRuntime.skip_controller.is_active = false
+	StellaRuntime.auto_play.is_active = false
+	StellaRuntime.game_state.current_state = GameStateMachine.State.PLAYING
 
 
 # --- Skip mode should NOT play voice ---
@@ -23,8 +23,8 @@ func test_skip_mode_suppresses_voice_play():
 	var conn = func(a, _c): voice_received.append(a)
 	_bus.voice_play.connect(conn)
 
-	NatsumeRuntime.skip_controller.is_active = true
-	assert_true(NatsumeRuntime.is_skipping())
+	StellaRuntime.skip_controller.is_active = true
+	assert_true(StellaRuntime.is_skipping())
 
 	_bus.show_dialogue.emit("sakura", "Hello", "sakura_001", "adv")
 	await get_tree().create_timer(0.2).timeout
@@ -32,7 +32,7 @@ func test_skip_mode_suppresses_voice_play():
 	assert_eq(voice_received.size(), 0, "voice should NOT play during skip mode")
 
 	_bus.voice_play.disconnect(conn)
-	NatsumeRuntime.skip_controller.is_active = false
+	StellaRuntime.skip_controller.is_active = false
 
 
 # --- voice_finished signal propagation ---
@@ -49,7 +49,7 @@ func test_voice_finished_signal_propagates():
 
 
 func test_audio_presenter_advance_does_not_crash():
-	var audio_presenter = NatsumeRuntime.get_node_or_null("AudioPresenter")
+	var audio_presenter = StellaRuntime.get_node_or_null("AudioPresenter")
 	if audio_presenter == null:
 		pending("AudioPresenter not available")
 		return
@@ -89,15 +89,15 @@ func test_voice_finished_clears_flag():
 # --- Mutual exclusivity ---
 
 func test_skip_and_auto_mutually_exclusive():
-	NatsumeRuntime.toggle_skip()
-	assert_true(NatsumeRuntime.is_skipping())
-	assert_false(NatsumeRuntime.is_auto_playing())
+	StellaRuntime.toggle_skip()
+	assert_true(StellaRuntime.is_skipping())
+	assert_false(StellaRuntime.is_auto_playing())
 
-	NatsumeRuntime.toggle_auto_play()
-	assert_false(NatsumeRuntime.is_skipping(), "skip should stop when auto activates")
-	assert_true(NatsumeRuntime.is_auto_playing())
+	StellaRuntime.toggle_auto_play()
+	assert_false(StellaRuntime.is_skipping(), "skip should stop when auto activates")
+	assert_true(StellaRuntime.is_auto_playing())
 
-	NatsumeRuntime.auto_play.stop()
+	StellaRuntime.auto_play.stop()
 
 
 # --- _dialogue_gen prevents double-advance ---
@@ -137,32 +137,32 @@ func test_dialogue_gen_changes_on_successive_dialogues():
 # --- auto_play_click_interrupt setting ---
 
 func test_auto_play_click_interrupt_default_true():
-	var val = NatsumeRuntime.get_setting("auto_play_click_interrupt")
+	var val = StellaRuntime.get_setting("auto_play_click_interrupt")
 	assert_true(val, "auto_play_click_interrupt should default to true")
 
 
 func test_auto_play_click_interrupt_persists():
-	NatsumeRuntime.set_setting("auto_play_click_interrupt", false)
-	assert_false(NatsumeRuntime.get_setting("auto_play_click_interrupt"),
+	StellaRuntime.set_setting("auto_play_click_interrupt", false)
+	assert_false(StellaRuntime.get_setting("auto_play_click_interrupt"),
 		"setting should persist after set")
 	# Restore default
-	NatsumeRuntime.set_setting("auto_play_click_interrupt", true)
+	StellaRuntime.set_setting("auto_play_click_interrupt", true)
 
 
 # --- Leaving PLAYING stops auto/skip ---
 
 func test_overlay_stops_auto_play():
-	NatsumeRuntime.auto_play.is_active = true
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.SETTINGS)
-	assert_false(NatsumeRuntime.is_auto_playing(), "auto should stop when leaving PLAYING")
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	StellaRuntime.auto_play.is_active = true
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.SETTINGS)
+	assert_false(StellaRuntime.is_auto_playing(), "auto should stop when leaving PLAYING")
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
 
 
 func test_overlay_stops_skip():
-	NatsumeRuntime.skip_controller.is_active = true
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.BACKLOG)
-	assert_false(NatsumeRuntime.is_skipping(), "skip should stop when leaving PLAYING")
-	NatsumeRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	StellaRuntime.skip_controller.is_active = true
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.BACKLOG)
+	assert_false(StellaRuntime.is_skipping(), "skip should stop when leaving PLAYING")
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
 
 
 # --- _voice_playing cleared on hide_dialogue ---

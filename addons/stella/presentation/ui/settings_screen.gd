@@ -1,0 +1,162 @@
+## Settings screen — sliders and toggles for game configuration.
+## Loaded as overlay by StellaRuntime, closed with ESC or right-click.
+extends PanelContainer
+
+@onready var settings_container: VBoxContainer = %SettingsContainer
+
+
+func _ready():
+	_build_ui()
+
+
+func _close():
+	StellaRuntime.save_settings()
+	StellaRuntime.close_overlay()
+
+
+func _build_ui():
+	for child in settings_container.get_children():
+		child.queue_free()
+
+	# Title
+	var title = Label.new()
+	title.text = "设置"
+	title.add_theme_font_size_override("font_size", 28)
+	settings_container.add_child(title)
+	settings_container.add_child(HSeparator.new())
+
+	# Text speed
+	_add_slider("文字速度", StellaRuntime.get_setting("character_interval"), 0, 100, func(val):
+		StellaRuntime.set_setting("character_interval", int(val))
+	)
+
+	# Auto play delay
+	_add_slider("自动播放延迟（秒）", StellaRuntime.get_setting("auto_play_delay") * 10, 5, 50, func(val):
+		StellaRuntime.set_setting("auto_play_delay", val / 10.0)
+	)
+
+	settings_container.add_child(HSeparator.new())
+
+	# BGM volume
+	_add_slider("BGM 音量", StellaRuntime.get_setting("bgm_volume") * 100, 0, 100, func(val):
+		StellaRuntime.set_setting("bgm_volume", val / 100.0)
+	)
+
+	# SE volume
+	_add_slider("SE 音量", StellaRuntime.get_setting("se_volume") * 100, 0, 100, func(val):
+		StellaRuntime.set_setting("se_volume", val / 100.0)
+	)
+
+	# Voice volume
+	_add_slider("语音音量", StellaRuntime.get_setting("voice_volume") * 100, 0, 100, func(val):
+		StellaRuntime.set_setting("voice_volume", val / 100.0)
+	)
+
+	# Auto play click interrupt
+	_add_toggle("左键打断自动模式", StellaRuntime.get_setting("auto_play_click_interrupt"), func(toggled):
+		StellaRuntime.set_setting("auto_play_click_interrupt", toggled)
+	)
+
+	settings_container.add_child(HSeparator.new())
+
+	# Fullscreen toggle
+	_add_toggle("全屏", StellaRuntime.get_setting("fullscreen"), func(toggled):
+		StellaRuntime.set_setting("fullscreen", toggled)
+		DisplayHelper.apply(StellaRuntime.settings_manager.settings)
+	)
+
+	# Resolution selector
+	_add_option("分辨率", DisplayHelper.get_preset_labels(), DisplayHelper.get_preset_keys().find(StellaRuntime.get_setting("resolution")), func(index):
+		var key = DisplayHelper.get_preset_keys()[index]
+		StellaRuntime.set_setting("resolution", key)
+		DisplayHelper.apply(StellaRuntime.settings_manager.settings)
+	)
+
+	settings_container.add_child(HSeparator.new())
+
+	# Reset button
+	var reset_btn = Button.new()
+	reset_btn.text = "恢复默认"
+	reset_btn.custom_minimum_size = Vector2(150, 40)
+	reset_btn.pressed.connect(func():
+		StellaRuntime.reset_settings()
+		_build_ui()
+	)
+	settings_container.add_child(reset_btn)
+
+
+func _add_slider(label_text: String, current_value: float, min_val: float, max_val: float, on_change: Callable):
+	var hbox = HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", 20)
+
+	var label = Label.new()
+	label.text = label_text
+	label.custom_minimum_size = Vector2(200, 0)
+	hbox.add_child(label)
+
+	var slider = HSlider.new()
+	slider.min_value = min_val
+	slider.max_value = max_val
+	slider.value = current_value
+	slider.custom_minimum_size = Vector2(300, 0)
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	slider.value_changed.connect(on_change)
+	hbox.add_child(slider)
+
+	var value_label = Label.new()
+	value_label.text = str(int(current_value))
+	value_label.custom_minimum_size = Vector2(50, 0)
+	slider.value_changed.connect(func(val): value_label.text = str(int(val)))
+	hbox.add_child(value_label)
+
+	settings_container.add_child(hbox)
+
+
+func _add_option(label_text: String, options: Array, current_index: int, on_change: Callable):
+	var hbox = HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", 20)
+
+	var label = Label.new()
+	label.text = label_text
+	label.custom_minimum_size = Vector2(200, 0)
+	hbox.add_child(label)
+
+	var option_btn = OptionButton.new()
+	for opt in options:
+		option_btn.add_item(opt)
+	option_btn.selected = max(current_index, 0)
+	option_btn.item_selected.connect(on_change)
+	hbox.add_child(option_btn)
+
+	settings_container.add_child(hbox)
+
+
+func _add_toggle(label_text: String, current_value: bool, on_change: Callable):
+	var hbox = HBoxContainer.new()
+	hbox.add_theme_constant_override("separation", 20)
+
+	var label = Label.new()
+	label.text = label_text
+	label.custom_minimum_size = Vector2(200, 0)
+	hbox.add_child(label)
+
+	var toggle = CheckButton.new()
+	toggle.button_pressed = current_value
+	toggle.toggled.connect(on_change)
+	hbox.add_child(toggle)
+
+	settings_container.add_child(hbox)
+
+
+func _gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed:
+		if event.button_index == MOUSE_BUTTON_RIGHT:
+			_close()
+		accept_event()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed:
+		if event.keycode == KEY_ESCAPE:
+			_close()
+			get_viewport().set_input_as_handled()

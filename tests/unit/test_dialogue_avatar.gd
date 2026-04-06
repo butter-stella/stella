@@ -5,7 +5,7 @@ var _game_scene: Node
 
 
 func before_each():
-	_game_scene = load("res://addons/natsume/scenes/game.tscn").instantiate()
+	_game_scene = load("res://addons/stella/scenes/game.tscn").instantiate()
 	add_child_autoqfree(_game_scene)
 	await get_tree().process_frame
 

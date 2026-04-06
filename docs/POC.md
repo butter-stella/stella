@@ -1,6 +1,6 @@
-# Natsume — POC 计划
+# Stella — POC 计划
 
-> 目标：用一段 DSL 剧本（`.nat`）驱动一个可交互的视觉小说场景，验证从 Core 到 Presentation 的完整链路。
+> 目标：用一段 DSL 剧本（`.stl`）驱动一个可交互的视觉小说场景，验证从 Core 到 Presentation 的完整链路。
 
 ## POC 目标场景
 
@@ -15,7 +15,7 @@
 ## POC 演示剧本
 
 ```ntm
-// demo.nat
+// demo.stl
 
 @scene start "初次相遇"
 
@@ -65,7 +65,7 @@ POC 覆盖 PLAN.md 的 Sprint 1-4，分为 Core 层（纯 GDScript，无需 Godo
 | 任务 | 产出 |
 |------|------|
 | 创建 Godot 项目（project.godot） | 可在 Godot 编辑器中打开 |
-| 搭建 `addons/natsume/` 目录结构 | plugin.cfg + 空目录 |
+| 搭建 `addons/stella/` 目录结构 | plugin.cfg + 空目录 |
 | 安装 GUT 测试框架 | `addons/gut/`，可在编辑器中运行测试 |
 | 配置 SignalBus Autoload | `autoload/signal_bus.gd` 注册为 Autoload |
 
@@ -205,7 +205,7 @@ func complete() -> void:
 
 ### Step 4：DSL 解析器
 
-**目标**：将 `.nat` 文本解析为 ScenarioData。
+**目标**：将 `.stl` 文本解析为 ScenarioData。
 
 **新建文件**：
 
@@ -269,7 +269,7 @@ Parser 维护 `if_stack`。遇到 `@if` 压栈，后续指令收集到 then_comm
 
 | 文件 | 说明 |
 |------|------|
-| `autoload/natsume_runtime.gd` | Autoload 入口：注册 handler、初始化引擎、加载剧本 |
+| `autoload/stella_runtime.gd` | Autoload 入口：注册 handler、初始化引擎、加载剧本 |
 | `presentation/dialogue/dialogue_presenter.gd` | 订阅 `show_dialogue` → 打字机效果 → 等待点击 |
 | `presentation/dialogue/dialogue_presenter.tscn` | 对话框场景（Panel + RichTextLabel + NameLabel） |
 | `presentation/dialogue/text_animator.gd` | 打字机效果（visible_characters 递增 + Timer） |
@@ -299,7 +299,7 @@ Main (Node2D)
 │   └── ChoicePanel (VBoxContainer, 居中, 默认隐藏)
 │       └── PromptLabel (Label)
 ├── InputHandler (Node)
-└── NatsumeRuntime (Node)  -- 或通过 Autoload 初始化
+└── StellaRuntime (Node)  -- 或通过 Autoload 初始化
 ```
 
 **DialoguePresenter 核心流程**：
@@ -362,7 +362,7 @@ game/
 │           ├── sad.png
 │           └── default.png
 └── scenarios/
-    └── demo.nat              — POC 演示剧本
+    └── demo.stl              — POC 演示剧本
 ```
 
 可用纯色矩形 + 文字标注作为临时素材，先跑通流程。
@@ -372,7 +372,7 @@ game/
 ## 数据流总览
 
 ```
-.nat 文件
+.stl 文件
   ↓ DslLexer.tokenize()
 Token[]
   ↓ DslParser.parse()
@@ -398,7 +398,7 @@ Step 0: 项目脚手架 + GUT            — 空项目可运行
 Step 1: 核心数据模型                 — 数据结构就绪
 Step 2: 命令系统 + 引擎              — 引擎可执行指令序列
 Step 3: 变量 + 基础命令处理器         — Core 层完整
-Step 4: DSL 解析器                   — .nat 驱动引擎
+Step 4: DSL 解析器                   — .stl 驱动引擎
 Step 5: Presentation 层              — 可看到完整演出
 Step 6: 测试素材 + 组装运行           — POC 完成
 ```
@@ -410,7 +410,7 @@ Step 5-6 需要在 Godot 编辑器中搭建场景并运行。
 
 ## POC 完成标准
 
-- [ ] `demo.nat` 可从头到尾完整运行
+- [ ] `demo.stl` 可从头到尾完整运行
 - [ ] 背景 fade 切换正确
 - [ ] 立绘显示/隐藏/表情切换正确
 - [ ] 对话打字机效果正常，点击推进

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Generate placeholder beep voice WAVs from .nat scenario files.
+"""Generate placeholder beep voice WAVs from .stl scenario files.
 
-Reads a .nat file, extracts all dialogue lines, generates a WAV for each
+Reads a .stl file, extracts all dialogue lines, generates a WAV for each
 (one beep per character, pause on punctuation), and writes the WAV to the
-voice directory. Also updates the .nat file to add #voice: tags where missing.
+voice directory. Also updates the .stl file to add #voice: tags where missing.
 
 Usage:
-    python tools/generate_placeholder_voice.py examples/demo/scenarios/demo.nat \
+    python tools/generate_placeholder_voice.py examples/demo/scenarios/demo.stl \
         --voice-dir examples/demo/audio/voice
 """
 
@@ -74,7 +74,7 @@ def text_to_wav(text: str, out_path: str):
         f.writeframes(struct.pack("<" + "h" * len(samples), *samples))
 
 
-# ── .nat parsing ──
+# ── .stl parsing ──
 
 def extract_dialogues(lines: list[str]) -> list[dict]:
     """Extract dialogue lines with their line numbers and metadata."""
@@ -131,8 +131,8 @@ def assign_voice_ids(dialogues: list[dict]) -> list[dict]:
     return dialogues
 
 
-def update_nat_file(lines: list[str], dialogues: list[dict]) -> list[str]:
-    """Update .nat lines to add #voice: tags where missing."""
+def update_stl_file(lines: list[str], dialogues: list[dict]) -> list[str]:
+    """Update .stl lines to add #voice: tags where missing."""
     updated = lines[:]
     for d in dialogues:
         if d["existing_voice"]:
@@ -145,16 +145,16 @@ def update_nat_file(lines: list[str], dialogues: list[dict]) -> list[str]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate placeholder voice WAVs from .nat files")
-    parser.add_argument("nat_file", help="Path to .nat scenario file")
+    parser = argparse.ArgumentParser(description="Generate placeholder voice WAVs from .stl files")
+    parser.add_argument("stl_file", help="Path to .stl scenario file")
     parser.add_argument("--voice-dir", required=True, help="Output directory for WAV files")
     parser.add_argument("--dry-run", action="store_true", help="Don't write files, just show what would be done")
-    parser.add_argument("--no-update-nat", action="store_true", help="Don't update the .nat file with voice tags")
+    parser.add_argument("--no-update-stl", action="store_true", help="Don't update the .stl file with voice tags")
     args = parser.parse_args()
 
     os.makedirs(args.voice_dir, exist_ok=True)
 
-    with open(args.nat_file, "r", encoding="utf-8") as f:
+    with open(args.stl_file, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
     dialogues = extract_dialogues(lines)
@@ -177,15 +177,15 @@ def main():
     else:
         print(f"Generated {generated} WAV files in {args.voice_dir}")
 
-    if not args.no_update_nat and not args.dry_run:
-        updated = update_nat_file(lines, dialogues)
+    if not args.no_update_stl and not args.dry_run:
+        updated = update_stl_file(lines, dialogues)
         if updated != lines:
-            with open(args.nat_file, "w", encoding="utf-8") as f:
+            with open(args.stl_file, "w", encoding="utf-8") as f:
                 f.writelines(updated)
             new_tags = sum(1 for d in dialogues if not d["existing_voice"])
-            print(f"Updated {args.nat_file}: added {new_tags} #voice: tags")
+            print(f"Updated {args.stl_file}: added {new_tags} #voice: tags")
         else:
-            print(f"{args.nat_file}: all dialogues already have voice tags")
+            print(f"{args.stl_file}: all dialogues already have voice tags")
 
 
 if __name__ == "__main__":

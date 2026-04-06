@@ -21,7 +21,7 @@ func after_each():
 
 
 func _create_audio_presenter() -> Node:
-	var script = load("res://addons/natsume/presentation/audio/audio_presenter.gd")
+	var script = load("res://addons/stella/presentation/audio/audio_presenter.gd")
 	var node = Node.new()
 	node.set_script(script)
 	return node

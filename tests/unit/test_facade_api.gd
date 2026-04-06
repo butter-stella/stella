@@ -1,28 +1,28 @@
 extends GutTest
-## Tests for NatsumeRuntime facade API and overlay management.
+## Tests for StellaRuntime facade API and overlay management.
 
 
 ## --- Save/Load Facade ---
 
 func test_has_save_returns_false_for_empty():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	assert_false(runtime.has_save(99))
 
 
 func test_get_save_list_returns_array():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	var result = runtime.get_save_list()
 	assert_typeof(result, TYPE_ARRAY)
 
 
 func test_get_save_metadata_empty_for_no_save():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	var meta = runtime.get_save_metadata(99)
 	assert_eq(meta, {})
 
 
 func test_reset_settings_restores_defaults():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	var orig = runtime.get_setting("bgm_volume")
 	runtime.set_setting("bgm_volume", 0.12)
 	runtime.reset_settings()
@@ -35,7 +35,7 @@ func test_reset_settings_restores_defaults():
 ## --- Playback Control Facade ---
 
 func test_toggle_auto_play():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	var was_active = runtime.is_auto_playing()
 	runtime.toggle_auto_play()
 	assert_ne(runtime.is_auto_playing(), was_active)
@@ -44,7 +44,7 @@ func test_toggle_auto_play():
 
 
 func test_toggle_skip():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	var was_active = runtime.is_skipping()
 	runtime.toggle_skip()
 	assert_ne(runtime.is_skipping(), was_active)
@@ -53,7 +53,7 @@ func test_toggle_skip():
 
 
 func test_auto_play_and_skip_mutually_exclusive():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	# Start auto play
 	if not runtime.is_auto_playing():
 		runtime.toggle_auto_play()
@@ -71,7 +71,7 @@ func test_auto_play_and_skip_mutually_exclusive():
 ## --- UI State Facade ---
 
 func test_show_backlog_transitions_state():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	runtime.show_backlog()
 	assert_eq(runtime.game_state.current_state, GameStateMachine.State.BACKLOG)
@@ -79,7 +79,7 @@ func test_show_backlog_transitions_state():
 
 
 func test_show_save_load_transitions_state():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	runtime.show_save_load()
 	assert_eq(runtime.game_state.current_state, GameStateMachine.State.SAVE_LOAD)
@@ -87,7 +87,7 @@ func test_show_save_load_transitions_state():
 
 
 func test_show_settings_transitions_state():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	runtime.show_settings()
 	assert_eq(runtime.game_state.current_state, GameStateMachine.State.SETTINGS)
@@ -95,7 +95,7 @@ func test_show_settings_transitions_state():
 
 
 func test_close_overlay_returns_to_previous():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	runtime.show_settings()
 	runtime.close_overlay()
@@ -105,7 +105,7 @@ func test_close_overlay_returns_to_previous():
 ## --- Backlog Facade ---
 
 func test_get_backlog_returns_array():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	var result = runtime.get_backlog()
 	assert_typeof(result, TYPE_ARRAY)
 
@@ -113,13 +113,13 @@ func test_get_backlog_returns_array():
 ## --- Settings Facade ---
 
 func test_get_setting():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	var val = runtime.get_setting("bgm_volume")
 	assert_typeof(val, TYPE_FLOAT)
 
 
 func test_set_setting():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	var orig = runtime.get_setting("bgm_volume")
 	runtime.set_setting("bgm_volume", 0.42)
 	assert_almost_eq(runtime.get_setting("bgm_volume"), 0.42, 0.001)
@@ -130,7 +130,7 @@ func test_set_setting():
 ## --- Overlay Lifecycle ---
 
 func test_return_to_title_closes_overlay():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	runtime.show_settings()
 	assert_not_null(runtime._current_overlay)
@@ -141,7 +141,7 @@ func test_return_to_title_closes_overlay():
 
 
 func test_start_game_closes_overlay():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	runtime.show_settings()
 	assert_not_null(runtime._current_overlay)
 
@@ -153,7 +153,7 @@ func test_start_game_closes_overlay():
 ## --- Continue Game from Title ---
 
 func test_continue_game_returns_false_when_no_saves():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	runtime._last_scenario_path = ""
 	var orig_scenario = runtime.config.scenario_path
 	runtime.config.scenario_path = ""
@@ -168,7 +168,7 @@ func test_continue_game_returns_false_when_no_saves():
 
 
 func test_continue_game_falls_back_to_config_scenario_path():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	var orig_path = runtime._last_scenario_path
 	runtime._last_scenario_path = ""
 
@@ -185,7 +185,7 @@ func test_continue_game_falls_back_to_config_scenario_path():
 
 
 func test_has_continue_save_with_quick_save():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	runtime.delete_quick_save()
 	runtime.delete_auto_save()
 	assert_false(runtime.has_continue_save())
@@ -196,7 +196,7 @@ func test_has_continue_save_with_quick_save():
 
 
 func test_has_continue_save_with_auto_save():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	runtime.delete_quick_save()
 	runtime.delete_auto_save()
 	assert_false(runtime.has_continue_save())
@@ -214,7 +214,7 @@ func test_has_continue_save_with_auto_save():
 ## --- continue_from_save from TITLE state ---
 
 func test_continue_from_save_rejects_missing_save():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	runtime._last_scenario_path = runtime.config.scenario_path
 	# Missing save → false regardless of state
 	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
@@ -227,7 +227,7 @@ func test_continue_from_save_rejects_missing_save():
 
 
 func test_continue_from_save_rejects_empty_scenario_path():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	var orig_path = runtime._last_scenario_path
 	var orig_config = runtime.config.scenario_path
 	runtime._last_scenario_path = ""
@@ -245,7 +245,7 @@ func test_continue_from_save_rejects_empty_scenario_path():
 
 
 func test_is_on_title_screen_direct():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
 	assert_true(runtime._is_on_title_screen(), "Direct TITLE state")
 
@@ -254,7 +254,7 @@ func test_is_on_title_screen_direct():
 
 
 func test_is_on_title_screen_via_overlay():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	# Simulate: TITLE → show_save_load → state becomes SAVE_LOAD with previous_state = TITLE
 	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
 	runtime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
@@ -265,7 +265,7 @@ func test_is_on_title_screen_via_overlay():
 
 
 func test_is_on_title_screen_in_game_overlay():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	# Simulate: PLAYING → show_save_load → state becomes SAVE_LOAD with previous_state = PLAYING
 	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	runtime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
@@ -274,7 +274,7 @@ func test_is_on_title_screen_in_game_overlay():
 
 
 func test_continue_from_save_returns_false_no_scenario_path():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	var orig_path = runtime._last_scenario_path
 	var orig_config = runtime.config.scenario_path
 	runtime._last_scenario_path = ""
@@ -293,7 +293,7 @@ func test_continue_from_save_returns_false_no_scenario_path():
 
 
 func test_continue_from_save_returns_false_without_save():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	runtime._last_scenario_path = runtime.config.scenario_path
 	var result = await runtime.continue_from_save(99)
 	assert_false(result, "continue_from_save should return false for non-existent slot")
@@ -302,7 +302,7 @@ func test_continue_from_save_returns_false_without_save():
 ## --- show_save_load from TITLE ---
 
 func test_show_save_load_from_title():
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
 	runtime.show_save_load("load")
 	assert_eq(runtime.game_state.current_state, GameStateMachine.State.SAVE_LOAD)
@@ -321,7 +321,7 @@ func test_continue_from_save_overlay_not_closed_before_scene_change():
 	# `await tree_changed`, then suspends. This also triggers a deferred
 	# change_scene_to_file which loads the game scene into the tree. We must
 	# await it to settle before the next test runs.
-	var runtime = get_tree().root.get_node("NatsumeRuntime")
+	var runtime = get_tree().root.get_node("StellaRuntime")
 	var orig_path = runtime._last_scenario_path
 	runtime._last_scenario_path = runtime.config.scenario_path
 
@@ -376,15 +376,15 @@ func _disconnect_game_presenters():
 				if not callable.is_valid():
 					continue
 				var obj = callable.get_object()
-				if obj != null and not obj is GutTest and obj != NatsumeRuntime \
-						and obj != NatsumeRuntime.presentation_state:
+				if obj != null and not obj is GutTest and obj != StellaRuntime \
+						and obj != StellaRuntime.presentation_state:
 					sig.disconnect(callable)
 
 
 ## --- Overlay Config ---
 
 func test_config_has_overlay_scene_overrides():
-	var config = NatsumeConfig.new()
+	var config = StellaConfig.new()
 	assert_eq(config.settings_scene, "")
 	assert_eq(config.save_load_scene, "")
 	assert_eq(config.backlog_scene, "")
