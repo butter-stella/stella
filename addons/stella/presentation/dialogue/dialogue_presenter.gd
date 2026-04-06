@@ -363,8 +363,8 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 	var avatar_expr = first_expr if first_expr != "" else String(_known_expressions.get(character, "default"))
 	_update_avatar(character, avatar_expr, mode)
 
-	# Launch voice queue (handles single-segment as a 1-iteration loop)
-	_run_voice_queue(character, segments, gen)
+	# (Voice queue was already kicked off above by _start_voice_playback —
+	# do not start another one here.)
 
 	await get_tree().process_frame
 	_is_typing = true
@@ -615,7 +615,12 @@ func _on_hide_dialogue():
 	_dialogue_segments = []
 	_dialogue_voice_character = ""
 	_dialogue_total_duration = 0.0
-	# Playback session state — also reset
+	# Playback session state — also reset. Bump the queue gen so any in-flight
+	# voice queue coroutine (e.g. a backlog replay still running) sees the
+	# mismatch on its next iteration and exits cleanly instead of leaking into
+	# the next dialogue.
+	_playback_queue_gen += 1
+	_playback_queue_active = false
 	_playback_aborted = false
 	_playback_total_duration = 0.0
 	_playback_played_duration = 0.0

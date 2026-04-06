@@ -403,6 +403,20 @@ func test_backlog_replay_does_not_corrupt_dialogue_state():
 	assert_eq(dialogue._dialogue_segments[0]["voice"], "sakura_011",
 		"first segment should still be the current dialogue's, not the backlog's")
 
+	# Now press the toolbar 重听 button — it must replay the CURRENT dialogue's
+	# voices (sakura_011 then sakura_012), NOT the backlog's (sakura_013/018/019).
+	var played: Array = []
+	var conn = func(asset, _c): played.append(asset)
+	SignalBus.voice_play.connect(conn)
+	dialogue._on_voice_replay_pressed()
+	await get_tree().process_frame
+	SignalBus.voice_play.disconnect(conn)
+
+	assert_true(played.size() >= 1,
+		"toolbar replay should fire at least one voice_play")
+	assert_eq(played[0], "sakura_011",
+		"toolbar replay must play the current dialogue's first voice, not the backlog's")
+
 
 func test_backlog_replay_does_not_change_stage_expression():
 	# Replay from backlog should NOT mutate the stage character立绘 (segments
@@ -447,3 +461,22 @@ func test_backlog_replay_does_not_emit_dialogue_voice_signals():
 		"backlog replay must not emit dialogue_voice_progress")
 	assert_eq(finished_count[0], 0,
 		"backlog replay must not emit dialogue_voice_finished")
+
+
+func test_hide_dialogue_cancels_in_flight_voice_queue():
+	# Bug: _on_hide_dialogue did not bump _playback_queue_gen, so a backlog
+	# replay queue still in flight would survive into the next dialogue and
+	# leave _playback_queue_active true.
+	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
+
+	# Start a multi-segment playback (simulates backlog replay still queued)
+	dialogue._playback_queue_active = true
+	var gen_before = dialogue._playback_queue_gen
+
+	SignalBus.hide_dialogue.emit()
+	await get_tree().process_frame
+
+	assert_gt(dialogue._playback_queue_gen, gen_before,
+		"hide_dialogue must bump _playback_queue_gen so any in-flight queue exits")
+	assert_false(dialogue._playback_queue_active,
+		"_playback_queue_active must be cleared on hide_dialogue")
