@@ -27,23 +27,20 @@ func _enter_tree():
 	# shows it. Without this, Godot hides unknown text extensions.
 	_register_stla_extension()
 
-	# Add main screen editor for .stla files
+	# Add main screen editor for .stla files. Since Godot 4's FileSystemDock
+	# has no public double-click signal, users open .stla files via the built-in
+	# script editor (Godot recognizes them as text files now), or by switching
+	# to the "Stla" main screen and opening manually.
 	_stla_editor = _stla_editor_script.new()
 	_stla_editor.name = "StlaEditor"
 	get_editor_interface().get_editor_main_screen().add_child(_stla_editor)
 	_make_visible(false)
-
-	# Open .stla files on double-click in FileSystem dock
-	get_editor_interface().get_file_system_dock().file_double_clicked.connect(_on_file_double_clicked)
 
 
 func _exit_tree():
 	for autoload_name in AUTOLOADS:
 		remove_autoload_singleton(autoload_name)
 
-	var fs_dock = get_editor_interface().get_file_system_dock()
-	if fs_dock.file_double_clicked.is_connected(_on_file_double_clicked):
-		fs_dock.file_double_clicked.disconnect(_on_file_double_clicked)
 	if _stla_editor:
 		_stla_editor.queue_free()
 		_stla_editor = null
@@ -59,12 +56,6 @@ func _get_plugin_name() -> String:
 
 func _get_plugin_icon() -> Texture2D:
 	return get_editor_interface().get_base_control().get_theme_icon("Script", "EditorIcons")
-
-
-func _on_file_double_clicked(path: String) -> void:
-	if path.get_extension() == "stla" and _stla_editor:
-		get_editor_interface().set_main_screen_editor("Stla")
-		_stla_editor.open_file(path)
 
 
 func _make_visible(visible: bool) -> void:

@@ -49,10 +49,9 @@ func _build_ui() -> void:
 	_highlighter.member_variable_color = Color(0.85, 0.85, 0.85)
 	# Comments
 	_highlighter.add_color_region("//", "", Color(0.5, 0.5, 0.5), true)
-	# Dialogue brackets
-	_highlighter.add_color_region("\u300c", "\u300d", Color(1.0, 0.9, 0.6))
-	# Monologue brackets
-	_highlighter.add_color_region("\uff08", "\uff09", Color(0.8, 0.8, 0.9))
+	# Note: Japanese full-width brackets (「」（）) cannot be used as color region
+	# delimiters — Godot's CodeHighlighter::is_symbol() only accepts ASCII
+	# punctuation. Dialogue/monologue bracket highlighting is therefore omitted.
 	# Inline effects
 	_highlighter.add_color_region("{", "}", Color(0.7, 0.5, 0.9))
 	# Inline expression markers
