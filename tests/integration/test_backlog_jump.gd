@@ -322,6 +322,63 @@ func test_jump_unblocks_choice_await():
 	await _stop_engine()
 
 
+func test_jump_unblocks_wait_timer():
+	# Issue #89: previously, jump_from_backlog only emitted advance_requested
+	# (and a sentinel choice_selected), but a wait_handler in TIMER mode
+	# awaits a SceneTreeTimer.timeout that listens to neither — so the old
+	# coroutine would park until the timer fired naturally. With
+	# engine_abort_requested, the wait handler races and unblocks promptly.
+	var data = ScenarioData.new()
+	data.id = "wait_test"
+	var s = SceneData.new()
+	s.id = "start"
+
+	var d0 = CommandData.new()
+	d0.type = "dialogue"
+	d0.params = {"character": "n", "text": "before wait"}
+	s.commands.append(d0)
+
+	var w = CommandData.new()
+	w.type = "wait"
+	w.params = {"duration": 60.0}  # would block for a full minute
+	s.commands.append(w)
+
+	var d1 = CommandData.new()
+	d1.type = "dialogue"
+	d1.params = {"character": "n", "text": "after wait"}
+	s.commands.append(d1)
+
+	data.scenes.append(s)
+
+	_runtime.engine.load_scenario(data)
+	_runtime.save_manager.register_provider(_runtime.engine.context)
+	_runtime.save_manager.register_provider(_runtime.engine.context.variable_store)
+
+	_runtime.engine.run()
+	await _advance(1)  # past dialogue 0; engine now parks on the 60s wait
+
+	assert_eq(_runtime.backlog_manager.get_entries().size(), 1)
+	assert_eq(_runtime.engine.context.current_command_index, 1,
+		"engine should be on the wait command")
+
+	# Jump back. Without the abort signal, the old coroutine would still
+	# be parked on the timer. With it, the wait_handler races and returns.
+	var t0 = Time.get_ticks_msec()
+	var ok = _runtime.jump_from_backlog(0)
+	assert_true(ok)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var elapsed = Time.get_ticks_msec() - t0
+	assert_lt(elapsed, 1000,
+		"jump should resolve promptly, not wait for the 60s timer")
+
+	# New engine context should be positioned at dialogue 0
+	assert_eq(_runtime.engine.context.current_command_index, 0)
+
+	await _stop_engine()
+
+
 func test_prepare_scenario_clears_backlog():
 	# Architect concerns #4 / #1: every fresh-state entry point — start_game,
 	# load_game, continue_from_save, quick_load (both from-title and in-game)

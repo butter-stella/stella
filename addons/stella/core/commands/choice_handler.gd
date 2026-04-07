@@ -3,6 +3,14 @@
 class_name ChoiceHandler extends CommandHandler
 
 
+## Internal waiter — choice_selected carries a payload (the option id) so
+## we need a custom race signal that propagates BOTH the abort flag and
+## the selected id, instead of using CommandHandler.await_with_abort
+## (which only returns a bool).
+class _AbortChoiceRace extends RefCounted:
+	signal done(was_aborted: bool, id: String)
+
+
 func get_command_type() -> String:
 	return "choice"
 
@@ -12,7 +20,24 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 	var options = data.params.get("options", [])
 
 	SignalBus.choice_show.emit(prompt, options)
-	var selected_id = await SignalBus.choice_selected
+	# Race against engine_abort_requested. If aborted, return early; the
+	# engine loop will see ctx != context and exit cleanly without
+	# applying any selection.
+	var waiter = _AbortChoiceRace.new()
+	var on_choice := func(id: String):
+		waiter.done.emit(false, id)
+	var on_abort := func():
+		waiter.done.emit(true, "")
+	SignalBus.choice_selected.connect(on_choice, CONNECT_ONE_SHOT)
+	SignalBus.engine_abort_requested.connect(on_abort, CONNECT_ONE_SHOT)
+	var result: Array = await waiter.done
+	if SignalBus.choice_selected.is_connected(on_choice):
+		SignalBus.choice_selected.disconnect(on_choice)
+	if SignalBus.engine_abort_requested.is_connected(on_abort):
+		SignalBus.engine_abort_requested.disconnect(on_abort)
+	if result[0]:  # aborted
+		return
+	var selected_id = result[1]
 
 	# Find the selected option and apply its effects
 	for opt in options:
