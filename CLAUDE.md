@@ -2,7 +2,7 @@
 
 ## Project
 
-Godot AVG / Galgame framework. Architecture docs in `docs/PLAN.md`, DSL design in `docs/DSL.md`, competitive research in `docs/RESEARCH.md`.
+Godot AVG / Galgame framework. Architecture docs in `docs/ARCHITECTURE.md`, DSL design in `docs/DSL.md`, competitive research in `docs/RESEARCH.md`.
 
 ## Tech Stack
 
@@ -59,7 +59,7 @@ Launch a sub-agent (sonnet model, background) to review the PR:
 - If critical issues found: list them, do NOT merge
 
 **Merge policy:**
-- **Planned tasks** (from PLAN.md sprints): CR agent can auto-merge if no critical issues
+- **Planned tasks** (sprint-driven, pre-defined): CR agent can auto-merge if no critical issues
 - **Unplanned tasks** (ad-hoc features, user requests, bug fixes): create PR but do NOT merge — leave open for user to review
 
 **重要：只有 CR sub-agent 有权合并 PR。** 主 agent 不得自行执行 `gh pr merge`。如果 CR agent 未能合并（超时、报错等），应重新启动 CR agent 而不是手动合并。这确保所有合并到 main 的代码都经过了独立 review。
