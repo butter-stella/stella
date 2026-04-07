@@ -36,6 +36,62 @@
 
 Core 与 Presentation 通过 Godot 信号（Signal）解耦。Core 层可独立单元测试。
 
+### 1.1 模块依赖与数据流
+
+```mermaid
+flowchart TB
+    subgraph Content[".stla 剧本 + 资源"]
+        STLA[scenario.stla]
+        ASSETS[图片/语音/BGM]
+    end
+
+    subgraph Autoload["Autoload 层"]
+        RT[StellaRuntime<br/>启动入口]
+        BUS[SignalBus<br/>跨层信号总线]
+    end
+
+    subgraph Core["Core 层（引擎无关）"]
+        PARSER[script_parser<br/>词法/语法]
+        ENGINE[scenario_engine<br/>执行调度 + ScenarioContext]
+        REG[command_registry<br/>+ *_handler.gd]
+        STATE[state / variable_system<br/>config / settings]
+        SAVE[save_system / bookmark<br/>gallery / localization]
+        PLAY[playback<br/>auto / skip / backlog / read_flag]
+    end
+
+    subgraph Presentation["Presentation 层（Godot 节点）"]
+        DLG[dialogue_presenter]
+        CHR[character_presenter]
+        BG[background]
+        AUD[audio]
+        FX[effects]
+        CHO[choice]
+        UI[ui / input]
+    end
+
+    STLA --> PARSER --> ENGINE
+    ASSETS -.-> Presentation
+    RT --> ENGINE
+    ENGINE <--> REG
+    ENGINE <--> STATE
+    ENGINE <--> SAVE
+    ENGINE <--> PLAY
+    REG -- emit --> BUS
+    PLAY -- emit --> BUS
+    BUS --> DLG
+    BUS --> CHR
+    BUS --> BG
+    BUS --> AUD
+    BUS --> FX
+    BUS --> CHO
+    UI -- user input --> BUS --> ENGINE
+```
+
+**数据流说明**：
+- 正向：`.stla` → `script_parser` → `scenario_engine` 调度 → `command_registry` 分发到各 `*_handler` → 通过 `SignalBus` 广播给 Presentation 层 presenter
+- 反向：用户输入（点击/选择）从 `presentation/input` 经 `SignalBus` 回到 `scenario_engine` 推进剧情
+- `playback` 子模块（auto/skip/backlog/read_flag）状态独立，与 engine 协作并通过 SignalBus 与 UI 联动
+
 ---
 
 ## 二、核心设计
