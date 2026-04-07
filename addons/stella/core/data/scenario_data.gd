@@ -18,3 +18,20 @@ func get_scene_index(scene_id: String) -> int:
 		if scenes[i].id == scene_id:
 			return i
 	return -1
+
+
+## Assign a monotonic uid to every command in every scene. Called by
+## ScenarioEngine.load_scenario, so any code path that goes through the
+## engine gets stable command identities for free.
+##
+## Idempotent: if a command already has uid != -1 it is left alone, so
+## tests that construct CommandData with explicit uids work too.
+func assign_command_uids() -> void:
+	var next_uid := 0
+	for scene in scenes:
+		for cmd in scene.commands:
+			if cmd.uid == -1:
+				cmd.uid = next_uid
+			# Always advance the counter so explicit uids don't collide
+			# with auto-assigned ones.
+			next_uid = max(next_uid, cmd.uid) + 1

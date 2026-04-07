@@ -320,9 +320,11 @@ func _on_scenario_ended(id: String) -> void:
 func _on_dialogue_for_backlog(character: String, segments: Array, _mode: String):
 	if engine == null or engine.context == null:
 		return
-	var sci := engine.context.current_scene_index
-	var cmi := engine.context.current_command_index
-	backlog_manager.add_entry(character, segments, sci, cmi, _capture_backlog_snapshot)
+	var cmd = engine.context.current_command()
+	var uid: int = -1
+	if cmd != null:
+		uid = cmd.uid
+	backlog_manager.add_entry(character, segments, uid, _capture_backlog_snapshot)
 
 
 ## Capture the lightweight snapshot stored on each backlog entry. Excludes

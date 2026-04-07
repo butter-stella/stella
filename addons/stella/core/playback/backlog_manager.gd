@@ -20,12 +20,20 @@ var _entries: Array = []
 var _cursor: int = -1
 
 
-func add_entry(character: String, segments: Array, scene_index: int = 0, command_index: int = 0, snapshot_func: Callable = Callable()) -> void:
+## Add a backlog entry for a dialogue that just fired.
+##
+## `command_uid` is the stable per-scenario id assigned by
+## ScenarioData.assign_command_uids() — used as the divergence-detection
+## key. Two entries from the same execution have the same uid; an entry
+## that diverges (different choice, different branch) has a different uid.
+## Earlier the manager used (scene_index, command_index) which collided
+## under @call reuse and dynamic command insertion (issue #88).
+func add_entry(character: String, segments: Array, command_uid: int = -1, snapshot_func: Callable = Callable()) -> void:
 	# Browser-history: walking known path → just advance the cursor.
 	var next_idx = _cursor + 1
 	if next_idx < _entries.size():
 		var existing = _entries[next_idx]
-		if existing["scene_index"] == scene_index and existing["command_index"] == command_index:
+		if existing["command_uid"] == command_uid:
 			_cursor = next_idx
 			return
 		# Divergence: drop everything after the cursor.
@@ -43,8 +51,7 @@ func add_entry(character: String, segments: Array, scene_index: int = 0, command
 		"character": character,
 		"text": full_text,
 		"voices": voices,
-		"scene_index": scene_index,
-		"command_index": command_index,
+		"command_uid": command_uid,
 		"snapshot": snapshot_func.call() if snapshot_func.is_valid() else null,
 	}
 
@@ -86,8 +93,7 @@ func jump_to(index: int) -> Dictionary:
 	_cursor = index - 1
 	return {
 		"snapshot": entry["snapshot"],
-		"scene_index": entry["scene_index"],
-		"command_index": entry["command_index"],
+		"command_uid": entry["command_uid"],
 	}
 
 
