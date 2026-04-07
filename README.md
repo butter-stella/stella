@@ -84,7 +84,7 @@ tests/                                 ← GUT 测试（439 个测试用例，�
 
 - [Usage Guide](docs/USAGE.md) — 安装、快速上手、配置文件、Facade API、自定义扩展
 - [DSL Reference](docs/DSL.md) — DSL 语法、智能默认值、`@combine` 合并对话、完整示例
-- [Architecture](docs/PLAN.md) — 三层架构、命令处理器、状态机
+- [Architecture](docs/ARCHITECTURE.md) — 三层架构、命令处理器、状态机
 - [Input System Design](docs/INPUT_DESIGN.md) — 鼠标推进 + 工具栏按钮共存的输入路由方案
 - [Research](docs/RESEARCH.md) — 竞品调研、语法对比
 
