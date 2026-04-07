@@ -17,20 +17,13 @@ Stella 是基于 Godot 4 的视觉小说 / Galgame 框架。设计目标：
 
 ## 一、架构总览
 
-```
-┌─────────────────────────────────────────────────┐
-│           Presentation Layer (表现层 / Godot)     │
-│  对话 | 立绘 | 背景 | 音频 | 选择 | 特效 | UI    │
-├─────────────────────────────────────────────────┤
-│              Core Layer (核心层)                  │
-│  脚本解析 | 剧情引擎 | 命令处理 | 变量 | 存档     │
-│  设置 | 播放控制 | 已读 | Backlog | 收藏 | 鉴赏    │
-├─────────────────────────────────────────────────┤
-│            Autoload (StellaRuntime / SignalBus)  │
-└─────────────────────────────────────────────────┘
-```
+Stella 采用分层架构，由下至上：
 
-Core 与 Presentation 通过 Godot 信号（Signal）解耦，所有跨层通信经由 `SignalBus` 单例。Core 层可独立单元测试。
+- **Autoload 层**：`StellaRuntime`（启动入口）+ `SignalBus`（全局信号总线）
+- **Core 层**：脚本解析、剧情引擎、命令处理、变量、存档、设置、播放控制、已读、Backlog、收藏、鉴赏。引擎无关，可独立单测
+- **Presentation 层**：对话、立绘、背景、音频、选择、特效、UI。基于 Godot 节点，订阅 SignalBus 渲染
+
+Core 与 Presentation 通过 Godot 信号（Signal）解耦，所有跨层通信经由 `SignalBus` 单例。
 
 ### 1.1 模块依赖与数据流
 
@@ -425,12 +418,19 @@ class_name GameSettings extends Resource
 
 `core/state/game_state_machine.gd` 管理宏观流程：
 
-```
-Title → Playing → Paused → Playing
-                → SaveLoad → Playing
-                → Settings → Playing
-                → Backlog → Playing
-Playing → Title（返回标题）
+```mermaid
+stateDiagram-v2
+    [*] --> Title
+    Title --> Playing: 新游戏 / 读档
+    Playing --> Title: 返回标题
+    Playing --> Paused
+    Playing --> SaveLoad
+    Playing --> Settings
+    Playing --> Backlog
+    Paused --> Playing
+    SaveLoad --> Playing
+    Settings --> Playing
+    Backlog --> Playing
 ```
 
 状态机在 Core 层维护，便于单测；状态切换通过信号通知 UI 层切换场景。
