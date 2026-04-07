@@ -178,7 +178,7 @@ func test_presentation_state_restore_emits_signals():
 	SignalBus.char_show.connect(char_cb)
 	SignalBus.bgm_play.connect(bgm_cb)
 
-	ps.emit_restore_signals()
+	ps.apply_to_presenters()
 
 	assert_eq(bg_received, ["forest.png"])
 	assert_eq(char_received, ["alice"])
@@ -196,7 +196,7 @@ func test_presentation_state_restore_uses_zero_duration():
 	var results := []
 	var cb = func(_a, _t, d): results.append(d)
 	SignalBus.bg_changed.connect(cb)
-	ps.emit_restore_signals()
+	ps.apply_to_presenters()
 	assert_eq(results.size(), 1, "bg_changed should have been emitted once")
 	if results.size() > 0:
 		assert_eq(results[0], 0.0, "restore should use duration=0 for instant apply")
