@@ -107,3 +107,45 @@ func test_choice_option_defaults():
 	assert_eq(opt.jump, "")
 	assert_eq(opt.condition, "")
 	assert_eq(opt.set_vars.size(), 0)
+
+
+# ─── assign_command_uids (issue #88) ───
+
+func test_assign_command_uids_monotonic_across_scenes():
+	var data = ScenarioData.new()
+	var s0 = SceneData.new()
+	s0.id = "a"
+	for i in range(3):
+		s0.commands.append(CommandData.new())
+	var s1 = SceneData.new()
+	s1.id = "b"
+	for i in range(2):
+		s1.commands.append(CommandData.new())
+	data.scenes = [s0, s1]
+
+	data.assign_command_uids()
+
+	assert_eq(s0.commands[0].uid, 0)
+	assert_eq(s0.commands[1].uid, 1)
+	assert_eq(s0.commands[2].uid, 2)
+	assert_eq(s1.commands[0].uid, 3)
+	assert_eq(s1.commands[1].uid, 4)
+
+
+func test_assign_command_uids_skips_already_assigned():
+	# Idempotent: pre-assigned uids are left alone.
+	var data = ScenarioData.new()
+	var s = SceneData.new()
+	var c0 = CommandData.new()
+	c0.uid = 100  # pre-assigned
+	var c1 = CommandData.new()  # uid=-1 by default
+	var c2 = CommandData.new()
+	c2.uid = 50
+	s.commands = [c0, c1, c2]
+	data.scenes = [s]
+
+	data.assign_command_uids()
+
+	assert_eq(c0.uid, 100, "pre-assigned uid preserved")
+	assert_eq(c1.uid, 101, "auto-assigned advances past max(prev, 100)")
+	assert_eq(c2.uid, 50, "pre-assigned uid preserved")

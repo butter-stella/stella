@@ -4,6 +4,13 @@ class_name CommandData extends RefCounted
 
 var type: String = ""
 var params: Dictionary = {}
+## Stable per-scenario monotonic id assigned at scenario load time.
+## Used by BacklogManager as a position-stable command identity that
+## survives `@call` reuse, dynamic insertion, and most edits — unlike
+## (scene_index, command_index) which collides under those scenarios.
+## Default -1 = unassigned (test fixtures that construct commands
+## manually without going through ScenarioEngine.load_scenario).
+var uid: int = -1
 
 
 func get_string(key: String, default: String = "") -> String:

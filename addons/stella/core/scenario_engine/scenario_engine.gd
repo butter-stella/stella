@@ -18,6 +18,9 @@ func stop() -> void:
 
 func load_scenario(data: ScenarioData) -> void:
 	stop()
+	# Assign stable per-command uids so BacklogManager's divergence
+	# detection works against a position-stable identity (issue #88).
+	data.assign_command_uids()
 	context = ScenarioContext.new(data)
 	if context.variable_store == null:
 		context.variable_store = VariableStore.new()
