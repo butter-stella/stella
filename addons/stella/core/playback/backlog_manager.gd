@@ -1,29 +1,59 @@
 ## Stores dialogue history for the backlog/history screen.
+##
+## Implements a "browser history" model with a cursor:
+## - add_entry on a known path (matches existing entry at cursor+1) only
+##   advances the cursor — no duplication.
+## - add_entry on a divergent path truncates entries after the cursor.
+## - jump_to(index) moves the cursor without truncating, so the user can
+##   navigate freely until they actually take a different branch.
+##
+## Each entry stores a full game-state snapshot captured by the runtime
+## (scenario_context + variable_store + presentation_state). Backlog jump
+## restores that snapshot directly — no fast-forward replay needed. The
+## max_entries cap (default 200) bounds total memory; older entries are
+## evicted from the front when exceeded.
 class_name BacklogManager extends RefCounted
 
-var max_entries: int = 100
+var max_entries: int = 200
+
 var _entries: Array = []
+var _cursor: int = -1
 
 
-func add_entry(character: String, segments: Array) -> void:
-	# `segments` is the unified dialogue payload — a list of
-	# {text, voice, expression} dicts. A normal single-line dialogue has
-	# segments.size() == 1; a @combine block has multiple. Backlog replay
-	# plays every segment's voice in order.
+func add_entry(character: String, segments: Array, scene_index: int = 0, command_index: int = 0, snapshot_func: Callable = Callable()) -> void:
+	# Browser-history: walking known path → just advance the cursor.
+	var next_idx = _cursor + 1
+	if next_idx < _entries.size():
+		var existing = _entries[next_idx]
+		if existing["scene_index"] == scene_index and existing["command_index"] == command_index:
+			_cursor = next_idx
+			return
+		# Divergence: drop everything after the cursor.
+		_entries.resize(_cursor + 1)
+
 	var full_text := ""
 	var voices: Array = []
 	for seg in segments:
-		full_text += String(seg.get("text", ""))
+		full_text += _strip_inline_markers(String(seg.get("text", "")))
 		var v := String(seg.get("voice", ""))
 		if v != "":
 			voices.append(v)
-	_entries.append({
+
+	var entry: Dictionary = {
 		"character": character,
 		"text": full_text,
 		"voices": voices,
-	})
+		"scene_index": scene_index,
+		"command_index": command_index,
+		"snapshot": snapshot_func.call() if snapshot_func.is_valid() else null,
+	}
+
+	_entries.append(entry)
+	_cursor = _entries.size() - 1
+
 	while _entries.size() > max_entries:
 		_entries.pop_front()
+		_cursor -= 1
 
 
 func get_entries() -> Array:
@@ -36,5 +66,72 @@ func get_entry(index: int) -> Dictionary:
 	return {}
 
 
+func get_cursor() -> int:
+	return _cursor
+
+
+## Move the cursor to one before `index` and return that entry's snapshot.
+## Does NOT truncate — history is preserved so the player can navigate
+## back and forth. The cursor lands at `index - 1` so that when the engine
+## re-dispatches the dialogue at `index`, the position match advances the
+## cursor cleanly without inserting a duplicate.
+##
+## Returns {} if index is invalid or the entry has no snapshot.
+func jump_to(index: int) -> Dictionary:
+	if index < 0 or index >= _entries.size():
+		return {}
+	var entry = _entries[index]
+	if entry.get("snapshot") == null:
+		return {}
+	_cursor = index - 1
+	return {
+		"snapshot": entry["snapshot"],
+		"scene_index": entry["scene_index"],
+		"command_index": entry["command_index"],
+	}
+
+
 func clear() -> void:
 	_entries.clear()
+	_cursor = -1
+
+
+## Strip typewriter/timeline directives from segment text so the backlog
+## displays only what the player actually sees:
+## - `[expression]` single-word bracketed expression markers
+## - `{key:value}` inline effects (`{wait:500}`, `{speed:fast}`, ...)
+##
+## Mirrors the parsing in DialoguePresenter._process_inline_effects and
+## ExpressionTimeline.extract_from_text. Kept local to BacklogManager to
+## avoid pulling presentation code into Core.
+static func _strip_inline_markers(text: String) -> String:
+	# Pass 1: drop [expression] tags. Match the presenter's rule — only
+	# bracket pairs whose tag is a single word with no colon and no space
+	# count as expression markers; anything else is left intact.
+	var pass1 := ""
+	var i := 0
+	while i < text.length():
+		if text[i] == "[":
+			var close = text.find("]", i)
+			if close != -1:
+				var tag = text.substr(i + 1, close - i - 1)
+				if tag.find(":") == -1 and tag.find(" ") == -1:
+					i = close + 1
+					continue
+		pass1 += text[i]
+		i += 1
+
+	# Pass 2: drop {key:value} inline effects.
+	var pass2 := ""
+	i = 0
+	while i < pass1.length():
+		if pass1[i] == "{":
+			var close = pass1.find("}", i)
+			if close != -1:
+				var tag = pass1.substr(i + 1, close - i - 1)
+				if tag.find(":") != -1:
+					i = close + 1
+					continue
+		pass2 += pass1[i]
+		i += 1
+	return pass2
