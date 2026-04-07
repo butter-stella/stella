@@ -34,7 +34,7 @@ func add_entry(character: String, segments: Array, scene_index: int = 0, command
 	var full_text := ""
 	var voices: Array = []
 	for seg in segments:
-		full_text += String(seg.get("text", ""))
+		full_text += _strip_inline_markers(String(seg.get("text", "")))
 		var v := String(seg.get("voice", ""))
 		if v != "":
 			voices.append(v)
@@ -94,3 +94,44 @@ func jump_to(index: int) -> Dictionary:
 func clear() -> void:
 	_entries.clear()
 	_cursor = -1
+
+
+## Strip typewriter/timeline directives from segment text so the backlog
+## displays only what the player actually sees:
+## - `[expression]` single-word bracketed expression markers
+## - `{key:value}` inline effects (`{wait:500}`, `{speed:fast}`, ...)
+##
+## Mirrors the parsing in DialoguePresenter._process_inline_effects and
+## ExpressionTimeline.extract_from_text. Kept local to BacklogManager to
+## avoid pulling presentation code into Core.
+static func _strip_inline_markers(text: String) -> String:
+	# Pass 1: drop [expression] tags. Match the presenter's rule — only
+	# bracket pairs whose tag is a single word with no colon and no space
+	# count as expression markers; anything else is left intact.
+	var pass1 := ""
+	var i := 0
+	while i < text.length():
+		if text[i] == "[":
+			var close = text.find("]", i)
+			if close != -1:
+				var tag = text.substr(i + 1, close - i - 1)
+				if tag.find(":") == -1 and tag.find(" ") == -1:
+					i = close + 1
+					continue
+		pass1 += text[i]
+		i += 1
+
+	# Pass 2: drop {key:value} inline effects.
+	var pass2 := ""
+	i = 0
+	while i < pass1.length():
+		if pass1[i] == "{":
+			var close = pass1.find("}", i)
+			if close != -1:
+				var tag = pass1.substr(i + 1, close - i - 1)
+				if tag.find(":") != -1:
+					i = close + 1
+					continue
+		pass2 += pass1[i]
+		i += 1
+	return pass2

@@ -34,6 +34,29 @@ func test_add_entry_stores_basic_fields():
 	assert_eq(entries[0]["command_index"], 0)
 
 
+func test_add_entry_strips_inline_effect_markers():
+	# {wait:N} / {speed:fast} are typewriter directives — they should NOT
+	# leak into the backlog history text.
+	var segs = [{"text": "你好{wait:500}世界{speed:fast}！", "voice": "", "expression": ""}]
+	_mgr.add_entry("a", segs, 0, 0, func(): return {})
+	assert_eq(_mgr.get_entries()[0]["text"], "你好世界！")
+
+
+func test_add_entry_strips_expression_markers():
+	# [expression] single-word brackets should be stripped too.
+	var segs = [{"text": "嗨[smile]，最近好吗？[sad]", "voice": "", "expression": ""}]
+	_mgr.add_entry("a", segs, 0, 0, func(): return {})
+	assert_eq(_mgr.get_entries()[0]["text"], "嗨，最近好吗？")
+
+
+func test_add_entry_preserves_brackets_with_spaces_or_colons():
+	# Brackets that aren't expression markers (have a colon or space)
+	# should be left alone — they're literal text.
+	var segs = [{"text": "[备注: 这是文本]", "voice": "", "expression": ""}]
+	_mgr.add_entry("a", segs, 0, 0, func(): return {})
+	assert_eq(_mgr.get_entries()[0]["text"], "[备注: 这是文本]")
+
+
 func test_add_entry_concatenates_combine_segments():
 	var segs = [
 		{"text": "foo", "voice": "v1", "expression": ""},
