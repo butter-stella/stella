@@ -62,7 +62,13 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 		visible_characters[id] = chars[id].duplicate()
 
 
-func emit_restore_signals() -> void:
+## Project the current PresentationState onto the visual presenters by
+## emitting bg/char/bgm signals with snap-to (no transition) parameters.
+##
+## Idempotent and side-effect-free outside the visual presenter layer:
+## safe to call from save/load restore, backlog jump replay, or any other
+## context that needs visuals to match a freshly-restored state.
+func apply_to_presenters() -> void:
 	if current_bg != "":
 		SignalBus.bg_changed.emit(current_bg, "none", 0.0)
 	for id in visible_characters:

@@ -274,7 +274,7 @@ func _prepare_scenario(scenario_path: String) -> void:
 func _load_scenario_and_restore(scenario_path: String, slot_id: int) -> void:
 	_prepare_scenario(scenario_path)
 	save_manager.load_save(slot_id)
-	presentation_state.emit_restore_signals()
+	presentation_state.apply_to_presenters()
 	engine.run()
 
 
@@ -369,7 +369,7 @@ func quick_load() -> bool:
 		_prepare_scenario(scenario_path)
 		var ok = save_manager.quick_load()
 		if ok:
-			presentation_state.emit_restore_signals()
+			presentation_state.apply_to_presenters()
 			engine.run()
 		return ok
 
@@ -378,7 +378,7 @@ func quick_load() -> bool:
 	_prepare_scenario(scenario_path)
 	var ok = save_manager.quick_load()
 	if ok:
-		presentation_state.emit_restore_signals()
+		presentation_state.apply_to_presenters()
 		engine.run()
 	return ok
 
@@ -440,7 +440,7 @@ func continue_game() -> bool:
 		_prepare_scenario(scenario_path)
 		var ok = _load_continue(continue_type)
 		if ok:
-			presentation_state.emit_restore_signals()
+			presentation_state.apply_to_presenters()
 			engine.run()
 		return ok
 
@@ -449,7 +449,7 @@ func continue_game() -> bool:
 	_prepare_scenario(scenario_path)
 	var ok = _load_continue(continue_type)
 	if ok:
-		presentation_state.emit_restore_signals()
+		presentation_state.apply_to_presenters()
 		engine.run()
 	return ok
 
@@ -615,7 +615,7 @@ func jump_from_backlog(index: int) -> bool:
 
 	# Snap visual presenters to the restored state in one shot before the
 	# engine re-dispatches the target dialogue.
-	presentation_state.emit_restore_signals()
+	presentation_state.apply_to_presenters()
 
 	# Register the new context as a save provider BEFORE swapping it in.
 	# Otherwise an autosave triggered by NOTIFICATION_WM_CLOSE_REQUEST in
