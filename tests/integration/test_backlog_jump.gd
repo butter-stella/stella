@@ -260,10 +260,79 @@ func test_jump_restores_presentation_state():
 	await _stop_engine()
 
 
-func test_start_scenario_clears_backlog():
-	# Concern #4 from the architect review: starting a fresh scenario must
-	# clear the previous run's backlog. Otherwise positions from the old
-	# run would silently match new entries via the cursor advance path.
+func test_jump_unblocks_choice_await():
+	# CR concern: ChoiceHandler awaits choice_selected, not advance_requested.
+	# If the engine is parked on a choice when the player jumps from backlog,
+	# the old run() coroutine must be unblocked or it will leak forever.
+	# Build a scenario: dialogue → choice → dialogue. Drive past the first
+	# dialogue so a backlog entry exists, let the choice show, jump back.
+	var data = ScenarioData.new()
+	data.id = "choice_test"
+	var s = SceneData.new()
+	s.id = "start"
+
+	var d0 = CommandData.new()
+	d0.type = "dialogue"
+	d0.params = {"character": "n", "text": "before choice"}
+	s.commands.append(d0)
+
+	var ch = CommandData.new()
+	ch.type = "choice"
+	ch.params = {
+		"prompt": "?",
+		"options": [{"id": "a", "label": "A", "jump": "start"}],
+	}
+	s.commands.append(ch)
+
+	data.scenes.append(s)
+
+	_runtime.engine.load_scenario(data)
+	_runtime.save_manager.register_provider(_runtime.engine.context)
+	_runtime.save_manager.register_provider(_runtime.engine.context.variable_store)
+
+	# Track choice_show emissions to confirm the engine actually parks on
+	# the choice before we jump.
+	var choices_shown: Array = []
+	var on_choice = func(_p, _o): choices_shown.append(true)
+	SignalBus.choice_show.connect(on_choice)
+
+	_runtime.engine.run()
+	await _advance(1)  # past dialogue 0, choice should now be awaited
+
+	assert_eq(choices_shown.size(), 1, "engine should be parked on choice")
+	assert_eq(_runtime.backlog_manager.get_entries().size(), 1)
+
+	# Jump from backlog while the choice is still awaiting selection.
+	# Without the choice_selected sentinel emit in jump_from_backlog, the
+	# old coroutine would never unblock. We assert that:
+	# 1. jump_from_backlog returns true
+	# 2. the new engine.run() works (advance + new entry recorded)
+	var ok = _runtime.jump_from_backlog(0)
+	assert_true(ok)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+	# Engine should be running on a fresh context. Cursor at 0, ready to
+	# match-advance when the dialogue re-fires.
+	assert_eq(_runtime.engine.context.current_command_index, 0,
+		"new engine context positioned at target")
+
+	SignalBus.choice_show.disconnect(on_choice)
+	await _stop_engine()
+
+
+func test_prepare_scenario_clears_backlog():
+	# Architect concerns #4 / #1: every fresh-state entry point — start_game,
+	# load_game, continue_from_save, quick_load (both from-title and in-game)
+	# — funnels through _prepare_scenario, which must clear the previous
+	# run's backlog. Otherwise stale (scene, command) positions would
+	# silently match new entries via the cursor's known-path branch and
+	# the new playthrough's history would be silently swallowed.
+	#
+	# We exercise the fix at its actual hook (_prepare_scenario) using a
+	# temp .stla file, rather than the private _start_scenario_internal,
+	# so this test guards ALL fresh-state paths.
 	_setup_scenario(3)
 	_runtime.engine.run()
 	await _advance(2)
@@ -271,10 +340,14 @@ func test_start_scenario_clears_backlog():
 
 	await _stop_engine()
 
-	# Simulate a fresh start. _start_scenario_internal is private; we
-	# replicate the relevant calls (clear + load) directly.
-	_runtime.presentation_state.clear()
-	_runtime.backlog_manager.clear()  # this is what _start_scenario_internal does
-	_setup_scenario(3)
+	# Write a minimal scenario file and route through _prepare_scenario.
+	var path = "user://test_backlog_clear.stla"
+	var f = FileAccess.open(path, FileAccess.WRITE)
+	f.store_string("@scene start\nnarrator「hi」\n")
+	f.close()
+
+	_runtime._prepare_scenario(path)
 	assert_eq(_runtime.backlog_manager.get_entries().size(), 0,
-		"backlog must be empty after a fresh start")
+		"_prepare_scenario must clear backlog (covers all fresh-state paths)")
+
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))

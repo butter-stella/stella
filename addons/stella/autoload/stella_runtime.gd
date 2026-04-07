@@ -241,14 +241,17 @@ func start_scenario(scenario_path: String) -> void:
 func _start_scenario_internal(scenario_path: String) -> void:
 	_prepare_scenario(scenario_path)
 	presentation_state.clear()
-	# Clear backlog so the previous playthrough's history doesn't bleed
-	# into the new one (positions would otherwise collide and the cursor
-	# would silently swallow new entries).
-	backlog_manager.clear()
 	engine.run()
 
 
 ## Load scenario data and register providers, but do NOT run the engine.
+##
+## Always clears the backlog: every entry into a scenario (start_game,
+## load_game, continue_from_save, quick_load — both from-title and in-game)
+## funnels through here, so this is the single chokepoint that guarantees
+## the previous playthrough's history doesn't bleed into the new one
+## (which would otherwise let stale (scene, command) positions silently
+## match new entries via the cursor's known-path branch).
 func _prepare_scenario(scenario_path: String) -> void:
 	var file = FileAccess.open(scenario_path, FileAccess.READ)
 	if file == null:
@@ -264,6 +267,7 @@ func _prepare_scenario(scenario_path: String) -> void:
 	engine.load_scenario(data)
 	save_manager.register_provider(engine.context)
 	save_manager.register_provider(engine.context.variable_store)
+	backlog_manager.clear()
 
 
 ## Load scenario, restore snapshot, restore presentation, then run.
@@ -596,9 +600,12 @@ func jump_from_backlog(index: int) -> bool:
 	# Reset visuals to a clean slate before restoring + snapping to the
 	# target state. char_hide("all") + bgm_stop also clear PresentationState
 	# via its signal listeners, which restore_snapshot then overwrites.
+	# fade("in", 0) drops any lingering screen fade overlay so a jump out
+	# of a faded-black region doesn't leave the screen blanked.
 	SignalBus.char_hide.emit("all")
 	SignalBus.bgm_stop.emit(0.0)
 	SignalBus.hide_dialogue.emit()
+	SignalBus.fade_requested.emit("in", 0.0)
 	presentation_state.clear()
 
 	var snap: Dictionary = info["snapshot"]
@@ -610,14 +617,22 @@ func jump_from_backlog(index: int) -> bool:
 	# engine re-dispatches the target dialogue.
 	presentation_state.emit_restore_signals()
 
-	# Swap in the new context, then unblock any old await so the previous
-	# run() loop returns promptly.
-	var old_ctx = engine.context
-	engine.context = new_ctx
+	# Register the new context as a save provider BEFORE swapping it in.
+	# Otherwise an autosave triggered by NOTIFICATION_WM_CLOSE_REQUEST in
+	# the window between swap and register would serialize an inconsistent
+	# mix (old context provider + new presentation_state).
 	save_manager.register_provider(new_ctx)
 	save_manager.register_provider(new_ctx.variable_store)
+	var old_ctx = engine.context
+	engine.context = new_ctx
 	old_ctx.is_finished = true  # belt-and-braces in case the old loop is between iterations
+	# Unblock any old await so the previous run() loop returns promptly:
+	# DialogueHandler / WaitHandler(click) await advance_requested,
+	# ChoiceHandler awaits choice_selected — emit both with sentinel values.
+	# (wait_handler timer mode and any future signal-await will leave the
+	# old loop parked until its own timeout fires, see issue #89.)
 	SignalBus.advance_requested.emit()
+	SignalBus.choice_selected.emit("")
 
 	engine.run()
 	return true
