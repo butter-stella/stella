@@ -239,7 +239,7 @@ func test_char_show_then_expression_change_uses_new_sprite():
 	SignalBus.char_show.emit("sakura", "happy", "left")
 	await get_tree().process_frame
 	# Now show the same character again at a different expression — simulates
-	# what presentation_state.emit_restore_signals() does on a load.
+	# what presentation_state.apply_to_presenters() does on a load.
 	SignalBus.char_show.emit("sakura", "happy", "left")
 	# Immediately fire char_expression_changed (no frame elapsed yet, so any
 	# queue_freed-but-still-in-tree node is the actual hazard)
