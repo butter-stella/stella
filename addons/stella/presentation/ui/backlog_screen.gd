@@ -21,15 +21,29 @@ func _on_entry_clicked(index: int) -> void:
 	StellaRuntime.jump_from_backlog(index)
 
 
+const CURSOR_COLOR := Color(1.0, 0.85, 0.4)
+
+
 func _populate():
 	for child in entries_container.get_children():
 		child.queue_free()
 
 	var entries = StellaRuntime.get_backlog()
+	var cursor: int = StellaRuntime.backlog_manager.get_cursor()
 	for i in range(entries.size()):
 		var entry = entries[i]
+		var is_current := i == cursor
 		var hbox = HBoxContainer.new()
 		hbox.add_theme_constant_override("separation", 12)
+
+		# Cursor indicator — a small "▸" glyph in the leftmost slot for the
+		# entry that matches the current playback position. Empty (but
+		# same width) for other rows so columns stay aligned.
+		var cursor_label = Label.new()
+		cursor_label.text = "▸" if is_current else ""
+		cursor_label.add_theme_color_override("font_color", CURSOR_COLOR)
+		cursor_label.custom_minimum_size = Vector2(16, 0)
+		hbox.add_child(cursor_label)
 
 		# Character name
 		var name_label = Label.new()
@@ -50,6 +64,8 @@ func _populate():
 		text_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		text_btn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		text_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		if is_current:
+			text_btn.add_theme_color_override("font_color", CURSOR_COLOR)
 		var jump_index = i
 		text_btn.pressed.connect(func(): _on_entry_clicked(jump_index))
 		hbox.add_child(text_btn)
