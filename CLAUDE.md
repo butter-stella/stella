@@ -53,16 +53,37 @@ PR must include the Work Summary section (see PR Requirements below). Use `gh pr
 
 ### 6. Code Review + Merge Policy
 
-Launch a sub-agent (sonnet model, background) to review the PR:
-- Read all changed files
-- Check for correctness, edge cases, GDScript idioms, test coverage
-- If critical issues found: list them, do NOT merge
+Launch CR sub-agent(s) in background to review the PR. Choose the right shape based on PR size and risk:
+
+**Small / mechanical PR** (rename, single-file UI tweak, doc update):
+- 1× sonnet code-review agent. Authorized to merge if clean.
+
+**Medium / non-trivial PR** (new feature, refactor touching multiple files, anything user-visible):
+- 2× agents in **parallel**:
+  - **sonnet code-review agent** — line-level correctness, edge cases, GDScript idioms, test gaps, end-to-end wiring trace
+  - **opus architect agent** — design-level concerns: layering, scalability of patterns, API stability, alternatives that may have been overlooked, status of any prior-round concerns
+- Both agents are explicitly told NOT to merge in their first round; they only report. The main agent synthesizes both reports and decides what to fix vs follow-up.
+
+**After fixes** (round 2, 3, ...): re-launch BOTH agents (parallel) on the updated state. Tell each one explicitly that this is a re-review of the fixed state; reference the previous round's concerns by number/topic so they can update status (RESOLVED / PARTIAL / STILL OPEN).
+
+**Final merge**: once both agents reach "ready / mergeable" verdict (or only minor non-blocking concerns remain), launch a separate **merger CR agent** with explicit user authorization quoted in the prompt. This agent runs the same sanity checks once more, then `gh pr merge --squash --delete-branch`.
 
 **Merge policy:**
-- **Planned tasks** (sprint-driven, pre-defined): CR agent can auto-merge if no critical issues
-- **Unplanned tasks** (ad-hoc features, user requests, bug fixes): create PR but do NOT merge — leave open for user to review
+- **Planned tasks** (sprint-driven, pre-defined; or implementing a tracked GitHub issue): CR agent can auto-merge if no critical issues found in the FIRST round. No need for the multi-round dance unless complexity warrants it.
+- **Unplanned tasks** (ad-hoc features, user requests, bug fixes initiated mid-conversation): create PR but do NOT auto-merge — leave open for user to review. CR agents must be told explicitly "do NOT merge" in the prompt. Only after the user explicitly authorizes ("可以合并了" or similar) does the main agent launch a merger CR agent with that authorization quoted.
 
 **重要：只有 CR sub-agent 有权合并 PR。** 主 agent 不得自行执行 `gh pr merge`。如果 CR agent 未能合并（超时、报错等），应重新启动 CR agent 而不是手动合并。这确保所有合并到 main 的代码都经过了独立 review。
+
+**CR prompt construction tips** (battle-tested on PR #87 / #92-#95):
+- Provide the agent with FULL context of what to verify — list specific concerns by file:line, especially anything that previous CR rounds flagged. Don't make the agent rediscover everything from scratch.
+- For re-review rounds, include a "v1 concerns status check" section asking the agent to mark each prior concern as RESOLVED / PARTIAL / STILL OPEN. This forces explicit verification rather than vague reassurance.
+- Tell the agent to run tests itself (not just trust the PR description). The exact commands:
+  ```
+  godot --headless --import 2>&1 | tail -3
+  godot -s addons/gut/gut_cmdln.gd --headless -gdir=res://tests/unit,res://tests/integration -gexit 2>&1 | tail -10
+  ```
+- Word limit reports: "under 600 words" for code-review, "600-1200 words" for architect. Without this they tend to over-report.
+- For merger agents: include the user's exact authorization quote in the prompt so the agent can satisfy CLAUDE.md's "user is the reviewer" gate for unplanned tasks.
 
 ### 7. Fix CR Feedback
 
@@ -71,7 +92,14 @@ If the CR agent (or any previous CR) found issues:
 - Write tests that expose the bugs first (TDD)
 - Fix the bugs
 - Run tests, commit, push 更新原 PR
-- CR agent 重新 review
+- Re-launch BOTH agents (parallel) for another round
+
+Between rounds, synthesize the two reports yourself before deciding what to fix:
+- **Must-fix** (shipping blockers, correctness bugs): fix in the current PR, no exceptions. If the same issue is flagged by both sonnet and opus it's almost certainly a blocker.
+- **Should-fix** (low-cost improvements, small test gaps): fix in current PR if cheap, otherwise file a follow-up issue.
+- **Follow-up only** (architectural debt, invasive refactors, polish): file GitHub issues via `gh issue create` and link them in the PR body. Don't scope-creep the current PR.
+
+When an architect agent proposes an alternative design (like "Alternative D: skip the replay infrastructure entirely"), **pause and check with the user before wholesale refactors**. Don't silently adopt a major redesign just because one agent suggested it — but don't dismiss it either. Present the tradeoff concisely and let the user pick.
 
 ### 8. Next Task
 
