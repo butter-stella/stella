@@ -21,4 +21,5 @@ func execute(data: CommandData, _context: ScenarioContext) -> void:
 		}]
 
 	SignalBus.show_dialogue.emit(character, segments, mode)
-	await SignalBus.advance_requested
+	# Race against engine_abort_requested so backlog jump can interrupt us.
+	await CommandHandler.await_with_abort(SignalBus.advance_requested)

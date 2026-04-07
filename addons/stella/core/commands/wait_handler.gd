@@ -9,8 +9,12 @@ func get_command_type() -> String:
 func execute(data: CommandData, _context: ScenarioContext) -> void:
 	var mode = data.get_string("mode", "")
 
+	# Both branches race against engine_abort_requested so a backlog jump
+	# can promptly cancel a wait — including the timer-mode wait that
+	# previously parked the old run() coroutine until its timer fired.
 	if mode == "click":
-		await SignalBus.advance_requested
+		await CommandHandler.await_with_abort(SignalBus.advance_requested)
 	else:
 		var duration = data.get_float("duration", 1.0)
-		await Engine.get_main_loop().create_timer(duration).timeout
+		var timer = Engine.get_main_loop().create_timer(duration)
+		await CommandHandler.await_with_abort(timer.timeout)
