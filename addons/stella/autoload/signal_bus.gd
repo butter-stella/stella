@@ -70,3 +70,13 @@ signal scenario_ended_event(scenario_id: String)
 signal scene_changed_event(scene_id: String)
 signal variable_changed(var_name: String, value: Variant)
 signal settings_changed(key: String, value: Variant)
+
+## Engine abort signal — fired by the runtime when the currently running
+## scenario coroutine must be cancelled (e.g. backlog jump replaces the
+## ScenarioContext under the engine and needs the in-flight handler to
+## return promptly so the new context can take over).
+##
+## All blocking handlers (dialogue/wait/choice/etc.) should race their
+## native await against this signal via CommandHandler.await_with_abort
+## and return early when it fires.
+signal engine_abort_requested()

@@ -626,13 +626,12 @@ func jump_from_backlog(index: int) -> bool:
 	var old_ctx = engine.context
 	engine.context = new_ctx
 	old_ctx.is_finished = true  # belt-and-braces in case the old loop is between iterations
-	# Unblock any old await so the previous run() loop returns promptly:
-	# DialogueHandler / WaitHandler(click) await advance_requested,
-	# ChoiceHandler awaits choice_selected — emit both with sentinel values.
-	# (wait_handler timer mode and any future signal-await will leave the
-	# old loop parked until its own timeout fires, see issue #89.)
-	SignalBus.advance_requested.emit()
-	SignalBus.choice_selected.emit("")
+	# Unblock the old run() loop's pending await — every blocking handler
+	# (dialogue/wait/choice) races against engine_abort_requested via
+	# CommandHandler.await_with_abort, so a single emit cancels them all
+	# regardless of which native signal each was waiting on. Even
+	# wait_handler in timer mode is covered now.
+	SignalBus.engine_abort_requested.emit()
 
 	engine.run()
 	return true
