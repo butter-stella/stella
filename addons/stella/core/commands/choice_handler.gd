@@ -8,14 +8,6 @@ func get_command_type() -> String:
 
 
 func execute(data: CommandData, context: ScenarioContext) -> void:
-	if context.is_replay:
-		# Replay window should never contain a choice — runtime forces an
-		# anchor after every branch boundary so replay is purely linear.
-		# Defensive bail-out: don't await, don't emit; the engine will keep
-		# fast-forwarding past us.
-		push_warning("ChoiceHandler: encountered choice during replay — should be impossible (anchor missing?)")
-		return
-
 	var prompt = data.get_string("prompt", "")
 	var options = data.params.get("options", [])
 

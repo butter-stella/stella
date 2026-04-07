@@ -6,10 +6,7 @@ func get_command_type() -> String:
 	return "se"
 
 
-func execute(data: CommandData, context: ScenarioContext) -> void:
-	if context.is_replay:
-		return
-
+func execute(data: CommandData, _context: ScenarioContext) -> void:
 	var asset = data.get_string("asset", "")
 
 	if data.get_bool("off"):

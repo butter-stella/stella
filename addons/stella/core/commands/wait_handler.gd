@@ -6,10 +6,7 @@ func get_command_type() -> String:
 	return "wait"
 
 
-func execute(data: CommandData, context: ScenarioContext) -> void:
-	if context.is_replay:
-		return
-
+func execute(data: CommandData, _context: ScenarioContext) -> void:
 	var mode = data.get_string("mode", "")
 
 	if mode == "click":

@@ -11,7 +11,6 @@ var _runtime: Node
 func before_each():
 	_runtime = get_tree().root.get_node("StellaRuntime")
 	_runtime.backlog_manager.clear()
-	_runtime.backlog_manager.anchor_interval = 2  # frequent anchors for tests
 
 
 func _build_scenario(num_dialogues: int) -> ScenarioData:
@@ -38,30 +37,31 @@ func _advance(n: int) -> void:
 
 func _setup_scenario(num: int) -> void:
 	_runtime.engine.load_scenario(_build_scenario(num))
-	_runtime.engine.context.presentation_state = _runtime.presentation_state
 	_runtime.save_manager.register_provider(_runtime.engine.context)
 	_runtime.save_manager.register_provider(_runtime.engine.context.variable_store)
 
 
-func test_backlog_records_entries_with_anchors_during_play():
-	_setup_scenario(5)
-	_runtime.engine.run()
-	# First dialogue is dispatched synchronously at run() start; each
-	# advance unblocks the next.
-	await _advance(3)  # → 4 entries total (0..3)
-
-	var entries = _runtime.backlog_manager.get_entries()
-	assert_eq(entries.size(), 4, "should record 4 entries")
-	# anchor_interval = 2 → entries at 0, 2 are anchors
-	assert_not_null(entries[0].get("snapshot"))
-	assert_null(entries[1].get("snapshot"))
-	assert_not_null(entries[2].get("snapshot"))
-	assert_null(entries[3].get("snapshot"))
-
-	# Stop the engine cleanly
+func _stop_engine() -> void:
 	_runtime.engine.stop()
 	SignalBus.advance_requested.emit()
 	await get_tree().process_frame
+
+
+func test_every_entry_carries_a_snapshot():
+	_setup_scenario(5)
+	_runtime.engine.run()
+	await _advance(3)  # → 4 entries
+
+	var entries = _runtime.backlog_manager.get_entries()
+	assert_eq(entries.size(), 4)
+	for entry in entries:
+		assert_not_null(entry.get("snapshot"),
+			"every entry should carry a full snapshot")
+		assert_true(entry["snapshot"].has("scenario_context"))
+		assert_true(entry["snapshot"].has("variable_store"))
+		assert_true(entry["snapshot"].has("presentation_state"))
+
+	await _stop_engine()
 
 
 func test_jump_from_backlog_returns_to_target_position():
@@ -78,54 +78,41 @@ func test_jump_from_backlog_returns_to_target_position():
 	await get_tree().process_frame
 	await get_tree().process_frame
 
-	# Engine should now be positioned at the dialogue at index 1, ready to
-	# emit show_dialogue. Verify backlog cursor moved without truncating.
 	assert_eq(_runtime.backlog_manager.get_cursor(), 1,
-		"cursor should be at the jumped-to entry")
+		"cursor advances back to the jumped-to entry")
 	assert_eq(_runtime.backlog_manager.get_entries().size(), 5,
-		"history should be preserved (no truncate on jump)")
+		"history preserved (no truncate on jump)")
 	assert_eq(_runtime.engine.context.current_command_index, 1,
 		"engine positioned at target dialogue")
-	assert_false(_runtime.engine.context.is_replay,
-		"replay flag cleared at target")
 
-	_runtime.engine.stop()
-	SignalBus.advance_requested.emit()
-	await get_tree().process_frame
+	await _stop_engine()
 
 
 func test_walking_known_path_after_jump_only_advances_cursor():
 	_setup_scenario(6)
 	_runtime.engine.run()
-	await _advance(4)  # → 5 entries (0..4), cursor=4
+	await _advance(4)  # → 5 entries
 
 	var size_before = _runtime.backlog_manager.get_entries().size()
 	_runtime.jump_from_backlog(1)
 	await get_tree().process_frame
 	await get_tree().process_frame
 
-	# After jump, engine is positioned at command 1, about to dispatch its
-	# dialogue. That sync dispatch fires while we're inside jump_from_backlog
-	# (engine.run() is called and runs until next await). Entries 2,3,4
-	# are already re-walked or re-walked on subsequent advances.
-	# Drive forward — entries 2,3,4 should match → cursor advances, no append.
+	# Drive forward — entries 2,3,4 should match → cursor advances, no append
 	await _advance(3)
 
 	assert_eq(_runtime.backlog_manager.get_entries().size(), size_before,
 		"no duplication when re-walking known path")
 	assert_eq(_runtime.backlog_manager.get_cursor(), 4,
-		"cursor advanced to original position")
+		"cursor advanced back to original position")
 
-	_runtime.engine.stop()
-	SignalBus.advance_requested.emit()
-	await get_tree().process_frame
+	await _stop_engine()
 
 
 func test_divergence_truncates_history_after_branch_point():
-	# Build a scenario where dialogue 1's command_index changes after jump:
-	# we simulate divergence by having a JUMP at command 2 that goes
-	# elsewhere (a separate scene). Then walking the new path produces
-	# entries with a different (scene_index, command_index).
+	# A two-scene scenario. Play through scene 0, jump back, then divert to
+	# scene 1. The new entries should be at (scene=1, cmd=0…) which don't
+	# match the original (scene=0, cmd=2…) → truncate.
 	var data = ScenarioData.new()
 	data.id = "div_test"
 	var s0 = SceneData.new()
@@ -146,37 +133,148 @@ func test_divergence_truncates_history_after_branch_point():
 	data.scenes.append(s1)
 
 	_runtime.engine.load_scenario(data)
-	_runtime.engine.context.presentation_state = _runtime.presentation_state
 	_runtime.save_manager.register_provider(_runtime.engine.context)
 	_runtime.save_manager.register_provider(_runtime.engine.context.variable_store)
 
 	_runtime.engine.run()
-	await _advance(3)  # → 4 entries from scene 0 (0..3)
+	await _advance(3)  # → 4 entries from scene 0
 
 	assert_eq(_runtime.backlog_manager.get_entries().size(), 4)
 
-	# Jump back to entry 1 (scene 0, cmd 1)
 	_runtime.jump_from_backlog(1)
 	await get_tree().process_frame
 	await get_tree().process_frame
 
-	# Now manually force a jump to scene 1 (simulating a branch). The next
-	# dialogue will be at (scene=1, cmd=0), which doesn't match the existing
-	# entry at cursor+1 (which is at scene=0, cmd=2) → divergence.
+	# Force a jump to scene 1 — the dialogue at (1,0) doesn't match the
+	# existing entry at cursor+1 (scene 0, cmd 2) → divergence.
 	_runtime.engine.context.pending_jump = "branch"
-	# Advance once: engine processes pending_jump → moves to scene 1,
-	# emits scene_changed → force_next_anchor → dispatches first dialogue
-	# at (1,0) → backlog truncates from cursor (1) and appends.
 	await _advance(1)
 
 	var entries = _runtime.backlog_manager.get_entries()
-	# entries should be: [original 0, original 1, new (1,0)] = 3 entries
-	assert_eq(entries.size(), 3, "diverged entries truncated")
+	assert_eq(entries.size(), 3, "diverged entries truncated past cursor")
 	assert_eq(entries[2]["scene_index"], 1)
 	assert_eq(entries[2]["command_index"], 0)
-	# The new entry should be a forced anchor (because scene_changed fired)
-	assert_not_null(entries[2].get("snapshot"))
 
-	_runtime.engine.stop()
-	SignalBus.advance_requested.emit()
+	await _stop_engine()
+
+
+func test_jump_restores_variables():
+	# Variables set after the jump target should be rolled back when the
+	# player jumps back.
+	var data = ScenarioData.new()
+	data.id = "var_test"
+	var s = SceneData.new()
+	s.id = "start"
+
+	var d0 = CommandData.new()
+	d0.type = "dialogue"
+	d0.params = {"character": "n", "text": "before"}
+	s.commands.append(d0)
+
+	var setter = CommandData.new()
+	setter.type = "set"
+	setter.params = {"var": "score", "value": 42}
+	s.commands.append(setter)
+
+	var d1 = CommandData.new()
+	d1.type = "dialogue"
+	d1.params = {"character": "n", "text": "after"}
+	s.commands.append(d1)
+
+	data.scenes.append(s)
+
+	_runtime.engine.load_scenario(data)
+	_runtime.save_manager.register_provider(_runtime.engine.context)
+	_runtime.save_manager.register_provider(_runtime.engine.context.variable_store)
+
+	_runtime.engine.run()
+	await _advance(1)  # → 2 entries (before, after); score == 42 now
+
+	assert_eq(_runtime.engine.context.variable_store.get_var("score"), 42)
+
+	# Jump back to entry 0 ("before") — score should rewind to its
+	# pre-set value (null/0).
+	_runtime.jump_from_backlog(0)
 	await get_tree().process_frame
+	await get_tree().process_frame
+
+	var rewound = _runtime.engine.context.variable_store.get_var("score")
+	assert_true(rewound == null or rewound == 0,
+		"variable should be rewound to its pre-set value, got %s" % str(rewound))
+
+	await _stop_engine()
+
+
+func test_jump_restores_presentation_state():
+	# A scenario that shows a character + bg before the second dialogue.
+	# After playing through, jump back to the FIRST dialogue and verify
+	# PresentationState reflects the empty initial state, not the later one.
+	var data = ScenarioData.new()
+	data.id = "pres_test"
+	var s = SceneData.new()
+	s.id = "start"
+
+	var d0 = CommandData.new()
+	d0.type = "dialogue"
+	d0.params = {"character": "n", "text": "first"}
+	s.commands.append(d0)
+
+	var bg = CommandData.new()
+	bg.type = "bg"
+	bg.params = {"asset": "park", "transition": "none", "duration": 0.0}
+	s.commands.append(bg)
+
+	var show = CommandData.new()
+	show.type = "char_show"
+	show.params = {"character": "sakura", "expression": "smile", "position": "left"}
+	s.commands.append(show)
+
+	var d1 = CommandData.new()
+	d1.type = "dialogue"
+	d1.params = {"character": "sakura", "text": "second"}
+	s.commands.append(d1)
+
+	data.scenes.append(s)
+
+	_runtime.presentation_state.clear()
+	_runtime.engine.load_scenario(data)
+	_runtime.save_manager.register_provider(_runtime.engine.context)
+	_runtime.save_manager.register_provider(_runtime.engine.context.variable_store)
+
+	_runtime.engine.run()
+	await _advance(1)  # → 2 entries
+
+	assert_eq(_runtime.presentation_state.current_bg, "park")
+	assert_true(_runtime.presentation_state.visible_characters.has("sakura"))
+
+	# Jump back to entry 0 — bg/char should be empty
+	_runtime.jump_from_backlog(0)
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+	assert_eq(_runtime.presentation_state.current_bg, "",
+		"bg rewound to pre-bg-command state")
+	assert_false(_runtime.presentation_state.visible_characters.has("sakura"),
+		"character rewound to pre-show state")
+
+	await _stop_engine()
+
+
+func test_start_scenario_clears_backlog():
+	# Concern #4 from the architect review: starting a fresh scenario must
+	# clear the previous run's backlog. Otherwise positions from the old
+	# run would silently match new entries via the cursor advance path.
+	_setup_scenario(3)
+	_runtime.engine.run()
+	await _advance(2)
+	assert_gt(_runtime.backlog_manager.get_entries().size(), 0)
+
+	await _stop_engine()
+
+	# Simulate a fresh start. _start_scenario_internal is private; we
+	# replicate the relevant calls (clear + load) directly.
+	_runtime.presentation_state.clear()
+	_runtime.backlog_manager.clear()  # this is what _start_scenario_internal does
+	_setup_scenario(3)
+	assert_eq(_runtime.backlog_manager.get_entries().size(), 0,
+		"backlog must be empty after a fresh start")

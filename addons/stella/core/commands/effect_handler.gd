@@ -6,10 +6,7 @@ func get_command_type() -> String:
 	return "effect"
 
 
-func execute(data: CommandData, context: ScenarioContext) -> void:
-	if context.is_replay:
-		return
-
+func execute(data: CommandData, _context: ScenarioContext) -> void:
 	var effect_type = data.get_string("effect_type", "")
 	var params = data.params.duplicate()
 	params.erase("effect_type")
