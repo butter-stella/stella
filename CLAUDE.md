@@ -101,6 +101,28 @@ Between rounds, synthesize the two reports yourself before deciding what to fix:
 
 When an architect agent proposes an alternative design (like "Alternative D: skip the replay infrastructure entirely"), **pause and check with the user before wholesale refactors**. Don't silently adopt a major redesign just because one agent suggested it — but don't dismiss it either. Present the tradeoff concisely and let the user pick.
 
+#### Case study: PR #87 (backlog jump)
+
+The CR strategy above was forged on PR #87 (`feat: backlog 跳转`) and its 4 follow-ups (#92–#95). The numbers:
+
+| Round | State | CR outcome |
+|---|---|---|
+| v1 | Sparse anchor snapshots + engine replay mode + 16-handler `if is_replay` branches | architect flagged 10 concerns (major: replay pattern doesn't scale, `ScenarioContext.presentation_state: Variant` layering leak, command identity instability, new-game-doesn't-clear-backlog bug) |
+| v2 | Adopted architect's **Alternative D**: per-entry full snapshot + `max_entries=200`. Net –516 lines. | Concerns #1 / #2 auto-RESOLVED by deletion. But sonnet + opus each independently flagged ChoiceHandler permanent park and clear-on-fresh-state missed paths. |
+| v3 | Fixed 5 blockers (choice unblock, clear chokepoint, autosave race, fade reset, vacuous test) | Both agents "ready to merge" — user manually playtested demo and authorized merge |
+| follow-up | 4 issues (#88–#91) turned into separate PRs #92–#95, each 1× sonnet auto-merge | All clean first try |
+
+**Key lessons this codified into the policy above**:
+
+1. **Trust parallel dual agents for medium+ PRs** — they catch independent concerns. The choice-handler bug in v2 was found by both; that coincidence raised confidence it was real, not opinion.
+2. **Don't let agents skip test runs** — early CR rounds reported "LGTM" before actually running GUT. Prompt must demand test execution.
+3. **Major redesigns need user confirmation** — Alternative D was the architect's suggestion; presenting the tradeoff ("~200KB memory vs. removing 516 lines + entire class of bugs") let the user make an informed call within 2 messages.
+4. **Follow-up issues are a release valve** — don't let CR rounds scope-creep. When architect raised 10 concerns, 4 became follow-up issues instead of being shoved into the same PR.
+5. **Squash merge keeps history clean** — 4 iterative commits on PR #87 became 1 commit on main. The iteration history lives in the PR description, not main's log.
+6. **Workspace fragility is real** — during the #91 work, a commit landed on the wrong branch (`docs/post-combine` instead of `feat/backlog-ui-cursor-highlight`) due to a detached-HEAD chain from earlier operations. **Always verify `git branch --show-current` immediately before `git commit`** when switching branches frequently.
+
+Full narrative is in PR #87's description on GitHub (the iteration across 3 commits is annotated inline).
+
 ### 8. Next Task
 
 ```
