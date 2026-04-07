@@ -245,6 +245,13 @@ func _start_scenario_internal(scenario_path: String) -> void:
 
 
 ## Load scenario data and register providers, but do NOT run the engine.
+##
+## Always clears the backlog: every entry into a scenario (start_game,
+## load_game, continue_from_save, quick_load — both from-title and in-game)
+## funnels through here, so this is the single chokepoint that guarantees
+## the previous playthrough's history doesn't bleed into the new one
+## (which would otherwise let stale (scene, command) positions silently
+## match new entries via the cursor's known-path branch).
 func _prepare_scenario(scenario_path: String) -> void:
 	var file = FileAccess.open(scenario_path, FileAccess.READ)
 	if file == null:
@@ -260,6 +267,7 @@ func _prepare_scenario(scenario_path: String) -> void:
 	engine.load_scenario(data)
 	save_manager.register_provider(engine.context)
 	save_manager.register_provider(engine.context.variable_store)
+	backlog_manager.clear()
 
 
 ## Load scenario, restore snapshot, restore presentation, then run.
@@ -310,7 +318,25 @@ func _on_scenario_ended(id: String) -> void:
 
 
 func _on_dialogue_for_backlog(character: String, segments: Array, _mode: String):
-	backlog_manager.add_entry(character, segments)
+	if engine == null or engine.context == null:
+		return
+	var sci := engine.context.current_scene_index
+	var cmi := engine.context.current_command_index
+	backlog_manager.add_entry(character, segments, sci, cmi, _capture_backlog_snapshot)
+
+
+## Capture the lightweight snapshot stored on each backlog entry. Excludes
+## read_flags and unlock_manager (those are monotonic — never need to roll
+## back when navigating history).
+func _capture_backlog_snapshot() -> Dictionary:
+	var snap: Dictionary = {}
+	if engine and engine.context:
+		snap["scenario_context"] = engine.context.capture_snapshot()
+		if engine.context.variable_store:
+			snap["variable_store"] = engine.context.variable_store.capture_snapshot()
+	if presentation_state:
+		snap["presentation_state"] = presentation_state.capture_snapshot()
+	return snap
 
 
 # ─── Facade API: Save/Load ───
@@ -546,6 +572,70 @@ func _close_current_overlay() -> void:
 ## Get dialogue history entries.
 func get_backlog() -> Array:
 	return backlog_manager.get_entries()
+
+
+## Jump to a backlog entry. Restores that entry's snapshot directly —
+## scenario position, variables, and presentation state are all rewound
+## to exactly the moment that dialogue was first displayed. Backlog history
+## is preserved (cursor moves but no truncate); divergence is detected
+## automatically when the player next adds an entry that doesn't match
+## the recorded path.
+func jump_from_backlog(index: int) -> bool:
+	if engine == null or engine.context == null:
+		return false
+	var info = backlog_manager.jump_to(index)
+	if info.is_empty():
+		return false
+
+	_close_current_overlay()
+	game_state.transition_to(GameStateMachine.State.PLAYING)
+
+	# Build a fresh context to swap in. The currently-running engine.run()
+	# loop captured the old context as a local — once it sees ctx != context
+	# (after we unblock its pending await below), it returns cleanly.
+	var scenario_data = engine.context.scenario_data
+	var new_ctx = ScenarioContext.new(scenario_data)
+	new_ctx.variable_store = VariableStore.new()
+
+	# Reset visuals to a clean slate before restoring + snapping to the
+	# target state. char_hide("all") + bgm_stop also clear PresentationState
+	# via its signal listeners, which restore_snapshot then overwrites.
+	# fade("in", 0) drops any lingering screen fade overlay so a jump out
+	# of a faded-black region doesn't leave the screen blanked.
+	SignalBus.char_hide.emit("all")
+	SignalBus.bgm_stop.emit(0.0)
+	SignalBus.hide_dialogue.emit()
+	SignalBus.fade_requested.emit("in", 0.0)
+	presentation_state.clear()
+
+	var snap: Dictionary = info["snapshot"]
+	new_ctx.restore_snapshot(snap.get("scenario_context", {}))
+	new_ctx.variable_store.restore_snapshot(snap.get("variable_store", {}))
+	presentation_state.restore_snapshot(snap.get("presentation_state", {}))
+
+	# Snap visual presenters to the restored state in one shot before the
+	# engine re-dispatches the target dialogue.
+	presentation_state.emit_restore_signals()
+
+	# Register the new context as a save provider BEFORE swapping it in.
+	# Otherwise an autosave triggered by NOTIFICATION_WM_CLOSE_REQUEST in
+	# the window between swap and register would serialize an inconsistent
+	# mix (old context provider + new presentation_state).
+	save_manager.register_provider(new_ctx)
+	save_manager.register_provider(new_ctx.variable_store)
+	var old_ctx = engine.context
+	engine.context = new_ctx
+	old_ctx.is_finished = true  # belt-and-braces in case the old loop is between iterations
+	# Unblock any old await so the previous run() loop returns promptly:
+	# DialogueHandler / WaitHandler(click) await advance_requested,
+	# ChoiceHandler awaits choice_selected — emit both with sentinel values.
+	# (wait_handler timer mode and any future signal-await will leave the
+	# old loop parked until its own timeout fires, see issue #89.)
+	SignalBus.advance_requested.emit()
+	SignalBus.choice_selected.emit("")
+
+	engine.run()
+	return true
 
 
 # ─── Facade API: Settings ───
