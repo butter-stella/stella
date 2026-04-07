@@ -6,7 +6,10 @@ func get_command_type() -> String:
 	return "cg"
 
 
-func execute(data: CommandData, _context: ScenarioContext) -> void:
+func execute(data: CommandData, context: ScenarioContext) -> void:
+	if context.is_replay:
+		return
+
 	if data.get_bool("off"):
 		var transition = data.get_string("transition", "fade")
 		var duration = data.get_float("duration", 0.5)

@@ -17,12 +17,17 @@ func _close():
 	StellaRuntime.close_overlay()
 
 
+func _on_entry_clicked(index: int) -> void:
+	StellaRuntime.jump_from_backlog(index)
+
+
 func _populate():
 	for child in entries_container.get_children():
 		child.queue_free()
 
 	var entries = StellaRuntime.get_backlog()
-	for entry in entries:
+	for i in range(entries.size()):
+		var entry = entries[i]
 		var hbox = HBoxContainer.new()
 		hbox.add_theme_constant_override("separation", 12)
 
@@ -36,12 +41,18 @@ func _populate():
 		name_label.custom_minimum_size = Vector2(100, 0)
 		hbox.add_child(name_label)
 
-		# Dialogue text
-		var text_label = Label.new()
-		text_label.text = entry["text"]
-		text_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		text_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		hbox.add_child(text_label)
+		# Dialogue text — wrapped in a flat Button so the user can click
+		# anywhere on the line to jump to that point in the scenario.
+		var text_btn = Button.new()
+		text_btn.text = entry["text"]
+		text_btn.flat = true
+		text_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		text_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		text_btn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		text_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		var jump_index = i
+		text_btn.pressed.connect(func(): _on_entry_clicked(jump_index))
+		hbox.add_child(text_btn)
 
 		# Voice replay button — delegates to DialoguePresenter via SignalBus so
 		# the playback uses the same voice queue + progress bar as the in-game

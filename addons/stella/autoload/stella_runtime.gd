@@ -88,7 +88,7 @@ func _ready():
 	# Bridge engine signals to SignalBus
 	engine.scenario_started.connect(func(id): SignalBus.scenario_started_event.emit(id))
 	engine.scenario_ended.connect(_on_scenario_ended)
-	engine.scene_changed.connect(func(id): SignalBus.scene_changed_event.emit(id))
+	engine.scene_changed.connect(_on_engine_scene_changed)
 
 	# Wire dialogue to backlog
 	SignalBus.show_dialogue.connect(_on_dialogue_for_backlog)
@@ -258,6 +258,8 @@ func _prepare_scenario(scenario_path: String) -> void:
 	var data = DslParser.parse(tokens, scenario_id)
 
 	engine.load_scenario(data)
+	# Replay handlers mutate PresentationState directly through this ref.
+	engine.context.presentation_state = presentation_state
 	save_manager.register_provider(engine.context)
 	save_manager.register_provider(engine.context.variable_store)
 
@@ -309,8 +311,42 @@ func _on_scenario_ended(id: String) -> void:
 	return_to_title()
 
 
+func _on_replay_finished_snap_visuals() -> void:
+	presentation_state.emit_restore_signals()
+
+
+func _on_engine_scene_changed(scene_id: String) -> void:
+	# Engine just jumped (scene boundary) — force the next backlog entry to
+	# carry an anchor snapshot. This guarantees replay between any two
+	# anchors stays linear (no choices/jumps in the middle).
+	backlog_manager.force_next_anchor()
+	SignalBus.scene_changed_event.emit(scene_id)
+
+
 func _on_dialogue_for_backlog(character: String, segments: Array, _mode: String):
-	backlog_manager.add_entry(character, segments)
+	if engine == null or engine.context == null:
+		return
+	# Skip recording during replay — the cursor is walking already-known
+	# path entries, no new history to add.
+	if engine.context.is_replay:
+		return
+	var sci := engine.context.current_scene_index
+	var cmi := engine.context.current_command_index
+	backlog_manager.add_entry(character, segments, sci, cmi, _capture_backlog_snapshot)
+
+
+## Capture the lightweight snapshot used for backlog anchors. Excludes
+## read_flags and unlock_manager (those are monotonic — never need to roll
+## back when navigating history).
+func _capture_backlog_snapshot() -> Dictionary:
+	var snap: Dictionary = {}
+	if engine and engine.context:
+		snap["scenario_context"] = engine.context.capture_snapshot()
+		if engine.context.variable_store:
+			snap["variable_store"] = engine.context.variable_store.capture_snapshot()
+	if presentation_state:
+		snap["presentation_state"] = presentation_state.capture_snapshot()
+	return snap
 
 
 # ─── Facade API: Save/Load ───
@@ -546,6 +582,64 @@ func _close_current_overlay() -> void:
 ## Get dialogue history entries.
 func get_backlog() -> Array:
 	return backlog_manager.get_entries()
+
+
+## Jump to a backlog entry. Restores the nearest preceding anchor snapshot,
+## fast-forwards the engine to the entry's exact position, then resumes
+## normal play. Backlog history is preserved (cursor moves but no truncate);
+## divergence is detected automatically when the player next adds an entry
+## that doesn't match the recorded path.
+func jump_from_backlog(index: int) -> bool:
+	if engine == null or engine.context == null:
+		return false
+	var info = backlog_manager.jump_to(index)
+	if info.is_empty():
+		return false
+
+	_close_current_overlay()
+	game_state.transition_to(GameStateMachine.State.PLAYING)
+
+	# Build a fresh context to swap in. The currently-running engine.run()
+	# loop captured the old context as a local — once it sees ctx != context
+	# (after we unblock its pending await below), it returns cleanly.
+	var scenario_data = engine.context.scenario_data
+	var new_ctx = ScenarioContext.new(scenario_data)
+	new_ctx.variable_store = VariableStore.new()
+
+	# Reset visuals to a clean slate, then restore the anchor state into
+	# the new providers. Replay handlers mutate PresentationState directly
+	# from here on; visuals don't move until replay_finished snaps them.
+	SignalBus.char_hide.emit("all")
+	SignalBus.bgm_stop.emit(0.0)
+	SignalBus.hide_dialogue.emit()
+	presentation_state.clear()
+
+	var snap: Dictionary = info["snapshot"]
+	new_ctx.restore_snapshot(snap.get("scenario_context", {}))
+	new_ctx.variable_store.restore_snapshot(snap.get("variable_store", {}))
+	presentation_state.restore_snapshot(snap.get("presentation_state", {}))
+
+	new_ctx.is_replay = true
+	new_ctx.replay_target_scene = info["target_scene_index"]
+	new_ctx.replay_target_command = info["target_command_index"]
+	new_ctx.presentation_state = presentation_state
+
+	# One-shot listener: when the engine clears is_replay at the target,
+	# emit_restore_signals snaps visuals to the post-replay PresentationState
+	# BEFORE the target dialogue handler executes (signal emit is sync).
+	engine.replay_finished.connect(_on_replay_finished_snap_visuals, CONNECT_ONE_SHOT)
+
+	# Swap in the new context, then unblock any old await so the previous
+	# run() loop returns promptly.
+	var old_ctx = engine.context
+	engine.context = new_ctx
+	save_manager.register_provider(new_ctx)
+	save_manager.register_provider(new_ctx.variable_store)
+	old_ctx.is_finished = true  # belt-and-braces in case the old loop is between iterations
+	SignalBus.advance_requested.emit()
+
+	engine.run()
+	return true
 
 
 # ─── Facade API: Settings ───

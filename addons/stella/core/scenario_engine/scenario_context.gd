@@ -10,6 +10,20 @@ var is_finished: bool = false
 var variable_store: VariableStore
 var return_stack: Array = []  # Array of {scene_index, command_index} for @call returns
 
+## Replay mode (used by backlog jump). Runtime-only — never serialized.
+## When `is_replay` is true, handlers skip awaits / audio / dialogue display
+## but still mutate state (variables, presentation_state via emitted signals).
+## The engine's main loop clears `is_replay` once execution reaches the
+## target position, so the target command itself runs in normal mode.
+var is_replay: bool = false
+var replay_target_scene: int = -1
+var replay_target_command: int = -1
+## Reference to PresentationState — used by visual handlers in replay mode
+## to mutate state directly without emitting visual signals. Set by the
+## runtime after loading a scenario; null in pure unit tests.
+## Typed as Variant to avoid a forward-class dependency.
+var presentation_state: Variant = null
+
 
 func _init(data: ScenarioData = null):
 	if data:

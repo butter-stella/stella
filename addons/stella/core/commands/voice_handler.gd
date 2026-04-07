@@ -6,7 +6,10 @@ func get_command_type() -> String:
 	return "voice"
 
 
-func execute(data: CommandData, _context: ScenarioContext) -> void:
+func execute(data: CommandData, context: ScenarioContext) -> void:
+	if context.is_replay:
+		return
+
 	var asset = data.get_string("asset", "")
 	if asset == "":
 		return

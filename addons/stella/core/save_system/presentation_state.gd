@@ -62,6 +62,46 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 		visible_characters[id] = chars[id].duplicate()
 
 
+## ─── Direct mutators (used during engine replay mode) ───
+##
+## In replay mode, handlers update PresentationState directly instead of
+## emitting signals — this prevents visual presenters from animating
+## intermediate states. After replay, the runtime calls emit_restore_signals
+## to snap visuals to the final state in one shot.
+
+func apply_bg(asset: String) -> void:
+	current_bg = asset
+
+
+func apply_char_show(character: String, expression: String, position: String) -> void:
+	visible_characters[character] = {"expression": expression, "position": position}
+
+
+func apply_char_hide(character: String) -> void:
+	if character == "all":
+		visible_characters.clear()
+	else:
+		visible_characters.erase(character)
+
+
+func apply_char_expr(character: String, expression: String) -> void:
+	if visible_characters.has(character):
+		visible_characters[character]["expression"] = expression
+
+
+func apply_char_move(character: String, position: String) -> void:
+	if visible_characters.has(character):
+		visible_characters[character]["position"] = position
+
+
+func apply_bgm_play(asset: String) -> void:
+	current_bgm = asset
+
+
+func apply_bgm_stop() -> void:
+	current_bgm = ""
+
+
 func emit_restore_signals() -> void:
 	if current_bg != "":
 		SignalBus.bg_changed.emit(current_bg, "none", 0.0)

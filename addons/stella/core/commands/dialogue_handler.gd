@@ -6,7 +6,11 @@ func get_command_type() -> String:
 	return "dialogue"
 
 
-func execute(data: CommandData, _context: ScenarioContext) -> void:
+func execute(data: CommandData, context: ScenarioContext) -> void:
+	if context.is_replay:
+		# Replay mode (jumping from backlog): don't display or await.
+		return
+
 	var character = data.get_string("character", "")
 	var mode = data.get_string("mode", "adv")
 	var segments: Array = data.params.get("segments", [])

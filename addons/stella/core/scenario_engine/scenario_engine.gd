@@ -6,6 +6,10 @@ signal scenario_started(scenario_id: String)
 signal scenario_ended(scenario_id: String)
 signal scene_changed(scene_id: String)
 signal command_executed(command_data: CommandData)
+## Emitted when the engine reaches the replay_target position and clears
+## is_replay. Listeners (typically StellaRuntime) snap visual presenters
+## to PresentationState before the target command runs.
+signal replay_finished()
 
 var context: ScenarioContext
 var registry: CommandRegistry
@@ -39,6 +43,15 @@ func run() -> void:
 	scene_changed.emit(ctx.current_scene().id)
 
 	while not ctx.is_finished:
+		# Replay mode: clear the flag once we reach the target position so
+		# the target command itself executes normally. This must run BEFORE
+		# the command is dispatched so the target sees is_replay == false.
+		if ctx.is_replay \
+				and ctx.current_scene_index == ctx.replay_target_scene \
+				and ctx.current_command_index == ctx.replay_target_command:
+			ctx.is_replay = false
+			replay_finished.emit()
+
 		# Handle pending jump
 		if ctx.pending_jump != "":
 			var jump_target = ctx.pending_jump
