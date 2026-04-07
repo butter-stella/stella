@@ -145,15 +145,16 @@ func test_divergence_truncates_history_after_branch_point():
 	await get_tree().process_frame
 	await get_tree().process_frame
 
-	# Force a jump to scene 1 — the dialogue at (1,0) doesn't match the
-	# existing entry at cursor+1 (scene 0, cmd 2) → divergence.
+	# Force a jump to scene 1 — the first dialogue there has a different
+	# stable uid than the existing entry at cursor+1 → divergence.
 	_runtime.engine.context.pending_jump = "branch"
 	await _advance(1)
 
 	var entries = _runtime.backlog_manager.get_entries()
 	assert_eq(entries.size(), 3, "diverged entries truncated past cursor")
-	assert_eq(entries[2]["scene_index"], 1)
-	assert_eq(entries[2]["command_index"], 0)
+	# First scene-1 dialogue (scene_index=1, command_index=0) — its stable
+	# uid was assigned at load_scenario time.
+	assert_eq(entries[2]["text"], "s1_0")
 
 	await _stop_engine()
 
