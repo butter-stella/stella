@@ -282,6 +282,7 @@ static func _flush_choice(choice_cmd: CommandData, options: Array, scene: SceneD
 
 static func _parse_scene_directive(token: DslToken) -> SceneData:
 	var scene = SceneData.new()
+	scene.declared_line = token.line
 	var text = token.raw_text.substr(7).strip_edges()  # Remove "@scene "
 	# Extract quoted title if present
 	var quote_start = text.find('"')

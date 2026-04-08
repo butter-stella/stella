@@ -573,6 +573,41 @@ sakura「after」""")
 				"synthetic scene %s should inherit chapter_id from enclosing chapter" % scene.id)
 
 
+func test_synthetic_elif_scenes_inherit_chapter_id():
+	# Follow-up from PR #100 round 2: __elif_* synthetic scenes (created by
+	# _close_elif_into_parent) also need to inherit chapter_id. Round-2 fix
+	# set this but lacked dedicated test coverage.
+	var data = _parse("""@chapter prologue
+@scene start
+@if x >= 10
+sakura「branch a」
+@elif x >= 5
+sakura「branch b」
+@else
+sakura「branch c」
+@end
+sakura「after」""")
+	var saw_elif := false
+	for scene in data.scenes:
+		if scene.id.begins_with("__elif_"):
+			saw_elif = true
+			assert_eq(scene.chapter_id, "prologue",
+				"synthetic elif scene %s should inherit chapter_id" % scene.id)
+	assert_true(saw_elif, "test scenario should produce at least one __elif_* scene")
+
+
+func test_scene_data_declared_line_set_by_parser():
+	# Prep chore for PR-B graph builder: scenes need source-range info so
+	# the graph builder can report "scene X on line N" for orphan warnings.
+	var data = _parse("""@chapter prologue
+@scene a
+sakura「one」
+@scene b
+sakura「two」""")
+	assert_eq(data.scenes[0].declared_line, 2)
+	assert_eq(data.scenes[1].declared_line, 4)
+
+
 func test_chapter_data_declared_line_set_by_parser():
 	# CR opus #2: empty-chapter diagnostic needs a real line number, requiring
 	# the parser to capture declared_line on ChapterData.
