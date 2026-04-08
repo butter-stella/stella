@@ -173,6 +173,8 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 					combine_pending_expr = ""
 				else:
 					var cmd = _parse_at_command(token)
+					if cmd:
+						cmd.declared_line = token.line
 					if cmd and current_scene:
 						if in_combine:
 							# Inside @combine, only @expr is allowed and it binds to the next segment.

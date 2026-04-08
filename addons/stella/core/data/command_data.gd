@@ -11,6 +11,11 @@ var params: Dictionary = {}
 ## Default -1 = unassigned (test fixtures that construct commands
 ## manually without going through ScenarioEngine.load_scenario).
 var uid: int = -1
+## Source line of the DSL token that produced this command (1-based).
+## Set by DslParser; 0 for commands constructed manually (e.g. test
+## fixtures or synthesized condition commands from @if expansion).
+## Used by ScenarioGraphBuilder for click-to-source on graph edges (#97).
+var declared_line: int = 0
 
 
 func get_string(key: String, default: String = "") -> String:
