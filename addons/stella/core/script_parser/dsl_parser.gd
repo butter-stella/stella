@@ -60,16 +60,40 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				choice_cmd = null
 				pending_options = []
 				# Chapters are top-level only — they cannot appear inside an
-				# @if/@else block. The lexer doesn't know context, so the
-				# parser enforces this.
+				# @if/@else block, @parallel block, or @combine block.
 				if if_stack.size() > 0:
 					_record_diagnostic(data, "error",
 						"DslParser: @chapter cannot be used inside @if/@else block (line %d)"
 						% token.line, token.line)
-					# Skip this directive entirely; do not change current_chapter.
+				elif in_parallel:
+					_record_diagnostic(data, "error",
+						"DslParser: @chapter cannot be used inside @parallel block (line %d)"
+						% token.line, token.line)
+				elif in_combine:
+					_record_diagnostic(data, "error",
+						"DslParser: @chapter cannot be used inside @combine block (line %d)"
+						% token.line, token.line)
 				else:
-					current_chapter = _parse_chapter_directive(token)
-					data.chapters.append(current_chapter)
+					var new_chapter = _parse_chapter_directive(token)
+					if new_chapter.id == "":
+						# Bare `@chapter` or quoted-only `@chapter "title"` —
+						# no usable id. Reject the chapter entirely; an empty-id
+						# chapter would silently break get_chapter_for_scene.
+						_record_diagnostic(data, "error",
+							"DslParser: @chapter is missing id (line %d)"
+							% token.line, token.line)
+						# Do NOT update current_chapter — subsequent scenes will
+						# trigger "before any @chapter" until a valid one appears.
+					elif data.get_chapter(new_chapter.id) != null:
+						_record_diagnostic(data, "error",
+							"DslParser: duplicate chapter id '%s' (line %d)"
+							% [new_chapter.id, token.line], token.line)
+						# Reject the duplicate; first one wins. current_chapter
+						# stays on the previous one so subsequent scenes still
+						# group sensibly under the original chapter.
+					else:
+						current_chapter = new_chapter
+						data.chapters.append(current_chapter)
 
 			DslToken.Type.AT_COMMAND:
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
@@ -220,12 +244,18 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 	_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 
 	# Issue #97: post-parse validation — every chapter must own at least one
-	# scene. Walk chapters in declaration order so error messages come out in
-	# source order.
+	# scene. Use the chapter's declared_line so the error points back to the
+	# original @chapter directive (not line 0).
 	for ch in data.chapters:
 		if ch.scene_ids.size() == 0:
 			_record_diagnostic(data, "error",
-				"DslParser: chapter '%s' contains no scenes" % ch.id, 0)
+				"DslParser: chapter '%s' contains no scenes (line %d)"
+				% [ch.id, ch.declared_line], ch.declared_line)
+
+	# Sort diagnostics by line so authors see issues in source order. Errors
+	# from the in-line scan are already line-ordered, but post-parse errors
+	# (empty chapter) get appended at the end and need reordering.
+	data.diagnostics.sort_custom(func(a, b): return int(a.get("line", 0)) < int(b.get("line", 0)))
 
 	return data
 
@@ -268,6 +298,7 @@ static func _parse_scene_directive(token: DslToken) -> SceneData:
 
 static func _parse_chapter_directive(token: DslToken) -> ChapterData:
 	var ch = ChapterData.new()
+	ch.declared_line = token.line
 	var text = token.raw_text.substr(8).strip_edges()  # Remove "@chapter"
 	# Extract quoted display name if present
 	var quote_start = text.find('"')
@@ -597,9 +628,17 @@ static func _close_elif_into_parent(elif_ctx: Dictionary, parent_ctx: Dictionary
 	var base_id = "__elif_%s_%d" % [elif_ctx["scene_id"], elif_ctx["line"]]
 	# The parent if's continuation scene ID (created later by _close_if_block)
 	var parent_cont_id = "__if_%s_%d_cont" % [parent_ctx["scene_id"], parent_ctx["line"]]
+	# Synthetic scenes inherit chapter_id from the enclosing scene's chapter
+	# (issue #97) — otherwise PR-B's flowchart graph builder sees them as
+	# orphans and they pollute "scene before any @chapter" detection.
+	var inherit_chapter_id := ""
+	var parent_scene = parent_ctx.get("parent_scene")
+	if parent_scene != null:
+		inherit_chapter_id = parent_scene.chapter_id
 
 	var then_scene = SceneData.new()
 	then_scene.id = base_id + "_then"
+	then_scene.chapter_id = inherit_chapter_id
 	for cmd in elif_ctx["then_commands"]:
 		then_scene.commands.append(cmd)
 	# Jump to parent's continuation after elif branch executes
@@ -610,6 +649,7 @@ static func _close_elif_into_parent(elif_ctx: Dictionary, parent_ctx: Dictionary
 	if elif_ctx["else_commands"].size() > 0:
 		var else_scene = SceneData.new()
 		else_scene.id = base_id + "_else"
+		else_scene.chapter_id = inherit_chapter_id
 		for cmd in elif_ctx["else_commands"]:
 			else_scene.commands.append(cmd)
 		else_scene.commands.append(_make_cmd("jump", {"target": parent_cont_id}))
@@ -627,15 +667,20 @@ static func _close_elif_into_parent(elif_ctx: Dictionary, parent_ctx: Dictionary
 static func _close_if_block(ctx: Dictionary, data: ScenarioData) -> SceneData:
 	var parent_scene: SceneData = ctx["parent_scene"]
 	var base_id = "__if_%s_%d" % [ctx["scene_id"], ctx["line"]]
+	# Synthetic scenes inherit chapter_id from the enclosing scene's chapter
+	# (issue #97) — see _close_elif_into_parent for rationale.
+	var inherit_chapter_id := parent_scene.chapter_id if parent_scene else ""
 
 	# Create synthetic scenes
 	var then_scene = SceneData.new()
 	then_scene.id = base_id + "_then"
+	then_scene.chapter_id = inherit_chapter_id
 	for cmd in ctx["then_commands"]:
 		then_scene.commands.append(cmd)
 
 	var cont_scene = SceneData.new()
 	cont_scene.id = base_id + "_cont"
+	cont_scene.chapter_id = inherit_chapter_id
 
 	# Add jump to continuation at end of then branch
 	var then_jump = _make_cmd("jump", {"target": cont_scene.id})
@@ -647,6 +692,7 @@ static func _close_if_block(ctx: Dictionary, data: ScenarioData) -> SceneData:
 	if ctx["else_commands"].size() > 0:
 		var else_scene = SceneData.new()
 		else_scene.id = base_id + "_else"
+		else_scene.chapter_id = inherit_chapter_id
 		for cmd in ctx["else_commands"]:
 			else_scene.commands.append(cmd)
 		var else_jump = _make_cmd("jump", {"target": cont_scene.id})

@@ -172,6 +172,12 @@ func test_chapter_data_holds_scene_ids():
 	assert_eq(ch.scene_ids[0], "scene_a")
 
 
+func test_chapter_data_declared_line_default_zero():
+	# Default for manually-constructed ChapterData (parser sets real value).
+	var ch = ChapterData.new()
+	assert_eq(ch.declared_line, 0)
+
+
 # ─── SceneData.chapter_id back-reference ───
 
 func test_scene_data_chapter_id_default_empty():

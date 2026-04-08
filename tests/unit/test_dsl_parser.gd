@@ -495,3 +495,118 @@ func test_no_diagnostic_when_well_formed():
 @scene c""")
 	assert_eq(data.diagnostics.size(), 0,
 		"well-formed scenario should produce no diagnostics")
+
+
+# ─── Round 2 fixes (CR feedback) ───
+
+func test_bare_chapter_with_no_id_emits_error_and_skips_append():
+	# CR sonnet BLOCKING / opus #5: `@chapter` without an id silently produces
+	# a chapter with id="" that downstream code (get_chapter_for_scene) treats
+	# as orphan, hiding the bug. Validate at parse time.
+	var data = _parse("@chapter\n@scene s")
+	assert_true(_has_diagnostic(data, "error", "missing id"),
+		"bare @chapter should produce a 'missing id' diagnostic")
+	# The chapter must NOT be appended to data.chapters (otherwise ""-id chapter
+	# pollutes lookups).
+	for ch in data.chapters:
+		assert_ne(ch.id, "", "no chapter with empty id should be in data.chapters")
+
+
+func test_chapter_with_only_quoted_title_emits_error():
+	# `@chapter "序章"` has a display name but no bare id → ch.id == "" → same
+	# trap as bare @chapter.
+	var data = _parse('@chapter "序章"\n@scene s')
+	assert_true(_has_diagnostic(data, "error", "missing id"),
+		"quoted-only @chapter should produce a 'missing id' diagnostic")
+
+
+func test_duplicate_chapter_id_emits_error():
+	# CR opus #4: silent correctness hazard for PR-C jump-by-id lookup.
+	var data = _parse("""@chapter ch
+@scene a
+@chapter ch
+@scene b""")
+	assert_true(_has_diagnostic(data, "error", "duplicate"),
+		"duplicate chapter id should produce a 'duplicate' diagnostic")
+	# Only the FIRST chapter is registered; the duplicate is rejected.
+	assert_eq(data.chapters.size(), 1)
+
+
+func test_chapter_inside_parallel_block_emits_error():
+	# CR sonnet should-fix #2: symmetry with @if guard.
+	var data = _parse("""@chapter c
+@scene s
+@parallel
+@chapter inner
+@end""")
+	assert_true(_has_diagnostic(data, "error", "@parallel"),
+		"chapter inside @parallel should error")
+
+
+func test_chapter_inside_combine_block_emits_error():
+	var data = _parse("""@chapter c
+@scene s
+@combine
+sakura「a」
+@chapter inner
+@end""")
+	assert_true(_has_diagnostic(data, "error", "@combine"),
+		"chapter inside @combine should error")
+
+
+func test_synthetic_if_scenes_inherit_chapter_id():
+	# CR sonnet should-fix #3: __if_*_then / __else / __cont scenes are
+	# created during @if expansion. They MUST inherit chapter_id from the
+	# enclosing scene's chapter, otherwise PR-C/D's flowchart builder sees
+	# them as orphans.
+	var data = _parse("""@chapter prologue
+@scene start
+@if some_flag
+sakura「then」
+@else
+sakura「else」
+@end
+sakura「after」""")
+	for scene in data.scenes:
+		if scene.id.begins_with("__if_"):
+			assert_eq(scene.chapter_id, "prologue",
+				"synthetic scene %s should inherit chapter_id from enclosing chapter" % scene.id)
+
+
+func test_chapter_data_declared_line_set_by_parser():
+	# CR opus #2: empty-chapter diagnostic needs a real line number, requiring
+	# the parser to capture declared_line on ChapterData.
+	var data = _parse("""@chapter prologue
+@scene s
+
+@chapter ch1
+@scene s2""")
+	assert_eq(data.chapters[0].declared_line, 1)
+	assert_eq(data.chapters[1].declared_line, 4)
+
+
+func test_empty_chapter_diagnostic_includes_real_line_number():
+	# Use line >= 1 (was 0 in round 1, breaking author UX).
+	var data = _parse("@chapter empty\n@chapter has_scene\n@scene s")
+	for d in data.diagnostics:
+		if "empty" in d.get("message", ""):
+			assert_gt(d.get("line", 0), 0,
+				"empty-chapter diagnostic should carry a real line number")
+
+
+func test_diagnostics_sorted_by_line():
+	# CR opus #3: post-parse validation errors arrive after the in-line scan,
+	# but should be reordered by line so authors see issues in source order.
+	var data = _parse("""@chapter empty
+@chapter has_scene
+@scene legit
+@if x
+@chapter inside_if
+@end""")
+	# Diagnostics should be sorted by line ascending.
+	var prev_line = -1
+	for d in data.diagnostics:
+		var line = int(d.get("line", 0))
+		assert_true(line >= prev_line,
+			"diagnostics should be sorted by line; saw %d after %d" % [line, prev_line])
+		prev_line = line
