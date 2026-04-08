@@ -185,6 +185,12 @@ func test_scene_data_chapter_id_default_empty():
 	assert_eq(s.chapter_id, "")
 
 
+func test_scene_data_declared_line_default_zero():
+	# Default for manually-constructed SceneData (parser sets real value).
+	var s = SceneData.new()
+	assert_eq(s.declared_line, 0)
+
+
 # ─── ScenarioData.chapters API ───
 
 func test_scenario_data_chapters_field_default_empty():

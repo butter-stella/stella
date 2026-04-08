@@ -6,3 +6,8 @@ var commands: Array = []  # Array[CommandData]
 ## Back-reference to the chapter this scene belongs to (issue #97).
 ## Set by DslParser at parse time. Empty string means orphan (parser error).
 var chapter_id: String = ""
+## Source line of the @scene directive (1-based). Set by DslParser; 0 for
+## scenes constructed manually (e.g. tests bypassing the parser) or for
+## synthetic @if/@elif scenes (which inherit from their parent's chapter
+## but are not author-declared).
+var declared_line: int = 0
