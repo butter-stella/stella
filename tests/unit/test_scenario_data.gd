@@ -149,3 +149,101 @@ func test_assign_command_uids_skips_already_assigned():
 	assert_eq(c0.uid, 100, "pre-assigned uid preserved")
 	assert_eq(c1.uid, 101, "auto-assigned advances past max(prev, 100)")
 	assert_eq(c2.uid, 50, "pre-assigned uid preserved")
+
+
+# ─── ChapterData (issue #97) ───
+
+func test_chapter_data_default_fields():
+	var ch = ChapterData.new()
+	assert_eq(ch.id, "")
+	assert_eq(ch.display_name, "")
+	assert_eq(ch.scene_ids.size(), 0)
+
+
+func test_chapter_data_holds_scene_ids():
+	var ch = ChapterData.new()
+	ch.id = "prologue"
+	ch.display_name = "序章"
+	ch.scene_ids.append("scene_a")
+	ch.scene_ids.append("scene_b")
+	assert_eq(ch.id, "prologue")
+	assert_eq(ch.display_name, "序章")
+	assert_eq(ch.scene_ids.size(), 2)
+	assert_eq(ch.scene_ids[0], "scene_a")
+
+
+func test_chapter_data_declared_line_default_zero():
+	# Default for manually-constructed ChapterData (parser sets real value).
+	var ch = ChapterData.new()
+	assert_eq(ch.declared_line, 0)
+
+
+# ─── SceneData.chapter_id back-reference ───
+
+func test_scene_data_chapter_id_default_empty():
+	var s = SceneData.new()
+	assert_eq(s.chapter_id, "")
+
+
+# ─── ScenarioData.chapters API ───
+
+func test_scenario_data_chapters_field_default_empty():
+	var data = ScenarioData.new()
+	assert_eq(data.chapters.size(), 0)
+
+
+func test_scenario_data_diagnostics_field_default_empty():
+	# Parser populates this with {level, message, line} entries.
+	var data = ScenarioData.new()
+	assert_eq(data.diagnostics.size(), 0)
+
+
+func test_scenario_get_chapter_by_id():
+	var data = ScenarioData.new()
+	var ch = ChapterData.new()
+	ch.id = "prologue"
+	data.chapters.append(ch)
+	assert_eq(data.get_chapter("prologue").id, "prologue")
+
+
+func test_scenario_get_chapter_returns_null_for_missing():
+	var data = ScenarioData.new()
+	assert_null(data.get_chapter("nonexistent"))
+
+
+func test_scenario_get_chapter_index():
+	var data = ScenarioData.new()
+	var c0 = ChapterData.new()
+	c0.id = "prologue"
+	var c1 = ChapterData.new()
+	c1.id = "ch1"
+	data.chapters.append(c0)
+	data.chapters.append(c1)
+	assert_eq(data.get_chapter_index("prologue"), 0)
+	assert_eq(data.get_chapter_index("ch1"), 1)
+	assert_eq(data.get_chapter_index("missing"), -1)
+
+
+func test_scenario_get_chapter_for_scene():
+	# Walk via scene.chapter_id back-reference.
+	var data = ScenarioData.new()
+	var ch = ChapterData.new()
+	ch.id = "prologue"
+	ch.scene_ids.append("start")
+	data.chapters.append(ch)
+	var s = SceneData.new()
+	s.id = "start"
+	s.chapter_id = "prologue"
+	data.scenes.append(s)
+	var found = data.get_chapter_for_scene("start")
+	assert_not_null(found)
+	assert_eq(found.id, "prologue")
+
+
+func test_scenario_get_chapter_for_scene_returns_null_for_orphan():
+	var data = ScenarioData.new()
+	var s = SceneData.new()
+	s.id = "orphan"
+	s.chapter_id = ""
+	data.scenes.append(s)
+	assert_null(data.get_chapter_for_scene("orphan"))

@@ -19,13 +19,47 @@
 
 ## 3. 核心语法
 
-### 3.1 场景定义
+### 3.1 章节与场景
 
 ```
+@chapter prologue "序章 — 樱花树下"
+
 @scene scene_001 "樱花树下的相遇"
 ```
 
-`@scene` 后跟场景 ID，可选标题（仅用于编辑器显示和 Backlog）。
+**`@chapter`** —— 叙事单元，**作者层面**对剧本的分章。每个章节有一个 ID 和可选的显示名（给玩家看的标题）。章节是流程图功能（issue #97）的基本单位，**每个章节在流程图上对应一个节点**。
+
+**`@scene`** —— 执行单元，**解析器层面**的脚本分段。`@scene` 后跟场景 ID，可选标题（仅用于编辑器显示和 Backlog）。
+
+**两者的关系**：
+
+- 每个 `@scene` 必须属于某个 `@chapter`
+- 一个 chapter 拥有它声明之后、直到下一个 `@chapter` 之前的所有 `@scene`
+- 第一个 `@scene` 之前必须有至少一个 `@chapter`，否则解析器报错（"强制规范化"）
+- 每个 chapter 必须至少包含一个 `@scene`，否则解析器报错
+- chapter id 必须显式提供且全文件唯一（不可省略，不可重复）
+- `@chapter` 是顶层指令，**不能** 出现在 `@if` / `@else` / `@parallel` / `@combine` 块内部
+- chapter 内部可以有任意多个 scene；它们都是该章节的"内部场景"，默认不出现在玩家流程图上（作者模式可下钻查看）
+
+**完整示例**：
+
+```
+@chapter prologue "序章"
+@scene scene_001 "樱花树下的相遇"
+sakura「你好。」
+@jump scene_branch_a
+
+@scene scene_branch_a       // 内部场景，没有显示名
+@expr sakura smile
+sakura「真巧，我们又见面了。」
+@jump chapter1_intro
+
+@chapter chapter1 "第一章 入学第一天"
+@scene chapter1_intro "教室"
+...
+```
+
+这个例子里 `prologue` 章节有 2 个 scene（`scene_001` 和 `scene_branch_a`），但只有 `scene_001` 是章节入口；`scene_branch_a` 是内部 scene，玩家流程图不可见。
 
 ### 3.2 对话（最高频操作，语法最短）
 
