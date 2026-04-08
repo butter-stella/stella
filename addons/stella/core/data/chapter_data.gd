@@ -11,3 +11,12 @@ var scene_ids: Array = []  # Array[String], in declaration order
 ## chapters constructed manually (e.g. in tests bypassing the parser).
 ## Used by post-parse validation to give empty-chapter errors a real line.
 var declared_line: int = 0
+
+
+## The chapter's entry scene id — by convention the first scene in the
+## chapter, the one execution starts with when entering the chapter.
+## Returns "" if the chapter has no scenes (parser would have errored).
+func get_entry_scene_id() -> String:
+	if scene_ids.size() == 0:
+		return ""
+	return scene_ids[0]

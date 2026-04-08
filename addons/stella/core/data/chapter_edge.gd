@@ -13,6 +13,11 @@ const KIND_SEQUENTIAL = "sequential"   # fall-through from last scene of chapter
 const KIND_CALL = "call"               # @call into another chapter
 const KIND_TERMINAL = "terminal"       # execution terminates inside this chapter (no outgoing transition)
 
+## Edge ID component separator. Unit Separator (U+001F) — chosen instead of
+## a printable character (e.g. "|") so it cannot collide with characters that
+## a chapter id or label might legitimately contain.
+const _ID_SEP = "\u001f"
+
 var source_chapter_id: String = ""
 ## Empty for KIND_TERMINAL edges (no target).
 var target_chapter_id: String = ""
@@ -27,7 +32,8 @@ var source_line: int = 0
 ## Stable identifier suitable for persistence (PR-C's visited_chapter_edges).
 ## Two edges with the same id are considered the "same edge" for visited
 ## tracking purposes — duplicates are deduplicated by the builder.
+##
+## label is included so multiple choice options to the same target are
+## distinct (e.g. "选项 A" → ch_x and "选项 B" → ch_x are 2 edges).
 func get_edge_id() -> String:
-	# label is included so multiple choice options to the same target are
-	# distinct (e.g. "选项 A" → ch_x and "选项 B" → ch_x are 2 edges).
-	return "%s|%s|%s|%s" % [source_chapter_id, target_chapter_id, kind, label]
+	return source_chapter_id + _ID_SEP + target_chapter_id + _ID_SEP + kind + _ID_SEP + label

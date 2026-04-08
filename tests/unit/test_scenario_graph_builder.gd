@@ -165,15 +165,25 @@ sakura「b」""")
 
 # ─── Loop / cycle handling ───
 
-func test_internal_cycle_does_not_infinite_loop():
-	# A scene that jumps back to itself (or to an earlier scene in the same
-	# chapter) must not crash the walker. Cycle detection per-walk is required.
+func test_internal_cycle_emits_deadlock_diagnostic():
+	# A scene that jumps back to itself with no escape: walker must not loop
+	# forever, and the chapter MUST be flagged as deadlock so PR-D can show
+	# the author / PR-C can refuse to leave.
 	var graph = _build("""@chapter a
 @scene s1
 @jump s1""")
-	# Just don't crash; the chapter has no cross-chapter edges.
+	# Chapter still exists in the graph (regression guard against the chapter
+	# being silently dropped).
+	assert_not_null(graph.get_chapter("a"), "deadlock chapter must remain in graph")
+	# No outgoing edges (player is stuck — not "terminal", which means natural end).
 	assert_eq(_count_edges_from(graph, "a"), 0,
-		"infinite-loop chapter has no terminal and no cross-chapter edges")
+		"deadlock chapter has 0 outgoing edges")
+	# Deadlock diagnostic surfaced.
+	var saw_deadlock := false
+	for d in graph.diagnostics:
+		if d.get("level") == "warning" and "no outgoing transitions" in str(d.get("message", "")):
+			saw_deadlock = true
+	assert_true(saw_deadlock, "deadlock chapter should produce a 'no outgoing transitions' warning")
 
 
 # ─── Lint warnings ───
@@ -240,23 +250,29 @@ func test_edge_id_stable_format():
 	e.source_chapter_id = "src"
 	e.target_chapter_id = "dst"
 	e.kind = ChapterEdge.KIND_JUMP
-	assert_eq(e.get_edge_id(), "src|dst|jump|")
+	# Fields joined by U+001F (Unit Separator). 4 fields → 3 separators.
+	var sep = "\u001f"
+	assert_eq(e.get_edge_id(), "src" + sep + "dst" + sep + "jump" + sep + "")
 
 
 # ─── Source line propagation ───
 
 func test_jump_edge_carries_source_line():
 	# The line number of the @jump command is captured for click-to-source.
+	# @jump is on line 3 of the fixture below.
 	var graph = _build("""@chapter a
 @scene s_a
 @jump s_b
 @chapter b
 @scene s_b
 sakura「b」""")
+	var found_jump := false
 	for e in graph.edges:
 		if e.kind == ChapterEdge.KIND_JUMP:
-			assert_gt(e.source_line, 0,
-				"@jump edge should carry a non-zero source line")
+			found_jump = true
+			assert_eq(e.source_line, 3,
+				"@jump edge should carry the exact source line of the @jump command")
+	assert_true(found_jump, "fixture should produce at least one JUMP edge")
 
 
 # ─── Deduplication ───
@@ -279,5 +295,121 @@ sakura「b」""")
 	for e in graph.edges:
 		if e.kind == ChapterEdge.KIND_JUMP and e.source_chapter_id == "a" and e.target_chapter_id == "b":
 			jump_edges += 1
+	# Regression guard: ensure walker actually emitted the edge (otherwise
+	# the equality check below would trivially pass on a "drops everything" bug).
+	assert_gt(jump_edges, 0, "convergent jump fixture must produce at least one edge")
 	assert_eq(jump_edges, 1,
 		"convergent jumps from both if branches should produce only one edge")
+
+
+# ─── Round 2 fixes (CR feedback) ───
+
+func test_cross_chapter_cycle_terminates_and_emits_edges():
+	# CR sonnet C11: A → B → C → A. Walker must terminate (per-chapter
+	# visited_scenes scope means each walk is bounded), and the resulting
+	# graph contains all 3 cross-chapter edges.
+	var graph = _build("""@chapter a
+@scene s_a
+@jump s_b
+@chapter b
+@scene s_b
+@jump s_c
+@chapter c
+@scene s_c
+@jump s_a""")
+	assert_true(_has_edge(graph, "a", "b", ChapterEdge.KIND_JUMP))
+	assert_true(_has_edge(graph, "b", "c", ChapterEdge.KIND_JUMP))
+	assert_true(_has_edge(graph, "c", "a", ChapterEdge.KIND_JUMP))
+
+
+func test_cross_chapter_jump_to_unknown_scene_emits_diagnostic():
+	# CR sonnet C9: a typo'd @jump target previously was a silent skip.
+	# Now the builder records a diagnostic so PR-D can show the typo.
+	var graph = _build("""@chapter a
+@scene s_a
+@jump s_typo
+@chapter b
+@scene s_b
+sakura「b」""")
+	var saw_diag := false
+	for d in graph.diagnostics:
+		if "unknown scene" in str(d.get("message", "")) and "s_typo" in str(d.get("message", "")):
+			saw_diag = true
+	assert_true(saw_diag, "typo'd jump target should produce 'unknown scene' diagnostic")
+
+
+func test_get_incoming_edges_returns_inbound():
+	# CR sonnet C12: get_incoming_edges API was untested. A typo in the
+	# target_chapter_id check would have gone unnoticed.
+	var graph = _build("""@chapter a
+@scene s_a
+@jump s_b
+@chapter b
+@scene s_b
+sakura「b」""")
+	var incoming = graph.get_incoming_edges("b")
+	assert_eq(incoming.size(), 1, "chapter b should have exactly 1 incoming edge")
+	assert_eq(incoming[0].source_chapter_id, "a")
+	assert_eq(incoming[0].target_chapter_id, "b")
+	# Chapter a has no inbound (cycle test covers the inbound-from-itself case)
+	assert_eq(graph.get_incoming_edges("a").size(), 0)
+
+
+func test_cross_chapter_sequential_dedup():
+	# CR opus: A has multiple internal scenes that all fall through into B.
+	# All paths produce the same edge_id (a, b, sequential, "") and dedup
+	# keeps just one. Without dedup, the graph would double-count.
+	var graph = _build("""@chapter a
+@scene s_a1
+sakura「one」
+@scene s_a2
+sakura「two」
+@chapter b
+@scene s_b
+sakura「b」""")
+	var seq_edges := 0
+	for e in graph.edges:
+		if e.kind == ChapterEdge.KIND_SEQUENTIAL and e.source_chapter_id == "a":
+			seq_edges += 1
+	assert_eq(seq_edges, 1,
+		"multiple internal-fallthrough paths must collapse to a single sequential edge")
+
+
+func test_chapter_data_get_entry_scene_id():
+	# CR opus: ChapterData.get_entry_scene_id() helper.
+	var ch = ChapterData.new()
+	assert_eq(ch.get_entry_scene_id(), "", "empty chapter returns empty string")
+	ch.scene_ids.append("first")
+	ch.scene_ids.append("second")
+	assert_eq(ch.get_entry_scene_id(), "first")
+
+
+func test_edge_id_uses_unit_separator_not_pipe():
+	# CR sonnet B7: edge ID separator changed from `|` to U+001F so chapter
+	# ids and labels containing `|` cannot collide.
+	var e = ChapterEdge.new()
+	e.source_chapter_id = "src|with|pipe"
+	e.target_chapter_id = "dst"
+	e.kind = ChapterEdge.KIND_JUMP
+	# The id should NOT use `|` as a separator — verify by checking that the
+	# substring "src|with|pipe" appears intact (not split by the separator).
+	var eid = e.get_edge_id()
+	assert_true("src|with|pipe" in eid,
+		"chapter id with `|` should appear unsplit in the edge id")
+	assert_true("\u001f" in eid,
+		"edge id should use Unit Separator U+001F as the field separator")
+
+
+func test_empty_chapter_skipped_silently_by_builder():
+	# Defensive: parser would normally error on empty chapter, but the
+	# builder must not crash if given a manually-constructed empty chapter.
+	var data = ScenarioData.new()
+	data.id = "test"
+	var ch = ChapterData.new()
+	ch.id = "empty"
+	data.chapters.append(ch)
+	var graph = ScenarioGraphBuilder.build(data)
+	# Builder should produce a graph with the empty chapter as a node and
+	# no outgoing edges (and no crash).
+	assert_eq(graph.chapters.size(), 1)
+	assert_eq(graph.get_outgoing_edges("empty").size(), 0)

@@ -37,13 +37,15 @@ static func _build_for_chapter(chapter: ChapterData, data: ScenarioData, graph: 
 	if chapter.scene_ids.size() == 0:
 		return  # Parser already errored on empty chapters; nothing to walk.
 
-	var entry_scene_id = chapter.scene_ids[0]
+	var entry_scene_id = chapter.get_entry_scene_id()
 	var visited_scenes: Dictionary = {}  # scene_id -> true
 	var emitted_edge_ids: Dictionary = {}  # edge_id -> true (dedup)
 	var has_terminal_path := false  # tracks whether walker reached an end-of-execution path
 
 	# Walk starting from the entry scene. The walker is iterative-style via
 	# a worklist so we don't recurse arbitrarily deep on long internal chains.
+	# LIFO is fine: edge dedup makes the discovery order irrelevant for the
+	# final graph; only intermediate ordering changes.
 	var worklist: Array = [entry_scene_id]
 	while worklist.size() > 0:
 		var scene_id: String = worklist.pop_back()
@@ -53,7 +55,7 @@ static func _build_for_chapter(chapter: ChapterData, data: ScenarioData, graph: 
 
 		var scene = data.get_scene(scene_id)
 		if scene == null:
-			continue  # Bad jump target — leave for separate diagnostic if needed.
+			continue  # Bad jump target — _handle_transition records its own diagnostic.
 
 		# Walk commands looking for transitions that exit this scene.
 		# Returns whether the scene "ended naturally" (fell through past the
@@ -79,15 +81,21 @@ static func _build_for_chapter(chapter: ChapterData, data: ScenarioData, graph: 
 						ChapterEdge.KIND_SEQUENTIAL, "", scene.declared_line,
 						emitted_edge_ids)
 
-	# If the walker found no terminal path AND no cross-chapter outgoing
-	# edges, the chapter is a self-loop (no exits) — still terminal in the
-	# graph sense.
-	if has_terminal_path or graph.get_outgoing_edges(chapter.id).size() == 0:
-		# Avoid double-emitting if has_terminal_path is true and we already
-		# accidentally produced edges for the same paths — use the dedup set.
-		if has_terminal_path:
-			_emit_edge(graph, chapter.id, "",
-				ChapterEdge.KIND_TERMINAL, "", 0, emitted_edge_ids)
+	# Three exit topologies:
+	#   1. Found a terminal path → emit TERMINAL edge.
+	#   2. Found no terminal path AND no cross-chapter outgoing edges →
+	#      chapter is internally cyclic with no escape (deadlock). Emit a
+	#      diagnostic; do NOT emit TERMINAL because the chapter doesn't
+	#      actually terminate. PR-C / PR-D treat zero-edge nodes as stuck.
+	#   3. Found cross-chapter edges but no terminal path → no TERMINAL
+	#      needed; the chapter exits via the cross edges.
+	if has_terminal_path:
+		_emit_edge(graph, chapter.id, "",
+			ChapterEdge.KIND_TERMINAL, "", 0, emitted_edge_ids)
+	elif graph.get_outgoing_edges(chapter.id).size() == 0:
+		_record_warning(graph,
+			"ScenarioGraphBuilder: chapter '%s' has no outgoing transitions (internal loop with no exit — player would be stuck)"
+			% chapter.id, chapter.declared_line)
 
 
 ## Walk commands of a single scene. Returns true if execution falls through
@@ -113,14 +121,19 @@ static func _walk_scene_commands(scene: SceneData, chapter: ChapterData,
 				# next command. Don't return; keep walking.
 
 			"choice":
+				# Pathological case (not currently produced by typical
+				# scripts but possible in DSL): if EVERY option has no jump
+				# target, execution would fall through past the @choice to
+				# subsequent commands. We currently treat the choice as a
+				# scene exit regardless — any post-choice commands in such
+				# scenes are unreachable from the graph's perspective. Document
+				# behavior; do not silently confuse the walker.
 				var options = cmd.params.get("options", [])
 				for opt in options:
 					var opt_target = opt.get("jump", "")
 					var opt_label = opt.get("label", "")
 					if opt_target == "":
-						# Choice option with no jump — falls through to
-						# next command (rare). Treat as internal flow.
-						continue
+						continue  # Internal-flow option (rare); see comment above.
 					_handle_transition(opt_target, ChapterEdge.KIND_CHOICE,
 						opt_label, cmd, chapter, data, graph,
 						emitted_edge_ids, worklist)
@@ -157,22 +170,36 @@ static func _handle_transition(target_scene_id: String, kind: String,
 		emitted_edge_ids: Dictionary, worklist: Array) -> void:
 	if target_scene_id == "":
 		return
-	var target_chapter_id = _chapter_id_of(target_scene_id, data)
+	var line = _command_source_line(cmd)
+
+	# Validate target exists. Author typo'd jump → emit diagnostic so the
+	# graph drift is visible (parser doesn't see this — it only validates
+	# at AST level, not at scene-id resolution).
+	var target_scene = data.get_scene(target_scene_id)
+	if target_scene == null:
+		_record_warning(graph,
+			"ScenarioGraphBuilder: %s in chapter '%s' targets unknown scene '%s' (line %d)"
+			% [kind, source_chapter.id, target_scene_id, line], line)
+		return
+
+	var target_chapter_id = target_scene.chapter_id
 	if target_chapter_id == "":
-		return  # Unknown / orphan target; parser would have flagged it.
+		# Orphan target scene — parser already flagged the orphan with its
+		# own diagnostic; nothing more to add here.
+		return
 
 	if target_chapter_id == source_chapter.id:
 		# Internal transition — keep walking.
 		worklist.append(target_scene_id)
 	else:
 		# Cross-chapter — emit edge.
-		var line = _command_source_line(cmd)
 		_emit_edge(graph, source_chapter.id, target_chapter_id,
 			kind, label, line, emitted_edge_ids)
 		# Lint: warn if jump targets a non-entry scene of the destination chapter.
 		var target_chapter = data.get_chapter(target_chapter_id)
-		if target_chapter != null and target_chapter.scene_ids.size() > 0:
-			if target_chapter.scene_ids[0] != target_scene_id:
+		if target_chapter != null:
+			var entry_id = target_chapter.get_entry_scene_id()
+			if entry_id != "" and entry_id != target_scene_id:
 				_record_warning(graph,
 					"ScenarioGraphBuilder: cross-chapter %s from '%s' to non-entry scene '%s' of chapter '%s' (line %d)"
 					% [kind, source_chapter.id, target_scene_id, target_chapter_id, line],
@@ -191,6 +218,12 @@ static func _chapter_id_of(scene_id: String, data: ScenarioData) -> String:
 ## Skips synthetic __if_*/__elif_* scenes — those are reached via condition
 ## commands, not declaration-order fallthrough, so they would otherwise
 ## produce phantom sequential edges.
+##
+## Note: scene ids beginning with `__if_` or `__elif_` are reserved by the
+## parser for synthetic scenes (DslParser._close_if_block /
+## _close_elif_into_parent). Author scenes with those prefixes would be
+## silently skipped here — DslParser does not currently validate against
+## reserved prefixes; that would be a future PR-A hardening.
 static func _next_scene_in_declaration_order(scene: SceneData, data: ScenarioData) -> String:
 	var idx = data.get_scene_index(scene.id)
 	if idx == -1:
