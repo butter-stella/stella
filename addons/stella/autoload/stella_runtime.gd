@@ -324,18 +324,28 @@ func _on_dialogue_for_backlog(character: String, segments: Array, _mode: String)
 	var uid: int = -1
 	if cmd != null:
 		uid = cmd.uid
-	backlog_manager.add_entry(character, segments, uid, _capture_backlog_snapshot)
+	backlog_manager.add_entry(character, segments, uid, _capture_rollback_snapshot)
 
 
-## Capture the lightweight snapshot stored on each backlog entry. Excludes
-## read_flags and unlock_manager (those are monotonic — never need to roll
-## back when navigating history).
-func _capture_backlog_snapshot() -> Dictionary:
+## Capture a lightweight snapshot for rollback paths (backlog jump and,
+## upcoming, flowchart jump — see issue #97).
+##
+## Excluded from this snapshot — these are monotonic / cross-playthrough
+## persistent and MUST NOT be rolled back when navigating history:
+##   - read_flags (already excluded by not being captured here)
+##   - unlock_manager (CG/scene/BGM unlock progress)
+##   - voice_bookmark_manager
+##   - VariableStore.Scope.GLOBAL (issue #98 — captured via the scoped
+##     capture_scenario_scope() helper, not the full capture_snapshot())
+##
+## The two callers (backlog and flowchart) share this function so the
+## "rollback contract" stays in one place.
+func _capture_rollback_snapshot() -> Dictionary:
 	var snap: Dictionary = {}
 	if engine and engine.context:
 		snap["scenario_context"] = engine.context.capture_snapshot()
 		if engine.context.variable_store:
-			snap["variable_store"] = engine.context.variable_store.capture_snapshot()
+			snap["variable_store"] = engine.context.variable_store.capture_scenario_scope()
 	if presentation_state:
 		snap["presentation_state"] = presentation_state.capture_snapshot()
 	return snap
@@ -595,9 +605,15 @@ func jump_from_backlog(index: int) -> bool:
 	# Build a fresh context to swap in. The currently-running engine.run()
 	# loop captured the old context as a local — once it sees ctx != context
 	# (after we unblock its pending await below), it returns cleanly.
+	#
+	# REUSE the existing VariableStore instance (do not allocate a fresh one).
+	# Issue #98: Scope.GLOBAL must survive rollback. The store's scenario scope
+	# is overwritten below by restore_scenario_scope; global stays as-is. The
+	# old context drops its reference when we swap, so reusing the store is
+	# safe and avoids losing global state via the discarded instance.
 	var scenario_data = engine.context.scenario_data
 	var new_ctx = ScenarioContext.new(scenario_data)
-	new_ctx.variable_store = VariableStore.new()
+	new_ctx.variable_store = engine.context.variable_store
 
 	# Reset visuals to a clean slate before restoring + snapping to the
 	# target state. char_hide("all") + bgm_stop also clear PresentationState
@@ -612,7 +628,8 @@ func jump_from_backlog(index: int) -> bool:
 
 	var snap: Dictionary = info["snapshot"]
 	new_ctx.restore_snapshot(snap.get("scenario_context", {}))
-	new_ctx.variable_store.restore_snapshot(snap.get("variable_store", {}))
+	# Scope-only restore: rollback paths must not touch Scope.GLOBAL (issue #98).
+	new_ctx.variable_store.restore_scenario_scope(snap.get("variable_store", {}))
 	presentation_state.restore_snapshot(snap.get("presentation_state", {}))
 
 	# Snap visual presenters to the restored state in one shot before the
