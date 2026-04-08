@@ -12,6 +12,11 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 	var choice_cmd: CommandData = null
 	var current_mode: String = "adv"  # adv / nvl / overlay
 
+	# @chapter state (issue #97). Tracks the most-recently-declared chapter so
+	# subsequent @scene declarations can be assigned to it. null until the
+	# first @chapter is seen.
+	var current_chapter: ChapterData = null
+
 	# @if/@else/@end state
 	var if_stack: Array = []  # Array of IfContext
 
@@ -38,6 +43,57 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				pending_options = []
 				current_scene = _parse_scene_directive(token)
 				data.scenes.append(current_scene)
+				# Issue #97: 强制规范化 — every scene must belong to a chapter.
+				if current_chapter == null:
+					_record_diagnostic(data, "error",
+						"DslParser: scene '%s' declared before any @chapter (line %d)"
+						% [current_scene.id, token.line], token.line)
+					# Forgiving: still record the orphan scene with empty
+					# chapter_id so the rest of the file parses; downstream
+					# graph builder treats orphans as errors.
+				else:
+					current_scene.chapter_id = current_chapter.id
+					current_chapter.scene_ids.append(current_scene.id)
+
+			DslToken.Type.CHAPTER_DIRECTIVE:
+				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
+				choice_cmd = null
+				pending_options = []
+				# Chapters are top-level only — they cannot appear inside an
+				# @if/@else block, @parallel block, or @combine block.
+				if if_stack.size() > 0:
+					_record_diagnostic(data, "error",
+						"DslParser: @chapter cannot be used inside @if/@else block (line %d)"
+						% token.line, token.line)
+				elif in_parallel:
+					_record_diagnostic(data, "error",
+						"DslParser: @chapter cannot be used inside @parallel block (line %d)"
+						% token.line, token.line)
+				elif in_combine:
+					_record_diagnostic(data, "error",
+						"DslParser: @chapter cannot be used inside @combine block (line %d)"
+						% token.line, token.line)
+				else:
+					var new_chapter = _parse_chapter_directive(token)
+					if new_chapter.id == "":
+						# Bare `@chapter` or quoted-only `@chapter "title"` —
+						# no usable id. Reject the chapter entirely; an empty-id
+						# chapter would silently break get_chapter_for_scene.
+						_record_diagnostic(data, "error",
+							"DslParser: @chapter is missing id (line %d)"
+							% token.line, token.line)
+						# Do NOT update current_chapter — subsequent scenes will
+						# trigger "before any @chapter" until a valid one appears.
+					elif data.get_chapter(new_chapter.id) != null:
+						_record_diagnostic(data, "error",
+							"DslParser: duplicate chapter id '%s' (line %d)"
+							% [new_chapter.id, token.line], token.line)
+						# Reject the duplicate; first one wins. current_chapter
+						# stays on the previous one so subsequent scenes still
+						# group sensibly under the original chapter.
+					else:
+						current_chapter = new_chapter
+						data.chapters.append(current_chapter)
 
 			DslToken.Type.AT_COMMAND:
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
@@ -187,6 +243,20 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 
 	_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 
+	# Issue #97: post-parse validation — every chapter must own at least one
+	# scene. Use the chapter's declared_line so the error points back to the
+	# original @chapter directive (not line 0).
+	for ch in data.chapters:
+		if ch.scene_ids.size() == 0:
+			_record_diagnostic(data, "error",
+				"DslParser: chapter '%s' contains no scenes (line %d)"
+				% [ch.id, ch.declared_line], ch.declared_line)
+
+	# Sort diagnostics by line so authors see issues in source order. Errors
+	# from the in-line scan are already line-ordered, but post-parse errors
+	# (empty chapter) get appended at the end and need reordering.
+	data.diagnostics.sort_custom(func(a, b): return int(a.get("line", 0)) < int(b.get("line", 0)))
+
 	return data
 
 
@@ -222,6 +292,40 @@ static func _parse_scene_directive(token: DslToken) -> SceneData:
 	else:
 		scene.id = text.split(" ")[0] if text != "" else ""
 	return scene
+
+
+# --- Chapter directive (issue #97) ---
+
+static func _parse_chapter_directive(token: DslToken) -> ChapterData:
+	var ch = ChapterData.new()
+	ch.declared_line = token.line
+	var text = token.raw_text.substr(8).strip_edges()  # Remove "@chapter"
+	# Extract quoted display name if present
+	var quote_start = text.find('"')
+	var quote_end = -1
+	if quote_start != -1:
+		quote_end = text.find('"', quote_start + 1)
+	else:
+		quote_start = text.find("\u201c")  # "
+		if quote_start != -1:
+			quote_end = text.find("\u201d", quote_start + 1)  # "
+	if quote_start != -1 and quote_end != -1:
+		ch.id = text.substr(0, quote_start).strip_edges()
+		ch.display_name = text.substr(quote_start + 1, quote_end - quote_start - 1)
+	else:
+		ch.id = text.split(" ")[0] if text != "" else ""
+		# Fallback: display name == id when no quoted title given
+		ch.display_name = ch.id
+	return ch
+
+
+## Record a diagnostic into data.diagnostics. Parser is intentionally silent
+## about console reporting — the integration layer (StellaRuntime) is
+## responsible for surfacing errors/warnings to the developer after parsing.
+## This keeps the parser pure-functional and testable: tests can construct
+## small fragments without polluting Godot's error log.
+static func _record_diagnostic(data: ScenarioData, level: String, message: String, line: int) -> void:
+	data.diagnostics.append({"level": level, "message": message, "line": line})
 
 
 # --- AT commands ---
@@ -524,9 +628,17 @@ static func _close_elif_into_parent(elif_ctx: Dictionary, parent_ctx: Dictionary
 	var base_id = "__elif_%s_%d" % [elif_ctx["scene_id"], elif_ctx["line"]]
 	# The parent if's continuation scene ID (created later by _close_if_block)
 	var parent_cont_id = "__if_%s_%d_cont" % [parent_ctx["scene_id"], parent_ctx["line"]]
+	# Synthetic scenes inherit chapter_id from the enclosing scene's chapter
+	# (issue #97) — otherwise PR-B's flowchart graph builder sees them as
+	# orphans and they pollute "scene before any @chapter" detection.
+	var inherit_chapter_id := ""
+	var parent_scene = parent_ctx.get("parent_scene")
+	if parent_scene != null:
+		inherit_chapter_id = parent_scene.chapter_id
 
 	var then_scene = SceneData.new()
 	then_scene.id = base_id + "_then"
+	then_scene.chapter_id = inherit_chapter_id
 	for cmd in elif_ctx["then_commands"]:
 		then_scene.commands.append(cmd)
 	# Jump to parent's continuation after elif branch executes
@@ -537,6 +649,7 @@ static func _close_elif_into_parent(elif_ctx: Dictionary, parent_ctx: Dictionary
 	if elif_ctx["else_commands"].size() > 0:
 		var else_scene = SceneData.new()
 		else_scene.id = base_id + "_else"
+		else_scene.chapter_id = inherit_chapter_id
 		for cmd in elif_ctx["else_commands"]:
 			else_scene.commands.append(cmd)
 		else_scene.commands.append(_make_cmd("jump", {"target": parent_cont_id}))
@@ -554,15 +667,20 @@ static func _close_elif_into_parent(elif_ctx: Dictionary, parent_ctx: Dictionary
 static func _close_if_block(ctx: Dictionary, data: ScenarioData) -> SceneData:
 	var parent_scene: SceneData = ctx["parent_scene"]
 	var base_id = "__if_%s_%d" % [ctx["scene_id"], ctx["line"]]
+	# Synthetic scenes inherit chapter_id from the enclosing scene's chapter
+	# (issue #97) — see _close_elif_into_parent for rationale.
+	var inherit_chapter_id := parent_scene.chapter_id if parent_scene else ""
 
 	# Create synthetic scenes
 	var then_scene = SceneData.new()
 	then_scene.id = base_id + "_then"
+	then_scene.chapter_id = inherit_chapter_id
 	for cmd in ctx["then_commands"]:
 		then_scene.commands.append(cmd)
 
 	var cont_scene = SceneData.new()
 	cont_scene.id = base_id + "_cont"
+	cont_scene.chapter_id = inherit_chapter_id
 
 	# Add jump to continuation at end of then branch
 	var then_jump = _make_cmd("jump", {"target": cont_scene.id})
@@ -574,6 +692,7 @@ static func _close_if_block(ctx: Dictionary, data: ScenarioData) -> SceneData:
 	if ctx["else_commands"].size() > 0:
 		var else_scene = SceneData.new()
 		else_scene.id = base_id + "_else"
+		else_scene.chapter_id = inherit_chapter_id
 		for cmd in ctx["else_commands"]:
 			else_scene.commands.append(cmd)
 		var else_jump = _make_cmd("jump", {"target": cont_scene.id})

@@ -263,6 +263,15 @@ func _prepare_scenario(scenario_path: String) -> void:
 	var tokens = DslLexer.tokenize(source)
 	var scenario_id = scenario_path.get_file().get_basename()
 	var data = DslParser.parse(tokens, scenario_id)
+	# Surface parser diagnostics (issue #97). DslParser is intentionally silent
+	# about console reporting; this is the integration point where parse-time
+	# errors/warnings reach the developer.
+	for d in data.diagnostics:
+		var msg = "[%s] %s" % [scenario_id, d.get("message", "")]
+		if d.get("level") == "error":
+			push_error(msg)
+		else:
+			push_warning(msg)
 
 	engine.load_scenario(data)
 	save_manager.register_provider(engine.context)

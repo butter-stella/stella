@@ -22,6 +22,8 @@ static func tokenize(source: String) -> Array:
 		# Classify token type
 		if stripped.begins_with("@scene ") or stripped == "@scene":
 			token.type = DslToken.Type.SCENE_DIRECTIVE
+		elif stripped.begins_with("@chapter ") or stripped == "@chapter":
+			token.type = DslToken.Type.CHAPTER_DIRECTIVE
 		elif stripped.begins_with("@"):
 			token.type = DslToken.Type.AT_COMMAND
 		elif _is_choice_option(stripped):

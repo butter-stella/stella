@@ -30,6 +30,28 @@ func test_scene_directive_no_title():
 	assert_eq(tokens[0].type, DslToken.Type.SCENE_DIRECTIVE)
 
 
+# ─── @chapter directive (issue #97) ───
+
+func test_chapter_directive_tokenizes():
+	var tokens = DslLexer.tokenize('@chapter prologue "序章"')
+	assert_eq(tokens.size(), 1)
+	assert_eq(tokens[0].type, DslToken.Type.CHAPTER_DIRECTIVE)
+	assert_eq(tokens[0].line, 1)
+
+
+func test_chapter_directive_without_title():
+	var tokens = DslLexer.tokenize("@chapter ch1")
+	assert_eq(tokens.size(), 1)
+	assert_eq(tokens[0].type, DslToken.Type.CHAPTER_DIRECTIVE)
+
+
+func test_chapter_directive_not_confused_with_at_command():
+	# Make sure @chapter is recognized as its own type, not generic @command
+	var tokens = DslLexer.tokenize("@chapter prologue")
+	assert_eq(tokens[0].type, DslToken.Type.CHAPTER_DIRECTIVE)
+	assert_ne(tokens[0].type, DslToken.Type.AT_COMMAND)
+
+
 func test_at_command():
 	var tokens = DslLexer.tokenize("@bg bg_school fade 0.8")
 	assert_eq(tokens.size(), 1)
