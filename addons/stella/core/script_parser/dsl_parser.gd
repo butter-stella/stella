@@ -173,6 +173,8 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 					combine_pending_expr = ""
 				else:
 					var cmd = _parse_at_command(token)
+					if cmd:
+						cmd.declared_line = token.line
 					if cmd and current_scene:
 						if in_combine:
 							# Inside @combine, only @expr is allowed and it binds to the next segment.
@@ -282,6 +284,7 @@ static func _flush_choice(choice_cmd: CommandData, options: Array, scene: SceneD
 
 static func _parse_scene_directive(token: DslToken) -> SceneData:
 	var scene = SceneData.new()
+	scene.declared_line = token.line
 	var text = token.raw_text.substr(7).strip_edges()  # Remove "@scene "
 	# Extract quoted title if present
 	var quote_start = text.find('"')
