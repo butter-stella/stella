@@ -392,3 +392,106 @@ sakura「结束。」 #voice:v3""")
 	assert_eq(data.scenes[0].commands[3].type, "dialogue")
 	assert_eq(data.scenes[0].commands[3].params.get("segments", []).size(), 2)
 	assert_eq(data.scenes[0].commands[4].type, "dialogue")
+
+
+# ─── @chapter directive (issue #97) ───
+
+func _has_diagnostic(data: ScenarioData, level: String, substring: String) -> bool:
+	for d in data.diagnostics:
+		if d.get("level") == level and substring in str(d.get("message", "")):
+			return true
+	return false
+
+
+func test_chapter_creates_chapter_data():
+	var data = _parse('@chapter prologue "序章"\n@scene start')
+	assert_eq(data.chapters.size(), 1)
+	assert_eq(data.chapters[0].id, "prologue")
+	assert_eq(data.chapters[0].display_name, "序章")
+
+
+func test_chapter_without_display_name_falls_back_to_id():
+	var data = _parse("@chapter ch1\n@scene start")
+	assert_eq(data.chapters.size(), 1)
+	assert_eq(data.chapters[0].id, "ch1")
+	# Fallback: display name == id when no quoted title
+	assert_eq(data.chapters[0].display_name, "ch1")
+
+
+func test_chapter_groups_following_scenes():
+	var data = _parse("""@chapter prologue
+@scene a
+@scene b
+@scene c""")
+	assert_eq(data.chapters.size(), 1)
+	assert_eq(data.chapters[0].scene_ids.size(), 3)
+	assert_eq(data.chapters[0].scene_ids[0], "a")
+	assert_eq(data.chapters[0].scene_ids[1], "b")
+	assert_eq(data.chapters[0].scene_ids[2], "c")
+
+
+func test_multiple_chapters_each_get_their_scenes():
+	var data = _parse("""@chapter prologue
+@scene a
+@scene b
+@chapter ch1
+@scene c
+@scene d""")
+	assert_eq(data.chapters.size(), 2)
+	assert_eq(data.chapters[0].id, "prologue")
+	assert_eq(data.chapters[0].scene_ids, ["a", "b"])
+	assert_eq(data.chapters[1].id, "ch1")
+	assert_eq(data.chapters[1].scene_ids, ["c", "d"])
+
+
+func test_scene_carries_chapter_id_back_reference():
+	var data = _parse("""@chapter prologue
+@scene a
+@chapter ch1
+@scene b""")
+	assert_eq(data.scenes.size(), 2)
+	assert_eq(data.scenes[0].chapter_id, "prologue")
+	assert_eq(data.scenes[1].chapter_id, "ch1")
+
+
+func test_scene_before_any_chapter_emits_error_diagnostic():
+	# Issue #97: 强制规范化 — scene declared before any @chapter is an error
+	var data = _parse('@scene orphan\n@chapter ch1\n@scene legit')
+	assert_true(_has_diagnostic(data, "error", "before any @chapter"),
+		"orphan scene should produce an error diagnostic")
+	# Orphan scene is still recorded with empty chapter_id (forgiving parser)
+	assert_eq(data.scenes[0].id, "orphan")
+	assert_eq(data.scenes[0].chapter_id, "")
+
+
+func test_empty_chapter_emits_error_diagnostic():
+	# Issue #97: 每个 chapter 必须至少包含一个 @scene
+	var data = _parse("@chapter empty_ch\n@chapter ch_with_scene\n@scene s")
+	assert_true(_has_diagnostic(data, "error", "empty_ch"),
+		"empty chapter should produce an error diagnostic naming it")
+
+
+func test_chapter_inside_if_block_emits_error_diagnostic():
+	var data = _parse("""@chapter prologue
+@scene start
+@if some_flag
+@chapter inner
+@end""")
+	assert_true(_has_diagnostic(data, "error", "@chapter cannot be used inside @if"),
+		"chapter inside @if block should produce an error diagnostic")
+
+
+func test_chapter_at_end_of_file_with_no_scenes_is_empty_chapter_error():
+	var data = _parse("@chapter ch1\n@scene s\n@chapter trailing")
+	assert_true(_has_diagnostic(data, "error", "trailing"),
+		"trailing chapter with no scenes should error")
+
+
+func test_no_diagnostic_when_well_formed():
+	var data = _parse("""@chapter prologue
+@scene a
+@scene b
+@chapter ch1
+@scene c""")
+	assert_eq(data.diagnostics.size(), 0,
+		"well-formed scenario should produce no diagnostics")

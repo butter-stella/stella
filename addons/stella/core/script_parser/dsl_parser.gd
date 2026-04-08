@@ -12,6 +12,11 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 	var choice_cmd: CommandData = null
 	var current_mode: String = "adv"  # adv / nvl / overlay
 
+	# @chapter state (issue #97). Tracks the most-recently-declared chapter so
+	# subsequent @scene declarations can be assigned to it. null until the
+	# first @chapter is seen.
+	var current_chapter: ChapterData = null
+
 	# @if/@else/@end state
 	var if_stack: Array = []  # Array of IfContext
 
@@ -38,6 +43,33 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				pending_options = []
 				current_scene = _parse_scene_directive(token)
 				data.scenes.append(current_scene)
+				# Issue #97: 强制规范化 — every scene must belong to a chapter.
+				if current_chapter == null:
+					_record_diagnostic(data, "error",
+						"DslParser: scene '%s' declared before any @chapter (line %d)"
+						% [current_scene.id, token.line], token.line)
+					# Forgiving: still record the orphan scene with empty
+					# chapter_id so the rest of the file parses; downstream
+					# graph builder treats orphans as errors.
+				else:
+					current_scene.chapter_id = current_chapter.id
+					current_chapter.scene_ids.append(current_scene.id)
+
+			DslToken.Type.CHAPTER_DIRECTIVE:
+				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
+				choice_cmd = null
+				pending_options = []
+				# Chapters are top-level only — they cannot appear inside an
+				# @if/@else block. The lexer doesn't know context, so the
+				# parser enforces this.
+				if if_stack.size() > 0:
+					_record_diagnostic(data, "error",
+						"DslParser: @chapter cannot be used inside @if/@else block (line %d)"
+						% token.line, token.line)
+					# Skip this directive entirely; do not change current_chapter.
+				else:
+					current_chapter = _parse_chapter_directive(token)
+					data.chapters.append(current_chapter)
 
 			DslToken.Type.AT_COMMAND:
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
@@ -187,6 +219,14 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 
 	_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 
+	# Issue #97: post-parse validation — every chapter must own at least one
+	# scene. Walk chapters in declaration order so error messages come out in
+	# source order.
+	for ch in data.chapters:
+		if ch.scene_ids.size() == 0:
+			_record_diagnostic(data, "error",
+				"DslParser: chapter '%s' contains no scenes" % ch.id, 0)
+
 	return data
 
 
@@ -222,6 +262,39 @@ static func _parse_scene_directive(token: DslToken) -> SceneData:
 	else:
 		scene.id = text.split(" ")[0] if text != "" else ""
 	return scene
+
+
+# --- Chapter directive (issue #97) ---
+
+static func _parse_chapter_directive(token: DslToken) -> ChapterData:
+	var ch = ChapterData.new()
+	var text = token.raw_text.substr(8).strip_edges()  # Remove "@chapter"
+	# Extract quoted display name if present
+	var quote_start = text.find('"')
+	var quote_end = -1
+	if quote_start != -1:
+		quote_end = text.find('"', quote_start + 1)
+	else:
+		quote_start = text.find("\u201c")  # "
+		if quote_start != -1:
+			quote_end = text.find("\u201d", quote_start + 1)  # "
+	if quote_start != -1 and quote_end != -1:
+		ch.id = text.substr(0, quote_start).strip_edges()
+		ch.display_name = text.substr(quote_start + 1, quote_end - quote_start - 1)
+	else:
+		ch.id = text.split(" ")[0] if text != "" else ""
+		# Fallback: display name == id when no quoted title given
+		ch.display_name = ch.id
+	return ch
+
+
+## Record a diagnostic into data.diagnostics. Parser is intentionally silent
+## about console reporting — the integration layer (StellaRuntime) is
+## responsible for surfacing errors/warnings to the developer after parsing.
+## This keeps the parser pure-functional and testable: tests can construct
+## small fragments without polluting Godot's error log.
+static func _record_diagnostic(data: ScenarioData, level: String, message: String, line: int) -> void:
+	data.diagnostics.append({"level": level, "message": message, "line": line})
 
 
 # --- AT commands ---

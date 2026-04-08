@@ -1,5 +1,7 @@
 // demo.stla — Stella Demo: 樱与学姐
 
+@chapter prologue "序章 — 樱花树下"
+
 @scene start "序章 — 樱花树下"
 
 @bgm bgm_spring
@@ -18,6 +20,8 @@ sakura「今天是你第一天，要不要我带你逛逛校园？」 #voice:sak
   - "我自己看看就好。" -> decline
 
 //========================================
+@chapter campus_tour "校园漫步"
+
 @scene tour "校园漫步"
 
 @expr sakura happy
@@ -77,6 +81,8 @@ sakura「学姐对谁都很温柔呢。」 #voice:sakura_010
 @jump cafe
 
 //========================================
+@chapter cafe_chapter "放学后的咖啡店"
+
 @scene cafe "放学后的咖啡店"
 
 @bgm bgm_cafe
@@ -123,6 +129,8 @@ senpai「看你开心就好。」 #voice:senpai_009
 @jump ending
 
 //========================================
+@chapter alone_chapter "独自一人"
+
 @scene decline "独自一人"
 
 @expr sakura sad
@@ -143,6 +151,8 @@ sakura「教室在二楼最左边那间！」 #voice:sakura_017
 @jump ending
 
 //========================================
+@chapter ending_chapter "尾声"
+
 @scene ending "尾声"
 
 @bgm bgm_ending

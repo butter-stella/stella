@@ -401,7 +401,7 @@ func test_prepare_scenario_clears_backlog():
 	# Write a minimal scenario file and route through _prepare_scenario.
 	var path = "user://test_backlog_clear.stla"
 	var f = FileAccess.open(path, FileAccess.WRITE)
-	f.store_string("@scene start\nnarrator「hi」\n")
+	f.store_string("@chapter ch\n@scene start\nnarrator「hi」\n")
 	f.close()
 
 	_runtime._prepare_scenario(path)

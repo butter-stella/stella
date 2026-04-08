@@ -3,6 +3,7 @@ class_name DslToken extends RefCounted
 
 enum Type {
 	SCENE_DIRECTIVE,   # @scene id ["title"]
+	CHAPTER_DIRECTIVE, # @chapter id ["display name"]  (issue #97)
 	AT_COMMAND,        # @bg, @show, @hide, @expr, @set, @if, @else, @end, @jump, @choice, ...
 	DIALOGUE,          # sakura「text」 [#voice:id]
 	NARRATION,         # 「text」
