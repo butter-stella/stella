@@ -409,3 +409,39 @@ func test_prepare_scenario_clears_backlog():
 		"_prepare_scenario must clear backlog (covers all fresh-state paths)")
 
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+
+func test_backlog_jump_preserves_global_vars():
+	# Issue #98: rollback paths (backlog/flowchart jump) must NOT roll back
+	# Scope.GLOBAL — global vars are monotonic, contractually persistent across
+	# playthroughs (think CG unlock flags, "ever-seen" markers).
+	#
+	# Build a scenario where dialogue 0 happens, then a global var is set,
+	# then dialogue 1 happens. Jump back to dialogue 0 and assert the global
+	# var SURVIVES (while scenario state IS rewound — covered by other tests).
+	_setup_scenario(2)
+	_runtime.engine.run()
+	await _advance(1)  # → 2 entries
+
+	# Simulate a "global progress" write that happens between entries.
+	# (No DSL command writes Scope.GLOBAL yet — issue #98 establishes the
+	# contract before that capability ships in #97.)
+	_runtime.engine.context.variable_store.set_var(
+		"unlocked_true_ending", true, VariableStore.Scope.GLOBAL)
+	assert_eq(
+		_runtime.engine.context.variable_store.get_var("unlocked_true_ending"),
+		true)
+
+	# Jump back to entry 0 — the rollback path overwrites scenario state but
+	# must leave global state alone.
+	var ok = _runtime.jump_from_backlog(0)
+	assert_true(ok)
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+	assert_eq(
+		_runtime.engine.context.variable_store.get_var("unlocked_true_ending"),
+		true,
+		"global var written after the snapshot must survive rollback (issue #98)")
+
+	await _stop_engine()
