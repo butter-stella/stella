@@ -47,3 +47,20 @@ func get_incoming_edges(chapter_id: String) -> Array:
 		if edge.target_chapter_id == chapter_id:
 			result.append(edge)
 	return result
+
+
+## Returns true if the chapter has scenes but no outgoing edges — i.e., the
+## player would be stuck if execution reached this chapter and didn't
+## terminate naturally. Builder marks this with a "no outgoing transitions"
+## diagnostic (see issue #103).
+##
+## Returns false for: empty chapters (parser error, not deadlock), non-existent
+## chapters, and chapters that have at least one outgoing edge (including
+## KIND_TERMINAL, which is a natural end).
+func is_deadlocked(chapter_id: String) -> bool:
+	if get_outgoing_edges(chapter_id).size() > 0:
+		return false
+	var ch = get_chapter(chapter_id)
+	if ch == null or ch.scene_ids.size() == 0:
+		return false
+	return true
