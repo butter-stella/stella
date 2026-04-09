@@ -8,6 +8,7 @@ const DEFAULT_GAME_SCENE = "res://addons/stella/scenes/game.tscn"
 const DEFAULT_SETTINGS_SCENE = "res://addons/stella/scenes/settings.tscn"
 const DEFAULT_SAVE_LOAD_SCENE = "res://addons/stella/scenes/save_load.tscn"
 const DEFAULT_BACKLOG_SCENE = "res://addons/stella/scenes/backlog.tscn"
+const DEFAULT_FLOWCHART_SCENE = "res://addons/stella/scenes/flowchart.tscn"
 
 var engine: ScenarioEngine
 var registry: CommandRegistry
@@ -326,6 +327,7 @@ func _is_on_title_screen() -> bool:
 		GameStateMachine.State.SAVE_LOAD,
 		GameStateMachine.State.SETTINGS,
 		GameStateMachine.State.BACKLOG,
+		GameStateMachine.State.FLOWCHART,
 	]
 	if game_state.current_state in overlay_states:
 		return game_state.previous_state == GameStateMachine.State.TITLE
@@ -617,6 +619,13 @@ func show_settings() -> void:
 	var scene_path = config.settings_scene if config.settings_scene != "" else DEFAULT_SETTINGS_SCENE
 	_open_overlay(scene_path)
 	game_state.transition_to(GameStateMachine.State.SETTINGS)
+
+
+## Show the flowchart overlay (issue #97 PR-D).
+func show_flowchart() -> void:
+	var scene_path = config.flowchart_scene if config.flowchart_scene != "" else DEFAULT_FLOWCHART_SCENE
+	_open_overlay(scene_path)
+	game_state.transition_to(GameStateMachine.State.FLOWCHART)
 
 
 ## Close the current overlay and return to previous state.

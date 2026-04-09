@@ -90,6 +90,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if not event.pressed or event.echo:
 		return
+	# F9: open flowchart overlay (issue #97). Works from PLAYING state only.
+	if event.keycode == KEY_F9:
+		if StellaRuntime.game_state.is_playing() and StellaRuntime.scenario_graph != null:
+			StellaRuntime.show_flowchart()
+		return
 	if not StellaRuntime.game_state.is_playing():
 		return
 	if event.keycode == KEY_SPACE or event.keycode == KEY_ENTER:

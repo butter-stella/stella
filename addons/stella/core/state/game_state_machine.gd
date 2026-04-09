@@ -1,5 +1,5 @@
 ## Manages macro game state transitions.
-## Title → Playing ↔ Paused / SaveLoad / Backlog / Settings
+## Title → Playing ↔ Paused / SaveLoad / Backlog / Settings / Flowchart
 class_name GameStateMachine extends RefCounted
 
 signal state_changed(from_state: int, to_state: int)
@@ -11,6 +11,7 @@ enum State {
 	SAVE_LOAD,
 	BACKLOG,
 	SETTINGS,
+	FLOWCHART,  ## Issue #97: flowchart overlay
 }
 
 var current_state: int = State.TITLE

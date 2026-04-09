@@ -33,6 +33,7 @@ var game_scene: String = ""
 var settings_scene: String = ""
 var save_load_scene: String = ""
 var backlog_scene: String = ""
+var flowchart_scene: String = ""
 
 
 func load_from_path(path: String) -> void:
@@ -71,3 +72,4 @@ func load_from_path(path: String) -> void:
 	settings_scene = cf.get_value("overrides", "settings_scene", settings_scene)
 	save_load_scene = cf.get_value("overrides", "save_load_scene", save_load_scene)
 	backlog_scene = cf.get_value("overrides", "backlog_scene", backlog_scene)
+	flowchart_scene = cf.get_value("overrides", "flowchart_scene", flowchart_scene)
