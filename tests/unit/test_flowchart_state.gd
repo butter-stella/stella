@@ -153,6 +153,29 @@ func test_visited_state_provider_id():
 	assert_eq(vs.get_provider_id(), "flowchart_visited")
 
 
+func test_visited_state_restore_merges_not_overwrites():
+	# CR round 1 BLOCKER (sonnet + opus): SaveManager calls restore_snapshot
+	# on every load_save. Without merge, loading an old save wipes visited
+	# progress from other playthroughs. Merge (union) ensures monotonic.
+	var vs = FlowchartVisitedState.new()
+	vs.mark_chapter_visited("A")
+	vs.mark_chapter_visited("B")
+	vs.mark_edge_visited("A|B|jump|")
+
+	# Simulate loading an older save that only knew about A + a new chapter C.
+	vs.restore_snapshot({
+		"visited_chapters": {"A": true, "C": true},
+		"visited_chapter_edges": {"A|C|jump|": true},
+	})
+
+	# B must NOT be lost; C is added.
+	assert_true(vs.is_chapter_visited("A"), "A should survive merge")
+	assert_true(vs.is_chapter_visited("B"), "B must NOT be wiped by old save")
+	assert_true(vs.is_chapter_visited("C"), "C should be added from loaded save")
+	assert_true(vs.is_edge_visited("A|B|jump|"), "old edge must survive")
+	assert_true(vs.is_edge_visited("A|C|jump|"), "new edge should be added")
+
+
 # ─── ScenarioGraph.is_deadlocked (#103) ───
 
 func test_is_deadlocked_returns_true_for_zero_edge_chapter():

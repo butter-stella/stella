@@ -45,6 +45,20 @@ func capture_snapshot() -> Dictionary:
 	}
 
 
+## Merge (union), NOT overwrite. Visited state is monotonic — loading an old
+## save must never erase progress accumulated in other playthroughs.
+##
+## SaveManager calls restore_snapshot on every load_save. Without merge,
+## loading save slot 1 (visited={A,B}) after visiting C in a new game
+## would wipe C. With merge, the result is {A,B,C}.
+##
+## Note: this means the in-memory visited set is the union of all saves
+## ever loaded in this session. For a fully correct cross-session global,
+## a separate persistence file would be needed (see follow-up issue).
 func restore_snapshot(snapshot: Dictionary) -> void:
-	visited_chapters = snapshot.get("visited_chapters", {}).duplicate()
-	visited_chapter_edges = snapshot.get("visited_chapter_edges", {}).duplicate()
+	var loaded_chapters = snapshot.get("visited_chapters", {})
+	for key in loaded_chapters:
+		visited_chapters[key] = true
+	var loaded_edges = snapshot.get("visited_chapter_edges", {})
+	for key in loaded_edges:
+		visited_chapter_edges[key] = true

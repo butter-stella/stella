@@ -41,9 +41,13 @@ func get_current_chapter_id() -> String:
 
 ## Get the snapshot to apply when jumping to the given chapter.
 ## Returns chapter_snapshots[id] if visited, else initial_snapshot.
+## Warns if initial_snapshot is empty (indicates _prepare_scenario was
+## not called before a jump, which would silently restore empty state).
 func get_snapshot_for_chapter(chapter_id: String) -> Dictionary:
 	if chapter_snapshots.has(chapter_id):
 		return chapter_snapshots[chapter_id]
+	if initial_snapshot.is_empty():
+		push_warning("FlowchartState: initial_snapshot is empty when jumping to unvisited chapter '%s' — was _prepare_scenario called?" % chapter_id)
 	return initial_snapshot
 
 

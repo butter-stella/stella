@@ -78,7 +78,12 @@ func _ready():
 	save_manager.register_provider(read_flags)
 	save_manager.register_provider(unlock_manager)
 	save_manager.register_provider(presentation_state)
-	# Flowchart visited is global/monotonic — registered once, persisted across saves.
+	# Flowchart state is per-save but the instance is a singleton on StellaRuntime
+	# (unlike engine.context / variable_store which are recreated each scenario load).
+	# Register once here; SaveManager deduplicates by provider_id.
+	save_manager.register_provider(flowchart_state)
+	# Flowchart visited is global/monotonic — restore_snapshot merges (union)
+	# rather than overwrites, so loading old saves never loses progress.
 	save_manager.register_provider(flowchart_visited)
 
 	# Audio presenter — global, available in all scenes (title, game, overlays)
@@ -287,9 +292,6 @@ func _prepare_scenario(scenario_path: String) -> void:
 	engine.load_scenario(data)
 	save_manager.register_provider(engine.context)
 	save_manager.register_provider(engine.context.variable_store)
-	# Issue #97: flowchart state is per-save, re-registered each time a
-	# scenario is loaded (same pattern as engine.context + variable_store).
-	save_manager.register_provider(flowchart_state)
 	backlog_manager.clear()
 
 	# Issue #97: build scenario graph and prepare flowchart state for new run.
