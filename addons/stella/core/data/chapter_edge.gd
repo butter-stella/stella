@@ -16,6 +16,11 @@ const KIND_TERMINAL = "terminal"       # execution terminates inside this chapte
 ## Edge ID component separator. Unit Separator (U+001F) — chosen instead of
 ## a printable character (e.g. "|") so it cannot collide with characters that
 ## a chapter id or label might legitimately contain.
+##
+## Note: edge IDs containing U+001F round-trip cleanly through Godot's
+## JSON.stringify / JSON.parse_string (escaped as \u001f per JSON spec).
+## If PR-C/D ever switches to a non-JSON persistence format, verify the
+## separator survives escaping/encoding (see issue #103).
 const _ID_SEP = "\u001f"
 
 var source_chapter_id: String = ""

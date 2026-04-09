@@ -24,6 +24,10 @@ var game_state: GameStateMachine
 var unlock_manager: UnlockManager
 var presentation_state: PresentationState
 var character_config_loader: CharacterConfigLoader
+## Issue #97: flowchart subsystem
+var flowchart_state: FlowchartState
+var flowchart_visited: FlowchartVisitedState
+var scenario_graph: ScenarioGraph
 
 ## Resource base paths — populated from config, can be overridden manually.
 var backgrounds_path: String = "res://art/backgrounds/"
@@ -68,9 +72,19 @@ func _ready():
 	character_config_loader = CharacterConfigLoader.new()
 	character_config_loader.set_base_path(characters_path)
 
+	flowchart_state = FlowchartState.new()
+	flowchart_visited = FlowchartVisitedState.new()
+
 	save_manager.register_provider(read_flags)
 	save_manager.register_provider(unlock_manager)
 	save_manager.register_provider(presentation_state)
+	# Flowchart state is per-save but the instance is a singleton on StellaRuntime
+	# (unlike engine.context / variable_store which are recreated each scenario load).
+	# Register once here; SaveManager deduplicates by provider_id.
+	save_manager.register_provider(flowchart_state)
+	# Flowchart visited is global/monotonic — restore_snapshot merges (union)
+	# rather than overwrites, so loading old saves never loses progress.
+	save_manager.register_provider(flowchart_visited)
 
 	# Audio presenter — global, available in all scenes (title, game, overlays)
 	var audio_script = load("res://addons/stella/presentation/audio/audio_presenter.gd")
@@ -89,6 +103,8 @@ func _ready():
 	engine.scenario_started.connect(func(id): SignalBus.scenario_started_event.emit(id))
 	engine.scenario_ended.connect(_on_scenario_ended)
 	engine.scene_changed.connect(func(id): SignalBus.scene_changed_event.emit(id))
+	# Issue #97: detect chapter transitions for flowchart state tracking.
+	engine.scene_changed.connect(_on_scene_changed_for_flowchart)
 
 	# Wire dialogue to backlog
 	SignalBus.show_dialogue.connect(_on_dialogue_for_backlog)
@@ -278,6 +294,20 @@ func _prepare_scenario(scenario_path: String) -> void:
 	save_manager.register_provider(engine.context.variable_store)
 	backlog_manager.clear()
 
+	# Issue #97: build scenario graph and prepare flowchart state for new run.
+	scenario_graph = ScenarioGraphBuilder.build(data)
+	for d in scenario_graph.diagnostics:
+		var msg = "[%s graph] %s" % [scenario_id, d.get("message", "")]
+		if d.get("level") == "error":
+			push_error(msg)
+		else:
+			push_warning(msg)
+	flowchart_state.clear()
+	# Capture INITIAL_SNAPSHOT immediately after scenario load, before
+	# engine.run() mutates any state. Used as fallback for jump_to_chapter
+	# when the target chapter has never been visited (author debug mode).
+	flowchart_state.initial_snapshot = _capture_rollback_snapshot()
+
 
 ## Load scenario, restore snapshot, restore presentation, then run.
 func _load_scenario_and_restore(scenario_path: String, slot_id: int) -> void:
@@ -324,6 +354,40 @@ func _on_scenario_ended(id: String) -> void:
 	SignalBus.scenario_ended_event.emit(id)
 	# Auto return to title after scenario ends
 	return_to_title()
+
+
+## Issue #97: called on every engine.scene_changed. Detects chapter
+## transitions and updates flowchart state + visited tracking.
+func _on_scene_changed_for_flowchart(scene_id: String) -> void:
+	if engine == null or engine.context == null:
+		return
+	if engine.context.scenario_data == null:
+		return
+	var scene = engine.context.scenario_data.get_scene(scene_id)
+	if scene == null or scene.chapter_id == "":
+		return
+
+	var new_chapter_id = scene.chapter_id
+	var old_chapter_id = flowchart_state.get_current_chapter_id()
+
+	if new_chapter_id == old_chapter_id:
+		return  # Still inside the same chapter — no transition.
+
+	# Chapter transition detected.
+	var snapshot = _capture_rollback_snapshot()
+	flowchart_state.enter_chapter(new_chapter_id, snapshot)
+	flowchart_visited.mark_chapter_visited(new_chapter_id)
+
+	# Mark traversed edge(s). We know old→new chapter but not HOW (jump /
+	# choice / sequential / call). Conservatively mark ALL edges between the
+	# two chapters. This is slightly inaccurate for the "two choice options to
+	# the same chapter" case (both marked visited when only one was taken),
+	# but correct for all other topologies. PR-D can refine with richer engine
+	# signals if needed (e.g. choice_selected carrying option label).
+	if old_chapter_id != "" and scenario_graph != null:
+		for edge in scenario_graph.get_outgoing_edges(old_chapter_id):
+			if edge.target_chapter_id == new_chapter_id:
+				flowchart_visited.mark_edge_visited(edge.get_edge_id())
 
 
 func _on_dialogue_for_backlog(character: String, segments: Array, _mode: String):
@@ -659,6 +723,74 @@ func jump_from_backlog(index: int) -> bool:
 	# CommandHandler.await_with_abort, so a single emit cancels them all
 	# regardless of which native signal each was waiting on. Even
 	# wait_handler in timer mode is covered now.
+	SignalBus.engine_abort_requested.emit()
+
+	engine.run()
+	return true
+
+
+## Jump to a chapter from the flowchart UI (issue #97).
+##
+## Restores the snapshot that was captured when the player last entered the
+## target chapter (or INITIAL_SNAPSHOT if never visited — author debug mode).
+## Updates flowchart_state.current_path: truncates if target is on the current
+## line, resets if off-line.
+##
+## Returns false if the chapter doesn't exist in the graph, has no entry scene,
+## or the engine is not running. Callers should check scenario_graph.is_deadlocked()
+## before offering the jump to the user (deadlocked chapters are technically
+## jumpable but the player would get stuck again immediately).
+func jump_from_flowchart(chapter_id: String) -> bool:
+	if engine == null or engine.context == null:
+		return false
+	if scenario_graph == null:
+		return false
+
+	var target_chapter = scenario_graph.get_chapter(chapter_id)
+	if target_chapter == null:
+		return false
+
+	var entry_scene_id = target_chapter.get_entry_scene_id()
+	if entry_scene_id == "":
+		return false
+
+	# Get the rollback snapshot for this chapter (visited → their entry snapshot;
+	# unvisited → initial_snapshot from the start of the scenario).
+	var snap = flowchart_state.get_snapshot_for_chapter(chapter_id)
+
+	# Update flowchart line (truncate or reset).
+	flowchart_state.jump_to(chapter_id)
+
+	# Same visual-reset + context-swap pattern as jump_from_backlog. See that
+	# method's comments for detailed rationale on each step.
+	_close_current_overlay()
+	game_state.transition_to(GameStateMachine.State.PLAYING)
+
+	var scenario_data = engine.context.scenario_data
+	var new_ctx = ScenarioContext.new(scenario_data)
+	new_ctx.variable_store = engine.context.variable_store  # Scope.GLOBAL preserved (#98)
+
+	SignalBus.char_hide.emit("all")
+	SignalBus.bgm_stop.emit(0.0)
+	SignalBus.hide_dialogue.emit()
+	SignalBus.fade_requested.emit("in", 0.0)
+	presentation_state.clear()
+
+	new_ctx.restore_snapshot(snap.get("scenario_context", {}))
+	new_ctx.variable_store.restore_scenario_scope(snap.get("variable_store", {}))
+	# Override scene position to chapter entry, regardless of where the snapshot
+	# was captured. The snapshot's scenario_context.scene_index points to the
+	# entry scene (captured at entry time), but after restore we set_scene
+	# explicitly to be safe against snapshot-context mismatch.
+	new_ctx.set_scene(entry_scene_id)
+	presentation_state.restore_snapshot(snap.get("presentation_state", {}))
+	presentation_state.apply_to_presenters()
+
+	save_manager.register_provider(new_ctx)
+	save_manager.register_provider(new_ctx.variable_store)
+	var old_ctx = engine.context
+	engine.context = new_ctx
+	old_ctx.is_finished = true
 	SignalBus.engine_abort_requested.emit()
 
 	engine.run()
