@@ -623,7 +623,8 @@ func show_settings() -> void:
 
 ## Show the flowchart overlay (issue #97 PR-D).
 func show_flowchart() -> void:
-	_open_overlay(DEFAULT_FLOWCHART_SCENE)
+	var scene_path = config.flowchart_scene if config.flowchart_scene != "" else DEFAULT_FLOWCHART_SCENE
+	_open_overlay(scene_path)
 	game_state.transition_to(GameStateMachine.State.FLOWCHART)
 
 
