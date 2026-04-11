@@ -317,3 +317,41 @@ func test_mark_current_line_read_writes_to_read_flags():
 func test_skip_only_read_setting_default_true():
 	var val = StellaRuntime.get_setting("skip_only_read")
 	assert_true(val, "skip_only_read should default to true")
+
+
+# --- _on_skip_pressed mid-typewriter snap behavior ---
+# Fix for round-2 Opus UX concern: when the user presses the toolbar skip
+# button while the typewriter is running, snap the text to end immediately
+# (like click-to-complete). Without this the button highlights but the
+# typewriter keeps running, which looks like skip isn't working.
+
+func test_skip_press_while_typing_snaps_text():
+	var dialogue = get_tree().root.find_child("DialoguePanel", true, false)
+	if dialogue == null:
+		pending("DialoguePanel not available in test scene")
+		return
+	# Leave skip off at test start so _on_skip_pressed toggles it ON.
+	StellaRuntime.skip_controller.is_active = false
+	dialogue._is_typing = true
+	dialogue.text_label.visible_characters = 3
+	dialogue._on_skip_pressed()
+	assert_false(dialogue._is_typing, "pressing skip while typing must stop the typewriter")
+	assert_eq(dialogue.text_label.visible_characters, -1, "pressing skip while typing must snap text to full")
+	# Cleanup
+	StellaRuntime.skip_controller.is_active = false
+
+
+func test_skip_press_toggle_off_leaves_state_alone():
+	var dialogue = get_tree().root.find_child("DialoguePanel", true, false)
+	if dialogue == null:
+		pending("DialoguePanel not available in test scene")
+		return
+	# Skip already on — pressing must toggle it OFF without touching text state.
+	StellaRuntime.skip_controller.is_active = true
+	dialogue._is_typing = true
+	dialogue.text_label.visible_characters = 5
+	dialogue._on_skip_pressed()
+	assert_false(StellaRuntime.is_skipping(), "pressing skip while active must toggle off")
+	assert_true(dialogue._is_typing, "toggling skip off must not disturb in-flight typewriter")
+	assert_eq(dialogue.text_label.visible_characters, 5, "toggling skip off must not snap text")
+	dialogue._is_typing = false

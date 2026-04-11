@@ -227,9 +227,20 @@ func _on_auto_pressed():
 func _on_skip_pressed():
 	StellaRuntime.toggle_skip()
 	_update_toggle_buttons()
-	# If skip just activated and text is fully shown, advance immediately
-	if StellaRuntime.is_skipping() and not _is_typing:
-		SignalBus.advance_requested.emit()
+	if not StellaRuntime.is_skipping():
+		return
+	# Skip just activated. If the typewriter is mid-flight, snap the text to
+	# end (same semantics as click-to-complete) so the user immediately sees
+	# the full line — otherwise the button lights up but the typewriter keeps
+	# running, which looks like skip isn't working. The loop's post-break
+	# check runs _finalize_dialogue with the right character/segments.
+	if _is_typing:
+		_is_typing = false
+		text_label.visible_characters = -1
+		return
+	# Text already fully shown — advance now so the next dialogue can run
+	# through the gate (which decides whether skip continues or stops).
+	SignalBus.advance_requested.emit()
 
 
 func _on_backlog_pressed():
