@@ -1,18 +1,40 @@
 extends GutTest
-## Tests ScreenEffects presenter — verifies shake intensity/duration and
-## flash color/duration actually flow from the signal payload to the visual
-## effect (not just defaulted to hardcoded values).
+## Tests ScreenEffects presenter — verifies that shake/flash are visually
+## applied to rendering layers (not Node2D parent, which has no visual
+## effect on CanvasLayer siblings), and that params flow from the signal
+## payload through to the actual effect.
 
 const SCREEN_EFFECTS_SCRIPT = preload("res://addons/stella/presentation/effects/screen_effects.gd")
 
 var _parent: Node2D
+var _bg_layer: CanvasLayer
+var _char_layer: CanvasLayer
+var _ui_layer: CanvasLayer
 var _effects: Node
 
 
 func before_each():
+	# Mirror the real game.tscn structure: Game (Node2D) with BackgroundLayer,
+	# CharacterLayer, UILayer as CanvasLayer children, plus a ScreenEffects Node.
 	_parent = Node2D.new()
-	_parent.name = "TestParent"
+	_parent.name = "Game"
 	add_child_autoqfree(_parent)
+
+	_bg_layer = CanvasLayer.new()
+	_bg_layer.name = "BackgroundLayer"
+	_bg_layer.layer = 0
+	_parent.add_child(_bg_layer)
+
+	_char_layer = CanvasLayer.new()
+	_char_layer.name = "CharacterLayer"
+	_char_layer.layer = 1
+	_parent.add_child(_char_layer)
+
+	_ui_layer = CanvasLayer.new()
+	_ui_layer.name = "UILayer"
+	_ui_layer.layer = 3
+	_parent.add_child(_ui_layer)
+
 	_effects = Node.new()
 	_effects.set_script(SCREEN_EFFECTS_SCRIPT)
 	_parent.add_child(_effects)
@@ -25,53 +47,92 @@ func after_each():
 		SignalBus.effect_requested.disconnect(_effects._on_effect)
 
 
-# --- Shake ---
+# --- Shake: must tween rendering-layer offsets, not the Node2D root ---
 
-func test_shake_uses_intensity_param():
-	# Shake with large intensity should produce a visibly larger offset than small intensity.
-	# We sample parent.position mid-shake several times and check the max |offset|.
+func test_shake_moves_background_and_character_layer_offsets():
+	# With intensity=50, at least one of the two content layers must be
+	# measurably off-origin during the shake.
 	var intensity = 50.0
 	var duration = 0.3
 	SignalBus.effect_requested.emit("shake", {"intensity": intensity, "duration": duration})
 
-	var max_offset := 0.0
-	var original = _parent.position
+	var max_bg := 0.0
+	var max_char := 0.0
 	for i in range(6):
 		await get_tree().create_timer(0.04).timeout
-		var offset = (_parent.position - original).length()
-		if offset > max_offset:
-			max_offset = offset
+		var bg_off = _bg_layer.offset.length()
+		var char_off = _char_layer.offset.length()
+		if bg_off > max_bg:
+			max_bg = bg_off
+		if char_off > max_char:
+			max_char = char_off
 
-	# With intensity=50, the per-step offset is randf_range(-50, 50) per axis,
-	# so the typical |offset| magnitude is well above 5 (much larger than
-	# what intensity=10 would produce). We use a conservative lower bound.
-	assert_gt(max_offset, 5.0, "shake with intensity=50 should move parent measurably")
+	assert_gt(max_bg, 5.0, "BackgroundLayer.offset should move measurably during shake")
+	assert_gt(max_char, 5.0, "CharacterLayer.offset should move measurably during shake")
 
-	# After shake duration, position should return to original.
-	await get_tree().create_timer(duration + 0.1).timeout
-	assert_eq(_parent.position, original, "parent should return to original after shake")
-
-
-func test_shake_duration_controls_finish_time():
-	var duration = 0.2
-	var original = _parent.position
-	SignalBus.effect_requested.emit("shake", {"intensity": 15.0, "duration": duration})
-
-	# After the duration has passed, shake should have returned to origin.
+	# Return to origin after duration.
 	await get_tree().create_timer(duration + 0.15).timeout
-	assert_eq(_parent.position, original, "after duration + margin, parent should be at origin")
+	assert_eq(_bg_layer.offset, Vector2.ZERO, "BackgroundLayer.offset must reset")
+	assert_eq(_char_layer.offset, Vector2.ZERO, "CharacterLayer.offset must reset")
 
 
-# --- Flash ---
+func test_shake_does_not_touch_ui_layer():
+	# UI must stay still so dialogue remains readable during shake.
+	var duration = 0.2
+	SignalBus.effect_requested.emit("shake", {"intensity": 40.0, "duration": duration})
+	for i in range(5):
+		await get_tree().create_timer(0.03).timeout
+		assert_eq(
+			_ui_layer.offset,
+			Vector2.ZERO,
+			"UILayer.offset must remain at origin throughout shake",
+		)
+	await get_tree().create_timer(duration + 0.15).timeout
+	assert_eq(_ui_layer.offset, Vector2.ZERO)
+
+
+func test_shake_does_not_touch_parent_node2d_position():
+	# Pre-fix, shake was mutating get_parent().position, which is
+	# invisible because all visible children are CanvasLayers (they
+	# ignore Node2D transforms). Verify the new behavior leaves the
+	# parent Node2D untouched.
+	var original = _parent.position
+	SignalBus.effect_requested.emit("shake", {"intensity": 30.0, "duration": 0.15})
+	await get_tree().create_timer(0.05).timeout
+	assert_eq(_parent.position, original, "shake must not mutate parent Node2D position")
+	await get_tree().create_timer(0.2).timeout
+	assert_eq(_parent.position, original)
+
+
+# --- Flash: must live on a high-layer CanvasLayer so it renders above all UI ---
+
+func test_flash_overlay_lives_on_high_canvas_layer():
+	SignalBus.effect_requested.emit("flash", {"duration": 0.1})
+	await get_tree().process_frame
+
+	var overlay = _find_flash_overlay()
+	assert_not_null(overlay, "flash should create an overlay ColorRect")
+
+	# Walk up to the first CanvasLayer ancestor; it must exist and its
+	# layer must be above the UI layer (3).
+	var anc = overlay.get_parent()
+	while anc != null and not (anc is CanvasLayer):
+		anc = anc.get_parent()
+	assert_not_null(anc, "flash overlay must be descendant of a CanvasLayer")
+	assert_gt(
+		(anc as CanvasLayer).layer,
+		3,
+		"flash overlay CanvasLayer must be above UILayer (layer=3)",
+	)
+
 
 func test_flash_default_color_is_white():
 	SignalBus.effect_requested.emit("flash", {"duration": 0.1})
 	await get_tree().process_frame
 	var overlay = _find_flash_overlay()
-	assert_not_null(overlay, "flash should create an overlay ColorRect")
+	assert_not_null(overlay)
 	assert_eq(overlay.color, Color.WHITE, "default flash color should be white")
 
-	# Wait for the tween to fade out + queue_free to run
 	await get_tree().create_timer(0.25).timeout
 	assert_null(_find_flash_overlay(), "overlay should be freed after flash completes")
 
@@ -80,7 +141,7 @@ func test_flash_red_color():
 	SignalBus.effect_requested.emit("flash", {"color": "red", "duration": 0.1})
 	await get_tree().process_frame
 	var overlay = _find_flash_overlay()
-	assert_not_null(overlay, "flash should create an overlay ColorRect")
+	assert_not_null(overlay)
 	assert_eq(overlay.color, Color.RED, "flash with color='red' should produce red overlay")
 
 
@@ -88,12 +149,30 @@ func test_flash_black_color():
 	SignalBus.effect_requested.emit("flash", {"color": "black", "duration": 0.1})
 	await get_tree().process_frame
 	var overlay = _find_flash_overlay()
-	assert_not_null(overlay, "flash should create an overlay ColorRect")
+	assert_not_null(overlay)
 	assert_eq(overlay.color, Color.BLACK, "flash with color='black' should produce black overlay")
 
 
+func test_flash_unknown_color_falls_back_to_white():
+	SignalBus.effect_requested.emit("flash", {"color": "not_a_real_color_name", "duration": 0.1})
+	await get_tree().process_frame
+	var overlay = _find_flash_overlay()
+	assert_not_null(overlay)
+	assert_eq(overlay.color, Color.WHITE, "unknown color name should fall back to white")
+
+
+# --- Helpers ---
+
 func _find_flash_overlay() -> ColorRect:
-	for child in _parent.get_children():
-		if child is ColorRect:
-			return child
+	# Recursively search ScreenEffects' subtree for a ColorRect.
+	return _find_color_rect_in(_effects)
+
+
+func _find_color_rect_in(node: Node) -> ColorRect:
+	if node is ColorRect:
+		return node
+	for child in node.get_children():
+		var found = _find_color_rect_in(child)
+		if found:
+			return found
 	return null
