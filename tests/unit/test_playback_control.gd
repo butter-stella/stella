@@ -126,24 +126,21 @@ func test_skip_should_skip_read_content():
 	rfm.mark_read("ch1", "s1", 0)
 	var sc = SkipController.new()
 	sc.is_active = true
-	sc.skip_only_read = true
-	assert_true(sc.should_skip("ch1", "s1", 0, rfm))
+	assert_true(sc.should_skip("ch1", "s1", 0, rfm, true))
 
 
 func test_skip_should_not_skip_unread_when_skip_only_read():
 	var rfm = ReadFlagManager.new()
 	var sc = SkipController.new()
 	sc.is_active = true
-	sc.skip_only_read = true
-	assert_false(sc.should_skip("ch1", "s1", 0, rfm))
+	assert_false(sc.should_skip("ch1", "s1", 0, rfm, true))
 
 
 func test_skip_should_skip_unread_when_not_skip_only_read():
 	var rfm = ReadFlagManager.new()
 	var sc = SkipController.new()
 	sc.is_active = true
-	sc.skip_only_read = false
-	assert_true(sc.should_skip("ch1", "s1", 0, rfm))
+	assert_true(sc.should_skip("ch1", "s1", 0, rfm, false))
 
 
 func test_skip_inactive_never_skips():
@@ -151,4 +148,4 @@ func test_skip_inactive_never_skips():
 	rfm.mark_read("ch1", "s1", 0)
 	var sc = SkipController.new()
 	sc.is_active = false
-	assert_false(sc.should_skip("ch1", "s1", 0, rfm))
+	assert_false(sc.should_skip("ch1", "s1", 0, rfm, true))

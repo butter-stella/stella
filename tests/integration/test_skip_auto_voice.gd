@@ -213,11 +213,11 @@ func test_ctrl_held_skips_unread_regardless_of_setting():
 	dialogue._ctrl_held = true
 	StellaRuntime.skip_controller.is_active = false
 	StellaRuntime.set_setting("skip_only_read", true)
-	assert_true(dialogue._is_skipping(), "Ctrl-hold must skip even unread lines")
+	assert_true(dialogue._should_skip_current(), "Ctrl-hold must skip even unread lines")
 	dialogue._ctrl_held = false
 
 
-func test_toolbar_skip_unread_blocked_when_only_read():
+func test_toolbar_skip_unread_pure_query_returns_false():
 	var dialogue = get_tree().root.find_child("DialoguePanel", true, false)
 	if dialogue == null:
 		pending("DialoguePanel not available in test scene")
@@ -226,8 +226,53 @@ func test_toolbar_skip_unread_blocked_when_only_read():
 	dialogue._ctrl_held = false
 	StellaRuntime.set_setting("skip_only_read", true)
 	StellaRuntime.skip_controller.is_active = true
-	assert_false(dialogue._is_skipping(), "toolbar skip should not skip unread when skip_only_read=true")
-	assert_false(StellaRuntime.skip_controller.is_active, "hitting an unread line must auto-stop toolbar skip")
+	# Pure query must not mutate skip_controller state.
+	assert_false(dialogue._should_skip_current(), "toolbar skip should not skip unread when skip_only_read=true")
+	assert_true(StellaRuntime.skip_controller.is_active, "query must not stop the skip controller")
+	StellaRuntime.skip_controller.is_active = false
+
+
+func test_apply_unread_skip_gate_stops_toolbar_skip_on_unread():
+	var dialogue = get_tree().root.find_child("DialoguePanel", true, false)
+	if dialogue == null:
+		pending("DialoguePanel not available in test scene")
+		return
+	_fresh_position(dialogue, 1005)
+	dialogue._ctrl_held = false
+	StellaRuntime.set_setting("skip_only_read", true)
+	StellaRuntime.skip_controller.is_active = true
+	dialogue._apply_unread_skip_gate()
+	assert_false(StellaRuntime.skip_controller.is_active, "gate must stop toolbar skip on unread line")
+
+
+func test_apply_unread_skip_gate_noop_on_read():
+	var dialogue = get_tree().root.find_child("DialoguePanel", true, false)
+	if dialogue == null:
+		pending("DialoguePanel not available in test scene")
+		return
+	_fresh_position(dialogue, 1006)
+	StellaRuntime.read_flags.mark_read("test_scn", "test_scene", 1006)
+	dialogue._ctrl_held = false
+	StellaRuntime.set_setting("skip_only_read", true)
+	StellaRuntime.skip_controller.is_active = true
+	dialogue._apply_unread_skip_gate()
+	assert_true(StellaRuntime.skip_controller.is_active, "gate must be a no-op when current line is read")
+	StellaRuntime.skip_controller.is_active = false
+
+
+func test_apply_unread_skip_gate_noop_when_ctrl_held():
+	var dialogue = get_tree().root.find_child("DialoguePanel", true, false)
+	if dialogue == null:
+		pending("DialoguePanel not available in test scene")
+		return
+	_fresh_position(dialogue, 1007)
+	dialogue._ctrl_held = true
+	StellaRuntime.set_setting("skip_only_read", true)
+	StellaRuntime.skip_controller.is_active = true
+	dialogue._apply_unread_skip_gate()
+	assert_true(StellaRuntime.skip_controller.is_active, "Ctrl-hold must bypass the gate")
+	dialogue._ctrl_held = false
+	StellaRuntime.skip_controller.is_active = false
 
 
 func test_toolbar_skip_unread_allowed_when_setting_off():
@@ -239,7 +284,7 @@ func test_toolbar_skip_unread_allowed_when_setting_off():
 	dialogue._ctrl_held = false
 	StellaRuntime.set_setting("skip_only_read", false)
 	StellaRuntime.skip_controller.is_active = true
-	assert_true(dialogue._is_skipping(), "toolbar skip should skip unread when skip_only_read=false")
+	assert_true(dialogue._should_skip_current(), "toolbar skip should skip unread when skip_only_read=false")
 	StellaRuntime.skip_controller.is_active = false
 	StellaRuntime.set_setting("skip_only_read", true)
 
@@ -254,7 +299,7 @@ func test_toolbar_skip_read_line_allowed():
 	dialogue._ctrl_held = false
 	StellaRuntime.set_setting("skip_only_read", true)
 	StellaRuntime.skip_controller.is_active = true
-	assert_true(dialogue._is_skipping(), "read line should be skippable by toolbar skip")
+	assert_true(dialogue._should_skip_current(), "read line should be skippable by toolbar skip")
 	StellaRuntime.skip_controller.is_active = false
 
 
