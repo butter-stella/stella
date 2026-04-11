@@ -57,6 +57,13 @@ func _build_ui():
 		StellaRuntime.set_setting("auto_play_click_interrupt", toggled)
 	)
 
+	# Skip unread — when on, the toolbar 快进 button skips everything. Off
+	# (default) = toolbar skip only fast-forwards already-read lines. Ctrl-hold
+	# always skips regardless of this setting.
+	_add_toggle("允许跳过未读文本", not StellaRuntime.get_setting("skip_only_read"), func(toggled):
+		StellaRuntime.set_setting("skip_only_read", not toggled)
+	)
+
 	settings_container.add_child(HSeparator.new())
 
 	# Fullscreen toggle

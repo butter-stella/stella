@@ -28,6 +28,12 @@ func test_skip_mode_suppresses_voice_play():
 	var conn = func(a, _c): voice_received.append(a)
 	_bus.voice_play.connect(conn)
 
+	# Disable skip_only_read for this test — it's isolating voice suppression,
+	# not the read-gate behavior. Default is true, which would auto-stop skip
+	# if the test runs after another test left engine.context pointing at
+	# unread content.
+	var prev = StellaRuntime.get_setting("skip_only_read")
+	StellaRuntime.set_setting("skip_only_read", false)
 	StellaRuntime.skip_controller.is_active = true
 	assert_true(StellaRuntime.is_skipping())
 
@@ -38,6 +44,7 @@ func test_skip_mode_suppresses_voice_play():
 
 	_bus.voice_play.disconnect(conn)
 	StellaRuntime.skip_controller.is_active = false
+	StellaRuntime.set_setting("skip_only_read", prev)
 
 
 # --- voice_finished signal propagation ---
@@ -182,3 +189,86 @@ func test_voice_playing_cleared_on_hide():
 	_bus.hide_dialogue.emit()
 	await get_tree().process_frame
 	assert_false(dialogue._voice_playing, "_voice_playing should clear on hide_dialogue")
+
+
+# --- skip_only_read semantics (PR: feat/skip-unread-setting) ---
+# Ctrl-hold always skips (including unread). Toolbar skip respects
+# skip_only_read — when true (default), it auto-stops at unread lines.
+
+func _fresh_position(dialogue: Node, index: int = 0) -> void:
+	# Tests don't run a real scenario engine, so seed the presenter's cached
+	# position fields directly — _on_show_dialogue normally fills them from
+	# engine.context.
+	dialogue._current_scenario_id = "test_scn"
+	dialogue._current_scene_id = "test_scene"
+	dialogue._current_command_index = index
+
+
+func test_ctrl_held_skips_unread_regardless_of_setting():
+	var dialogue = get_tree().root.find_child("DialoguePanel", true, false)
+	if dialogue == null:
+		pending("DialoguePanel not available in test scene")
+		return
+	_fresh_position(dialogue, 1000)
+	dialogue._ctrl_held = true
+	StellaRuntime.skip_controller.is_active = false
+	StellaRuntime.set_setting("skip_only_read", true)
+	assert_true(dialogue._is_skipping(), "Ctrl-hold must skip even unread lines")
+	dialogue._ctrl_held = false
+
+
+func test_toolbar_skip_unread_blocked_when_only_read():
+	var dialogue = get_tree().root.find_child("DialoguePanel", true, false)
+	if dialogue == null:
+		pending("DialoguePanel not available in test scene")
+		return
+	_fresh_position(dialogue, 1001)
+	dialogue._ctrl_held = false
+	StellaRuntime.set_setting("skip_only_read", true)
+	StellaRuntime.skip_controller.is_active = true
+	assert_false(dialogue._is_skipping(), "toolbar skip should not skip unread when skip_only_read=true")
+	assert_false(StellaRuntime.skip_controller.is_active, "hitting an unread line must auto-stop toolbar skip")
+
+
+func test_toolbar_skip_unread_allowed_when_setting_off():
+	var dialogue = get_tree().root.find_child("DialoguePanel", true, false)
+	if dialogue == null:
+		pending("DialoguePanel not available in test scene")
+		return
+	_fresh_position(dialogue, 1002)
+	dialogue._ctrl_held = false
+	StellaRuntime.set_setting("skip_only_read", false)
+	StellaRuntime.skip_controller.is_active = true
+	assert_true(dialogue._is_skipping(), "toolbar skip should skip unread when skip_only_read=false")
+	StellaRuntime.skip_controller.is_active = false
+	StellaRuntime.set_setting("skip_only_read", true)
+
+
+func test_toolbar_skip_read_line_allowed():
+	var dialogue = get_tree().root.find_child("DialoguePanel", true, false)
+	if dialogue == null:
+		pending("DialoguePanel not available in test scene")
+		return
+	_fresh_position(dialogue, 1003)
+	StellaRuntime.read_flags.mark_read("test_scn", "test_scene", 1003)
+	dialogue._ctrl_held = false
+	StellaRuntime.set_setting("skip_only_read", true)
+	StellaRuntime.skip_controller.is_active = true
+	assert_true(dialogue._is_skipping(), "read line should be skippable by toolbar skip")
+	StellaRuntime.skip_controller.is_active = false
+
+
+func test_mark_current_line_read_writes_to_read_flags():
+	var dialogue = get_tree().root.find_child("DialoguePanel", true, false)
+	if dialogue == null:
+		pending("DialoguePanel not available in test scene")
+		return
+	_fresh_position(dialogue, 1004)
+	assert_false(StellaRuntime.read_flags.is_read("test_scn", "test_scene", 1004))
+	dialogue._mark_current_line_read()
+	assert_true(StellaRuntime.read_flags.is_read("test_scn", "test_scene", 1004))
+
+
+func test_skip_only_read_setting_default_true():
+	var val = StellaRuntime.get_setting("skip_only_read")
+	assert_true(val, "skip_only_read should default to true")
