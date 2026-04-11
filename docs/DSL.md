@@ -230,16 +230,23 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
 
 ```
 // 屏幕特效
-@effect shake               // 屏幕震动
-@effect flash                // 白屏闪光
-@effect blur 0.5             // 模糊
-@effect off                  // 清除所有特效
+@effect shake                  // 震动，默认 intensity=10 duration=0.3
+@effect shake 20 0.5           // 指定强度和时长
+@effect flash                   // 闪光，默认 white 0.2s
+@effect flash red 0.25          // 指定颜色和时长
+@effect flash #ff0000 0.25      // 也支持十六进制颜色
+@effect blur 0.5                // 模糊
+@effect off                     // 清除所有特效
 
 // 黑屏过渡（常用于时间跳跃）
 @fade out 1.0
 「第二天——」
 @fade in 1.0
 ```
+
+**shake 参数**：`intensity` 是每帧 ± 偏移像素的幅度（默认 10），`duration` 是总时长秒（默认 0.3）。
+
+**flash 参数**：`color` 接受 Godot 命名颜色（`white`/`red`/`black`/`blue`/...）或十六进制字符串（`#ff0000`），未知名会 fallback 到白色。`duration` 是淡出总时长秒（默认 0.2）。
 
 ### 3.10 分支选择
 

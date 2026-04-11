@@ -143,6 +143,46 @@ func test_dsl_parser_effect_off():
 	assert_true(cmd.get_bool("off"))
 
 
+func test_dsl_parser_effect_shake_with_params():
+	var tokens = DslLexer.tokenize("@scene s\n@effect shake 15 0.4")
+	var data = DslParser.parse(tokens, "t")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.type, "effect")
+	assert_eq(cmd.get_string("effect_type"), "shake")
+	assert_almost_eq(cmd.get_float("intensity"), 15.0, 0.001)
+	assert_almost_eq(cmd.get_float("duration"), 0.4, 0.001)
+
+
+func test_dsl_parser_effect_shake_defaults():
+	var tokens = DslLexer.tokenize("@scene s\n@effect shake")
+	var data = DslParser.parse(tokens, "t")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.type, "effect")
+	assert_eq(cmd.get_string("effect_type"), "shake")
+	# Defaults should apply when user omits numeric params.
+	assert_almost_eq(cmd.get_float("intensity"), 10.0, 0.001)
+	assert_almost_eq(cmd.get_float("duration"), 0.3, 0.001)
+
+
+func test_dsl_parser_effect_flash_with_params():
+	var tokens = DslLexer.tokenize("@scene s\n@effect flash red 0.25")
+	var data = DslParser.parse(tokens, "t")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.type, "effect")
+	assert_eq(cmd.get_string("effect_type"), "flash")
+	assert_eq(cmd.get_string("color"), "red")
+	assert_almost_eq(cmd.get_float("duration"), 0.25, 0.001)
+
+
+func test_dsl_parser_effect_flash_defaults():
+	var tokens = DslLexer.tokenize("@scene s\n@effect flash")
+	var data = DslParser.parse(tokens, "t")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_string("effect_type"), "flash")
+	assert_eq(cmd.get_string("color"), "white")
+	assert_almost_eq(cmd.get_float("duration"), 0.2, 0.001)
+
+
 # --- ParallelHandler ---
 
 func test_parallel_handler_type():
