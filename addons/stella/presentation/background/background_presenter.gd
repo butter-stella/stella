@@ -1,6 +1,6 @@
 ## Displays backgrounds with multiple transition types.
 ## Double-buffered: front and back TextureRect.
-## Supports: fade, dissolve, wipe transitions.
+## Supports: fade, dissolve, wipe, slide_{left,right,up,down} transitions.
 extends CanvasLayer
 
 @onready var bg_front: TextureRect = $BgFront
@@ -27,6 +27,8 @@ func _on_bg_changed(asset: String, transition: String, duration: float):
 			await _transition_dissolve(texture, duration)
 		"wipe":
 			await _transition_wipe(texture, duration)
+		"slide_left", "slide_right", "slide_up", "slide_down":
+			await _transition_slide(texture, duration, transition)
 		_:  # "fade" or default
 			await _transition_fade(texture, duration)
 
@@ -89,6 +91,60 @@ func _transition_dissolve(texture: Texture2D, duration: float):
 	bg_front.texture = texture
 	bg_front.material = null
 	bg_back.modulate.a = 0.0
+
+
+func _transition_slide(texture: Texture2D, duration: float, direction: String):
+	# Convention: direction names the way content moves.
+	#   slide_left  → old exits to the left, new enters from the right.
+	#   slide_right → mirror of slide_left.
+	#   slide_up / slide_down → vertical equivalents.
+	var viewport_size = get_viewport().get_visible_rect().size
+	if viewport_size == Vector2.ZERO:
+		# Viewport not yet laid out (e.g. first-frame autoplay). Slide would
+		# be invisible because delta is zero; fall back to fade so the bg
+		# switch at least happens.
+		push_warning("BackgroundPresenter: viewport size is zero, falling back to fade for slide")
+		await _transition_fade(texture, duration)
+		return
+
+	bg_front.material = null
+	bg_back.material = null
+
+	bg_back.texture = texture
+	bg_back.modulate.a = 1.0
+
+	var front_origin = bg_front.position
+	var back_origin = bg_back.position
+
+	var delta: Vector2
+	match direction:
+		"slide_left":
+			delta = Vector2(-viewport_size.x, 0)
+		"slide_right":
+			delta = Vector2(viewport_size.x, 0)
+		"slide_up":
+			delta = Vector2(0, -viewport_size.y)
+		"slide_down":
+			delta = Vector2(0, viewport_size.y)
+		_:
+			delta = Vector2(-viewport_size.x, 0)
+
+	# New layer starts off-screen on the opposite side of delta; slides in to origin.
+	bg_back.position = back_origin - delta
+
+	var tween = create_tween().set_parallel(true)
+	tween.tween_property(bg_front, "position", front_origin + delta, duration) \
+		.set_trans(Tween.TRANS_QUART).set_ease(Tween.EASE_OUT)
+	tween.tween_property(bg_back, "position", back_origin, duration) \
+		.set_trans(Tween.TRANS_QUART).set_ease(Tween.EASE_OUT)
+	await tween.finished
+
+	# Commit new texture to front, reset both to origin.
+	bg_front.texture = texture
+	bg_front.modulate.a = 1.0
+	bg_front.position = front_origin
+	bg_back.modulate.a = 0.0
+	bg_back.position = back_origin
 
 
 func _transition_wipe(texture: Texture2D, duration: float):

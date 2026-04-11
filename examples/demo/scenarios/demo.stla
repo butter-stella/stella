@@ -28,7 +28,7 @@ sakura「今天是你第一天，要不要我带你逛逛校园？」 #voice:sak
 sakura「太好了！走吧走吧！」 #voice:sakura_004
 
 @hide sakura
-@bg bg_hallway fade 0.8
+@bg bg_hallway slide_left 0.6
 @show sakura smile left
 
 sakura「这里是教学楼的走廊，我们教室在那边——」 #voice:sakura_005
@@ -86,7 +86,7 @@ sakura「学姐对谁都很温柔呢。」 #voice:sakura_010
 @scene cafe "放学后的咖啡店"
 
 @bgm bgm_cafe
-@bg bg_cafe dissolve 1.0
+@bg bg_cafe slide_right 0.7
 @show sakura happy left
 @show senpai default right
 
@@ -156,7 +156,7 @@ sakura「教室在二楼最左边那间！」 #voice:sakura_017
 @scene ending "尾声"
 
 @bgm bgm_ending
-@bg bg_outside fade 1.0
+@bg bg_outside slide_up 0.8
 @hide all
 
 @nvl

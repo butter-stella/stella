@@ -116,7 +116,15 @@ sakura「那个人就是..{wait:500}{speed:0.3}你吗？」
 @bg bg_school fade 0.8
 @bg bg_sunset dissolve 1.0
 @bg bg_night wipe 0.6
+
+// 滑动进入（带方向，方向名即 "旧图离开的方向"）
+@bg bg_cafe slide_left 0.6      // 旧图向左滑出，新图从右进入
+@bg bg_hallway slide_right 0.6
+@bg bg_outside slide_up 0.6
+@bg bg_school_gate slide_down 0.6
 ```
+
+**可用转场类型**：`fade`、`dissolve`、`wipe`、`slide_left`、`slide_right`、`slide_up`、`slide_down`。
 
 **省略规则**：不写转场类型和时间 = `fade 0.5`。
 
