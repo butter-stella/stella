@@ -98,6 +98,7 @@ func _setup_toolbar():
 		{"id": "auto", "text": "自动", "callback": _on_auto_pressed},
 		{"id": "skip", "text": "快进", "callback": _on_skip_pressed},
 		{"id": "backlog", "text": "记录", "callback": _on_backlog_pressed},
+		{"id": "prev_choice", "text": "回选项", "callback": _on_prev_choice_pressed},
 		{"id": "quick_save", "text": "快存", "callback": _on_quick_save_pressed},
 		{"id": "quick_load", "text": "快读", "callback": _on_quick_load_pressed},
 		{"id": "save", "text": "存档", "callback": _on_save_pressed},
@@ -212,6 +213,10 @@ func _on_skip_pressed():
 
 func _on_backlog_pressed():
 	StellaRuntime.show_backlog()
+
+
+func _on_prev_choice_pressed():
+	StellaRuntime.jump_to_previous_choice()
 
 
 func _on_quick_save_pressed():
