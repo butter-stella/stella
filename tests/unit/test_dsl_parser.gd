@@ -83,6 +83,15 @@ func test_bg_defaults():
 	assert_almost_eq(cmd.get_float("duration"), 0.5, 0.001)
 
 
+func test_bg_slide_transitions_preserved():
+	for dir in ["slide_left", "slide_right", "slide_up", "slide_down"]:
+		var data = _parse("@scene start\n@bg bg_cafe %s 0.6" % dir)
+		var cmd = data.scenes[0].commands[0]
+		assert_eq(cmd.type, "bg")
+		assert_eq(cmd.get_string("transition"), dir, "transition %s should pass through" % dir)
+		assert_almost_eq(cmd.get_float("duration"), 0.6, 0.001)
+
+
 func test_show_full_params():
 	var data = _parse("""@scene start
 @show sakura smile left""")
