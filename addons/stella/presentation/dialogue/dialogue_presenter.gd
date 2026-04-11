@@ -38,6 +38,7 @@ var toolbar_icons: Dictionary = {
 var _voice_replay_btn: Button
 var _auto_btn: Button
 var _skip_btn: Button
+var _prev_choice_btn: Button
 var _dialogue_gen: int = 0  # increments on each new dialogue, stale coroutines check this
 
 # Dialogue state — owned by the currently visible/active dialogue. Only updated
@@ -69,6 +70,15 @@ func _ready():
 	SignalBus.voice_progress.connect(_on_voice_progress_relay)
 	SignalBus.dialogue_voice_replay_requested.connect(_on_dialogue_voice_replay_requested)
 	SignalBus.scenario_ended_event.connect(func(_id): visible = false)
+	# Refresh the "回选项" button state whenever execution surfaces a new
+	# command (dialogue or choice). Both signals fire AFTER the engine has
+	# advanced to the command being presented, so can_jump_to_previous_choice()
+	# reads the right current_cmd_uid. scenario lifecycle signals handle
+	# start/end-of-run resets.
+	SignalBus.show_dialogue.connect(func(_c, _s, _m): _refresh_prev_choice_btn())
+	SignalBus.choice_show.connect(func(_p, _o): _refresh_prev_choice_btn())
+	SignalBus.scenario_started_event.connect(func(_id): _refresh_prev_choice_btn())
+	SignalBus.scenario_ended_event.connect(func(_id): _refresh_prev_choice_btn())
 	SignalBus.voice_started.connect(func(_c, _a): _voice_playing = true)
 	SignalBus.voice_finished.connect(func(): _voice_playing = false)
 	SignalBus.char_show.connect(func(c, e, _p): _known_expressions[c] = e)
@@ -138,6 +148,9 @@ func _setup_toolbar():
 			_auto_btn = btn
 		elif btn_info["id"] == "skip":
 			_skip_btn = btn
+		elif btn_info["id"] == "prev_choice":
+			_prev_choice_btn = btn
+			btn.disabled = true  # no history at startup
 
 
 func _on_voice_replay_pressed():
@@ -217,6 +230,12 @@ func _on_backlog_pressed():
 
 func _on_prev_choice_pressed():
 	StellaRuntime.jump_to_previous_choice()
+
+
+func _refresh_prev_choice_btn():
+	if _prev_choice_btn == null:
+		return
+	_prev_choice_btn.disabled = not StellaRuntime.can_jump_to_previous_choice()
 
 
 func _on_quick_save_pressed():

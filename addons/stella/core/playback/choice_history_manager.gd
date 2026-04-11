@@ -60,6 +60,12 @@ func has_previous(current_cmd_uid: int) -> bool:
 ## subsequent pop could return. On rewind, the engine re-runs the target
 ## choice, its choice_show listener re-records it, and the stack is
 ## correct again.
+##
+## TODO(@call re-entrance): if the same @choice command is reached via a
+## @call and the return stack, its uid will appear twice in _entries. The
+## skip-top rule would skip the inner reentrance and return the outer
+## frame — probably not what the player expects. Rare in practice; refine
+## once @call is used with choices inside called scenes.
 func pop_previous(current_cmd_uid: int) -> Dictionary:
 	var target_idx := -1
 	for i in range(_entries.size() - 1, -1, -1):
@@ -69,9 +75,14 @@ func pop_previous(current_cmd_uid: int) -> Dictionary:
 	if target_idx == -1:
 		return {}
 	var snap = _entries[target_idx]["snapshot"]
-	_entries.resize(target_idx)
 	if snap == null:
+		# Defensive: don't truncate on a malformed entry — that would lose
+		# valid history below. Callers pass a live Callable in practice so
+		# this branch shouldn't fire, but the earlier `is_valid()` guard in
+		# record() implies we should handle the null case without side
+		# effects.
 		return {}
+	_entries.resize(target_idx)
 	return {"snapshot": snap}
 
 

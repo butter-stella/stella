@@ -689,6 +689,68 @@ func get_backlog() -> Array:
 	return backlog_manager.get_entries()
 
 
+## Shared rollback pipeline for all "jump to a captured snapshot" paths:
+## backlog jump, choice history jump, and flowchart chapter jump. Each of
+## those features looks up a snapshot in its own storage, then delegates
+## here to perform the actual restore. Centralizing the pipeline keeps the
+## rollback contract (issue #98 — Scope.GLOBAL must survive) in one place.
+##
+## Pipeline stages, in order:
+## 1. Close any overlay + transition to PLAYING state.
+## 2. Build a fresh ScenarioContext that reuses the old VariableStore
+##    instance — dropping the store would lose Scope.GLOBAL (#98).
+## 3. Reset visuals to a clean slate. char_hide + bgm_stop trigger the
+##    PresentationState signal listeners; restore_snapshot then overwrites
+##    them. fade("in",0) drops any lingering screen-fade overlay.
+## 4. Restore scenario_context + scenario-scope vars + presentation_state
+##    from the snapshot. Scope-only var restore so Scope.GLOBAL stays intact.
+## 5. If override_scene_id is non-empty, set_scene to it AFTER the snapshot
+##    restore. Used by flowchart jump where the snapshot position and the
+##    chapter entry can differ and we want to be safe against mismatch.
+## 6. apply_to_presenters — snap visuals to the restored state in one shot
+##    before engine.run() re-dispatches the target command.
+## 7. Register the new context as a save provider BEFORE swapping it in.
+##    Otherwise an autosave triggered by NOTIFICATION_WM_CLOSE_REQUEST in
+##    the window between swap and register would serialize an inconsistent
+##    mix (old context provider + new presentation_state).
+## 8. Swap engine.context, mark the old ctx finished (belt-and-braces in
+##    case the old loop is between iterations), and emit
+##    engine_abort_requested. Every blocking handler (dialogue/wait/choice)
+##    races against this signal via CommandHandler.await_with_abort, so a
+##    single emit cancels them all regardless of which native signal each
+##    was waiting on.
+## 9. engine.run() — new loop picks up the restored context.
+func _restore_runtime_from_snapshot(snap: Dictionary, override_scene_id: String = "") -> void:
+	_close_current_overlay()
+	game_state.transition_to(GameStateMachine.State.PLAYING)
+
+	var scenario_data = engine.context.scenario_data
+	var new_ctx = ScenarioContext.new(scenario_data)
+	new_ctx.variable_store = engine.context.variable_store
+
+	SignalBus.char_hide.emit("all")
+	SignalBus.bgm_stop.emit(0.0)
+	SignalBus.hide_dialogue.emit()
+	SignalBus.fade_requested.emit("in", 0.0)
+	presentation_state.clear()
+
+	new_ctx.restore_snapshot(snap.get("scenario_context", {}))
+	new_ctx.variable_store.restore_scenario_scope(snap.get("variable_store", {}))
+	if override_scene_id != "":
+		new_ctx.set_scene(override_scene_id)
+	presentation_state.restore_snapshot(snap.get("presentation_state", {}))
+	presentation_state.apply_to_presenters()
+
+	save_manager.register_provider(new_ctx)
+	save_manager.register_provider(new_ctx.variable_store)
+	var old_ctx = engine.context
+	engine.context = new_ctx
+	old_ctx.is_finished = true
+	SignalBus.engine_abort_requested.emit()
+
+	engine.run()
+
+
 ## Jump to a backlog entry. Restores that entry's snapshot directly —
 ## scenario position, variables, and presentation state are all rewound
 ## to exactly the moment that dialogue was first displayed. Backlog history
@@ -701,62 +763,23 @@ func jump_from_backlog(index: int) -> bool:
 	var info = backlog_manager.jump_to(index)
 	if info.is_empty():
 		return false
-
-	_close_current_overlay()
-	game_state.transition_to(GameStateMachine.State.PLAYING)
-
-	# Build a fresh context to swap in. The currently-running engine.run()
-	# loop captured the old context as a local — once it sees ctx != context
-	# (after we unblock its pending await below), it returns cleanly.
-	#
-	# REUSE the existing VariableStore instance (do not allocate a fresh one).
-	# Issue #98: Scope.GLOBAL must survive rollback. The store's scenario scope
-	# is overwritten below by restore_scenario_scope; global stays as-is. The
-	# old context drops its reference when we swap, so reusing the store is
-	# safe and avoids losing global state via the discarded instance.
-	var scenario_data = engine.context.scenario_data
-	var new_ctx = ScenarioContext.new(scenario_data)
-	new_ctx.variable_store = engine.context.variable_store
-
-	# Reset visuals to a clean slate before restoring + snapping to the
-	# target state. char_hide("all") + bgm_stop also clear PresentationState
-	# via its signal listeners, which restore_snapshot then overwrites.
-	# fade("in", 0) drops any lingering screen fade overlay so a jump out
-	# of a faded-black region doesn't leave the screen blanked.
-	SignalBus.char_hide.emit("all")
-	SignalBus.bgm_stop.emit(0.0)
-	SignalBus.hide_dialogue.emit()
-	SignalBus.fade_requested.emit("in", 0.0)
-	presentation_state.clear()
-
-	var snap: Dictionary = info["snapshot"]
-	new_ctx.restore_snapshot(snap.get("scenario_context", {}))
-	# Scope-only restore: rollback paths must not touch Scope.GLOBAL (issue #98).
-	new_ctx.variable_store.restore_scenario_scope(snap.get("variable_store", {}))
-	presentation_state.restore_snapshot(snap.get("presentation_state", {}))
-
-	# Snap visual presenters to the restored state in one shot before the
-	# engine re-dispatches the target dialogue.
-	presentation_state.apply_to_presenters()
-
-	# Register the new context as a save provider BEFORE swapping it in.
-	# Otherwise an autosave triggered by NOTIFICATION_WM_CLOSE_REQUEST in
-	# the window between swap and register would serialize an inconsistent
-	# mix (old context provider + new presentation_state).
-	save_manager.register_provider(new_ctx)
-	save_manager.register_provider(new_ctx.variable_store)
-	var old_ctx = engine.context
-	engine.context = new_ctx
-	old_ctx.is_finished = true  # belt-and-braces in case the old loop is between iterations
-	# Unblock the old run() loop's pending await — every blocking handler
-	# (dialogue/wait/choice) races against engine_abort_requested via
-	# CommandHandler.await_with_abort, so a single emit cancels them all
-	# regardless of which native signal each was waiting on. Even
-	# wait_handler in timer mode is covered now.
-	SignalBus.engine_abort_requested.emit()
-
-	engine.run()
+	_restore_runtime_from_snapshot(info["snapshot"])
 	return true
+
+
+## True if there's a previous-choice snapshot the player can rewind to
+## from the current position. Used by the toolbar to enable/disable the
+## "回选项" button — calling jump_to_previous_choice() without this check
+## is still safe (returns false as a no-op) but the button should visibly
+## reflect whether it would do anything.
+func can_jump_to_previous_choice() -> bool:
+	if engine == null or engine.context == null:
+		return false
+	var cur_cmd = engine.context.current_command()
+	var cur_uid: int = -1
+	if cur_cmd != null:
+		cur_uid = cur_cmd.uid
+	return choice_history_manager.has_previous(cur_uid)
 
 
 ## Rewind execution to the most recent @choice menu — the "回到上一选项"
@@ -765,11 +788,6 @@ func jump_from_backlog(index: int) -> bool:
 ## they've already made a selection and progressed, "previous" means the
 ## choice they just walked past. Returns false when there's no such
 ## snapshot available.
-##
-## This mirrors jump_from_backlog's restore pipeline exactly — the two
-## share the rollback contract (see _capture_rollback_snapshot). They're
-## kept as independent methods for now; a third rewind path would be the
-## trigger to extract a shared helper.
 func jump_to_previous_choice() -> bool:
 	if engine == null or engine.context == null:
 		return false
@@ -780,36 +798,7 @@ func jump_to_previous_choice() -> bool:
 	var info = choice_history_manager.pop_previous(cur_uid)
 	if info.is_empty():
 		return false
-
-	_close_current_overlay()
-	game_state.transition_to(GameStateMachine.State.PLAYING)
-
-	# See jump_from_backlog() for the rationale on each step in the
-	# restore pipeline — they must remain in sync.
-	var scenario_data = engine.context.scenario_data
-	var new_ctx = ScenarioContext.new(scenario_data)
-	new_ctx.variable_store = engine.context.variable_store
-
-	SignalBus.char_hide.emit("all")
-	SignalBus.bgm_stop.emit(0.0)
-	SignalBus.hide_dialogue.emit()
-	SignalBus.fade_requested.emit("in", 0.0)
-	presentation_state.clear()
-
-	var snap: Dictionary = info["snapshot"]
-	new_ctx.restore_snapshot(snap.get("scenario_context", {}))
-	new_ctx.variable_store.restore_scenario_scope(snap.get("variable_store", {}))
-	presentation_state.restore_snapshot(snap.get("presentation_state", {}))
-	presentation_state.apply_to_presenters()
-
-	save_manager.register_provider(new_ctx)
-	save_manager.register_provider(new_ctx.variable_store)
-	var old_ctx = engine.context
-	engine.context = new_ctx
-	old_ctx.is_finished = true
-	SignalBus.engine_abort_requested.emit()
-
-	engine.run()
+	_restore_runtime_from_snapshot(info["snapshot"])
 	return true
 
 
@@ -845,39 +834,11 @@ func jump_from_flowchart(chapter_id: String) -> bool:
 	# Update flowchart line (truncate or reset).
 	flowchart_state.jump_to(chapter_id)
 
-	# Same visual-reset + context-swap pattern as jump_from_backlog. See that
-	# method's comments for detailed rationale on each step.
-	_close_current_overlay()
-	game_state.transition_to(GameStateMachine.State.PLAYING)
-
-	var scenario_data = engine.context.scenario_data
-	var new_ctx = ScenarioContext.new(scenario_data)
-	new_ctx.variable_store = engine.context.variable_store  # Scope.GLOBAL preserved (#98)
-
-	SignalBus.char_hide.emit("all")
-	SignalBus.bgm_stop.emit(0.0)
-	SignalBus.hide_dialogue.emit()
-	SignalBus.fade_requested.emit("in", 0.0)
-	presentation_state.clear()
-
-	new_ctx.restore_snapshot(snap.get("scenario_context", {}))
-	new_ctx.variable_store.restore_scenario_scope(snap.get("variable_store", {}))
-	# Override scene position to chapter entry, regardless of where the snapshot
-	# was captured. The snapshot's scenario_context.scene_index points to the
-	# entry scene (captured at entry time), but after restore we set_scene
-	# explicitly to be safe against snapshot-context mismatch.
-	new_ctx.set_scene(entry_scene_id)
-	presentation_state.restore_snapshot(snap.get("presentation_state", {}))
-	presentation_state.apply_to_presenters()
-
-	save_manager.register_provider(new_ctx)
-	save_manager.register_provider(new_ctx.variable_store)
-	var old_ctx = engine.context
-	engine.context = new_ctx
-	old_ctx.is_finished = true
-	SignalBus.engine_abort_requested.emit()
-
-	engine.run()
+	# Delegate the restore pipeline. Pass entry_scene_id as the override so
+	# set_scene runs after restore_snapshot — defending against a snapshot-
+	# context mismatch where the captured scene_index disagrees with the
+	# chapter entry scene.
+	_restore_runtime_from_snapshot(snap, entry_scene_id)
 	return true
 
 

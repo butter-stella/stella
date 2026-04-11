@@ -252,6 +252,82 @@ func test_jump_rolls_back_variable_set_between_choices():
 	await _stop_engine()
 
 
+# ─── can_jump_to_previous_choice — toolbar button state source ───
+
+func test_cannot_jump_before_any_choice():
+	_setup(_build_two_choice_scenario())
+	_runtime.engine.run()
+	await get_tree().process_frame
+	# Engine might have just started; either way no choice yet.
+	assert_false(_runtime.can_jump_to_previous_choice(),
+		"button disabled when no choice has fired")
+	await _stop_engine()
+
+
+func test_cannot_jump_while_parked_on_first_choice():
+	_setup(_build_two_choice_scenario())
+	_runtime.engine.run()
+	await _advance(1)  # parked on choice1
+
+	assert_false(_runtime.can_jump_to_previous_choice(),
+		"first choice on its own is not rewindable (nowhere to go back to)")
+
+	await _select("a")
+	await _stop_engine()
+
+
+func test_can_jump_after_walking_past_first_choice():
+	_setup(_build_two_choice_scenario())
+	_runtime.engine.run()
+	await _advance(1)
+	await _select("a")
+	await get_tree().process_frame
+	await get_tree().process_frame  # engine now past choice1, showing d1
+
+	assert_true(_runtime.can_jump_to_previous_choice(),
+		"walked past choice1 → can rewind to it")
+
+	await _advance(1)  # reach choice2
+	assert_true(_runtime.can_jump_to_previous_choice(),
+		"parked on choice2 with choice1 below → can rewind")
+
+	await _select("a")
+	await _stop_engine()
+
+
+# ─── Scope.GLOBAL preservation (issue #98) ───
+
+func test_jump_preserves_global_vars():
+	# Globals must survive any rollback path (backlog / flowchart / choice).
+	# Set a global between two choices, rewind to the first, assert it's
+	# still there — scenario-scope rollback must NOT touch Scope.GLOBAL.
+	_setup(_build_two_choice_scenario())
+	_runtime.engine.run()
+	await _advance(1)
+	await _select("a")
+	await _advance(1)  # parked on choice2
+
+	_runtime.engine.context.variable_store.set_var(
+		"seen_true_ending", true, VariableStore.Scope.GLOBAL)
+	assert_eq(
+		_runtime.engine.context.variable_store.get_var("seen_true_ending"),
+		true)
+
+	var ok = _runtime.jump_to_previous_choice()
+	assert_true(ok)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+	assert_eq(
+		_runtime.engine.context.variable_store.get_var("seen_true_ending"),
+		true,
+		"global var must survive choice rewind (issue #98)")
+
+	await _select("a")
+	await _stop_engine()
+
+
 # ─── Clear on fresh scenario ───
 
 func test_prepare_scenario_clears_choice_history():
@@ -274,3 +350,23 @@ func test_prepare_scenario_clears_choice_history():
 		"_prepare_scenario must clear choice history alongside backlog")
 
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+
+func test_return_to_title_clears_choice_history():
+	_setup(_build_two_choice_scenario())
+	_runtime.engine.run()
+	await _advance(1)  # parked on choice1 → one entry
+	assert_gt(_runtime.choice_history_manager.size(), 0)
+
+	# Unblock the choice await before return_to_title runs scene changes.
+	SignalBus.engine_abort_requested.emit()
+	_runtime.engine.stop()
+	await get_tree().process_frame
+
+	# return_to_title is the in-game "back to main menu" path. It must
+	# wipe choice history alongside backlog.
+	_runtime.return_to_title()
+	await get_tree().process_frame
+
+	assert_eq(_runtime.choice_history_manager.size(), 0,
+		"return_to_title must clear choice history alongside backlog")
