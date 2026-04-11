@@ -16,6 +16,14 @@ var _nvl_text: String = ""  # accumulated NVL text (already shown)
 var _current_mode: String = "adv"
 var _ui_hidden: bool = false
 var _ctrl_held: bool = false  # Ctrl key skip
+# Cached position of the currently displayed line — filled from engine.context
+# on _on_show_dialogue, consulted by _should_skip_current() for read-aware
+# toolbar skip, written by _mark_current_line_read() when the user has seen
+# the line. Read flags intentionally are NOT reverted by rollback (backlog /
+# flowchart / choice rewind) — once seen, always seen. See stella_runtime.gd:436.
+var _current_scenario_id: String = ""
+var _current_scene_id: String = ""
+var _current_command_index: int = -1
 var _current_voice: String = ""  # current dialogue voice asset
 var _current_voice_character: String = ""
 var _voice_playing: bool = false
@@ -219,9 +227,20 @@ func _on_auto_pressed():
 func _on_skip_pressed():
 	StellaRuntime.toggle_skip()
 	_update_toggle_buttons()
-	# If skip just activated and text is fully shown, advance immediately
-	if StellaRuntime.is_skipping() and not _is_typing:
-		SignalBus.advance_requested.emit()
+	if not StellaRuntime.is_skipping():
+		return
+	# Skip just activated. If the typewriter is mid-flight, snap the text to
+	# end (same semantics as click-to-complete) so the user immediately sees
+	# the full line — otherwise the button lights up but the typewriter keeps
+	# running, which looks like skip isn't working. The loop's post-break
+	# check runs _finalize_dialogue with the right character/segments.
+	if _is_typing:
+		_is_typing = false
+		text_label.visible_characters = -1
+		return
+	# Text already fully shown — advance now so the next dialogue can run
+	# through the gate (which decides whether skip continues or stops).
+	SignalBus.advance_requested.emit()
 
 
 func _on_backlog_pressed():
@@ -276,8 +295,74 @@ func _update_toggle_buttons():
 		_update_button_modulate(_skip_btn, "skip")
 
 
-func _is_skipping() -> bool:
-	return StellaRuntime.is_skipping() or _ctrl_held
+## Read-aware skip decision — pure query, no side effects.
+## - Ctrl hold always skips (even unread text).
+## - Toolbar skip respects the `skip_only_read` setting: when on, it blocks
+##   at unread lines so the user doesn't race past content they haven't seen.
+## Callers that want to *act* on toolbar-skip-blocked-by-unread (i.e. un-toggle
+## the button) should call `_apply_unread_skip_gate()` after this returns false.
+func _should_skip_current() -> bool:
+	if _ctrl_held:
+		return true
+	if not StellaRuntime.is_skipping():
+		return false
+	if not StellaRuntime.get_setting("skip_only_read"):
+		return true
+	# No known position (e.g. tests without a real scenario engine, or an
+	# in-between state) — can't gate on read status, so allow the skip.
+	if _current_command_index < 0:
+		return true
+	return _is_current_line_read()
+
+
+## Side-effect counterpart to `_should_skip_current()`. If toolbar skip is
+## active but blocked by an unread line, stop the toolbar skip so the button
+## un-highlights and the user reads normally. Safe to call any number of times:
+## once `skip_controller.is_active` is false, this is a no-op.
+func _apply_unread_skip_gate() -> void:
+	if _ctrl_held:
+		return
+	if not StellaRuntime.is_skipping():
+		return
+	if not StellaRuntime.get_setting("skip_only_read"):
+		return
+	if _current_command_index < 0:
+		return
+	if _is_current_line_read():
+		return
+	StellaRuntime.skip_controller.stop()
+	_update_toggle_buttons()
+
+
+func _capture_current_position() -> void:
+	_current_scenario_id = ""
+	_current_scene_id = ""
+	_current_command_index = -1
+	if StellaRuntime.engine == null or StellaRuntime.engine.context == null:
+		return
+	var ctx = StellaRuntime.engine.context
+	if ctx.scenario_data == null:
+		return
+	var scene = ctx.current_scene()
+	if scene == null:
+		return
+	_current_scenario_id = ctx.scenario_data.id
+	_current_scene_id = scene.id
+	_current_command_index = ctx.current_command_index
+
+
+func _is_current_line_read() -> bool:
+	if _current_command_index < 0:
+		return false
+	return StellaRuntime.read_flags.is_read(
+		_current_scenario_id, _current_scene_id, _current_command_index)
+
+
+func _mark_current_line_read() -> void:
+	if _current_command_index < 0:
+		return
+	StellaRuntime.read_flags.mark_read(
+		_current_scenario_id, _current_scene_id, _current_command_index)
 
 
 ## Unified dialogue handler.
@@ -294,6 +379,11 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 
 	_dialogue_gen += 1
 	var gen = _dialogue_gen
+
+	# Cache (scenario_id, scene_id, command_index) of the line we are about to
+	# display — consulted by _should_skip_current() / _apply_unread_skip_gate()
+	# and written by _mark_current_line_read() once the user has seen the line.
+	_capture_current_position()
 
 	# Snapshot dialogue state. _start_voice_playback later writes _playback_*
 	# but never touches _dialogue_*, so a backlog replay can run in parallel
@@ -393,8 +483,14 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 	await get_tree().process_frame
 	_is_typing = true
 
+	# If toolbar skip is active and the new line is unread (with skip_only_read
+	# on), un-toggle it now so the button reflects reality and the user reads
+	# normally. Runs once per dialogue — pure-query checks below can't side
+	# effect, so this is the explicit gate.
+	_apply_unread_skip_gate()
+
 	# Skip mode: show all text immediately and snap to final state
-	if _is_skipping():
+	if _should_skip_current():
 		text_label.visible_characters = -1
 		_is_typing = false
 		_finalize_dialogue(character, segments)
@@ -408,7 +504,7 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 	for i in range(total_new_chars):
 		if not _is_typing:
 			break
-		if _is_skipping():
+		if _should_skip_current():
 			text_label.visible_characters = -1
 			_is_typing = false
 			_finalize_dialogue(character, segments)
@@ -440,6 +536,7 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 
 	text_label.visible_characters = -1
 	_is_typing = false
+	_mark_current_line_read()
 
 	# Auto-play: wait for the voice queue to drain all segments, then advance
 	if StellaRuntime.is_auto_playing():
@@ -488,7 +585,7 @@ func _run_voice_queue(character: String, segments: Array, gen: int) -> void:
 				_update_avatar(character, expr, "adv")
 		var voice := String(seg.get("voice", ""))
 		prev_had_voice = (voice != "")
-		if voice != "" and not _is_skipping():
+		if voice != "" and not _should_skip_current():
 			_current_voice = voice
 			SignalBus.voice_play.emit(voice, character)
 
@@ -517,6 +614,7 @@ func _finalize_dialogue(character: String, segments: Array) -> void:
 	# and snap expression to the final segment's expression. For a single-segment
 	# dialogue with empty expression this is a no-op.
 	_playback_aborted = true
+	_mark_current_line_read()
 	if _playback_total_duration > 0.0 and _playback_is_dialogue:
 		SignalBus.dialogue_voice_finished.emit()
 	if segments.size() == 0:
