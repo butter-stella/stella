@@ -35,6 +35,7 @@ sakura「这里是教学楼的走廊，我们教室在那边——」 #voice:sak
 
 @show senpai default right
 
+@effect shake 8 0.25
 sakura「啊！学姐！」 #voice:sakura_006
 
 @expr senpai smile
@@ -105,6 +106,7 @@ sakura「我本来很开心的...」 #voice:sakura_013
 @expr sakura surprised
 sakura「但是听说下周要期中考...」 #voice:sakura_018
 @expr sakura sad
+@effect flash white 0.18
 sakura「我数学肯定完蛋了。」 #voice:sakura_019
 @end
 

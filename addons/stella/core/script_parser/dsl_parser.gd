@@ -442,9 +442,22 @@ static func _parse_at_command(token: DslToken) -> CommandData:
 		"effect":
 			if parts.size() > 0 and parts[0] == "off":
 				return _make_cmd("effect", {"off": true, "effect_type": "off"})
-			return _make_cmd("effect", {
-				"effect_type": parts[0] if parts.size() > 0 else "",
-			})
+			var effect_type = parts[0] if parts.size() > 0 else ""
+			match effect_type:
+				"shake":
+					return _make_cmd("effect", {
+						"effect_type": "shake",
+						"intensity": float(parts[1]) if parts.size() > 1 else 10.0,
+						"duration": float(parts[2]) if parts.size() > 2 else 0.3,
+					})
+				"flash":
+					return _make_cmd("effect", {
+						"effect_type": "flash",
+						"color": parts[1] if parts.size() > 1 else "white",
+						"duration": float(parts[2]) if parts.size() > 2 else 0.2,
+					})
+				_:
+					return _make_cmd("effect", {"effect_type": effect_type})
 		"end":
 			return null  # Handled by if_stack or ignored
 		_:
