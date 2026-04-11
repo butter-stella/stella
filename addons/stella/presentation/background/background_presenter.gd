@@ -98,13 +98,21 @@ func _transition_slide(texture: Texture2D, duration: float, direction: String):
 	#   slide_left  → old exits to the left, new enters from the right.
 	#   slide_right → mirror of slide_left.
 	#   slide_up / slide_down → vertical equivalents.
+	var viewport_size = get_viewport().get_visible_rect().size
+	if viewport_size == Vector2.ZERO:
+		# Viewport not yet laid out (e.g. first-frame autoplay). Slide would
+		# be invisible because delta is zero; fall back to fade so the bg
+		# switch at least happens.
+		push_warning("BackgroundPresenter: viewport size is zero, falling back to fade for slide")
+		await _transition_fade(texture, duration)
+		return
+
 	bg_front.material = null
 	bg_back.material = null
 
 	bg_back.texture = texture
 	bg_back.modulate.a = 1.0
 
-	var viewport_size = get_viewport().get_visible_rect().size
 	var front_origin = bg_front.position
 	var back_origin = bg_back.position
 
