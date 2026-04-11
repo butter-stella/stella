@@ -12,6 +12,13 @@
 ## restores that snapshot directly — no fast-forward replay needed. The
 ## max_entries cap (default 200) bounds total memory; older entries are
 ## evicted from the front when exceeded.
+##
+## NOT a SaveManager provider. The snapshots reference the currently-
+## running engine.context and become meaningless across scenario reload.
+## Persisting them into save files would balloon save size and risk
+## restoring stale rollback points that point at commands which no longer
+## exist. Session-only memory state, cleared on every fresh scenario
+## entry (see StellaRuntime._prepare_scenario + the other two clear sites).
 class_name BacklogManager extends RefCounted
 
 var max_entries: int = 200

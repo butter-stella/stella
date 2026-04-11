@@ -12,6 +12,7 @@ func before_each():
 	_runtime = get_tree().root.get_node("StellaRuntime")
 	_runtime.backlog_manager.clear()
 	_runtime.choice_history_manager.clear()
+	_runtime.flowchart_state.clear()
 
 
 func _advance(n: int) -> void:
@@ -74,6 +75,52 @@ func _build_two_choice_scenario() -> ScenarioData:
 	s.commands.append(d2)
 
 	data.scenes.append(s)
+	return data
+
+
+# Two chapters separated by a choice that jumps to the second chapter's scene.
+# Chapter A hosts the choice command; selecting "go" routes to chapter B.
+func _build_cross_chapter_scenario() -> ScenarioData:
+	var data = ScenarioData.new()
+	data.id = "cross_chapter_test"
+
+	var chA = ChapterData.new()
+	chA.id = "chA"
+	chA.display_name = "章节 A"
+	chA.scene_ids = ["sA"]
+	data.chapters.append(chA)
+
+	var chB = ChapterData.new()
+	chB.id = "chB"
+	chB.display_name = "章节 B"
+	chB.scene_ids = ["sB"]
+	data.chapters.append(chB)
+
+	var sA = SceneData.new()
+	sA.id = "sA"
+	sA.chapter_id = "chA"
+	var d0 = CommandData.new()
+	d0.type = "dialogue"
+	d0.params = {"character": "n", "text": "chA intro"}
+	sA.commands.append(d0)
+	var c = CommandData.new()
+	c.type = "choice"
+	c.params = {
+		"prompt": "go?",
+		"options": [{"id": "go", "label": "go", "jump": "sB"}],
+	}
+	sA.commands.append(c)
+	data.scenes.append(sA)
+
+	var sB = SceneData.new()
+	sB.id = "sB"
+	sB.chapter_id = "chB"
+	var d1 = CommandData.new()
+	d1.type = "dialogue"
+	d1.params = {"character": "n", "text": "chB line"}
+	sB.commands.append(d1)
+	data.scenes.append(sB)
+
 	return data
 
 
@@ -292,6 +339,51 @@ func test_can_jump_after_walking_past_first_choice():
 		"parked on choice2 with choice1 below → can rewind")
 
 	await _select("a")
+	await _stop_engine()
+
+
+# ─── Flowchart line sync on cross-chapter rewind ───
+
+func test_rewind_across_chapter_boundary_truncates_flowchart_line():
+	# Scenario: chA hosts a dialogue + choice → choice jumps to chB.
+	# Walk: chA dialogue → chA choice → select "go" → chB dialogue.
+	# Flowchart path after walk: [chA, chB].
+	# Rewind to the choice (which lives in chA) → expected path: [chA].
+	# Without the fix, the stale [chA, chB] line would have the player's
+	# "current location" in chB while the engine runs in chA — and the
+	# next chapter transition would append onto a lie.
+	var data = _build_cross_chapter_scenario()
+	_runtime.scenario_graph = ScenarioGraphBuilder.build(data)
+	_runtime.flowchart_state.clear()
+	_setup(data)
+	_runtime.save_manager.register_provider(_runtime.flowchart_state)
+	_runtime.flowchart_state.initial_snapshot = _runtime._capture_rollback_snapshot()
+
+	_runtime.engine.run()
+	await _advance(1)  # past chA dialogue → parks on choice
+	assert_eq(_runtime.flowchart_state.current_path, ["chA"],
+		"still in chA while choice is showing")
+
+	await _select("go")
+	await get_tree().process_frame
+	await get_tree().process_frame  # jump to sB, engine now in chB
+	assert_eq(_runtime.flowchart_state.current_path, ["chA", "chB"],
+		"entered chB after selecting")
+
+	# Rewind: from chB back to the choice in chA. This is the cross-chapter
+	# rewind that the restore pipeline must sync the flowchart line for.
+	var ok = _runtime.jump_to_previous_choice()
+	assert_true(ok)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+	assert_eq(_runtime.engine.context.current_scene().id, "sA",
+		"engine back in chA's scene")
+	assert_eq(_runtime.flowchart_state.current_path, ["chA"],
+		"flowchart line must truncate to chA — stale [chA, chB] is a lie")
+
+	await _select("go")
 	await _stop_engine()
 
 

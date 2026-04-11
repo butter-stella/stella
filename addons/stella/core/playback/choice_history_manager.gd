@@ -15,6 +15,14 @@
 ##
 ## The max_entries cap (default 50) bounds memory; older entries are
 ## evicted from the front when exceeded — matching BacklogManager's policy.
+##
+## NOT a SaveManager provider. The snapshots here reference the currently-
+## running engine.context and become meaningless across scenario reload.
+## Persisting them into save files would balloon save size and risk
+## restoring stale rollback points that point at commands which no longer
+## exist. Session-only memory state, cleared on every fresh scenario entry
+## alongside backlog_manager (see StellaRuntime._prepare_scenario / the
+## other two clear sites).
 class_name ChoiceHistoryManager extends RefCounted
 
 var max_entries: int = 50
