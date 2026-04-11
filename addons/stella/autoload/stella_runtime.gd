@@ -383,7 +383,11 @@ func _on_scene_changed_for_flowchart(scene_id: String) -> void:
 		return  # Still inside the same chapter — no transition.
 
 	# Chapter transition detected.
-	var snapshot = _capture_rollback_snapshot()
+	# Pass new_chapter_id as the override so the captured snapshot's
+	# chapter_id field reflects the chapter the player will be IN after
+	# restore, not the old one (flowchart_state.current_path hasn't been
+	# updated yet at this point).
+	var snapshot = _capture_rollback_snapshot(new_chapter_id)
 	flowchart_state.enter_chapter(new_chapter_id, snapshot)
 	flowchart_visited.mark_chapter_visited(new_chapter_id)
 
@@ -423,8 +427,9 @@ func _on_choice_for_history(_prompt: String, _options: Array) -> void:
 	choice_history_manager.record(uid, _capture_rollback_snapshot)
 
 
-## Capture a lightweight snapshot for rollback paths (backlog jump and,
-## upcoming, flowchart jump — see issue #97).
+## Capture a lightweight snapshot for rollback paths (backlog jump,
+## flowchart jump, choice rewind — all three delegate to
+## _restore_runtime_from_snapshot when applying).
 ##
 ## Excluded from this snapshot — these are monotonic / cross-playthrough
 ## persistent and MUST NOT be rolled back when navigating history:
@@ -434,9 +439,14 @@ func _on_choice_for_history(_prompt: String, _options: Array) -> void:
 ##   - VariableStore.Scope.GLOBAL (issue #98 — captured via the scoped
 ##     capture_scenario_scope() helper, not the full capture_snapshot())
 ##
-## The two callers (backlog and flowchart) share this function so the
-## "rollback contract" stays in one place.
-func _capture_rollback_snapshot() -> Dictionary:
+## `chapter_override`: when a caller is capturing during a chapter
+## transition (see _on_scene_changed_for_flowchart), the chapter that's
+## about to become current is passed explicitly — flowchart_state hasn't
+## been updated yet at that moment, so `get_current_chapter_id()` would
+## return the wrong (previous) chapter. Default empty string falls back
+## to flowchart_state's current value, which is correct for mid-chapter
+## captures (backlog entry, choice menu).
+func _capture_rollback_snapshot(chapter_override: String = "") -> Dictionary:
 	var snap: Dictionary = {}
 	if engine and engine.context:
 		snap["scenario_context"] = engine.context.capture_snapshot()
@@ -444,6 +454,15 @@ func _capture_rollback_snapshot() -> Dictionary:
 			snap["variable_store"] = engine.context.variable_store.capture_scenario_scope()
 	if presentation_state:
 		snap["presentation_state"] = presentation_state.capture_snapshot()
+	# Chapter id is used by _restore_runtime_from_snapshot to keep the
+	# flowchart line in sync with the restored engine position — crucial
+	# for cross-chapter rewinds (otherwise current_path grows on every
+	# rewind as scene_changed re-appends the "new" chapter).
+	if flowchart_state:
+		if chapter_override != "":
+			snap["chapter_id"] = chapter_override
+		else:
+			snap["chapter_id"] = flowchart_state.get_current_chapter_id()
 	return snap
 
 
@@ -740,6 +759,17 @@ func _restore_runtime_from_snapshot(snap: Dictionary, override_scene_id: String 
 		new_ctx.set_scene(override_scene_id)
 	presentation_state.restore_snapshot(snap.get("presentation_state", {}))
 	presentation_state.apply_to_presenters()
+
+	# Sync the flowchart trajectory to match the restored engine position.
+	# Without this, a cross-chapter rewind leaves current_path ending on a
+	# stale chapter — and the subsequent scene_changed event re-appends the
+	# "new" chapter on top, causing current_path to grow with every rewind.
+	# Skipped for snapshots missing chapter_id (e.g. initial_snapshot
+	# captured before any chapter was entered — jump_from_flowchart handles
+	# that case with its own explicit flowchart_state.jump_to() call).
+	var chapter_at_capture: String = snap.get("chapter_id", "")
+	if chapter_at_capture != "" and flowchart_state != null:
+		flowchart_state.jump_to(chapter_at_capture)
 
 	save_manager.register_provider(new_ctx)
 	save_manager.register_provider(new_ctx.variable_store)
