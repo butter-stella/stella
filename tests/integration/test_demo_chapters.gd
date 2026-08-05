@@ -66,3 +66,26 @@ func test_demo_every_scene_has_chapter_id():
 			continue
 		assert_ne(scene.chapter_id, "",
 			"scene '%s' should have a non-empty chapter_id" % scene.id)
+
+
+func test_demo_cafe_flash_is_a_real_command_before_combined_dialogue():
+	var data = _parse_demo()
+	var cafe = data.get_scene("cafe")
+	assert_not_null(cafe, "demo should contain the cafe scene")
+	if cafe == null:
+		return
+
+	var flash_index := -1
+	var combine_index := -1
+	for i in range(cafe.commands.size()):
+		var cmd: CommandData = cafe.commands[i]
+		if cmd.type == "effect" and cmd.get_string("effect_type") == "flash":
+			flash_index = i
+			assert_eq(cmd.get_string("color"), "white")
+			assert_almost_eq(cmd.get_float("duration"), 0.18, 0.001)
+		elif cmd.type == "dialogue" and cmd.params.get("segments", []).size() > 1:
+			combine_index = i
+
+	assert_gte(flash_index, 0, "demo flash must survive parsing")
+	assert_gte(combine_index, 0, "demo should contain the combined dialogue")
+	assert_lt(flash_index, combine_index, "flash should play when the combined line begins")

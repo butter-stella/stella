@@ -342,6 +342,7 @@ func _is_on_title_screen() -> bool:
 
 ## Reset current presentation state (for in-scene reload).
 func _reset_presentation() -> void:
+	SignalBus.effect_requested.emit("off", {})
 	SignalBus.char_hide.emit("all")
 	SignalBus.bgm_stop.emit(0.0)
 	SignalBus.hide_dialogue.emit()
