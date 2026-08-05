@@ -336,6 +336,16 @@ func test_reset_presentation_clears_backlog():
 		"_reset_presentation must clear the backlog")
 
 
+func test_reset_presentation_clears_screen_effects():
+	var received: Array = []
+	var listener := func(effect_type: String, _params: Dictionary):
+		received.append(effect_type)
+	SignalBus.effect_requested.connect(listener)
+	StellaRuntime._reset_presentation()
+	SignalBus.effect_requested.disconnect(listener)
+	assert_true(received.has("off"), "in-place load reset must cancel active screen effects")
+
+
 func test_replay_button_visible_when_only_later_segment_has_voice():
 	# Latent bug: replay button visibility was based on segments[0].voice only.
 	# A combine where seg[0] is voice-less but seg[1] has a voice would hide

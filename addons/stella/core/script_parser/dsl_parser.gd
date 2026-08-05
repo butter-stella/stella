@@ -181,7 +181,9 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 							if cmd.type == "char_expr":
 								combine_pending_expr = cmd.get_string("expression", "")
 							else:
-								push_warning("DslParser: @%s is not allowed inside @combine block (line %d)" % [cmd_name, token.line])
+								_record_diagnostic(data, "warning",
+									"DslParser: @%s is not allowed inside @combine block (line %d)"
+									% [cmd_name, token.line], token.line)
 						elif in_parallel:
 							parallel_commands.append(cmd)
 						else:
@@ -199,7 +201,9 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 							combine_character = char_name
 							combine_character_set = true
 						elif char_name != combine_character:
-							push_warning("DslParser: @combine block mixes characters '%s' and '%s' (line %d)" % [combine_character, char_name, token.line])
+							_record_diagnostic(data, "warning",
+								"DslParser: @combine block mixes characters '%s' and '%s' (line %d)"
+								% [combine_character, char_name, token.line], token.line)
 						combine_segments.append({
 							"text": cmd.get_string("text", ""),
 							"voice": cmd.get_string("voice", ""),
@@ -220,7 +224,9 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 							combine_character = ""
 							combine_character_set = true
 						elif combine_character != "":
-							push_warning("DslParser: @combine block mixes narration and character '%s' (line %d)" % [combine_character, token.line])
+							_record_diagnostic(data, "warning",
+								"DslParser: @combine block mixes narration and character '%s' (line %d)"
+								% [combine_character, token.line], token.line)
 						combine_segments.append({
 							"text": cmd.get_string("text", ""),
 							"voice": cmd.get_string("voice", ""),

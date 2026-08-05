@@ -230,13 +230,20 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
 
 ```
 // 屏幕特效
-@effect shake                  // 震动，默认 intensity=10 duration=0.3
-@effect shake 20 0.5           // 指定强度和时长
-@effect flash                   // 闪光，默认 white 0.2s
-@effect flash red 0.25          // 指定颜色和时长
-@effect flash #ff0000 0.25      // 也支持十六进制颜色
-@effect blur 0.5                // 模糊
-@effect off                     // 清除所有特效
+// 震动，默认 intensity=10 duration=0.3
+@effect shake
+// 指定强度和时长
+@effect shake 20 0.5
+// 闪光，默认 white 0.2s
+@effect flash
+// 指定颜色和时长
+@effect flash red 0.25
+// 也支持十六进制颜色
+@effect flash #ff0000 0.25
+// 模糊
+@effect blur 0.5
+// 清除所有特效
+@effect off
 
 // 黑屏过渡（常用于时间跳跃）
 @fade out 1.0

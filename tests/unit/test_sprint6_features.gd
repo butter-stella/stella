@@ -183,6 +183,14 @@ func test_dsl_parser_effect_flash_defaults():
 	assert_almost_eq(cmd.get_float("duration"), 0.2, 0.001)
 
 
+func test_dsl_parser_effect_flash_hex_color():
+	var tokens = DslLexer.tokenize("@scene s\n@effect flash #ff0000 0.25")
+	var data = DslParser.parse(tokens, "t")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_string("color"), "#ff0000")
+	assert_almost_eq(cmd.get_float("duration"), 0.25, 0.001)
+
+
 # --- ParallelHandler ---
 
 func test_parallel_handler_type():
