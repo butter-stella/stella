@@ -172,7 +172,7 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 					combine_character_set = false
 					combine_pending_expr = ""
 				else:
-					var cmd = _parse_at_command(token)
+					var cmd = _parse_at_command(token, data)
 					if cmd:
 						cmd.declared_line = token.line
 					if cmd and current_scene:
@@ -181,7 +181,9 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 							if cmd.type == "char_expr":
 								combine_pending_expr = cmd.get_string("expression", "")
 							else:
-								push_warning("DslParser: @%s is not allowed inside @combine block (line %d)" % [cmd_name, token.line])
+								_record_diagnostic(data, "warning",
+									"DslParser: @%s is not allowed inside @combine block (line %d)"
+									% [cmd_name, token.line], token.line)
 						elif in_parallel:
 							parallel_commands.append(cmd)
 						else:
@@ -199,7 +201,9 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 							combine_character = char_name
 							combine_character_set = true
 						elif char_name != combine_character:
-							push_warning("DslParser: @combine block mixes characters '%s' and '%s' (line %d)" % [combine_character, char_name, token.line])
+							_record_diagnostic(data, "warning",
+								"DslParser: @combine block mixes characters '%s' and '%s' (line %d)"
+								% [combine_character, char_name, token.line], token.line)
 						combine_segments.append({
 							"text": cmd.get_string("text", ""),
 							"voice": cmd.get_string("voice", ""),
@@ -220,7 +224,9 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 							combine_character = ""
 							combine_character_set = true
 						elif combine_character != "":
-							push_warning("DslParser: @combine block mixes narration and character '%s' (line %d)" % [combine_character, token.line])
+							_record_diagnostic(data, "warning",
+								"DslParser: @combine block mixes narration and character '%s' (line %d)"
+								% [combine_character, token.line], token.line)
 						combine_segments.append({
 							"text": cmd.get_string("text", ""),
 							"voice": cmd.get_string("voice", ""),
@@ -335,16 +341,19 @@ static func _record_diagnostic(data: ScenarioData, level: String, message: Strin
 
 static func _get_at_command_name(raw: String) -> String:
 	var after_at = raw.substr(1).strip_edges()
-	var space_pos = after_at.find(" ")
-	if space_pos == -1:
-		return after_at
-	return after_at.substr(0, space_pos)
+	for index in range(after_at.length()):
+		if _is_inline_whitespace(after_at.substr(index, 1)):
+			return after_at.substr(0, index)
+	return after_at
 
 
-static func _parse_at_command(token: DslToken) -> CommandData:
+static func _parse_at_command(token: DslToken, data: ScenarioData) -> CommandData:
 	var raw = token.raw_text
 	var name = _get_at_command_name(raw)
-	var args = raw.substr(raw.find(name) + name.length()).strip_edges()
+	var name_position := raw.find(name, 1)
+	var args = _strip_inline_comment(
+		raw.substr(name_position + name.length()).strip_edges()
+	)
 	var parts = _split_args(args)
 
 	match name:
@@ -440,15 +449,152 @@ static func _parse_at_command(token: DslToken) -> CommandData:
 				"duration": 0.5,
 			})
 		"effect":
-			if parts.size() > 0 and parts[0] == "off":
-				return _make_cmd("effect", {"off": true, "effect_type": "off"})
-			return _make_cmd("effect", {
-				"effect_type": parts[0] if parts.size() > 0 else "",
-			})
+			if parts.is_empty():
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: @effect is missing an effect type (line %d)" % token.line,
+					token.line,
+				)
+				return null
+			var effect_type: String = parts[0]
+			match effect_type:
+				"off":
+					if parts.size() > 1:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @effect off does not accept arguments (line %d)"
+							% token.line,
+							token.line,
+						)
+						return null
+					return _make_cmd("effect", {"off": true, "effect_type": "off"})
+				"shake":
+					if parts.size() > 3:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @effect shake accepts at most intensity and duration (line %d)"
+							% token.line,
+							token.line,
+						)
+						return null
+					var intensity_value: Variant = 10.0
+					var duration_value: Variant = 0.3
+					if parts.size() > 1:
+						intensity_value = _parse_effect_number(
+							parts[1], "shake", "intensity", token, data
+						)
+					if parts.size() > 2:
+						duration_value = _parse_effect_number(
+							parts[2], "shake", "duration", token, data
+						)
+
+					if intensity_value == null or duration_value == null:
+						return null
+					var intensity := float(intensity_value)
+					var duration := float(duration_value)
+					if intensity < 0.0:
+						_record_diagnostic(
+							data,
+							"warning",
+							"DslParser: @effect shake intensity is negative; using its absolute value (line %d)"
+							% token.line,
+							token.line,
+						)
+						intensity = absf(intensity)
+					if duration < 0.0:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @effect shake duration must be non-negative (line %d)"
+							% token.line,
+							token.line,
+						)
+						return null
+					return _make_cmd("effect", {
+						"effect_type": "shake",
+						"intensity": intensity,
+						"duration": duration,
+					})
+				"flash":
+					if parts.size() > 3:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @effect flash accepts at most color and duration (line %d)"
+							% token.line,
+							token.line,
+						)
+						return null
+					var duration_value: Variant = 0.2
+					if parts.size() > 2:
+						duration_value = _parse_effect_number(
+							parts[2], "flash", "duration", token, data
+						)
+					if duration_value == null:
+						return null
+					var duration := float(duration_value)
+					if duration < 0.0:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @effect flash duration must be non-negative (line %d)"
+							% token.line,
+							token.line,
+						)
+						return null
+					return _make_cmd("effect", {
+						"effect_type": "flash",
+						"color": parts[1] if parts.size() > 1 else "white",
+						"duration": duration,
+					})
+				_:
+					_record_diagnostic(
+						data,
+						"warning",
+						"DslParser: @effect '%s' is not built in; forwarding it to custom listeners (line %d)"
+						% [effect_type, token.line],
+						token.line,
+					)
+					return _make_cmd("effect", {
+						"effect_type": effect_type,
+						"args": parts.slice(1),
+					})
 		"end":
 			return null  # Handled by if_stack or ignored
 		_:
 			return null
+
+
+static func _parse_effect_number(
+	raw_value: String,
+	effect_type: String,
+	parameter_name: String,
+	token: DslToken,
+	data: ScenarioData,
+) -> Variant:
+	if not raw_value.is_valid_float():
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @effect %s %s must be a finite number, got '%s' (line %d)"
+			% [effect_type, parameter_name, raw_value, token.line],
+			token.line,
+		)
+		return null
+	var value := raw_value.to_float()
+	if not is_finite(value):
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @effect %s %s must be finite, got '%s' (line %d)"
+			% [effect_type, parameter_name, raw_value, token.line],
+			token.line,
+		)
+		return null
+	return value
 
 
 static func _parse_set_command(args: String) -> CommandData:
@@ -745,8 +891,46 @@ static func _make_cmd(type: String, params: Dictionary) -> CommandData:
 
 static func _split_args(text: String) -> Array:
 	var result: Array = []
-	for part in text.split(" "):
-		var stripped = part.strip_edges()
-		if stripped != "":
-			result.append(stripped)
+	var current := ""
+	for index in range(text.length()):
+		var character := text.substr(index, 1)
+		if _is_inline_whitespace(character):
+			if not current.is_empty():
+				result.append(current)
+				current = ""
+		else:
+			current += character
+	if not current.is_empty():
+		result.append(current)
 	return result
+
+
+static func _strip_inline_comment(text: String) -> String:
+	if text.length() < 2:
+		return text
+	var closing_quote := ""
+	var escaped := false
+	for index in range(text.length() - 1):
+		var character := text.substr(index, 1)
+		if not closing_quote.is_empty():
+			if escaped:
+				escaped = false
+			elif character == "\\":
+				escaped = true
+			elif character == closing_quote:
+				closing_quote = ""
+			continue
+		match character:
+			"\"", "'":
+				closing_quote = character
+			"“":
+				closing_quote = "”"
+			"/":
+				if text.substr(index + 1, 1) == "/" \
+					and (index == 0 or _is_inline_whitespace(text.substr(index - 1, 1))):
+					return text.substr(0, index).strip_edges()
+	return text
+
+
+static func _is_inline_whitespace(character: String) -> bool:
+	return not character.is_empty() and character.strip_edges().is_empty()

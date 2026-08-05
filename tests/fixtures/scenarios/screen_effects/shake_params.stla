@@ -1,0 +1,12 @@
+// E2E fixture: parameterized shake followed by explicit cleanup.
+@chapter screen_effects_shake "Screen Effects — Shake"
+@scene start
+@effect shake 32 5.0
+
+// Checkpoint 1: shake must be active in the presenter.
+@wait click
+@effect off
+
+// Checkpoint 2: all affected layers must be restored.
+@wait click
+@end

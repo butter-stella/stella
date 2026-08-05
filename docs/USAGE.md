@@ -102,6 +102,28 @@ backlog_scene = ""
 
 游戏场景中使用插件的 Presenter 脚本（`BackgroundPresenter`、`CharacterPresenter` 等），通过 `StellaRuntime` 的 Facade API 控制游戏流程。
 
+如果自定义游戏场景需要支持 `@effect shake`，请在每个需要震动的舞台 `CanvasLayer` 下添加一个专用的全屏 `Control` 根节点（建议命名为 `ShakeRoot`，Full Rect、Mouse Filter Ignore），把该层的可见内容放到根节点下，再将根节点路径写入 `ScreenEffects.shake_target_paths`。使用全屏 `Control` 可确保子 Control 的 anchors 仍以视口尺寸布局；普通 `Node2D` 目标也受支持，但不适合作为锚点 UI 的父节点。路径相对 `ScreenEffects` 解析；内置默认值为 `../BackgroundLayer/ShakeRoot` 和 `../CharacterLayer/ShakeRoot`。`ScreenEffects` 在特效期间独占这些根节点的 `position`；镜头移动、平移等系统应使用外层 `CanvasLayer.offset` 或其他子节点，这样它们可以与 shake 安全叠加。不要把 UI 根节点列入目标，便可让对话框保持静止。
+
+为避免恰好等于视口大小的背景在位移时露出清屏色，还应把背景的 `ShakeRoot` 同时写入 `shake_coverage_target_paths`。该目标必须是宽高至少 1 px 的有限尺寸、单位缩放、零旋转的 `Control`；运行时只在 shake 期间围绕中心按强度增加必要的 overscan，窗口尺寸变化时会同步重算，并在结束或取消时恢复原始 scale 与 pivot。人物根不要加入 coverage 列表，因此人物比例和 anchor 不会改变。`Node2D` 目标或未配置 coverage 的自定义场景仍可震动，但需要项目自己提供足够的背景出血区。旧版自定义场景中直系的 `BgFront`/`BgBack` 与 `SlotLeft`/`SlotCenter`/`SlotRight` 仍可正常加载，但需要按上述结构迁移后才会获得可组合且不露边的 shake。
+
+`@effect flash` 的绘制宿主由 `ScreenEffects.flash_canvas_path` 指定。推荐像内置场景一样，创建一个独立且 `layer` 严格高于场景内所有 UI（包括项目自定义 UI）的 `CanvasLayer`，再将其路径填入该属性；`ScreenEffects` 不会修改外部宿主的层级。宿主必须位于场景树中，退出场景树时其活动 flash 会被同步取消。宿主层应使用唯一的最高层级，因为同一 CanvasLayer 层级的跨层绘制顺序不应作为遮盖保证。若路径留空，兼容模式会在 `ScreenEffects` 下创建私有 CanvasLayer，并使用可配置的 `flash_canvas_layer`（默认 100）。
+
+```text
+Game
+├── BackgroundLayer (CanvasLayer)
+│   └── ShakeRoot (Control，Full Rect)
+│       ├── BgFront
+│       └── BgBack
+├── CharacterLayer (CanvasLayer)
+│   └── ShakeRoot (Control，Full Rect)
+│       └── ...
+├── UILayer (CanvasLayer)
+└── ScreenEffects
+    └── FlashCanvas (CanvasLayer，最高 layer)
+```
+
+内置场景的 `ScreenEffects` 将 `BackgroundLayer/ShakeRoot` 同时配置为 shake target 和 coverage target，将 `CharacterLayer/ShakeRoot` 只配置为 shake target。
+
 如果不搭建自己的场景，引擎会使用内置的默认场景。
 
 ### Step 5 — 运行
