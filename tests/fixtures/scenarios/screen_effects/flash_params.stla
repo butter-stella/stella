@@ -1,0 +1,12 @@
+// E2E fixture: hexadecimal flash color followed by explicit cleanup.
+@chapter screen_effects_flash "Screen Effects — Flash"
+@scene start
+@effect flash #ff3366 5.0
+
+// Checkpoint 1: flash overlay must be visible above the UI.
+@wait click
+@effect off
+
+// Checkpoint 2: the overlay must be removed.
+@wait click
+@end

@@ -1,0 +1,242 @@
+extends GutTest
+## Disk-backed E2E coverage for screen-effect DSL commands.
+##
+## Each test exercises the production path:
+## .stla file -> lexer -> parser -> scenario engine -> registered handler ->
+## SignalBus -> ScreenEffects in the built-in game scene.
+
+const GAME_SCENE := preload("res://addons/stella/scenes/game.tscn")
+const FIXTURE_ROOT := "res://tests/fixtures/scenarios/screen_effects"
+
+var _game: Node2D
+var _background_layer: CanvasLayer
+var _character_layer: CanvasLayer
+var _ui_layer: CanvasLayer
+var _effects: Node
+var _engine: ScenarioEngine
+var _effect_events: Array[Dictionary] = []
+var _effect_listener: Callable
+
+
+func before_each() -> void:
+	_engine = null
+	_game = GAME_SCENE.instantiate()
+	add_child_autoqfree(_game)
+	await get_tree().process_frame
+
+	_background_layer = _game.get_node("BackgroundLayer")
+	_character_layer = _game.get_node("CharacterLayer")
+	_ui_layer = _game.get_node("UILayer")
+	_effects = _game.get_node("ScreenEffects")
+
+	_effect_events.clear()
+	_effect_listener = func(effect_type: String, params: Dictionary):
+		_effect_events.append({
+			"type": effect_type,
+			"params": params.duplicate(true),
+		})
+	SignalBus.effect_requested.connect(_effect_listener)
+
+
+func after_each() -> void:
+	if _effect_listener.is_valid() and SignalBus.effect_requested.is_connected(_effect_listener):
+		SignalBus.effect_requested.disconnect(_effect_listener)
+
+	# Release a failed test from @wait click and clear any active presentation
+	# state before the next test starts.
+	if _engine != null and _engine.context != null and not _engine.context.is_finished:
+		_engine.stop()
+		SignalBus.engine_abort_requested.emit()
+		await get_tree().process_frame
+
+	if is_instance_valid(_game):
+		_game.queue_free()
+		await get_tree().process_frame
+
+
+func test_shake_fixture_reaches_the_real_game_presenter() -> void:
+	var background_baseline := Vector2(11.0, -7.0)
+	var character_baseline := Vector2(-5.0, 9.0)
+	var ui_baseline := Vector2(2.0, -3.0)
+	_background_layer.offset = background_baseline
+	_character_layer.offset = character_baseline
+	_ui_layer.offset = ui_baseline
+
+	_start_fixture("shake_params.stla")
+	if not await _wait_for_command(1, "shake fixture reaches its active checkpoint"):
+		return
+	if not _has_effect_events(1, "shake fixture must emit its effect event"):
+		return
+
+	assert_eq(_event_types(), ["shake"])
+	assert_almost_eq(_effect_events[0]["params"].get("intensity", 0.0), 32.0, 0.001)
+	assert_almost_eq(_effect_events[0]["params"].get("duration", 0.0), 5.0, 0.001)
+	assert_not_null(_effects._shake_tween, "the production presenter must start a shake tween")
+	assert_true(_effects._shake_targets.has(_background_layer))
+	assert_true(_effects._shake_targets.has(_character_layer))
+	assert_false(_effects._shake_targets.has(_ui_layer), "UI must not be a shake target")
+	assert_eq(_effects._shake_baselines.get(_background_layer), background_baseline)
+	assert_eq(_effects._shake_baselines.get(_character_layer), character_baseline)
+
+	# Sample several random deltas. Their exact values are deliberately not
+	# asserted; only actual movement and the rigid-stage invariant are relevant.
+	var observed_movement := false
+	for _frame in range(4):
+		await get_tree().process_frame
+		var background_delta := _background_layer.offset - background_baseline
+		var character_delta := _character_layer.offset - character_baseline
+		observed_movement = observed_movement or background_delta.length() > 0.001
+		assert_lt(background_delta.distance_to(character_delta), 0.001)
+	assert_true(observed_movement, "shake must move the configured stage layers")
+	assert_eq(_ui_layer.offset, ui_baseline)
+
+	SignalBus.advance_requested.emit()
+	if not await _wait_for_command(3, "shake fixture reaches its cleared checkpoint"):
+		return
+	assert_eq(_event_types(), ["shake", "off"])
+	assert_null(_effects._shake_tween)
+	assert_eq(_background_layer.offset, background_baseline)
+	assert_eq(_character_layer.offset, character_baseline)
+	assert_eq(_ui_layer.offset, ui_baseline)
+	await _finish_fixture()
+
+
+func test_flash_fixture_reaches_the_real_game_presenter() -> void:
+	_start_fixture("flash_params.stla")
+	if not await _wait_for_command(1, "flash fixture reaches its active checkpoint"):
+		return
+	if not _has_effect_events(1, "flash fixture must emit its effect event"):
+		return
+
+	assert_eq(_event_types(), ["flash"])
+	assert_eq(_effect_events[0]["params"].get("color", ""), "#ff3366")
+	assert_almost_eq(_effect_events[0]["params"].get("duration", 0.0), 5.0, 0.001)
+	var overlay := _find_flash_overlay()
+	assert_not_null(overlay, "the production presenter must create a flash overlay")
+	if overlay != null:
+		assert_eq(overlay.color, Color.from_string("#ff3366", Color.WHITE))
+		assert_eq(overlay.mouse_filter, Control.MOUSE_FILTER_IGNORE)
+		var canvas := _find_canvas_ancestor(overlay)
+		assert_not_null(canvas)
+		if canvas != null:
+			assert_gt(canvas.layer, _ui_layer.layer, "flash must render above the UI")
+
+	SignalBus.advance_requested.emit()
+	if not await _wait_for_command(3, "flash fixture reaches its cleared checkpoint"):
+		return
+	assert_eq(_event_types(), ["flash", "off"])
+	assert_null(_effects._flash_tween)
+	assert_null(_effects._flash_overlay)
+	await get_tree().process_frame
+	assert_null(_find_flash_overlay(), "@effect off must free the old flash overlay")
+	await _finish_fixture()
+
+
+func test_off_fixture_clears_shake_and_flash_together() -> void:
+	var background_baseline := Vector2(7.0, 4.0)
+	var character_baseline := Vector2(-8.0, 3.0)
+	_background_layer.offset = background_baseline
+	_character_layer.offset = character_baseline
+
+	_start_fixture("effect_off.stla")
+	if not await _wait_for_command(2, "off fixture reaches its active checkpoint"):
+		return
+
+	assert_eq(_event_types(), ["shake", "flash"])
+	assert_not_null(_effects._shake_tween)
+	assert_not_null(_effects._flash_tween)
+	assert_not_null(_find_flash_overlay())
+
+	SignalBus.advance_requested.emit()
+	if not await _wait_for_command(4, "off fixture reaches its cleared checkpoint"):
+		return
+	if not _has_effect_events(3, "off fixture must emit shake, flash, and off events"):
+		return
+	assert_eq(_event_types(), ["shake", "flash", "off"])
+	assert_true(_effect_events[2]["params"].get("off", false))
+	assert_null(_effects._shake_tween)
+	assert_null(_effects._flash_tween)
+	assert_null(_effects._flash_overlay)
+	assert_eq(_background_layer.offset, background_baseline)
+	assert_eq(_character_layer.offset, character_baseline)
+	await _finish_fixture()
+
+
+func _start_fixture(file_name: String) -> void:
+	assert_not_null(StellaRuntime.registry, "the production command registry must exist")
+	assert_true(StellaRuntime.registry.has_handler("effect"), "EffectHandler must be registered")
+	assert_true(StellaRuntime.registry.has_handler("wait"), "WaitHandler must be registered")
+
+	_engine = ScenarioEngine.new()
+	_engine.registry = StellaRuntime.registry
+	_engine.load_scenario(_load_fixture(file_name))
+	_engine.run()
+
+
+func _load_fixture(file_name: String) -> ScenarioData:
+	var path := FIXTURE_ROOT.path_join(file_name)
+	var file := FileAccess.open(path, FileAccess.READ)
+	assert_not_null(file, "fixture must exist: %s" % path)
+	if file == null:
+		return ScenarioData.new()
+
+	var source := file.get_as_text()
+	file.close()
+	var data := DslParser.parse(DslLexer.tokenize(source), file_name.get_basename())
+	assert_eq(data.diagnostics, [], "fixture must parse without diagnostics: %s" % path)
+	assert_eq(data.scenes.size(), 1, "fixture should stay focused on one scene")
+	return data
+
+
+func _wait_for_command(command_index: int, message: String) -> bool:
+	var reached: bool = await wait_until(
+		func(): return _engine.context.current_command_index == command_index,
+		1.0,
+		message,
+	)
+	assert_true(reached, message)
+	return reached
+
+
+func _finish_fixture() -> void:
+	SignalBus.advance_requested.emit()
+	var finished: bool = await wait_until(
+		func(): return _engine.context.is_finished,
+		1.0,
+		"fixture reaches completion after its final checkpoint",
+	)
+	assert_true(finished)
+
+
+func _event_types() -> Array:
+	var types: Array = []
+	for event in _effect_events:
+		types.append(event["type"])
+	return types
+
+
+func _has_effect_events(minimum: int, message: String) -> bool:
+	var has_events := _effect_events.size() >= minimum
+	assert_true(has_events, message)
+	return has_events
+
+
+func _find_flash_overlay() -> ColorRect:
+	return _find_color_rect_in(_effects)
+
+
+func _find_color_rect_in(node: Node) -> ColorRect:
+	if node is ColorRect:
+		return node
+	for child in node.get_children():
+		var found := _find_color_rect_in(child)
+		if found != null:
+			return found
+	return null
+
+
+func _find_canvas_ancestor(node: Node) -> CanvasLayer:
+	var ancestor := node.get_parent()
+	while ancestor != null and not ancestor is CanvasLayer:
+		ancestor = ancestor.get_parent()
+	return ancestor as CanvasLayer

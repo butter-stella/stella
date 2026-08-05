@@ -1,0 +1,13 @@
+// E2E fixture: @effect off must cancel concurrent shake and flash effects.
+@chapter screen_effects_off "Screen Effects — Off"
+@scene start
+@effect shake 24 5.0
+@effect flash red 5.0
+
+// Checkpoint 1: both effects must be active at the same time.
+@wait click
+@effect off
+
+// Checkpoint 2: both effects must be cleared together.
+@wait click
+@end
