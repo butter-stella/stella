@@ -154,6 +154,45 @@ func test_replacing_shake_preserves_original_root_baselines() -> void:
 	assert_eq(_char_shake_root.position, char_baseline)
 
 
+func test_reentrant_shake_request_waits_until_every_old_target_is_restored() -> void:
+	var first := Control.new()
+	first.name = "FirstControlTarget"
+	first.position = Vector2(8.0, -3.0)
+	first.size = Vector2(100.0, 100.0)
+	_bg_layer.add_child(first)
+	var second := Control.new()
+	second.name = "SecondControlTarget"
+	second.position = Vector2(-5.0, 11.0)
+	second.size = Vector2(100.0, 100.0)
+	_char_layer.add_child(second)
+	var target_paths: Array[NodePath] = [
+		NodePath("../BackgroundLayer/FirstControlTarget"),
+		NodePath("../CharacterLayer/SecondControlTarget"),
+	]
+	_effects.shake_target_paths = target_paths
+
+	SignalBus.effect_requested.emit("shake", {"intensity": 20.0, "duration": 1.0})
+	var old_tween: Tween = _effects._shake_tween
+	_effects._apply_shake_offset(old_tween, Vector2(4.0, -6.0))
+	var request_state := {"requested": false}
+	first.item_rect_changed.connect(func():
+		if request_state["requested"]:
+			return
+		request_state["requested"] = true
+		SignalBus.effect_requested.emit("shake", {"intensity": 5.0, "duration": 1.0})
+	)
+
+	SignalBus.effect_requested.emit("off", {})
+	assert_true(request_state["requested"])
+	assert_not_same(_effects._shake_tween, old_tween)
+	assert_eq(_effects._shake_baselines.get(first), Vector2(8.0, -3.0))
+	assert_eq(_effects._shake_baselines.get(second), Vector2(-5.0, 11.0))
+	assert_eq(_effects._shake_targets.size(), 2)
+	SignalBus.effect_requested.emit("off", {})
+	assert_eq(first.position, Vector2(8.0, -3.0))
+	assert_eq(second.position, Vector2(-5.0, 11.0))
+
+
 func test_shake_does_not_touch_ui_layer_or_parent() -> void:
 	var ui_baseline := Vector2(3.0, -6.0)
 	var parent_baseline := Vector2(9.0, 2.0)
@@ -223,6 +262,64 @@ func test_ready_does_not_pause_a_shake_started_after_enter_tree() -> void:
 	assert_not_null(_effects._shake_tween)
 
 
+func test_shake_startup_can_remove_presenter_without_using_the_killed_tween() -> void:
+	var target := Control.new()
+	target.name = "RemovingTarget"
+	target.position = Vector2(6.0, -2.0)
+	target.size = Vector2(100.0, 100.0)
+	_bg_layer.add_child(target)
+	var target_paths: Array[NodePath] = [NodePath("../BackgroundLayer/RemovingTarget")]
+	_effects.shake_target_paths = target_paths
+	var removal_state := {"removed": false}
+	target.item_rect_changed.connect(func():
+		if removal_state["removed"]:
+			return
+		removal_state["removed"] = true
+		_parent.remove_child(_effects)
+	)
+
+	SignalBus.effect_requested.emit("shake", {"intensity": 10.0, "duration": 1.0})
+	assert_true(removal_state["removed"])
+	assert_null(_effects._shake_tween)
+	assert_eq(target.position, Vector2(6.0, -2.0))
+	assert_engine_error_count(0)
+	_parent.add_child(_effects)
+	await get_tree().process_frame
+
+
+func test_shake_replacement_cleanup_can_remove_presenter_without_stale_tween() -> void:
+	var target := Control.new()
+	target.name = "ReplacementRemovingTarget"
+	target.position = Vector2(6.0, -2.0)
+	target.size = Vector2(100.0, 100.0)
+	_bg_layer.add_child(target)
+	var target_paths: Array[NodePath] = [
+		NodePath("../BackgroundLayer/ReplacementRemovingTarget"),
+	]
+	_effects.shake_target_paths = target_paths
+
+	SignalBus.effect_requested.emit("shake", {"intensity": 10.0, "duration": 1.0})
+	var first_tween: Tween = _effects._shake_tween
+	_effects._apply_shake_offset(first_tween, Vector2(4.0, -6.0))
+	var removal_state := {"removed": false}
+	target.item_rect_changed.connect(func():
+		if removal_state["removed"]:
+			return
+		removal_state["removed"] = true
+		_parent.remove_child(_effects)
+	)
+
+	SignalBus.effect_requested.emit("shake", {"intensity": 5.0, "duration": 1.0})
+	assert_true(removal_state["removed"])
+	assert_false(_effects.is_inside_tree())
+	assert_null(_effects._shake_tween)
+	assert_eq(_effects._effect_mutation_depth, 0)
+	assert_eq(target.position, Vector2(6.0, -2.0))
+	assert_engine_error_count(0)
+	_parent.add_child(_effects)
+	await get_tree().process_frame
+
+
 func test_huge_finite_shake_duration_has_constant_setup_and_can_be_cancelled() -> void:
 	# The old implementation attempted range(ceil(duration / 0.05)) here and
 	# hung before returning. Reaching the assertions proves setup stays bounded.
@@ -249,14 +346,20 @@ func test_non_finite_and_non_numeric_shake_params_are_rejected() -> void:
 	assert_push_warning("shake intensity must be a finite number")
 
 
-func test_invalid_replacement_shake_still_clears_the_previous_one() -> void:
+func test_invalid_or_zero_replacement_shake_preserves_the_previous_one() -> void:
 	SignalBus.effect_requested.emit("shake", {"intensity": 20.0, "duration": 1.0})
-	assert_not_null(_effects._shake_tween)
+	var active_tween: Tween = _effects._shake_tween
+	assert_not_null(active_tween)
 	SignalBus.effect_requested.emit("shake", {"intensity": 20.0, "duration": -1.0})
-	assert_null(_effects._shake_tween)
-	assert_eq(_bg_shake_root.position, Vector2.ZERO)
-	assert_eq(_char_shake_root.position, Vector2.ZERO)
+	assert_same(_effects._shake_tween, active_tween)
 	assert_push_warning("shake duration must be non-negative")
+	SignalBus.effect_requested.emit("shake", {"intensity": NAN, "duration": 1.0})
+	assert_same(_effects._shake_tween, active_tween)
+	assert_push_warning("shake intensity must be finite")
+	SignalBus.effect_requested.emit("shake", {"intensity": 20.0, "duration": 0.0})
+	assert_same(_effects._shake_tween, active_tween)
+	SignalBus.effect_requested.emit("shake", {"intensity": 0.0, "duration": 1.0})
+	assert_same(_effects._shake_tween, active_tween)
 
 
 func test_negative_intensity_is_normalized_and_large_intensity_is_clamped() -> void:
@@ -267,6 +370,73 @@ func test_negative_intensity_is_normalized_and_large_intensity_is_clamped() -> v
 	assert_true(absf(delta.x) <= 7.0 and absf(delta.y) <= 7.0)
 	assert_push_warning("negative shake intensity normalized")
 	assert_push_warning("exceeds the configured maximum")
+
+
+func test_huge_finite_shake_limit_cannot_produce_infinite_positions() -> void:
+	_effects.max_shake_intensity = 1.0e308
+	SignalBus.effect_requested.emit("shake", {"intensity": 1.0e308, "duration": 0.5})
+
+	assert_almost_eq(
+		_effects._shake_intensity,
+		_effects.ABSOLUTE_MAX_SHAKE_INTENSITY,
+		0.001,
+	)
+	assert_true(_bg_shake_root.position.is_finite())
+	assert_true(_char_shake_root.position.is_finite())
+	assert_true(absf(_bg_shake_root.position.x) <= _effects.ABSOLUTE_MAX_SHAKE_INTENSITY)
+	assert_true(absf(_bg_shake_root.position.y) <= _effects.ABSOLUTE_MAX_SHAKE_INTENSITY)
+	for _sample in range(20):
+		_effects._apply_shake_delta(_effects._shake_tween)
+		assert_true(_bg_shake_root.position.is_finite())
+		assert_true(_char_shake_root.position.is_finite())
+	assert_push_warning("exceeds the absolute safe maximum")
+	assert_push_warning("exceeds the configured maximum")
+
+
+func test_tiny_shake_coverage_target_is_rejected_before_scale_overflow() -> void:
+	var target := Control.new()
+	target.name = "TinyCoverageTarget"
+	target.size = Vector2(1.0e-35, 1.0e-35)
+	_bg_layer.add_child(target)
+	var target_paths: Array[NodePath] = [NodePath("../BackgroundLayer/TinyCoverageTarget")]
+	_effects.shake_target_paths = target_paths
+	_effects.shake_coverage_target_paths = target_paths
+
+	SignalBus.effect_requested.emit("shake", {"intensity": 4096.0, "duration": 1.0})
+	assert_true(target.scale.is_finite())
+	assert_eq(target.scale, Vector2.ONE)
+	assert_true(target.position.is_finite())
+	assert_true(_effects._shake_coverage_baselines.is_empty())
+	assert_push_warning("finite size of at least")
+
+
+func test_active_shake_coverage_recomputes_on_resize_and_disconnects_on_stop() -> void:
+	var target := Control.new()
+	target.name = "ResizableCoverageTarget"
+	target.size = Vector2(320.0, 180.0)
+	_bg_layer.add_child(target)
+	var target_paths: Array[NodePath] = [NodePath("../BackgroundLayer/ResizableCoverageTarget")]
+	_effects.shake_target_paths = target_paths
+	_effects.shake_coverage_target_paths = target_paths
+
+	SignalBus.effect_requested.emit("shake", {"intensity": 20.0, "duration": 1.0})
+	assert_almost_eq(target.scale.x, 1.0 + 40.0 / 180.0, 0.0001)
+	assert_eq(target.pivot_offset, Vector2(160.0, 90.0))
+	var coverage_state: Dictionary = _effects._shake_coverage_baselines[target]
+	var resized_callback: Callable = coverage_state["resized_callback"]
+	assert_true(target.resized.is_connected(resized_callback))
+
+	target.size = Vector2(160.0, 90.0)
+	await get_tree().process_frame
+	assert_almost_eq(target.scale.x, 1.0 + 40.0 / 90.0, 0.0001)
+	assert_eq(target.pivot_offset, Vector2(80.0, 45.0))
+
+	SignalBus.effect_requested.emit("off", {})
+	assert_eq(target.scale, Vector2.ONE)
+	assert_eq(target.pivot_offset, Vector2.ZERO)
+	assert_false(target.resized.is_connected(resized_callback))
+	target.size = Vector2(80.0, 45.0)
+	assert_eq(target.scale, Vector2.ONE, "a stopped effect must not react to later resizes")
 
 
 # --- Flash: explicit host when configured; configurable fallback otherwise ---
@@ -305,6 +475,67 @@ func test_flash_can_use_external_canvas_without_mutating_or_owning_it() -> void:
 	assert_eq(host.layer, 123)
 
 
+func test_detached_external_flash_host_cannot_restore_an_orphaned_overlay() -> void:
+	var host := CanvasLayer.new()
+	host.name = "DetachableEffectsLayer"
+	_parent.add_child(host)
+	_effects.flash_canvas_path = NodePath("../DetachableEffectsLayer")
+	SignalBus.effect_requested.emit("flash", {"duration": 100.0})
+	var old_overlay: ColorRect = _effects._flash_overlay
+
+	_parent.remove_child(host)
+	assert_null(_effects._flash_tween)
+	assert_null(_effects._flash_overlay)
+	assert_null(_effects._flash_canvas)
+	assert_false(old_overlay.visible)
+	_parent.add_child(host)
+	await get_tree().process_frame
+	assert_false(is_instance_valid(old_overlay))
+	assert_engine_error_count(0)
+
+
+func test_flash_requested_from_host_tree_exiting_cannot_survive_detach() -> void:
+	var host := CanvasLayer.new()
+	host.name = "LateTrackedEffectsLayer"
+	_parent.add_child(host)
+	_effects.flash_canvas_path = NodePath("../LateTrackedEffectsLayer")
+	var request_state := {"requested": false, "overlay": null}
+	host.tree_exiting.connect(func():
+		request_state["requested"] = true
+		SignalBus.effect_requested.emit("flash", {"color": "red", "duration": 100.0})
+		request_state["overlay"] = _effects._flash_overlay
+	)
+
+	_parent.remove_child(host)
+	assert_true(request_state["requested"])
+	var old_overlay: ColorRect = request_state["overlay"]
+	assert_not_null(old_overlay, "the adversarial request must reach flash setup")
+	assert_null(_effects._flash_tween)
+	assert_null(_effects._flash_overlay)
+	assert_null(_effects._flash_canvas)
+	assert_false(old_overlay.visible)
+	await get_tree().process_frame
+	assert_false(is_instance_valid(old_overlay))
+	_parent.add_child(host)
+	await get_tree().process_frame
+	assert_engine_error_count(0)
+
+
+func test_reentering_presenter_cannot_restore_its_old_fallback_overlay() -> void:
+	SignalBus.effect_requested.emit("flash", {"duration": 100.0})
+	var old_overlay: ColorRect = _effects._flash_overlay
+	assert_not_null(old_overlay)
+
+	_parent.remove_child(_effects)
+	assert_null(_effects._flash_tween)
+	assert_null(_effects._flash_overlay)
+	assert_false(old_overlay.visible)
+	_parent.add_child(_effects)
+	await get_tree().process_frame
+	assert_false(is_instance_valid(old_overlay))
+	assert_engine_error_count(0)
+
+
 func test_switching_back_to_fallback_reuses_the_private_canvas() -> void:
 	var fallback_canvas: CanvasLayer = _effects._flash_canvas
 	var host := CanvasLayer.new()
@@ -323,11 +554,135 @@ func test_switching_back_to_fallback_reuses_the_private_canvas() -> void:
 	assert_same(_effects._flash_overlay.get_parent(), fallback_canvas)
 
 
+func test_reentrant_flash_request_waits_until_old_overlay_is_detached() -> void:
+	SignalBus.effect_requested.emit("flash", {"color": "red", "duration": 1.0})
+	var old_overlay: ColorRect = _effects._flash_overlay
+	var request_state := {"requested": false}
+	old_overlay.visibility_changed.connect(func():
+		if request_state["requested"] or old_overlay.visible:
+			return
+		request_state["requested"] = true
+		SignalBus.effect_requested.emit("flash", {"color": "blue", "duration": 1.0})
+	)
+
+	SignalBus.effect_requested.emit("off", {})
+	assert_true(request_state["requested"])
+	assert_not_null(_effects._flash_tween)
+	assert_not_same(_effects._flash_overlay, old_overlay)
+	assert_eq(_effects._flash_overlay.color, Color.BLUE)
+	assert_false(_effects._flash_overlay.is_queued_for_deletion())
+
+
+func test_flash_replacement_cleanup_can_remove_presenter_without_stale_overlay() -> void:
+	SignalBus.effect_requested.emit("flash", {"color": "red", "duration": 1.0})
+	var old_overlay: ColorRect = _effects._flash_overlay
+	var removal_state := {"removed": false}
+	old_overlay.visibility_changed.connect(func():
+		if removal_state["removed"] or old_overlay.visible:
+			return
+		removal_state["removed"] = true
+		_parent.remove_child(_effects)
+	)
+
+	SignalBus.effect_requested.emit("flash", {"color": "blue", "duration": 1.0})
+	assert_true(removal_state["removed"])
+	assert_false(_effects.is_inside_tree())
+	assert_null(_effects._flash_tween)
+	assert_null(_effects._flash_overlay)
+	assert_false(old_overlay.visible)
+	assert_eq(_effects._effect_mutation_depth, 0)
+	assert_engine_error_count(0)
+	_parent.add_child(_effects)
+	await get_tree().process_frame
+
+
+func test_external_host_exit_defers_reentrant_flash_until_tree_change_finishes() -> void:
+	var host := CanvasLayer.new()
+	host.name = "ReentrantEffectsLayer"
+	_parent.add_child(host)
+	_effects.flash_canvas_path = NodePath("../ReentrantEffectsLayer")
+	SignalBus.effect_requested.emit("flash", {"color": "red", "duration": 100.0})
+	var old_overlay: ColorRect = _effects._flash_overlay
+	var request_state := {"requested": false}
+	old_overlay.visibility_changed.connect(func():
+		if request_state["requested"] or old_overlay.visible:
+			return
+		request_state["requested"] = true
+		SignalBus.effect_requested.emit("flash", {"color": "blue", "duration": 1.0})
+	)
+
+	_parent.remove_child(host)
+	assert_true(request_state["requested"])
+	assert_null(_effects._flash_tween)
+	assert_null(_effects._flash_overlay)
+	assert_false(old_overlay.visible)
+	assert_eq(_effects._effect_mutation_depth, 1)
+	await get_tree().process_frame
+	assert_eq(_effects._effect_mutation_depth, 0)
+	assert_true(_effects._queued_effect_requests.is_empty())
+	assert_null(_effects._flash_tween)
+	assert_null(_effects._flash_overlay)
+	assert_push_warning("flash canvas not found")
+	assert_engine_error_count(0)
+
+	_parent.add_child(host)
+	SignalBus.effect_requested.emit("flash", {"color": "green", "duration": 1.0})
+	assert_not_null(_effects._flash_overlay)
+	assert_same(_effects._flash_overlay.get_parent(), host)
+	assert_eq(_effects._flash_overlay.color, Color.GREEN)
+
+
+func test_fallback_host_exit_discards_reentrant_flash_without_reviving_it() -> void:
+	SignalBus.effect_requested.emit("flash", {"color": "red", "duration": 100.0})
+	var old_overlay: ColorRect = _effects._flash_overlay
+	var request_state := {"requested": false}
+	old_overlay.visibility_changed.connect(func():
+		if request_state["requested"] or old_overlay.visible:
+			return
+		request_state["requested"] = true
+		SignalBus.effect_requested.emit("flash", {"color": "blue", "duration": 1.0})
+	)
+
+	_parent.remove_child(_effects)
+	assert_true(request_state["requested"])
+	assert_false(_effects.is_inside_tree())
+	assert_null(_effects._flash_tween)
+	assert_null(_effects._flash_overlay)
+	assert_false(old_overlay.visible)
+	await get_tree().process_frame
+	assert_eq(_effects._effect_mutation_depth, 0)
+	assert_true(_effects._queued_effect_requests.is_empty())
+	assert_engine_error_count(0)
+
+	_parent.add_child(_effects)
+	await get_tree().process_frame
+	assert_null(_effects._flash_tween, "the detached request must not revive after re-entry")
+	assert_null(_effects._flash_overlay)
+	SignalBus.effect_requested.emit("flash", {"color": "green", "duration": 1.0})
+	assert_not_null(_effects._flash_overlay)
+	assert_eq(_effects._flash_overlay.color, Color.GREEN)
+
+
 func test_invalid_explicit_flash_canvas_does_not_fall_back_silently() -> void:
 	_effects.flash_canvas_path = NodePath("../MissingEffectsLayer")
 	SignalBus.effect_requested.emit("flash", {"duration": 0.2})
 	assert_null(_effects._flash_overlay)
 	assert_null(_effects._flash_canvas)
+	assert_push_warning("flash canvas not found")
+
+
+func test_invalid_replacement_flash_canvas_preserves_the_active_flash() -> void:
+	SignalBus.effect_requested.emit("flash", {"color": "red", "duration": 1.0})
+	var active_tween: Tween = _effects._flash_tween
+	var active_overlay: ColorRect = _effects._flash_overlay
+	var active_canvas: CanvasLayer = _effects._flash_canvas
+	_effects.flash_canvas_path = NodePath("../MissingEffectsLayer")
+
+	SignalBus.effect_requested.emit("flash", {"color": "blue", "duration": 1.0})
+	assert_same(_effects._flash_tween, active_tween)
+	assert_same(_effects._flash_overlay, active_overlay)
+	assert_same(_effects._flash_canvas, active_canvas)
+	assert_eq(active_overlay.color, Color.RED)
 	assert_push_warning("flash canvas not found")
 
 
@@ -364,6 +719,53 @@ func test_invalid_flash_inputs_are_safe() -> void:
 	await get_tree().process_frame
 	assert_eq(_find_flash_overlay().color, Color.WHITE)
 	assert_push_warning("flash color must be a string")
+
+
+func test_invalid_or_zero_replacement_flash_preserves_the_previous_one() -> void:
+	SignalBus.effect_requested.emit("flash", {"color": "red", "duration": 1.0})
+	var active_tween: Tween = _effects._flash_tween
+	var active_overlay: ColorRect = _effects._flash_overlay
+	assert_not_null(active_tween)
+	assert_not_null(active_overlay)
+
+	SignalBus.effect_requested.emit("flash", {"duration": INF})
+	assert_same(_effects._flash_tween, active_tween)
+	assert_same(_effects._flash_overlay, active_overlay)
+	assert_push_warning("flash duration must be finite")
+	SignalBus.effect_requested.emit("flash", {"duration": -1.0})
+	assert_same(_effects._flash_tween, active_tween)
+	assert_same(_effects._flash_overlay, active_overlay)
+	assert_push_warning("flash duration must be non-negative")
+	SignalBus.effect_requested.emit("flash", {"duration": 0.0})
+	assert_same(_effects._flash_tween, active_tween)
+	assert_same(_effects._flash_overlay, active_overlay)
+
+
+func test_freeing_external_flash_host_mid_effect_clears_state_without_engine_errors() -> void:
+	var host := CanvasLayer.new()
+	host.name = "DisposableEffectsLayer"
+	_parent.add_child(host)
+	_effects.flash_canvas_path = NodePath("../DisposableEffectsLayer")
+	SignalBus.effect_requested.emit("flash", {"duration": 100.0})
+	assert_not_null(_effects._flash_overlay)
+
+	host.free()
+	assert_null(_effects._flash_tween)
+	assert_null(_effects._flash_overlay)
+	assert_null(_effects._flash_canvas)
+
+	var replacement_host := CanvasLayer.new()
+	replacement_host.name = "DisposableEffectsLayer"
+	_parent.add_child(replacement_host)
+	SignalBus.effect_requested.emit("flash", {"duration": 0.1})
+	assert_eq(_effects._effect_mutation_depth, 1)
+	assert_eq(_effects._queued_effect_requests.size(), 1)
+	await get_tree().process_frame
+	assert_eq(_effects._effect_mutation_depth, 0)
+	assert_true(_effects._queued_effect_requests.is_empty())
+	assert_not_null(_effects._flash_overlay)
+	assert_same(_effects._flash_overlay.get_parent(), replacement_host)
+	assert_engine_error_count(0)
 
 
 func test_effect_off_removes_active_flash() -> void:

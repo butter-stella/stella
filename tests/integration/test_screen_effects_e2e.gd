@@ -6,7 +6,9 @@ extends GutTest
 ## SignalBus -> ScreenEffects in the built-in game scene.
 
 const GAME_SCENE := preload("res://addons/stella/scenes/game.tscn")
+const DEMO_GAME_SCENE := preload("res://examples/demo/scenes/game.tscn")
 const FIXTURE_ROOT := "res://tests/fixtures/scenarios/screen_effects"
+const COVERAGE_EPSILON := 0.01
 
 var _game: Node2D
 var _background_layer: CanvasLayer
@@ -56,6 +58,174 @@ func after_each() -> void:
 	if is_instance_valid(_game):
 		_game.queue_free()
 		await get_tree().process_frame
+
+
+func test_builtin_shake_coverage_handles_absolute_maximum_at_all_corners() -> void:
+	var background: TextureRect = _game.get_node("BackgroundLayer/ShakeRoot/BgFront")
+	var viewport_size := _game.get_viewport().get_visible_rect().size
+	background.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	background.texture = _exact_texture(Vector2i(viewport_size))
+	background.modulate.a = 1.0
+	await get_tree().process_frame
+
+	var root_position := _background_shake_root.position
+	var root_scale := _background_shake_root.scale
+	var root_pivot := _background_shake_root.pivot_offset
+	var root_size := _background_shake_root.size
+	var character_scale := _character_shake_root.scale
+	assert_eq(
+		_effects.shake_coverage_target_paths,
+		[NodePath("../BackgroundLayer/ShakeRoot")],
+	)
+
+	var intensity: float = _effects.ABSOLUTE_MAX_SHAKE_INTENSITY
+	SignalBus.effect_requested.emit("shake", {"intensity": intensity, "duration": 5.0})
+	var tween: Tween = _effects._shake_tween
+	assert_not_null(tween)
+	if tween == null:
+		return
+	assert_almost_eq(_effects._shake_intensity, intensity, 0.001)
+	assert_gt(_background_shake_root.scale.x, 1.0)
+	assert_eq(_background_shake_root.scale.x, _background_shake_root.scale.y)
+	assert_eq(_background_shake_root.size, root_size)
+	assert_eq(_character_shake_root.scale, character_scale)
+	_assert_four_corner_coverage(background, tween, intensity, viewport_size)
+
+	SignalBus.effect_requested.emit("off", {})
+	assert_eq(_background_shake_root.position, root_position)
+	assert_eq(_background_shake_root.scale, root_scale)
+	assert_eq(_background_shake_root.pivot_offset, root_pivot)
+	assert_eq(_background_shake_root.size, root_size)
+	assert_eq(_character_shake_root.scale, character_scale)
+
+
+func test_active_shake_recomputes_coverage_after_viewport_resize() -> void:
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(1920, 1080)
+	add_child_autoqfree(viewport)
+	_game.reparent(viewport, false)
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+	var background: TextureRect = _game.get_node("BackgroundLayer/ShakeRoot/BgFront")
+	background.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	background.texture = _exact_texture(viewport.size)
+	background.modulate.a = 1.0
+	await get_tree().process_frame
+
+	var root_position := _background_shake_root.position
+	var root_scale := _background_shake_root.scale
+	var root_pivot := _background_shake_root.pivot_offset
+	var character_scale := _character_shake_root.scale
+	var intensity := 100.0
+	SignalBus.effect_requested.emit("shake", {"intensity": intensity, "duration": 5.0})
+	var tween: Tween = _effects._shake_tween
+	assert_not_null(tween)
+	if tween == null:
+		return
+	var scale_before_resize := _background_shake_root.scale
+
+	var resized_size := Vector2i(960, 540)
+	viewport.size = resized_size
+	background.texture = _exact_texture(resized_size)
+	var settled: bool = await wait_until(
+		func(): return _background_shake_root.size.is_equal_approx(Vector2(resized_size)),
+		1.0,
+		"ShakeRoot follows the resized SubViewport",
+	)
+	assert_true(settled)
+	if not settled:
+		return
+	await get_tree().process_frame
+
+	assert_gt(
+		_background_shake_root.scale.x,
+		scale_before_resize.x,
+		"smaller viewport requires a larger coverage scale",
+	)
+	assert_true(
+		_background_shake_root.pivot_offset.is_equal_approx(Vector2(resized_size) * 0.5)
+	)
+	assert_true(_character_shake_root.size.is_equal_approx(Vector2(resized_size)))
+	assert_eq(_character_shake_root.scale, character_scale)
+	_assert_four_corner_coverage(background, tween, intensity, Vector2(resized_size))
+
+	SignalBus.effect_requested.emit("off", {})
+	assert_eq(_background_shake_root.position, root_position)
+	assert_eq(_background_shake_root.scale, root_scale)
+	assert_eq(_background_shake_root.pivot_offset, root_pivot)
+	assert_true(_background_shake_root.size.is_equal_approx(Vector2(resized_size)))
+	assert_eq(_character_shake_root.scale, character_scale)
+
+
+func test_shake_coverage_composes_with_slide_left_transition() -> void:
+	var front: TextureRect = _game.get_node("BackgroundLayer/ShakeRoot/BgFront")
+	var back: TextureRect = _game.get_node("BackgroundLayer/ShakeRoot/BgBack")
+	var viewport_size := _game.get_viewport().get_visible_rect().size
+	front.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	back.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	var old_texture := _exact_texture(Vector2i(viewport_size), Color.RED)
+	var new_texture := _exact_texture(Vector2i(viewport_size), Color.BLUE)
+	front.texture = old_texture
+	front.modulate.a = 1.0
+	back.texture = null
+	back.modulate.a = 0.0
+	await get_tree().process_frame
+
+	var front_origin := front.position
+	var back_origin := back.position
+	var root_position := _background_shake_root.position
+	var root_scale := _background_shake_root.scale
+	var root_pivot := _background_shake_root.pivot_offset
+	var intensity := 64.0
+	var duration := 0.4
+	SignalBus.effect_requested.emit("shake", {"intensity": intensity, "duration": 5.0})
+	var tween: Tween = _effects._shake_tween
+	assert_not_null(tween)
+	if tween == null:
+		return
+
+	_background_layer._transition_slide(new_texture, duration, "slide_left")
+	var saw_transition_motion := false
+	for sample in range(6):
+		await get_tree().create_timer(0.05).timeout
+		var delta := (
+			Vector2(intensity, intensity)
+			if sample % 2 == 0
+			else Vector2(-intensity, -intensity)
+		)
+		_effects._apply_shake_offset(tween, delta)
+		saw_transition_motion = (
+			saw_transition_motion or not front.position.is_equal_approx(front_origin)
+		)
+		_assert_slide_pair_covers_viewport(front, back, viewport_size)
+
+	assert_true(saw_transition_motion, "slide_left must actually animate")
+	await get_tree().create_timer(duration + 0.1).timeout
+	assert_eq(front.position, front_origin)
+	assert_eq(back.position, back_origin)
+	assert_same(front.texture, new_texture)
+	assert_almost_eq(front.modulate.a, 1.0, 0.001)
+	assert_almost_eq(back.modulate.a, 0.0, 0.001)
+
+	SignalBus.effect_requested.emit("off", {})
+	assert_eq(_background_shake_root.position, root_position)
+	assert_eq(_background_shake_root.scale, root_scale)
+	assert_eq(_background_shake_root.pivot_offset, root_pivot)
+
+
+func test_builtin_and_demo_scenes_configure_background_coverage_only() -> void:
+	assert_eq(
+		_effects.shake_coverage_target_paths,
+		[NodePath("../BackgroundLayer/ShakeRoot")],
+	)
+	var demo_game := DEMO_GAME_SCENE.instantiate()
+	var demo_effects: Node = demo_game.get_node("ScreenEffects")
+	assert_eq(
+		demo_effects.shake_coverage_target_paths,
+		[NodePath("../BackgroundLayer/ShakeRoot")],
+	)
+	demo_game.free()
 
 
 func test_shake_fixture_reaches_the_real_game_presenter() -> void:
@@ -278,3 +448,76 @@ func _find_canvas_ancestor(node: Node) -> CanvasLayer:
 	while ancestor != null and not ancestor is CanvasLayer:
 		ancestor = ancestor.get_parent()
 	return ancestor as CanvasLayer
+
+
+func _canvas_aabb(item: Control) -> Rect2:
+	var transform := item.get_global_transform_with_canvas()
+	var points := [
+		transform * Vector2.ZERO,
+		transform * Vector2(item.size.x, 0.0),
+		transform * item.size,
+		transform * Vector2(0.0, item.size.y),
+	]
+	var minimum: Vector2 = points[0]
+	var maximum: Vector2 = points[0]
+	for point: Vector2 in points:
+		minimum.x = minf(minimum.x, point.x)
+		minimum.y = minf(minimum.y, point.y)
+		maximum.x = maxf(maximum.x, point.x)
+		maximum.y = maxf(maximum.y, point.y)
+	return Rect2(minimum, maximum - minimum)
+
+
+func _exact_texture(size: Vector2i, color: Color = Color.WHITE) -> ImageTexture:
+	var image := Image.create(size.x, size.y, false, Image.FORMAT_RGBA8)
+	image.fill(color)
+	return ImageTexture.create_from_image(image)
+
+
+func _assert_four_corner_coverage(
+	background: TextureRect,
+	tween: Tween,
+	intensity: float,
+	viewport_size: Vector2,
+) -> void:
+	for delta in [
+		Vector2(intensity, intensity),
+		Vector2(intensity, -intensity),
+		Vector2(-intensity, intensity),
+		Vector2(-intensity, -intensity),
+	]:
+		_effects._apply_shake_offset(tween, delta)
+		var covered_rect := _canvas_aabb(background)
+		assert_true(
+			covered_rect.position.x <= COVERAGE_EPSILON \
+				and covered_rect.position.y <= COVERAGE_EPSILON \
+				and covered_rect.end.x >= viewport_size.x - COVERAGE_EPSILON \
+				and covered_rect.end.y >= viewport_size.y - COVERAGE_EPSILON,
+			"%s must cover %s at shake delta %s" % [covered_rect, viewport_size, delta],
+		)
+
+
+func _assert_slide_pair_covers_viewport(
+	front: TextureRect,
+	back: TextureRect,
+	viewport_size: Vector2,
+) -> void:
+	var front_rect := _canvas_aabb(front)
+	var back_rect := _canvas_aabb(back)
+	var left_rect := front_rect
+	var right_rect := back_rect
+	if left_rect.position.x > right_rect.position.x:
+		var swap := left_rect
+		left_rect = right_rect
+		right_rect = swap
+
+	assert_true(front_rect.position.y <= COVERAGE_EPSILON)
+	assert_true(front_rect.end.y >= viewport_size.y - COVERAGE_EPSILON)
+	assert_true(back_rect.position.y <= COVERAGE_EPSILON)
+	assert_true(back_rect.end.y >= viewport_size.y - COVERAGE_EPSILON)
+	assert_true(left_rect.position.x <= COVERAGE_EPSILON)
+	assert_true(right_rect.end.x >= viewport_size.x - COVERAGE_EPSILON)
+	assert_true(
+		left_rect.end.x >= right_rect.position.x - COVERAGE_EPSILON,
+		"slide backgrounds must remain adjacent: %s / %s" % [left_rect, right_rect],
+	)

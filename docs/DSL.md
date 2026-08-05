@@ -240,8 +240,6 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
 @effect flash red 0.25
 // 也支持十六进制颜色
 @effect flash #ff0000 0.25
-// 模糊
-@effect blur 0.5
 // 清除所有特效
 @effect off
 
@@ -251,9 +249,11 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
 @fade in 1.0
 ```
 
-**shake 参数**：`intensity` 是每次采样 ± 偏移像素的幅度（默认 10），`duration` 是总时长秒（默认 0.3）。数值必须有限，时长不能为负；错误参数会产生带行号的解析诊断并安全地跳过该特效。负强度会取绝对值并产生警告；运行时还会按 `ScreenEffects.max_shake_intensity`（默认 4096）限制极端强度。
+**shake 参数**：`intensity` 是每次采样 ± 偏移像素的幅度（默认 10），`duration` 是总时长秒（默认 0.3）。数值必须有限，时长不能为负；错误参数会产生带行号的解析诊断并安全地跳过该特效，不会中断已经播放中的效果。负强度会取绝对值并产生警告；运行时还会按 `ScreenEffects.max_shake_intensity`（默认 4096）以及框架固定的 4096 绝对安全上限限制极端强度。
 
 **flash 参数**：`color` 接受 Godot 命名颜色（`white`/`red`/`black`/`blue`/...）或十六进制字符串（`#ff0000`），未知名会 fallback 到白色。`duration` 是淡出总时长秒（默认 0.2），必须是非负有限数值。flash 的实际绘制层由游戏场景中的 `ScreenEffects` 配置决定；自定义场景的 shake 根节点与 flash 层级规范见[使用指南](USAGE.md)。
+
+当前内置效果只有 `shake`、`flash` 和 `off`。其它 effect type 会产生 warning，并连同原始位置参数数组 `args` 转发给 `SignalBus.effect_requested`，供项目自定义监听器处理；拼写错误因此不会再静默消失。内置效果如果参数过多会产生 error 并跳过。
 
 ### 3.10 分支选择
 
@@ -472,7 +472,7 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | 音效 | `@se asset` | `@se asset` |
 | 全屏对话 | `@nvl ... @nvl off` | — |
 | 无框叠字 | `@overlay ... @overlay off` | — |
-| 特效 | `@effect type` | — |
+| 特效 | `@effect shake/flash/off ...` | — |
 | 黑屏 | `@fade out/in duration` | `@fade out/in` |
 | 选择 | `@choice` + 选项列表 | — |
 | 变量 | `@set var = value` | — |

@@ -257,6 +257,7 @@ script = ExtResource("5")
 [node name="ScreenEffects" type="Node" parent="." unique_id=1602941451]
 script = ExtResource("8")
 shake_target_paths = Array[NodePath]([NodePath("../BackgroundLayer/ShakeRoot"), NodePath("../CharacterLayer/ShakeRoot")])
+shake_coverage_target_paths = Array[NodePath]([NodePath("../BackgroundLayer/ShakeRoot")])
 flash_canvas_path = NodePath("FlashCanvas")
 
 [node name="FlashCanvas" type="CanvasLayer" parent="ScreenEffects"]
