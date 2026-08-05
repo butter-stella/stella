@@ -4,6 +4,9 @@ extends GutTest
 
 const RuntimeTestSupport = preload("res://tests/helpers/runtime_test_support.gd")
 const SAVE_LOAD_SCENE = preload("res://addons/stella/scenes/save_load.tscn")
+const CUSTOM_SAVE_LOAD_SCRIPT = preload(
+	"res://tests/integration/fixtures/custom_save_load_screen.gd"
+)
 const TEST_SAVE_DIR := "user://test_save_load_screen/"
 
 var _runtime: Node
@@ -37,6 +40,21 @@ func test_mode_set_before_ready_builds_load_ui() -> void:
 	_assert_mode_ui(screen, "load")
 	_assert_slot_state(screen, 0, false)
 	_assert_slot_state(screen, 1, true)
+
+
+func test_public_mode_transition_preserves_subclass_hook() -> void:
+	var screen: Control = SAVE_LOAD_SCENE.instantiate()
+	screen.set_script(CUSTOM_SAVE_LOAD_SCRIPT)
+	screen.set_mode("load")
+	assert_eq(screen.applied_modes, ["load"],
+		"set_mode must delegate to the protected extension hook before ready")
+	add_child_autoqfree(screen)
+	await get_tree().process_frame
+
+	_assert_mode_ui(screen, "load")
+	screen.set_mode("save")
+	assert_eq(screen.applied_modes, ["load", "save"])
+	_assert_mode_ui(screen, "save")
 
 
 func test_mode_change_after_ready_rebuilds_slots_without_duplicates() -> void:

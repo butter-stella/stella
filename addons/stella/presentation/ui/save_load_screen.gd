@@ -27,6 +27,12 @@ func set_mode(mode: String) -> void:
 	if mode != "save" and mode != "load":
 		push_warning("SaveLoadScreen: mode must be 'save' or 'load', got '%s'" % mode)
 		return
+	_set_mode(mode)
+
+
+## Extension hook for project-specific save/load screens.
+## Must remain safe when called before the node enters the scene tree.
+func _set_mode(mode: String) -> void:
 	_mode = mode
 	if not is_node_ready():
 		return
