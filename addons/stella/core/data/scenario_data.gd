@@ -10,8 +10,8 @@ var scenes: Array = []  # Array[SceneData]
 var chapters: Array = []  # Array[ChapterData]
 ## Parser diagnostics — used for testable error/warning reporting.
 ## Each entry is {level: "error"|"warning", message: String, line: int}.
-## Parser also pushes the same messages to Godot's error log via push_error /
-## push_warning, but tests assert against this list.
+## StellaRuntime surfaces these messages through push_error / push_warning after
+## parsing; the parser itself remains silent so tests can assert against this list.
 var diagnostics: Array = []
 
 

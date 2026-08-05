@@ -35,6 +35,7 @@ sakura「这里是教学楼的走廊，我们教室在那边——」 #voice:sak
 
 @show senpai default right
 
+@effect shake 8 0.25
 sakura「啊！学姐！」 #voice:sakura_006
 
 @expr senpai smile
@@ -99,6 +100,7 @@ senpai「好啊，那就来一份吧。」 #voice:senpai_007
 
 sakura「因为好吃嘛！{wait:300}对了...」 #voice:sakura_012
 
+@effect flash white 0.18
 @combine
 @expr sakura sad
 sakura「我本来很开心的...」 #voice:sakura_013

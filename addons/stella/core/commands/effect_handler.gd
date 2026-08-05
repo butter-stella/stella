@@ -1,4 +1,4 @@
-## Emits effect_requested signal for screen effects (shake, flash, blur).
+## Emits effect_requested for built-in or project-defined screen effects.
 class_name EffectHandler extends CommandHandler
 
 
