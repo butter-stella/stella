@@ -403,6 +403,20 @@ sakura「结束。」 #voice:v3""")
 	assert_eq(data.scenes[0].commands[4].type, "dialogue")
 
 
+func test_combine_rejects_effect_with_structured_warning():
+	var data = _parse("""@scene start
+@combine
+@effect flash white 0.2
+sakura「第一句。」 #voice:v1
+@end""")
+	assert_true(
+		_has_diagnostic(data, "warning", "@effect is not allowed inside @combine"),
+		"unsupported combine commands must be surfaced through parser diagnostics",
+	)
+	assert_eq(data.scenes[0].commands.size(), 1)
+	assert_eq(data.scenes[0].commands[0].type, "dialogue")
+
+
 # ─── @chapter directive (issue #97) ───
 
 func _has_diagnostic(data: ScenarioData, level: String, substring: String) -> bool:

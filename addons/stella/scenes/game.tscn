@@ -205,3 +205,4 @@ script = ExtResource("5")
 
 [node name="ScreenEffects" type="Node" parent="." unique_id=191658614]
 script = ExtResource("8")
+shake_target_paths = Array[NodePath]([NodePath("../BackgroundLayer"), NodePath("../CharacterLayer")])

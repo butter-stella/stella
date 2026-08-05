@@ -102,6 +102,8 @@ backlog_scene = ""
 
 游戏场景中使用插件的 Presenter 脚本（`BackgroundPresenter`、`CharacterPresenter` 等），通过 `StellaRuntime` 的 Facade API 控制游戏流程。
 
+如果自定义游戏场景需要支持 `@effect shake`，请添加使用 `res://addons/stella/presentation/effects/screen_effects.gd` 的 `ScreenEffects` 节点，并在 `shake_target_paths` 中填入需要同步震动的 `CanvasLayer` 路径。路径相对 `ScreenEffects` 节点解析；默认为 `../BackgroundLayer` 和 `../CharacterLayer`，也可指向任意命名或嵌套的背景/立绘层。未列入的 UI 层不会被震动。
+
 如果不搭建自己的场景，引擎会使用内置的默认场景。
 
 ### Step 5 — 运行
