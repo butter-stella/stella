@@ -5,14 +5,15 @@ extends GutTest
 ##   - Voice stop on advance emits voice_finished (prevents _voice_playing stuck true)
 
 
+const RuntimeTestSupport = preload("res://tests/helpers/runtime_test_support.gd")
+
 var _bus: Node
 var _game_scene: Node
 
 
-func before_each():
+func before_each() -> void:
 	_bus = get_tree().root.get_node("SignalBus")
-	StellaRuntime.skip_controller.is_active = false
-	StellaRuntime.auto_play.is_active = false
+	await RuntimeTestSupport.reset_for_test(StellaRuntime, get_tree())
 	StellaRuntime.game_state.current_state = GameStateMachine.State.PLAYING
 	# Load the game scene so DialoguePanel is available for tests that poke at it.
 	_game_scene = load("res://addons/stella/scenes/game.tscn").instantiate()
@@ -28,12 +29,6 @@ func test_skip_mode_suppresses_voice_play():
 	var conn = func(a, _c): voice_received.append(a)
 	_bus.voice_play.connect(conn)
 
-	# Disable skip_only_read for this test — it's isolating voice suppression,
-	# not the read-gate behavior. Default is true, which would auto-stop skip
-	# if the test runs after another test left engine.context pointing at
-	# unread content.
-	var prev = StellaRuntime.get_setting("skip_only_read")
-	StellaRuntime.set_setting("skip_only_read", false)
 	StellaRuntime.skip_controller.is_active = true
 	assert_true(StellaRuntime.is_skipping())
 
@@ -44,7 +39,6 @@ func test_skip_mode_suppresses_voice_play():
 
 	_bus.voice_play.disconnect(conn)
 	StellaRuntime.skip_controller.is_active = false
-	StellaRuntime.set_setting("skip_only_read", prev)
 
 
 # --- voice_finished signal propagation ---

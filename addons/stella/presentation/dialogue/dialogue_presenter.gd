@@ -481,6 +481,8 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 	# do not start another one here.)
 
 	await get_tree().process_frame
+	if gen != _dialogue_gen:
+		return
 	_is_typing = true
 
 	# If toolbar skip is active and the new line is unread (with skip_only_read
@@ -495,6 +497,8 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 		_is_typing = false
 		_finalize_dialogue(character, segments)
 		await get_tree().create_timer(StellaRuntime.get_setting("skip_interval") / 1000.0).timeout
+		if gen != _dialogue_gen:
+			return
 		SignalBus.advance_requested.emit()
 		return
 
@@ -509,6 +513,8 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 			_is_typing = false
 			_finalize_dialogue(character, segments)
 			await get_tree().create_timer(StellaRuntime.get_setting("skip_interval") / 1000.0).timeout
+			if gen != _dialogue_gen:
+				return
 			SignalBus.advance_requested.emit()
 			return
 
@@ -523,6 +529,8 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 			if effect["pos"] == i:
 				if effect["type"] == "wait":
 					await get_tree().create_timer(effect["value"] / 1000.0).timeout
+					if gen != _dialogue_gen:
+						return
 				elif effect["type"] == "speed":
 					delay = effect["value"] / 1000.0
 
@@ -729,6 +737,14 @@ func _process_inline_effects(text: String) -> Dictionary:
 
 
 func _on_hide_dialogue():
+	# Invalidate every async branch of the current dialogue before clearing the
+	# visible state. Without this, an old typewriter can finish after a runtime
+	# reset and mark its line in the replacement ReadFlagManager.
+	_dialogue_gen += 1
+	_is_typing = false
+	_current_scenario_id = ""
+	_current_scene_id = ""
+	_current_command_index = -1
 	visible = false
 	_nvl_text = ""
 	_current_character = ""
@@ -812,5 +828,3 @@ func _on_avatar_expression_changed(character: String, expression: String) -> voi
 	_known_expressions[character] = expression
 	if character == _current_character and _current_mode == "adv":
 		_update_avatar(character, expression, "adv")
-
-

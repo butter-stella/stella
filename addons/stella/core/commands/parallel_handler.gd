@@ -17,6 +17,13 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 		return
 
 	for sub_cmd in sub_commands:
+		# A runtime reset or rollback can abort the currently awaited child. Do
+		# not start a later child after that one-shot abort signal has fired, or
+		# the new child could wait forever on a signal it already missed.
+		if context.is_finished:
+			return
 		var handler = _registry.get_handler(sub_cmd.type)
 		if handler:
 			await handler.execute(sub_cmd, context)
+			if context.is_finished:
+				return
