@@ -170,7 +170,7 @@ func run() -> void:
 extends Node
 
 # 对话
-signal show_dialogue(character: String, text: String, voice: String, mode: String)
+signal show_dialogue(character: String, segments: Array, mode: String)
 signal hide_dialogue()
 signal advance_requested()
 

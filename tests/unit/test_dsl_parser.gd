@@ -46,6 +46,38 @@ sakura「你好。」 #voice:sakura_001""")
 	assert_eq(cmd.get_string("voice"), "sakura_001")
 
 
+func test_dialogue_preserves_voice_and_explicit_avatar_tags():
+	var data = _parse("""@scene start
+sakura「你好。」 #voice:sakura_001 #avatar:sakura/smile""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_string("voice"), "sakura_001")
+	assert_eq(cmd.get_string("avatar"), "sakura/smile")
+
+
+func test_invalid_dialogue_duration_is_a_structured_warning_with_source_line():
+	var data = _parse("""@scene start
+// Keep the dialogue on a non-trivial source line.
+sakura「你好。」 #duration:not-a-number""")
+	var duration_diagnostic: Dictionary = {}
+	for diagnostic in data.diagnostics:
+		if "#duration" in String(diagnostic.get("message", "")):
+			duration_diagnostic = diagnostic
+			break
+
+	assert_false(
+		duration_diagnostic.is_empty(),
+		"invalid #duration must be surfaced through ScenarioData.diagnostics",
+	)
+	assert_eq(duration_diagnostic.get("level", ""), "warning")
+	assert_eq(duration_diagnostic.get("line", 0), 3)
+	assert_almost_eq(
+		data.scenes[0].commands[0].get_float("duration_ms", -1.0),
+		0.0,
+		0.001,
+		"invalid #duration should fall back to an instantaneous transition",
+	)
+
+
 func test_narration():
 	var data = _parse("""@scene start
 「窗外下起了雨。」""")
@@ -53,6 +85,35 @@ func test_narration():
 	assert_eq(cmd.type, "dialogue")
 	assert_eq(cmd.get_string("character"), "")
 	assert_eq(cmd.get_string("text"), "窗外下起了雨。")
+
+
+func test_narration_preserves_voice_tag():
+	var data = _parse("""@scene start
+「窗外下起了雨。」 #voice:narration_001""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_string("voice"), "narration_001")
+
+
+func test_dialogue_unescapes_explicit_newline():
+	var data = _parse("""@scene start
+sakura「第一行\\n第二行」""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_string("text"), "第一行\n第二行")
+
+
+func test_narration_unescapes_explicit_newline():
+	var data = _parse("""@scene start
+「第一行\\n第二行」""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_string("text"), "第一行\n第二行")
+
+
+func test_monologue_preserves_voice_tag_and_unescapes_newline():
+	var data = _parse("""@scene start
+sakura（第一行\\n第二行） #voice:sakura_001""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_string("voice"), "sakura_001")
+	assert_eq(cmd.get_string("text"), "第一行\n第二行")
 
 
 func test_monologue():
@@ -317,6 +378,37 @@ sakura「第三句。」 #voice:v3
 	assert_eq(segments[2]["text"], "第三句。")
 	assert_eq(segments[2]["voice"], "v3")
 	assert_eq(segments[2]["expression"], "happy")
+
+
+func test_combine_preserves_presentation_metadata_per_voice_segment():
+	var data = _parse("""@scene start
+@combine
+sakura「第一句，」 #voice:v1 #avatar:sakura/smile
+sakura「第二句。」 #voice:v2 #stage:stage_a #avatar:sakura/sad #transition:fade #duration:300
+sakura「第三句。」 #voice:v3 #avatar:sakura/happy
+@end""")
+	var segments: Array = data.scenes[0].commands[0].params.get("segments", [])
+	assert_eq(segments.size(), 3)
+	assert_eq(segments[0]["text"], "第一句，")
+	assert_eq(segments[0]["voice"], "v1")
+	assert_eq(segments[0]["avatar"], "sakura/smile")
+	assert_eq(segments[0]["stage"], "")
+	assert_eq(segments[0]["transition"], "cut")
+	assert_almost_eq(float(segments[0]["duration_ms"]), 0.0, 0.001)
+	assert_eq(segments[1]["text"], "第二句。")
+	assert_eq(segments[1]["voice"], "v2")
+	assert_eq(segments[1]["stage"], "stage_a")
+	assert_eq(segments[1]["avatar"], "sakura/sad")
+	assert_eq(segments[1]["transition"], "fade")
+	assert_almost_eq(float(segments[1]["duration_ms"]), 300.0, 0.001)
+	assert_eq(segments[2]["avatar"], "sakura/happy")
+	assert_eq(segments[2]["stage"], "")
+	assert_eq(segments[2]["transition"], "cut")
+	assert_almost_eq(float(segments[2]["duration_ms"]), 0.0, 0.001)
+	assert_eq(
+		data.scenes[0].commands[0].get_string("text"),
+		"第一句，第二句。第三句。",
+	)
 
 
 func test_combine_concatenated_text_for_backlog():

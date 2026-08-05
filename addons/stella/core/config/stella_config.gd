@@ -40,7 +40,10 @@ func load_from_path(path: String) -> void:
 	var cf = ConfigFile.new()
 	var err = cf.load(path)
 	if err != OK:
-		has_config_file = false
+		# Keep any configuration loaded earlier. This matters for layered config:
+		# a malformed optional local override must not invalidate a valid base.
+		# Fresh instances already default to false, preserving missing-file
+		# behavior for the first load.
 		return
 
 	has_config_file = true

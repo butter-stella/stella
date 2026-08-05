@@ -76,6 +76,9 @@ sakura（这个人...好奇怪。）
 // 附带语音
 sakura「你好，初次见面。」 #voice:sakura_001
 
+// 指定对话框左下头像（相对于 [paths] characters，扩展名可省略）
+sakura「你好，初次见面。」 #voice:sakura_001 #avatar:sakura/face_small
+
 // 句内表情切换 — 编剧只需标注语义位置
 sakura「我本来很开心的...[surprised]但是听到这个消息...[cry]呜呜...」
 
@@ -87,6 +90,11 @@ sakura「那个人就是..{wait:500}{speed:0.3}你吗？」
 - 打字机速度使用全局设置
 - 自动等待玩家点击后推进
 - 如有语音，自动播放
+- 如有 `#avatar:`，ADV 模式直接显示指定头像，不要求角色 `avatar_rect`
+
+对话、旁白与内心独白的正文支持 `\n`（换行）、`\r`（回车）和
+`\\`（字面反斜杠）转义。路径等正文若需要保留反斜杠，应写成双反斜杠，
+例如 `C:\\novel`。
 
 ### 3.3 对话框模式切换
 
@@ -335,9 +343,9 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
 ```
 @combine
 @expr sakura sad
-sakura「我本来很开心的...」 #voice:sakura_013
+sakura「我本来很开心的...」 #voice:sakura_013 #avatar:sakura/sad
 @expr sakura surprised
-sakura「但是听说下周要期中考...」 #voice:sakura_018
+sakura「但是听说下周要期中考...」 #voice:sakura_018 #stage:classroom_evening #transition:dissolve #duration:300
 @expr sakura sad
 sakura「我数学肯定完蛋了。」 #voice:sakura_019
 @end
@@ -347,6 +355,14 @@ sakura「我数学肯定完蛋了。」 #voice:sakura_019
 
 - 块内所有 dialogue 行合并为**一句对话**，玩家视角上打字机从头连续打到尾
 - 块内 `@expr` 绑定到紧随其后的 segment，在该段语音开始播放时触发
+- 每个 dialogue segment 仍是一条完整、非空的对白，可分别携带
+  `#voice:`、`#avatar:`、`#stage:`、`#transition:` 和
+  `#duration:`；这些视觉元数据会在该段语音开始前应用
+- `#avatar:` 是头像资源 id，`#stage:` 是背景资源 id；`#transition:`
+  可使用 `cut`、`none`、`fade`、`dissolve`、`wipe`、`slide_left`、
+  `slide_right`、`slide_up` 或 `slide_down`
+- `#duration:` 单位为毫秒，默认 `0`；只控制该 segment 的背景转场时长，
+  无语音的 segment 也会按顺序立即应用对应视觉状态
 - 语音按顺序排队：第 1 段播完 → 第 2 段立即接上 + 切立绘/头像 → ...
 - 左键点击：整句结束（文本全显、立绘定格在最后一段表情）
 - 快进模式：整段作为一句跳过

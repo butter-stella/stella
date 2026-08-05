@@ -33,7 +33,7 @@ your_project/
 │           ├── default.png
 │           └── smile.png
 ├── audio/
-│   ├── bgm/               ← BGM (ogg/mp3)
+│   ├── bgm/               ← BGM (ogg/mp3/wav)
 │   └── se/                ← 音效 (ogg/wav)
 ├── scenarios/             ← .stla 剧本
 └── stella.cfg            ← 配置文件
@@ -68,6 +68,10 @@ scenario = "res://scenarios/demo.stla"
 ```
 
 如果你的目录结构遵循默认约定（`art/backgrounds/`、`art/characters/` 等），只需要这两行配置。
+
+需要在本机覆盖资源目录或场景时，可另建不提交到 Git 的
+`stella.local.cfg`。Stella 会先读取 `stella.cfg`，再用
+`stella.local.cfg` 中出现的键覆盖它；未写入本地文件的键继续沿用基础配置。
 
 完整配置示例：
 
@@ -172,7 +176,7 @@ StellaRuntime.save_settings()        # 保存设置到磁盘
 | `@bg bg_school` | `{backgrounds_path}/bg_school.png` |
 | `@show sakura smile` | `{characters_path}/sakura/smile.png` |
 | `@show sakura` | `{characters_path}/sakura/default.png` |
-| `@bgm bgm_spring` | `{bgm_path}/bgm_spring.ogg` (或 .mp3) |
+| `@bgm bgm_spring` | `{bgm_path}/bgm_spring.ogg` (或 .mp3/.wav) |
 | `@se se_click` | `{se_path}/se_click.ogg` (或 .wav) |
 
 路径前缀通过 `stella.cfg` 的 `[paths]` 段配置，也可在代码中直接设置 `StellaRuntime` 的属性。

@@ -4,6 +4,7 @@ extends Node
 var _bgm_player: AudioStreamPlayer
 var _se_players: Array = []
 var _max_se_channels: int = 4
+var _se_player_assets: Dictionary = {}
 var _voice_player: AudioStreamPlayer
 var _system_se_player: AudioStreamPlayer
 var _current_voice_character: String = ""
@@ -99,14 +100,14 @@ func _on_settings_changed(key: String, _value: Variant):
 # ─── BGM ───
 
 func _on_bgm_play(asset: String, fade_duration: float):
-	var stream = _load_audio(StellaRuntime.bgm_path, asset, ["ogg", "mp3"])
+	var stream = _load_audio(StellaRuntime.bgm_path, asset, ["ogg", "mp3", "wav"])
 	if stream == null:
 		push_warning("AudioPresenter: BGM not found: %s" % asset)
 		return
 
-	# Enable looping — AudioStreamOggVorbis / AudioStreamMP3 default to loop=false.
-	if "loop" in stream:
-		stream.loop = true
+	# Work on a duplicate so changing loop metadata never mutates the cached
+	# ResourceLoader instance shared by another player.
+	stream = _with_loop_setting(stream, true)
 
 	var master = StellaRuntime.get_setting("master_volume")
 	if master == null:
@@ -148,26 +149,30 @@ func _on_bgm_stop(fade_duration: float):
 
 # ─── SE ───
 
-func _on_se_play(asset: String, _loop: bool):
+func _on_se_play(asset: String, loop: bool):
 	var stream = _load_audio(StellaRuntime.se_path, asset, ["ogg", "wav"])
 	if stream == null:
 		push_warning("AudioPresenter: SE not found: %s" % asset)
 		return
+	stream = _with_loop_setting(stream, loop)
 
 	for player in _se_players:
 		if not player.playing:
 			player.stream = stream
+			_se_player_assets[player] = asset
 			player.play()
 			return
 
 	_se_players[0].stream = stream
+	_se_player_assets[_se_players[0]] = asset
 	_se_players[0].play()
 
 
 func _on_se_stop(asset: String):
 	for player in _se_players:
-		if player.playing and player.stream and player.stream.resource_path.find(asset) != -1:
+		if player.playing and _se_player_assets.get(player, "") == asset:
 			player.stop()
+			_se_player_assets.erase(player)
 
 
 # ─── Voice ───
@@ -250,3 +255,21 @@ func _load_audio(base_path: String, asset: String, extensions: Array) -> AudioSt
 		if ResourceLoader.exists(path):
 			return load(path)
 	return null
+
+
+## Return a per-player stream whose loop flag matches the request.
+## Compressed streams expose `loop: bool`, while WAV uses `loop_mode`.
+func _with_loop_setting(stream: AudioStream, enabled: bool) -> AudioStream:
+	var configured = stream.duplicate() as AudioStream
+	if configured == null:
+		configured = stream
+
+	if configured is AudioStreamWAV:
+		configured.loop_mode = (
+			AudioStreamWAV.LOOP_FORWARD if enabled
+			else AudioStreamWAV.LOOP_DISABLED
+		)
+	elif "loop" in configured:
+		configured.loop = enabled
+
+	return configured

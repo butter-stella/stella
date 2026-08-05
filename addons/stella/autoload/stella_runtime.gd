@@ -3,6 +3,7 @@
 extends Node
 
 const CONFIG_PATH = "res://stella.cfg"
+const LOCAL_CONFIG_PATH = "res://stella.local.cfg"
 const DEFAULT_TITLE_SCENE = "res://addons/stella/scenes/title.tscn"
 const DEFAULT_GAME_SCENE = "res://addons/stella/scenes/game.tscn"
 const DEFAULT_SETTINGS_SCENE = "res://addons/stella/scenes/settings.tscn"
@@ -44,6 +45,8 @@ var title_scene_path: String = ""
 ## Internal state
 var _last_scenario_path: String = ""
 var _current_overlay: Node = null
+var _initial_title_redirect_checked := false
+var _initial_title_redirect_waited_for_scene := false
 
 
 func _notification(what: int) -> void:
@@ -53,8 +56,7 @@ func _notification(what: int) -> void:
 
 func _ready():
 	# Load project config
-	config = StellaConfig.new()
-	config.load_from_path(CONFIG_PATH)
+	config = _load_project_config()
 	_apply_config()
 
 	save_manager = SaveManager.new()
@@ -114,9 +116,28 @@ func _ready():
 	# Wire choice presentation to choice-history (rewind-to-previous-choice).
 	SignalBus.choice_show.connect(_on_choice_for_history)
 
+	# The plugin installs the built-in title as the project's bootstrap scene.
+	# A configured title override must therefore be applied once the bootstrap
+	# scene exists, rather than only when returning from gameplay.
+	_redirect_initial_title_scene_if_needed.call_deferred()
+
 	# Play title BGM after AudioPresenter is ready
 	if config.title_bgm != "":
 		_play_title_bgm.call_deferred()
+
+
+## Load the shared project config, then apply an optional local override.
+## Loading both files into the same StellaConfig preserves base values for
+## keys omitted from stella.local.cfg.
+func _load_project_config(
+	base_path: String = CONFIG_PATH,
+	local_path: String = LOCAL_CONFIG_PATH,
+) -> StellaConfig:
+	var loaded_config = StellaConfig.new()
+	loaded_config.load_from_path(base_path)
+	if FileAccess.file_exists(local_path):
+		loaded_config.load_from_path(local_path)
+	return loaded_config
 
 
 ## Apply config values to runtime paths.
@@ -132,6 +153,77 @@ func _apply_config() -> void:
 		title_scene_path = config.title_scene
 	else:
 		title_scene_path = DEFAULT_TITLE_SCENE
+
+
+## Return whether startup owns the built-in title and may replace it safely.
+##
+## Checking both the configured main scene and the live scene prevents an
+## explicitly launched scene (including test runners) from being hijacked.
+func _should_redirect_initial_title_scene(
+	current_scene_path: String,
+	project_main_scene_path: String,
+	editor_hint: bool,
+) -> bool:
+	if editor_hint:
+		return false
+	if title_scene_path == "" or title_scene_path == DEFAULT_TITLE_SCENE:
+		return false
+	return (
+		project_main_scene_path == DEFAULT_TITLE_SCENE
+		and current_scene_path == DEFAULT_TITLE_SCENE
+	)
+
+
+## Apply [overrides] title_scene on the first project startup.
+##
+## Autoloads become ready before the main scene on some launch paths, so allow
+## one frame for SceneTree.current_scene to appear. The one-shot guard is set
+## before changing scenes to prevent recursive redirects.
+func _redirect_initial_title_scene_if_needed() -> void:
+	if _initial_title_redirect_checked:
+		return
+	if Engine.is_editor_hint():
+		_initial_title_redirect_checked = true
+		return
+
+	var current_scene := get_tree().current_scene
+	if current_scene == null:
+		if not _initial_title_redirect_waited_for_scene:
+			_initial_title_redirect_waited_for_scene = true
+			get_tree().process_frame.connect(
+				_redirect_initial_title_scene_if_needed,
+				CONNECT_ONE_SHOT,
+			)
+			return
+		else:
+			_initial_title_redirect_checked = true
+			return
+
+	var current_scene_path: String = current_scene.scene_file_path
+	var project_main_scene_path := str(ProjectSettings.get_setting(
+		"application/run/main_scene",
+		"",
+	))
+	_initial_title_redirect_checked = true
+	if not _should_redirect_initial_title_scene(
+		current_scene_path,
+		project_main_scene_path,
+		false,
+	):
+		return
+
+	if not ResourceLoader.exists(title_scene_path, "PackedScene"):
+		push_warning(
+			"StellaRuntime: configured title scene not found: %s" % title_scene_path
+		)
+		return
+
+	var error := get_tree().change_scene_to_file(title_scene_path)
+	if error != OK:
+		push_error(
+			"StellaRuntime: failed to open configured title scene %s (error %s)"
+			% [title_scene_path, error]
+		)
 
 
 func _register_handlers():
