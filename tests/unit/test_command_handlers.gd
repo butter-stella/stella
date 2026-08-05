@@ -40,6 +40,10 @@ func test_dialogue_handler_emits_signal():
 		"character": "sakura",
 		"text": "Hello!",
 		"voice": "voice_001",
+		"avatar": "sakura/smile",
+		"stage": "stage_smile",
+		"transition": "fade",
+		"duration_ms": 300.0,
 		"mode": "adv",
 	})
 
@@ -52,6 +56,14 @@ func test_dialogue_handler_emits_signal():
 	assert_eq(received[0]["segments"].size(), 1)
 	assert_eq(received[0]["segments"][0]["text"], "Hello!")
 	assert_eq(received[0]["segments"][0]["voice"], "voice_001")
+	assert_eq(received[0]["segments"][0]["avatar"], "sakura/smile")
+	assert_eq(received[0]["segments"][0]["stage"], "stage_smile")
+	assert_eq(received[0]["segments"][0]["transition"], "fade")
+	assert_almost_eq(
+		float(received[0]["segments"][0]["duration_ms"]),
+		300.0,
+		0.001,
+	)
 
 
 func test_dialogue_handler_defaults():
@@ -75,8 +87,24 @@ func test_dialogue_handler_passes_segments_through():
 	_bus.show_dialogue.connect(func(_c, segs, _m): received.append(segs))
 
 	var segments = [
-		{"text": "一", "voice": "v1", "expression": "sad"},
-		{"text": "二", "voice": "v2", "expression": "happy"},
+		{
+			"text": "一",
+			"voice": "v1",
+			"expression": "sad",
+			"stage": "",
+			"avatar": "sakura/sad",
+			"transition": "cut",
+			"duration_ms": 0.0,
+		},
+		{
+			"text": "二",
+			"voice": "v2",
+			"expression": "happy",
+			"stage": "stage_happy",
+			"avatar": "sakura/happy",
+			"transition": "fade",
+			"duration_ms": 250.0,
+		},
 	]
 	var cmd = _build_cmd("dialogue", {
 		"character": "sakura",
@@ -92,7 +120,11 @@ func test_dialogue_handler_passes_segments_through():
 	assert_eq(received.size(), 1)
 	assert_eq(received[0].size(), 2)
 	assert_eq(received[0][0]["voice"], "v1")
+	assert_eq(received[0][0]["avatar"], "sakura/sad")
 	assert_eq(received[0][1]["expression"], "happy")
+	assert_eq(received[0][1]["stage"], "stage_happy")
+	assert_eq(received[0][1]["transition"], "fade")
+	assert_almost_eq(float(received[0][1]["duration_ms"]), 250.0, 0.001)
 
 
 # --- BgHandler ---

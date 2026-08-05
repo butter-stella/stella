@@ -2,6 +2,9 @@
 .godot/
 *.import
 
+# Machine-local project overrides (may contain private asset paths)
+stella.local.cfg
+
 # IDE
 .idea/
 .vs/

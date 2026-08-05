@@ -1,10 +1,32 @@
 extends GutTest
 
+const TEST_BASE_CONFIG_PATH = "user://test_project_base.cfg"
+const TEST_LOCAL_CONFIG_PATH = "user://test_project_local.cfg"
+
 var config: StellaConfig
 
 
 func before_each():
 	config = StellaConfig.new()
+	_remove_test_project_configs()
+
+
+func after_each():
+	_remove_test_project_configs()
+
+
+func _remove_test_project_configs() -> void:
+	for path in [TEST_BASE_CONFIG_PATH, TEST_LOCAL_CONFIG_PATH]:
+		if FileAccess.file_exists(path):
+			DirAccess.remove_absolute(path)
+
+
+func _write_project_config(path: String, values: Dictionary) -> void:
+	var cf = ConfigFile.new()
+	for section in values:
+		for key in values[section]:
+			cf.set_value(section, key, values[section][key])
+	assert_eq(cf.save(path), OK)
 
 
 func test_defaults_when_no_file():
@@ -183,3 +205,143 @@ func test_runtime_title_scene_from_config_override():
 
 	runtime.title_scene_path = orig_title
 	DirAccess.remove_absolute(path)
+
+
+func test_runtime_project_config_uses_base_when_local_is_missing():
+	_write_project_config(TEST_BASE_CONFIG_PATH, {
+		"game": {
+			"title": "Base Game",
+			"scenario": "res://base/scenario.stla",
+		},
+	})
+
+	var runtime = get_tree().root.get_node("StellaRuntime")
+	var loaded: StellaConfig = runtime._load_project_config(
+		TEST_BASE_CONFIG_PATH,
+		TEST_LOCAL_CONFIG_PATH,
+	)
+
+	assert_eq(loaded.game_title, "Base Game")
+	assert_eq(loaded.scenario_path, "res://base/scenario.stla")
+
+
+func test_runtime_project_config_local_overrides_base_and_keeps_unspecified_values():
+	_write_project_config(TEST_BASE_CONFIG_PATH, {
+		"game": {
+			"title": "Base Game",
+			"scenario": "res://base/scenario.stla",
+		},
+		"paths": {
+			"voice": "res://base/voice/",
+		},
+	})
+	_write_project_config(TEST_LOCAL_CONFIG_PATH, {
+		"game": {
+			"title": "Local Game",
+		},
+		"paths": {
+			"voice": "res://local/voice/",
+		},
+	})
+
+	var runtime = get_tree().root.get_node("StellaRuntime")
+	var loaded: StellaConfig = runtime._load_project_config(
+		TEST_BASE_CONFIG_PATH,
+		TEST_LOCAL_CONFIG_PATH,
+	)
+
+	assert_eq(loaded.game_title, "Local Game")
+	assert_eq(loaded.scenario_path, "res://base/scenario.stla")
+	assert_eq(loaded.voice_path, "res://local/voice/")
+
+
+func test_runtime_project_config_invalid_local_preserves_valid_base():
+	_write_project_config(TEST_BASE_CONFIG_PATH, {
+		"game": {
+			"title": "Base Game",
+			"scenario": "res://base/scenario.stla",
+		},
+	})
+	var local_file := FileAccess.open(TEST_LOCAL_CONFIG_PATH, FileAccess.WRITE)
+	assert_not_null(local_file)
+	local_file.store_string("[game\ntitle=broken")
+	local_file.close()
+
+	var runtime = get_tree().root.get_node("StellaRuntime")
+	var loaded: StellaConfig = runtime._load_project_config(
+		TEST_BASE_CONFIG_PATH,
+		TEST_LOCAL_CONFIG_PATH,
+	)
+	assert_engine_error("ConfigFile parse error")
+
+	assert_true(loaded.has_config_file)
+	assert_eq(loaded.game_title, "Base Game")
+	assert_eq(loaded.scenario_path, "res://base/scenario.stla")
+
+
+func test_runtime_redirects_builtin_initial_title_to_config_override():
+	var runtime = get_tree().root.get_node("StellaRuntime")
+	var original_title = runtime.title_scene_path
+	runtime.title_scene_path = "res://custom/title.tscn"
+
+	assert_true(runtime._should_redirect_initial_title_scene(
+		runtime.DEFAULT_TITLE_SCENE,
+		runtime.DEFAULT_TITLE_SCENE,
+		false,
+	))
+
+	runtime.title_scene_path = original_title
+
+
+func test_runtime_does_not_redirect_when_title_override_is_builtin_or_empty():
+	var runtime = get_tree().root.get_node("StellaRuntime")
+	var original_title = runtime.title_scene_path
+
+	runtime.title_scene_path = runtime.DEFAULT_TITLE_SCENE
+	assert_false(runtime._should_redirect_initial_title_scene(
+		runtime.DEFAULT_TITLE_SCENE,
+		runtime.DEFAULT_TITLE_SCENE,
+		false,
+	))
+
+	runtime.title_scene_path = ""
+	assert_false(runtime._should_redirect_initial_title_scene(
+		runtime.DEFAULT_TITLE_SCENE,
+		runtime.DEFAULT_TITLE_SCENE,
+		false,
+	))
+
+	runtime.title_scene_path = original_title
+
+
+func test_runtime_does_not_redirect_explicit_scene_or_custom_project_main():
+	var runtime = get_tree().root.get_node("StellaRuntime")
+	var original_title = runtime.title_scene_path
+	runtime.title_scene_path = "res://custom/title.tscn"
+
+	assert_false(runtime._should_redirect_initial_title_scene(
+		"res://tests/fixtures/runner.tscn",
+		runtime.DEFAULT_TITLE_SCENE,
+		false,
+	), "An explicitly launched scene must not be replaced")
+	assert_false(runtime._should_redirect_initial_title_scene(
+		runtime.DEFAULT_TITLE_SCENE,
+		"res://custom/bootstrap.tscn",
+		false,
+	), "A project's custom bootstrap scene must keep ownership of startup")
+
+	runtime.title_scene_path = original_title
+
+
+func test_runtime_does_not_redirect_inside_editor():
+	var runtime = get_tree().root.get_node("StellaRuntime")
+	var original_title = runtime.title_scene_path
+	runtime.title_scene_path = "res://custom/title.tscn"
+
+	assert_false(runtime._should_redirect_initial_title_scene(
+		runtime.DEFAULT_TITLE_SCENE,
+		runtime.DEFAULT_TITLE_SCENE,
+		true,
+	))
+
+	runtime.title_scene_path = original_title

@@ -28,6 +28,7 @@ var _current_voice: String = ""  # current dialogue voice asset
 var _current_voice_character: String = ""
 var _voice_playing: bool = false
 var _current_character: String = ""  # current speaking character for avatar
+var _current_avatar_asset: String = ""  # explicit per-dialogue portrait asset
 var _config_loader: CharacterConfigLoader
 var _known_expressions: Dictionary = {}  # character_id -> current expression
 
@@ -56,6 +57,7 @@ var _dialogue_gen: int = 0  # increments on each new dialogue, stale coroutines 
 var _dialogue_segments: Array = []
 var _dialogue_voice_character: String = ""
 var _dialogue_total_duration: float = 0.0
+var _segment_presentation_complete: bool = false
 
 # Playback session state — owned by whichever voice queue is currently running
 # (could be the dialogue's own initial playback, a toolbar replay, or a backlog
@@ -70,7 +72,6 @@ var _playback_segment_durations: Array = []  # per-segment voice durations (0 if
 # the queue + audio still run, but the dialogue_voice_* signals (which drive the
 # in-game progress bar) are suppressed so the dialogue toolbar bar stays quiet.
 var _playback_is_dialogue: bool = true
-
 
 func _ready():
 	SignalBus.show_dialogue.connect(_on_show_dialogue)
@@ -196,24 +197,36 @@ func _on_dialogue_voice_replay_requested(voices: Array, character: String) -> vo
 ## are NOT emitted — the audio still plays, but the dialogue's in-game progress
 ## bar doesn't react. Used so backlog playback shares queue machinery without
 ## hijacking the dialogue's UI.
-func _start_voice_playback(character: String, segments: Array, is_dialogue_playback: bool = true) -> void:
+func _start_voice_playback(
+	character: String,
+	segments: Array,
+	is_dialogue_playback: bool = true,
+	apply_segment_presentation: bool = false,
+) -> void:
 	_playback_is_dialogue = is_dialogue_playback
 	_playback_aborted = false
 	_playback_played_duration = 0.0
 	_playback_segment_durations.clear()
 	_playback_total_duration = 0.0
+	var character_voice_enabled := _is_character_voice_enabled(character)
 	for seg in segments:
 		var v := String(seg.get("voice", ""))
 		var dur := 0.0
-		if v != "":
+		if v != "" and character_voice_enabled:
 			var stream = _load_voice_stream(v)
 			if stream:
 				dur = stream.get_length()
 		_playback_segment_durations.append(dur)
 		_playback_total_duration += dur
+
 	if _playback_total_duration > 0.0 and _playback_is_dialogue:
 		SignalBus.dialogue_voice_started.emit(_playback_total_duration)
-	_run_voice_queue(character, segments, _dialogue_gen)
+	_run_voice_queue(
+		character,
+		segments,
+		_dialogue_gen,
+		apply_segment_presentation,
+	)
 
 
 func _on_auto_pressed():
@@ -221,6 +234,7 @@ func _on_auto_pressed():
 	_update_toggle_buttons()
 	# If auto-play just activated and text is fully shown, advance immediately
 	if StellaRuntime.is_auto_playing() and not _is_typing:
+		finalize_current_dialogue_for_advance()
 		SignalBus.advance_requested.emit()
 
 
@@ -232,15 +246,42 @@ func _on_skip_pressed():
 	# Skip just activated. If the typewriter is mid-flight, snap the text to
 	# end (same semantics as click-to-complete) so the user immediately sees
 	# the full line — otherwise the button lights up but the typewriter keeps
-	# running, which looks like skip isn't working. The loop's post-break
-	# check runs _finalize_dialogue with the right character/segments.
+	# running, which looks like skip isn't working.
 	if _is_typing:
-		_is_typing = false
-		text_label.visible_characters = -1
+		complete_current_dialogue()
 		return
 	# Text already fully shown — advance now so the next dialogue can run
 	# through the gate (which decides whether skip continues or stops).
+	finalize_current_dialogue_for_advance()
 	SignalBus.advance_requested.emit()
+
+
+## Complete the active typewriter synchronously.
+##
+## InputHandler calls this instead of only flipping _is_typing so the remaining
+## @combine segments land on their final authored visuals in the same input
+## frame. The typewriter coroutine observes _playback_aborted afterwards and
+## therefore will not finalize the dialogue a second time.
+func complete_current_dialogue() -> void:
+	if not _is_typing:
+		return
+	_is_typing = false
+	text_label.visible_characters = -1
+	_finalize_dialogue(_dialogue_voice_character, _dialogue_segments)
+
+
+## Preserve the final @combine visual state when the text finished typing before
+## its segmented voice queue. InputHandler calls this immediately before it
+## emits advance_requested.
+func finalize_current_dialogue_for_advance() -> void:
+	if _dialogue_segments.is_empty():
+		return
+	# Reapplying an already-reached final stage can restart or flash a
+	# transition. Keep this independent from audio queue state: toolbar replay
+	# may replace the initial queue without applying any visuals.
+	if _segment_presentation_complete:
+		return
+	_finalize_dialogue(_dialogue_voice_character, _dialogue_segments)
 
 
 func _on_backlog_pressed():
@@ -390,8 +431,12 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 	# without corrupting what the toolbar 重听 button will play.
 	_dialogue_segments = segments.duplicate(true)
 	_dialogue_voice_character = character
+	_segment_presentation_complete = false
+	_current_avatar_asset = String(segments[0].get("avatar", ""))
+	_current_voice_character = character
+	_current_mode = mode
 	# Kick off the dialogue's own playback. This computes _playback_total_duration.
-	_start_voice_playback(character, segments)
+	_start_voice_playback(character, segments, true, true)
 	# Now snapshot the freshly-computed total as the dialogue's total — used
 	# by the toolbar replay button visibility check (cheap, no reload).
 	_dialogue_total_duration = _playback_total_duration
@@ -424,7 +469,6 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 		full_text += seg_clean
 	timeline.markers = all_markers
 
-	_current_voice_character = character
 	var first_voice := String(segments[0].get("voice", ""))
 	_current_voice = first_voice
 	if _voice_replay_btn:
@@ -434,7 +478,6 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 		_voice_replay_btn.visible = (_dialogue_total_duration > 0.0)
 
 	visible = true
-	_current_mode = mode
 
 	if toolbar:
 		toolbar.visible = (mode == "adv")
@@ -475,7 +518,11 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 	# Avatar: first segment's explicit expression takes priority, else current known
 	var first_expr := String(segments[0].get("expression", ""))
 	var avatar_expr = first_expr if first_expr != "" else String(_known_expressions.get(character, "default"))
-	_update_avatar(character, avatar_expr, mode)
+	# When the line is being skipped, the queue deliberately suppresses all
+	# intermediate presentation. Do not briefly draw segment 0 here before
+	# _finalize_dialogue snaps directly to the final segment.
+	if not _should_skip_current():
+		_update_avatar(character, avatar_expr, mode)
 
 	# (Voice queue was already kicked off above by _start_voice_playback —
 	# do not start another one here.)
@@ -554,14 +601,20 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 		if gen != _dialogue_gen:
 			return
 		if StellaRuntime.is_auto_playing():
+			finalize_current_dialogue_for_advance()
 			SignalBus.advance_requested.emit()
 
 
-func _run_voice_queue(character: String, segments: Array, gen: int) -> void:
-	# Plays all segment voices sequentially. Owns every segment so a missing/empty
-	# voice can't hang the queue. Between segments, awaits voice_finished iff the
-	# previous segment actually played a voice. Works identically for single- and
-	# multi-segment dialogues.
+func _run_voice_queue(
+	character: String,
+	segments: Array,
+	gen: int,
+	apply_segment_presentation: bool = false,
+) -> void:
+	# Plays all segment voices sequentially. During the dialogue's initial
+	# playback only, each segment's stage/avatar/expression is applied before
+	# its voice clip starts. Toolbar and backlog replay pass false so replaying
+	# audio can never mutate the current visual state.
 	_playback_queue_gen += 1
 	var q_gen = _playback_queue_gen
 	_playback_queue_active = true
@@ -578,14 +631,21 @@ func _run_voice_queue(character: String, segments: Array, gen: int) -> void:
 			if i - 1 < _playback_segment_durations.size():
 				_playback_played_duration += float(_playback_segment_durations[i - 1])
 		var seg = segments[i]
-		var expr := String(seg.get("expression", ""))
-		if expr != "" and character != "":
-			SignalBus.char_expression_changed.emit(character, expr)
-			if _current_mode == "adv":
-				_update_avatar(character, expr, "adv")
+		if apply_segment_presentation and not _should_skip_current():
+			_apply_segment_presentation(character, seg, false)
 		var voice := String(seg.get("voice", ""))
-		prev_had_voice = (voice != "")
-		if voice != "" and not _should_skip_current():
+		var measured_duration := (
+			float(_playback_segment_durations[i])
+			if i < _playback_segment_durations.size()
+			else 0.0
+		)
+		prev_had_voice = (
+			voice != ""
+			and measured_duration > 0.0
+			and _is_character_voice_enabled(character)
+			and not _should_skip_current()
+		)
+		if prev_had_voice:
 			_current_voice = voice
 			SignalBus.voice_play.emit(voice, character)
 
@@ -605,26 +665,112 @@ func _run_voice_queue(character: String, segments: Array, gen: int) -> void:
 
 	if q_gen == _playback_queue_gen:
 		_playback_queue_active = false
+		# Reaching the final segment is not enough to prove the final stage is
+		# committed: its transition may still be animating. Keep advance
+		# finalization armed for that case so a click cuts to the authored final
+		# frame instead of carrying a stale tween into the next command.
+		if apply_segment_presentation and not _playback_aborted:
+			_segment_presentation_complete = not _final_stage_needs_commit(segments)
 		if _playback_total_duration > 0.0 and _playback_is_dialogue:
 			SignalBus.dialogue_voice_finished.emit()
 
 
+func _apply_segment_presentation(
+	character: String,
+	segment: Dictionary,
+	force_cut: bool,
+) -> void:
+	var stage := String(segment.get("stage", ""))
+	if stage != "":
+		var transition := "cut" if force_cut else String(
+			segment.get("transition", "cut")
+		)
+		if transition == "":
+			transition = "cut"
+		var duration := (
+			0.0 if force_cut
+			else maxf(
+				0.0,
+				float(segment.get("duration_ms", 0.0)),
+			) / 1000.0
+		)
+		SignalBus.bg_changed.emit(stage, transition, duration)
+
+	var avatar := String(segment.get("avatar", ""))
+	if avatar != "":
+		_current_avatar_asset = avatar
+		_update_avatar(character, "", _current_mode)
+
+	var expression := String(segment.get("expression", ""))
+	if expression != "" and character != "":
+		SignalBus.char_expression_changed.emit(character, expression)
+		if _current_mode == "adv":
+			_update_avatar(character, expression, "adv")
+
+
+## Click/skip bypass the remaining voice clips, so derive the final value of
+## each independent visual channel and apply it once. A segment may omit stage
+## while changing avatar (or vice versa); simply applying the last dictionary
+## would therefore lose part of the authored final state.
+func _apply_final_segment_presentation(
+	character: String,
+	segments: Array,
+	force_cut: bool,
+) -> void:
+	var final_stage_segment: Dictionary = {}
+	var final_avatar := ""
+	var final_expression := ""
+	for segment in segments:
+		if not segment is Dictionary:
+			continue
+		if String(segment.get("stage", "")) != "":
+			final_stage_segment = segment
+		if String(segment.get("avatar", "")) != "":
+			final_avatar = String(segment.get("avatar", ""))
+		if String(segment.get("expression", "")) != "":
+			final_expression = String(segment.get("expression", ""))
+
+	var final_segment := {
+		"stage": String(final_stage_segment.get("stage", "")),
+		"transition": String(final_stage_segment.get("transition", "cut")),
+		"duration_ms": float(final_stage_segment.get("duration_ms", 0.0)),
+		"avatar": final_avatar,
+		"expression": final_expression,
+	}
+	_apply_segment_presentation(character, final_segment, force_cut)
+	_segment_presentation_complete = true
+
+
+## Return whether advancing must explicitly cut an animated final stage to its
+## authored endpoint. Background transitions are asynchronous and the dialogue
+## presenter deliberately has no dependency on BackgroundPresenter internals,
+## so a positive-duration animated transition is treated conservatively.
+func _final_stage_needs_commit(segments: Array) -> bool:
+	for index in range(segments.size() - 1, -1, -1):
+		var segment = segments[index]
+		if not segment is Dictionary:
+			continue
+		if String(segment.get("stage", "")) == "":
+			continue
+		var transition := String(segment.get("transition", "cut"))
+		var duration_ms := maxf(0.0, float(segment.get("duration_ms", 0.0)))
+		return transition not in ["", "cut", "none"] and duration_ms > 0.0
+	return false
+
+
 func _finalize_dialogue(character: String, segments: Array) -> void:
-	# User aborted typewriter (or skip mode) — cancel the voice queue progression
-	# and snap expression to the final segment's expression. For a single-segment
-	# dialogue with empty expression this is a no-op.
+	# User aborted typewriter (or skip mode) — cancel voice progression and snap
+	# directly to the combined dialogue's final authored visual state.
+	var queue_was_active := _playback_queue_active
 	_playback_aborted = true
 	_mark_current_line_read()
-	if _playback_total_duration > 0.0 and _playback_is_dialogue:
+	_apply_final_segment_presentation(character, segments, true)
+	if (
+		queue_was_active
+		and _playback_total_duration > 0.0
+		and _playback_is_dialogue
+	):
 		SignalBus.dialogue_voice_finished.emit()
-	if segments.size() == 0:
-		return
-	var last_seg = segments[segments.size() - 1]
-	var last_expr := String(last_seg.get("expression", ""))
-	if last_expr != "" and character != "":
-		SignalBus.char_expression_changed.emit(character, last_expr)
-		if _current_mode == "adv":
-			_update_avatar(character, last_expr, "adv")
 
 
 ## Relays low-level voice_progress (per-clip) into dialogue_voice_progress
@@ -632,8 +778,8 @@ func _finalize_dialogue(character: String, segments: Array) -> void:
 ## Only relays during DIALOGUE playback — backlog/external replays don't drive
 ## the in-game progress bar.
 func _on_voice_progress_relay(position: float, _duration: float) -> void:
+	var total_pos = _playback_played_duration + position
 	if _playback_total_duration > 0.0 and _playback_is_dialogue:
-		var total_pos = _playback_played_duration + position
 		SignalBus.dialogue_voice_progress.emit(total_pos, _playback_total_duration)
 
 
@@ -643,6 +789,18 @@ func _load_voice_stream(asset: String) -> AudioStream:
 		if ResourceLoader.exists(path):
 			return load(path) as AudioStream
 	return null
+
+
+func _is_character_voice_enabled(character: String) -> bool:
+	var enabled_by_character = StellaRuntime.get_setting(
+		"character_voice_enabled"
+	)
+	if (
+		enabled_by_character is Dictionary
+		and enabled_by_character.has(character)
+	):
+		return bool(enabled_by_character[character])
+	return true
 
 
 
@@ -732,11 +890,13 @@ func _on_hide_dialogue():
 	visible = false
 	_nvl_text = ""
 	_current_character = ""
+	_current_avatar_asset = ""
 	_voice_playing = false
 	# Dialogue state — clear so the toolbar replay button hides
 	_dialogue_segments = []
 	_dialogue_voice_character = ""
 	_dialogue_total_duration = 0.0
+	_segment_presentation_complete = false
 	# Playback session state — also reset. Bump the queue gen so any in-flight
 	# voice queue coroutine (e.g. a backlog replay still running) sees the
 	# mismatch on its next iteration and exits cleanly instead of leaking into
@@ -761,6 +921,22 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 	if mode != "adv" or character == "":
 		_avatar_container.visible = false
 		_avatar_texture.texture = null
+		return
+
+	if _current_avatar_asset != "":
+		var explicit_texture = _load_explicit_avatar(_current_avatar_asset)
+		if explicit_texture == null:
+			push_warning(
+				"DialoguePresenter: explicit avatar not found: %s"
+				% _current_avatar_asset
+			)
+			_current_character = ""
+			_avatar_container.visible = false
+			_avatar_texture.texture = null
+			return
+		_current_character = character
+		_avatar_texture.texture = explicit_texture
+		_avatar_container.visible = true
 		return
 
 	var config = _config_loader.get_config(character)
@@ -797,6 +973,20 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 	_avatar_container.visible = true
 
 
+func _load_explicit_avatar(asset: String) -> Texture2D:
+	var base_path = StellaRuntime.characters_path + asset
+	var candidates: Array[String] = []
+	if asset.get_extension() != "":
+		candidates.append(base_path)
+	else:
+		for extension in ["png", "webp", "jpg", "jpeg"]:
+			candidates.append("%s.%s" % [base_path, extension])
+	for path in candidates:
+		if ResourceLoader.exists(path):
+			return load(path) as Texture2D
+	return null
+
+
 func _resolve_sprite_path(character: String, expression: String, config: CharacterConfig, base_path: String) -> String:
 	if config.is_layered():
 		# For layered mode, use the face sprite
@@ -812,5 +1002,3 @@ func _on_avatar_expression_changed(character: String, expression: String) -> voi
 	_known_expressions[character] = expression
 	if character == _current_character and _current_mode == "adv":
 		_update_avatar(character, expression, "adv")
-
-

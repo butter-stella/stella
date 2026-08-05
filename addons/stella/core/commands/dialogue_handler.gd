@@ -17,7 +17,11 @@ func execute(data: CommandData, _context: ScenarioContext) -> void:
 		segments = [{
 			"text": data.get_string("text", ""),
 			"voice": data.get_string("voice", ""),
+			"avatar": data.get_string("avatar", ""),
 			"expression": "",
+			"stage": data.get_string("stage", ""),
+			"transition": data.get_string("transition", "cut"),
+			"duration_ms": data.get_float("duration_ms", 0.0),
 		}]
 
 	SignalBus.show_dialogue.emit(character, segments, mode)

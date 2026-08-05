@@ -193,7 +193,7 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 				choice_cmd = null
 				pending_options = []
-				var cmd = _parse_dialogue(token, current_mode)
+				var cmd = _parse_dialogue(token, current_mode, data)
 				if cmd and current_scene:
 					if in_combine:
 						var char_name = cmd.get_string("character", "")
@@ -207,7 +207,11 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 						combine_segments.append({
 							"text": cmd.get_string("text", ""),
 							"voice": cmd.get_string("voice", ""),
+							"avatar": cmd.get_string("avatar", ""),
 							"expression": combine_pending_expr,
+							"stage": cmd.get_string("stage", ""),
+							"transition": cmd.get_string("transition", "cut"),
+							"duration_ms": cmd.get_float("duration_ms", 0.0),
 						})
 						combine_pending_expr = ""
 					else:
@@ -217,7 +221,7 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 				choice_cmd = null
 				pending_options = []
-				var cmd = _parse_narration(token, current_mode)
+				var cmd = _parse_narration(token, current_mode, data)
 				if cmd and current_scene:
 					if in_combine:
 						if not combine_character_set:
@@ -230,7 +234,11 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 						combine_segments.append({
 							"text": cmd.get_string("text", ""),
 							"voice": cmd.get_string("voice", ""),
+							"avatar": cmd.get_string("avatar", ""),
 							"expression": combine_pending_expr,
+							"stage": cmd.get_string("stage", ""),
+							"transition": cmd.get_string("transition", "cut"),
+							"duration_ms": cmd.get_float("duration_ms", 0.0),
 						})
 						combine_pending_expr = ""
 					else:
@@ -240,7 +248,7 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 				choice_cmd = null
 				pending_options = []
-				var cmd = _parse_monologue(token)
+				var cmd = _parse_monologue(token, data)
 				if cmd and current_scene:
 					_add_command(cmd, current_scene, if_stack)
 
@@ -567,7 +575,11 @@ static func _parse_set_expression(expr: String) -> Dictionary:
 
 # --- Dialogue ---
 
-static func _parse_dialogue(token: DslToken, mode: String = "adv") -> CommandData:
+static func _parse_dialogue(
+	token: DslToken,
+	mode: String,
+	data: ScenarioData,
+) -> CommandData:
 	var raw = token.raw_text
 	var bracket_start = raw.find("\u300c")  # 「
 	var bracket_end = raw.rfind("\u300d")    # 」
@@ -576,25 +588,32 @@ static func _parse_dialogue(token: DslToken, mode: String = "adv") -> CommandDat
 		return null
 
 	var character = raw.substr(0, bracket_start).strip_edges()
-	var text = raw.substr(bracket_start + 1, bracket_end - bracket_start - 1)
-
-	# Extract voice tag
-	var voice = ""
-	var after_bracket = raw.substr(bracket_end + 1).strip_edges()
-	var voice_match = "#voice:"
-	var voice_pos = after_bracket.find(voice_match)
-	if voice_pos != -1:
-		voice = after_bracket.substr(voice_pos + voice_match.length()).strip_edges()
+	var text = _decode_text_escapes(
+		raw.substr(bracket_start + 1, bracket_end - bracket_start - 1)
+	)
+	var voice = _extract_voice_tag(raw, bracket_end)
+	var avatar = _extract_metadata_tag(raw, bracket_end, "avatar")
+	var stage = _extract_metadata_tag(raw, bracket_end, "stage")
+	var transition = _extract_metadata_tag(raw, bracket_end, "transition")
+	var duration_ms = _extract_duration_ms(raw, bracket_end, data, token.line)
 
 	return _make_cmd("dialogue", {
 		"character": character,
 		"text": text,
 		"voice": voice,
+		"avatar": avatar,
+		"stage": stage,
+		"transition": transition if transition != "" else "cut",
+		"duration_ms": duration_ms,
 		"mode": mode,
 	})
 
 
-static func _parse_narration(token: DslToken, mode: String = "adv") -> CommandData:
+static func _parse_narration(
+	token: DslToken,
+	mode: String,
+	data: ScenarioData,
+) -> CommandData:
 	var raw = token.raw_text
 	var bracket_start = raw.find("\u300c")
 	var bracket_end = raw.rfind("\u300d")
@@ -602,17 +621,28 @@ static func _parse_narration(token: DslToken, mode: String = "adv") -> CommandDa
 	if bracket_start == -1 or bracket_end == -1:
 		return null
 
-	var text = raw.substr(bracket_start + 1, bracket_end - bracket_start - 1)
+	var text = _decode_text_escapes(
+		raw.substr(bracket_start + 1, bracket_end - bracket_start - 1)
+	)
+	var voice = _extract_voice_tag(raw, bracket_end)
+	var avatar = _extract_metadata_tag(raw, bracket_end, "avatar")
+	var stage = _extract_metadata_tag(raw, bracket_end, "stage")
+	var transition = _extract_metadata_tag(raw, bracket_end, "transition")
+	var duration_ms = _extract_duration_ms(raw, bracket_end, data, token.line)
 
 	return _make_cmd("dialogue", {
 		"character": "",
 		"text": text,
-		"voice": "",
+		"voice": voice,
+		"avatar": avatar,
+		"stage": stage,
+		"transition": transition if transition != "" else "cut",
+		"duration_ms": duration_ms,
 		"mode": mode,
 	})
 
 
-static func _parse_monologue(token: DslToken) -> CommandData:
+static func _parse_monologue(token: DslToken, data: ScenarioData) -> CommandData:
 	var raw = token.raw_text
 	var paren_start = raw.find("\uff08")  # （
 	var paren_end = raw.rfind("\uff09")    # ）
@@ -621,12 +651,23 @@ static func _parse_monologue(token: DslToken) -> CommandData:
 		return null
 
 	var character = raw.substr(0, paren_start).strip_edges()
-	var text = raw.substr(paren_start + 1, paren_end - paren_start - 1)
+	var text = _decode_text_escapes(
+		raw.substr(paren_start + 1, paren_end - paren_start - 1)
+	)
+	var voice = _extract_voice_tag(raw, paren_end)
+	var avatar = _extract_metadata_tag(raw, paren_end, "avatar")
+	var stage = _extract_metadata_tag(raw, paren_end, "stage")
+	var transition = _extract_metadata_tag(raw, paren_end, "transition")
+	var duration_ms = _extract_duration_ms(raw, paren_end, data, token.line)
 
 	return _make_cmd("dialogue", {
 		"character": character,
 		"text": text,
-		"voice": "",
+		"voice": voice,
+		"avatar": avatar,
+		"stage": stage,
+		"transition": transition if transition != "" else "cut",
+		"duration_ms": duration_ms,
 		"mode": "monologue",
 	})
 
@@ -750,6 +791,7 @@ static func _build_combine_command(character: String, segments: Array, mode: Str
 		"character": character,
 		"text": full_text,
 		"voice": primary_voice,
+		"avatar": String(segments[0].get("avatar", "")),
 		"mode": mode,
 		"segments": segments.duplicate(true),
 	})
@@ -768,4 +810,68 @@ static func _split_args(text: String) -> Array:
 		var stripped = part.strip_edges()
 		if stripped != "":
 			result.append(stripped)
+	return result
+
+
+static func _extract_voice_tag(raw: String, content_end: int) -> String:
+	return _extract_metadata_tag(raw, content_end, "voice")
+
+
+static func _extract_duration_ms(
+	raw: String,
+	content_end: int,
+	data: ScenarioData,
+	line: int,
+) -> float:
+	var encoded := _extract_metadata_tag(raw, content_end, "duration")
+	var after_content := raw.substr(content_end + 1)
+	if encoded == "" and after_content.find("#duration:") == -1:
+		return 0.0
+	if not encoded.is_valid_float():
+		_record_diagnostic(
+			data,
+			"warning",
+			"DslParser: non-numeric #duration value '%s' (line %d)"
+			% [encoded, line],
+			line,
+		)
+		return 0.0
+	return maxf(0.0, float(encoded))
+
+
+static func _extract_metadata_tag(raw: String, content_end: int, tag: String) -> String:
+	var after_content = raw.substr(content_end + 1)
+	var marker = "#%s:" % tag
+	var marker_pos: int = after_content.find(marker)
+	if marker_pos == -1:
+		return ""
+	var value_start: int = marker_pos + marker.length()
+	var value_end: int = value_start
+	while value_end < after_content.length():
+		var current_character: String = after_content.substr(value_end, 1)
+		if current_character == " " or current_character == "\t":
+			break
+		value_end += 1
+	return after_content.substr(value_start, value_end - value_start)
+
+
+static func _decode_text_escapes(text: String) -> String:
+	var result := ""
+	var i := 0
+	while i < text.length():
+		if text[i] != "\\" or i + 1 >= text.length():
+			result += text[i]
+			i += 1
+			continue
+		var escaped := text[i + 1]
+		match escaped:
+			"n":
+				result += "\n"
+			"r":
+				result += "\r"
+			"\\":
+				result += "\\"
+			_:
+				result += "\\" + escaped
+		i += 2
 	return result

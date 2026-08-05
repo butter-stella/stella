@@ -11,9 +11,12 @@ extends GutTest
 var _game_scene: Node
 var _origin_front: Vector2
 var _origin_back: Vector2
+var _previous_backgrounds_path: String
 
 
 func before_each():
+	_previous_backgrounds_path = StellaRuntime.backgrounds_path
+	StellaRuntime.backgrounds_path = "res://examples/demo/art/backgrounds/"
 	_game_scene = load("res://addons/stella/scenes/game.tscn").instantiate()
 	add_child_autoqfree(_game_scene)
 	# Run a throwaway fade transition to force layout to settle (anchor-based
@@ -22,6 +25,10 @@ func before_each():
 	await get_tree().create_timer(0.2).timeout
 	_origin_front = _bg_front().position
 	_origin_back = _bg_back().position
+
+
+func after_each():
+	StellaRuntime.backgrounds_path = _previous_backgrounds_path
 
 
 func _bg_front() -> TextureRect:
@@ -104,3 +111,95 @@ func test_fade_transition_still_works():
 	assert_eq(_bg_front().texture.resource_path.get_file(), "bg_cafe.png")
 	assert_eq(_bg_front().modulate.a, 1.0)
 	assert_eq(_bg_back().modulate.a, 0.0)
+
+
+func test_fade_keeps_full_coverage_mid_transition():
+	_seed_bg("bg_school_gate")
+	var duration := 0.4
+	SignalBus.bg_changed.emit("bg_cafe", "fade", duration)
+
+	await get_tree().create_timer(duration * 0.4).timeout
+	var front_alpha := _bg_front().modulate.a
+	var back_alpha := _bg_back().modulate.a
+	assert_almost_eq(
+		front_alpha,
+		1.0,
+		0.001,
+		"the old full-screen frame must stay opaque during a crossfade",
+	)
+	assert_between(
+		back_alpha,
+		0.0,
+		1.0,
+		"the new full-screen frame should be partway through its fade",
+	)
+	var composite_coverage := back_alpha + front_alpha * (1.0 - back_alpha)
+	assert_almost_eq(
+		composite_coverage,
+		1.0,
+		0.001,
+		"a crossfade must never expose the black viewport",
+	)
+
+
+func test_cut_commits_new_texture_synchronously():
+	_seed_bg("bg_school_gate")
+
+	SignalBus.bg_changed.emit("bg_cafe", "cut", 0.0)
+
+	assert_eq(
+		_bg_front().texture.resource_path.get_file(),
+		"bg_cafe.png",
+		"cut must commit the new texture before bg_changed.emit returns",
+	)
+	assert_eq(_bg_front().modulate.a, 1.0)
+	assert_eq(_bg_back().modulate.a, 0.0)
+	assert_eq(
+		_bg_back().position,
+		_bg_front().position,
+		"cut must leave both full-screen buffers at the same resting position",
+	)
+
+
+func test_cut_cancels_in_flight_transition_without_stale_overwrite():
+	_seed_bg("bg_school_gate")
+
+	SignalBus.bg_changed.emit("bg_cafe", "fade", 0.1)
+	SignalBus.bg_changed.emit("bg_outside", "cut", 0.0)
+
+	assert_eq(
+		_bg_front().texture.resource_path.get_file(),
+		"bg_outside.png",
+		"cut must synchronously win over the in-flight fade",
+	)
+
+	# Wait past the old fade's former completion time. Its stale coroutine must
+	# not commit bg_cafe over the cut target.
+	await get_tree().create_timer(0.2).timeout
+	assert_eq(
+		_bg_front().texture.resource_path.get_file(),
+		"bg_outside.png",
+		"a cancelled transition must never overwrite a later cut",
+	)
+
+
+func test_cut_clears_material_from_cancelled_shader_transition():
+	_seed_bg("bg_school_gate")
+
+	SignalBus.bg_changed.emit("bg_cafe", "dissolve", 0.2)
+	assert_not_null(_bg_front().material, "sanity: dissolve should install a shader material")
+
+	SignalBus.bg_changed.emit("bg_outside", "cut", 0.0)
+
+	assert_null(_bg_front().material, "cut must clear the cancelled transition's shader")
+	assert_eq(_bg_front().texture.resource_path.get_file(), "bg_outside.png")
+
+
+func test_dissolve_completion_clears_shader_material():
+	_seed_bg("bg_school_gate")
+
+	SignalBus.bg_changed.emit("bg_cafe", "dissolve", 0.05)
+	await get_tree().create_timer(0.15).timeout
+
+	assert_null(_bg_front().material, "completed dissolve must restore a plain TextureRect")
+	assert_eq(_bg_front().texture.resource_path.get_file(), "bg_cafe.png")

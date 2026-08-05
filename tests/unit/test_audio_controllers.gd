@@ -160,3 +160,52 @@ func test_voice_handler_empty_asset_does_not_emit():
 	await handler.execute(cmd, ScenarioContext.new())
 
 	assert_eq(received.size(), 0, "empty asset should not emit voice_play")
+
+
+# --- AudioPresenter asset compatibility ---
+
+func test_audio_presenter_loads_wav_bgm():
+	var presenter = StellaRuntime.get_node("AudioPresenter")
+	var original_bgm_path = StellaRuntime.bgm_path
+	StellaRuntime.bgm_path = "res://examples/demo/audio/se/"
+	presenter._bgm_player.stop()
+	presenter._bgm_player.stream = null
+
+	presenter._on_bgm_play("se_select", 0.0)
+
+	assert_not_null(presenter._bgm_player.stream, "WAV must be accepted as a BGM asset")
+	if presenter._bgm_player.stream:
+		assert_true(
+			presenter._bgm_player.stream is AudioStreamWAV,
+			"the requested WAV BGM must load as an AudioStreamWAV",
+		)
+	presenter._bgm_player.stop()
+	presenter._bgm_player.stream = null
+	StellaRuntime.bgm_path = original_bgm_path
+
+
+func test_audio_presenter_applies_loop_to_wav_se():
+	var presenter = StellaRuntime.get_node("AudioPresenter")
+	var original_se_path = StellaRuntime.se_path
+	StellaRuntime.se_path = "res://examples/demo/audio/se/"
+	for player in presenter._se_players:
+		player.stop()
+		player.stream = null
+
+	presenter._on_se_play("se_select", true)
+
+	var stream: AudioStream = presenter._se_players[0].stream
+	assert_not_null(stream, "looping SE should load into an available channel")
+	if stream is AudioStreamWAV:
+		assert_ne(
+			stream.loop_mode,
+			AudioStreamWAV.LOOP_DISABLED,
+			"loop=true must enable WAV stream looping",
+		)
+	else:
+		assert_true("loop" in stream and stream.loop, "loop=true must enable stream looping")
+	for player in presenter._se_players:
+		player.stop()
+		player.stream = null
+	presenter._se_player_assets.clear()
+	StellaRuntime.se_path = original_se_path

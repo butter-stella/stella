@@ -2,12 +2,19 @@ extends GutTest
 ## Tests for dialogue box avatar feature.
 
 var _game_scene: Node
+var _original_characters_path: String
 
 
 func before_each():
+	_original_characters_path = StellaRuntime.characters_path
+	StellaRuntime.characters_path = "res://examples/demo/art/characters/"
 	_game_scene = load("res://addons/stella/scenes/game.tscn").instantiate()
 	add_child_autoqfree(_game_scene)
 	await get_tree().process_frame
+
+
+func after_each():
+	StellaRuntime.characters_path = _original_characters_path
 
 
 func _get_presenter():
@@ -113,6 +120,46 @@ func test_avatar_hidden_when_no_avatar_rect():
 	var avatar = _get_avatar()
 	assert_false(container.visible, "avatar should be hidden when no avatar_rect configured")
 	assert_null(avatar.texture)
+
+
+func test_explicit_avatar_asset_does_not_require_character_config():
+	SignalBus.show_dialogue.emit(
+		"translated_name",
+		[{
+			"text": "Hello",
+			"voice": "",
+			"expression": "",
+			"avatar": "sakura/smile",
+		}],
+		"adv",
+	)
+	await get_tree().process_frame
+	var container = _get_avatar_container()
+	var avatar = _get_avatar()
+	assert_true(container.visible)
+	assert_not_null(avatar.texture)
+
+
+func test_dialogue_without_explicit_avatar_clears_previous_asset():
+	SignalBus.show_dialogue.emit(
+		"translated_name",
+		[{
+			"text": "Hello",
+			"voice": "",
+			"expression": "",
+			"avatar": "sakura/smile",
+		}],
+		"adv",
+	)
+	await get_tree().process_frame
+	SignalBus.show_dialogue.emit(
+		"nonexistent_char",
+		[{"text": "Next", "voice": "", "expression": ""}],
+		"adv",
+	)
+	await get_tree().process_frame
+	assert_false(_get_avatar_container().visible)
+	assert_null(_get_avatar().texture)
 
 
 func test_expression_tracking_via_char_show():

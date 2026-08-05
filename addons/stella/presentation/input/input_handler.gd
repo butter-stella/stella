@@ -47,21 +47,23 @@ func _input(event: InputEvent) -> void:
 			if dialogue:
 				dialogue._update_toggle_buttons()
 			if dialogue and dialogue._is_typing:
-				dialogue._is_typing = false
-				dialogue.text_label.visible_characters = -1
+				dialogue.complete_current_dialogue()
 				get_viewport().set_input_as_handled()
 				return
+			if dialogue:
+				dialogue.finalize_current_dialogue_for_advance()
 			SignalBus.advance_requested.emit()
 			get_viewport().set_input_as_handled()
 			return
 
 		# Normal mode
 		if dialogue and dialogue._is_typing:
-			dialogue._is_typing = false
-			dialogue.text_label.visible_characters = -1
+			dialogue.complete_current_dialogue()
 			get_viewport().set_input_as_handled()
 			return
 
+		if dialogue:
+			dialogue.finalize_current_dialogue_for_advance()
 		SignalBus.advance_requested.emit()
 
 	elif event.button_index == MOUSE_BUTTON_RIGHT:
@@ -86,6 +88,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			dialogue._ctrl_held = event.pressed
 			# Ctrl pressed while text fully shown: advance immediately to start skipping
 			if event.pressed and not dialogue._is_typing:
+				dialogue.finalize_current_dialogue_for_advance()
 				SignalBus.advance_requested.emit()
 		return
 	if not event.pressed or event.echo:
@@ -100,9 +103,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.keycode == KEY_SPACE or event.keycode == KEY_ENTER:
 		var dialogue = _get_dialogue()
 		if dialogue and dialogue._is_typing:
-			dialogue._is_typing = false
-			dialogue.text_label.visible_characters = -1
+			dialogue.complete_current_dialogue()
 		else:
+			if dialogue:
+				dialogue.finalize_current_dialogue_for_advance()
 			SignalBus.advance_requested.emit()
 
 

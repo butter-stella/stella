@@ -4,9 +4,12 @@ extends Node
 
 # Dialogue
 ## Unified dialogue signal — both normal and @combine dialogues flow through here.
-## segments: Array of {text: String, voice: String, expression: String}
+## segments: Array of {
+##   text: String, voice: String, expression: String,
+##   stage: String, avatar: String, transition: String, duration_ms: float
+## }
 ## A normal single-line dialogue has segments.size() == 1. A @combine block has
-## multiple segments; voices play sequentially, expression switches at each
+## multiple segments; voices and presentation changes advance together at each
 ## segment boundary. Either way, the dialogue is one unit for advance/skip/backlog.
 signal show_dialogue(character: String, segments: Array, mode: String)
 signal hide_dialogue()
