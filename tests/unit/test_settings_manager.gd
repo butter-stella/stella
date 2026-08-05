@@ -134,6 +134,56 @@ func test_reset_emits_only_actual_changes_and_does_not_save_implicitly():
 	assert_eq(changed, [], "an unchanged reset must not emit redundant notifications")
 
 
+func test_reset_notifications_use_current_values_after_synchronous_reentry():
+	_manager.settings.from_dict({
+		"character_interval": 10,
+		"bgm_volume": 0.1,
+	})
+	var bgm_values: Array[float] = []
+	_manager.settings_changed.connect(func(key: String, _value: Variant) -> void:
+		if key == "character_interval":
+			_manager.set_value("bgm_volume", 0.25)
+	)
+	_manager.settings_changed.connect(func(key: String, value: Variant) -> void:
+		if key == "bgm_volume":
+			bgm_values.append(float(value))
+	)
+
+	_manager.reset_to_default()
+
+	assert_almost_eq(_manager.settings.bgm_volume, 0.25, 0.001)
+	assert_eq(bgm_values.size(), 2,
+		"the nested write and the reset's planned notification should both be observable")
+	for value in bgm_values:
+		assert_almost_eq(value, 0.25, 0.001,
+			"reset must not emit a cached default after a listener changes the value")
+
+
+func test_character_voice_notifications_emit_complete_stable_dictionaries():
+	var volume_payloads: Array[Dictionary] = []
+	var enabled_payloads: Array[Dictionary] = []
+	_manager.settings_changed.connect(func(key: String, value: Variant) -> void:
+		if key == "character_voice_volume":
+			volume_payloads.append(value)
+		elif key == "character_voice_enabled":
+			enabled_payloads.append(value)
+	)
+
+	_manager.set_character_voice_volume("sakura", 0.5)
+	_manager.set_character_voice_volume("yuzu", 0.25)
+	_manager.set_character_voice_enabled("sakura", false)
+	_manager.set_character_voice_enabled("yuzu", true)
+
+	assert_eq(volume_payloads, [
+		{"sakura": 0.5},
+		{"sakura": 0.5, "yuzu": 0.25},
+	])
+	assert_eq(enabled_payloads, [
+		{"sakura": false},
+		{"sakura": false, "yuzu": true},
+	])
+
+
 func test_character_voice_volume():
 	_manager.set_character_voice_volume("sakura", 0.5)
 	assert_almost_eq(_manager.get_character_voice_volume("sakura"), 0.5, 0.01)

@@ -10,7 +10,7 @@ var settings_path: String = "user://settings.json"
 func set_value(key: String, value: Variant) -> void:
 	if key in settings:
 		settings[key] = value
-		settings_changed.emit(key, value)
+		_emit_current_value(key)
 
 
 func save() -> void:
@@ -42,14 +42,16 @@ func reset_to_default() -> void:
 
 	# GameSettings.to_dict() is the canonical public-field order. Emit only real
 	# changes after the atomic restore, keeping reset side effects deterministic.
+	# Read each value at emission time because signal listeners may synchronously
+	# write settings again while this loop is running.
 	for key in default_values:
 		if previous_values[key] != default_values[key]:
-			settings_changed.emit(key, default_values[key])
+			_emit_current_value(key)
 
 
 func set_character_voice_volume(character_id: String, volume: float) -> void:
 	settings.character_voice_volume[character_id] = volume
-	settings_changed.emit("character_voice_volume", {character_id: volume})
+	_emit_current_value("character_voice_volume")
 
 
 func get_character_voice_volume(character_id: String) -> float:
@@ -58,8 +60,17 @@ func get_character_voice_volume(character_id: String) -> float:
 
 func set_character_voice_enabled(character_id: String, enabled: bool) -> void:
 	settings.character_voice_enabled[character_id] = enabled
-	settings_changed.emit("character_voice_enabled", {character_id: enabled})
+	_emit_current_value("character_voice_enabled")
 
 
 func is_character_voice_enabled(character_id: String) -> bool:
 	return settings.character_voice_enabled.get(character_id, true)
+
+
+func _emit_current_value(key: String) -> void:
+	var value: Variant = settings[key]
+	# Mutable settings use stable, complete snapshots. Consumers can treat every
+	# payload as the current value instead of distinguishing patches from resets.
+	if value is Dictionary:
+		value = value.duplicate(true)
+	settings_changed.emit(key, value)
