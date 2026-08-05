@@ -172,7 +172,7 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 					combine_character_set = false
 					combine_pending_expr = ""
 				else:
-					var cmd = _parse_at_command(token)
+					var cmd = _parse_at_command(token, data)
 					if cmd:
 						cmd.declared_line = token.line
 					if cmd and current_scene:
@@ -347,7 +347,7 @@ static func _get_at_command_name(raw: String) -> String:
 	return after_at.substr(0, space_pos)
 
 
-static func _parse_at_command(token: DslToken) -> CommandData:
+static func _parse_at_command(token: DslToken, data: ScenarioData) -> CommandData:
 	var raw = token.raw_text
 	var name = _get_at_command_name(raw)
 	var args = raw.substr(raw.find(name) + name.length()).strip_edges()
@@ -451,16 +451,66 @@ static func _parse_at_command(token: DslToken) -> CommandData:
 			var effect_type = parts[0] if parts.size() > 0 else ""
 			match effect_type:
 				"shake":
+					var intensity_value: Variant = 10.0
+					var duration_value: Variant = 0.3
+					if parts.size() > 1:
+						intensity_value = _parse_effect_number(
+							parts[1], "shake", "intensity", token, data
+						)
+					if parts.size() > 2:
+						duration_value = _parse_effect_number(
+							parts[2], "shake", "duration", token, data
+						)
+
+					var intensity := 0.0 if intensity_value == null else float(intensity_value)
+					var duration := 0.0 if duration_value == null else float(duration_value)
+					if intensity_value != null and intensity < 0.0:
+						_record_diagnostic(
+							data,
+							"warning",
+							"DslParser: @effect shake intensity is negative; using its absolute value (line %d)"
+							% token.line,
+							token.line,
+						)
+						intensity = absf(intensity)
+					if duration_value != null and duration < 0.0:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @effect shake duration must be non-negative (line %d)"
+							% token.line,
+							token.line,
+						)
+						duration = 0.0
+					# Invalid intensity disables the whole request instead of silently
+					# replacing an author typo with a visible default shake.
+					if intensity_value == null:
+						duration = 0.0
 					return _make_cmd("effect", {
 						"effect_type": "shake",
-						"intensity": float(parts[1]) if parts.size() > 1 else 10.0,
-						"duration": float(parts[2]) if parts.size() > 2 else 0.3,
+						"intensity": intensity,
+						"duration": duration,
 					})
 				"flash":
+					var duration_value: Variant = 0.2
+					if parts.size() > 2:
+						duration_value = _parse_effect_number(
+							parts[2], "flash", "duration", token, data
+						)
+					var duration := 0.0 if duration_value == null else float(duration_value)
+					if duration_value != null and duration < 0.0:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @effect flash duration must be non-negative (line %d)"
+							% token.line,
+							token.line,
+						)
+						duration = 0.0
 					return _make_cmd("effect", {
 						"effect_type": "flash",
 						"color": parts[1] if parts.size() > 1 else "white",
-						"duration": float(parts[2]) if parts.size() > 2 else 0.2,
+						"duration": duration,
 					})
 				_:
 					return _make_cmd("effect", {"effect_type": effect_type})
@@ -468,6 +518,35 @@ static func _parse_at_command(token: DslToken) -> CommandData:
 			return null  # Handled by if_stack or ignored
 		_:
 			return null
+
+
+static func _parse_effect_number(
+	raw_value: String,
+	effect_type: String,
+	parameter_name: String,
+	token: DslToken,
+	data: ScenarioData,
+) -> Variant:
+	if not raw_value.is_valid_float():
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @effect %s %s must be a finite number, got '%s' (line %d)"
+			% [effect_type, parameter_name, raw_value, token.line],
+			token.line,
+		)
+		return null
+	var value := raw_value.to_float()
+	if not is_finite(value):
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @effect %s %s must be finite, got '%s' (line %d)"
+			% [effect_type, parameter_name, raw_value, token.line],
+			token.line,
+		)
+		return null
+	return value
 
 
 static func _parse_set_command(args: String) -> CommandData:

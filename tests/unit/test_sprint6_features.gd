@@ -191,6 +191,92 @@ func test_dsl_parser_effect_flash_hex_color():
 	assert_almost_eq(cmd.get_float("duration"), 0.25, 0.001)
 
 
+func test_dsl_parser_effect_rejects_overflow_duration_as_safe_noop():
+	var tokens = DslLexer.tokenize("@scene s\n@effect shake 1 1e309")
+	var data = DslParser.parse(tokens, "t")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_float("duration"), 0.0)
+	var diagnostic := _find_effect_diagnostic(data, "error", "shake duration must be finite")
+	assert_false(diagnostic.is_empty(), "overflow must produce an author-facing error")
+	assert_eq(diagnostic.get("line"), 2)
+
+
+func test_dsl_parser_effect_rejects_nan_duration_as_safe_noop():
+	var tokens = DslLexer.tokenize("@scene s\n@effect shake 1 NaN")
+	var data = DslParser.parse(tokens, "t")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_float("duration"), 0.0)
+	assert_false(
+		_find_effect_diagnostic(data, "error", "@effect shake duration must be").is_empty()
+	)
+
+
+func test_dsl_parser_effect_rejects_inf_duration_as_safe_noop():
+	var tokens = DslLexer.tokenize("@scene s\n@effect flash white INF")
+	var data = DslParser.parse(tokens, "t")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_float("duration"), 0.0)
+	assert_false(
+		_find_effect_diagnostic(data, "error", "@effect flash duration must be").is_empty()
+	)
+
+
+func test_dsl_parser_effect_rejects_invalid_intensity_as_safe_noop():
+	var tokens = DslLexer.tokenize("@scene s\n@effect shake strong 1.0")
+	var data = DslParser.parse(tokens, "t")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_float("intensity"), 0.0)
+	assert_eq(cmd.get_float("duration"), 0.0)
+	assert_false(
+		_find_effect_diagnostic(data, "error", "shake intensity must be a finite number").is_empty()
+	)
+
+
+func test_dsl_parser_effect_negative_duration_is_an_error_and_noop():
+	var tokens = DslLexer.tokenize("@scene s\n@effect flash white -0.5")
+	var data = DslParser.parse(tokens, "t")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_float("duration"), 0.0)
+	assert_false(
+		_find_effect_diagnostic(data, "error", "flash duration must be non-negative").is_empty()
+	)
+
+
+func test_dsl_parser_effect_zero_duration_is_a_valid_explicit_noop():
+	var tokens = DslLexer.tokenize("@scene s\n@effect shake 10 0")
+	var data = DslParser.parse(tokens, "t")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_float("duration"), 0.0)
+	assert_true(_find_effect_diagnostic(data, "error", "@effect shake").is_empty())
+
+
+func test_dsl_parser_effect_preserves_huge_finite_duration():
+	var tokens = DslLexer.tokenize("@scene s\n@effect shake 10 1e300")
+	var data = DslParser.parse(tokens, "t")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_float("duration"), 1.0e300)
+	assert_true(is_finite(cmd.get_float("duration")))
+	assert_true(_find_effect_diagnostic(data, "error", "@effect shake").is_empty())
+
+
+func test_dsl_parser_effect_normalizes_negative_shake_intensity_with_warning():
+	var tokens = DslLexer.tokenize("@scene s\n@effect shake -12 0.5")
+	var data = DslParser.parse(tokens, "t")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(cmd.get_float("intensity"), 12.0)
+	assert_eq(cmd.get_float("duration"), 0.5)
+	assert_false(
+		_find_effect_diagnostic(data, "warning", "shake intensity is negative").is_empty()
+	)
+
+
+func _find_effect_diagnostic(data: ScenarioData, level: String, substring: String) -> Dictionary:
+	for diagnostic in data.diagnostics:
+		if diagnostic.get("level") == level and substring in str(diagnostic.get("message", "")):
+			return diagnostic
+	return {}
+
+
 # --- ParallelHandler ---
 
 func test_parallel_handler_type():

@@ -12,6 +12,8 @@ var _game: Node2D
 var _background_layer: CanvasLayer
 var _character_layer: CanvasLayer
 var _ui_layer: CanvasLayer
+var _background_shake_root: Control
+var _character_shake_root: Control
 var _effects: Node
 var _engine: ScenarioEngine
 var _effect_events: Array[Dictionary] = []
@@ -27,6 +29,8 @@ func before_each() -> void:
 	_background_layer = _game.get_node("BackgroundLayer")
 	_character_layer = _game.get_node("CharacterLayer")
 	_ui_layer = _game.get_node("UILayer")
+	_background_shake_root = _game.get_node("BackgroundLayer/ShakeRoot")
+	_character_shake_root = _game.get_node("CharacterLayer/ShakeRoot")
 	_effects = _game.get_node("ScreenEffects")
 
 	_effect_events.clear()
@@ -55,11 +59,15 @@ func after_each() -> void:
 
 
 func test_shake_fixture_reaches_the_real_game_presenter() -> void:
-	var background_baseline := Vector2(11.0, -7.0)
-	var character_baseline := Vector2(-5.0, 9.0)
+	var background_root_baseline := Vector2(11.0, -7.0)
+	var character_root_baseline := Vector2(-5.0, 9.0)
+	var background_layer_baseline := Vector2(40.0, -12.0)
+	var character_layer_baseline := Vector2(-18.0, 30.0)
 	var ui_baseline := Vector2(2.0, -3.0)
-	_background_layer.offset = background_baseline
-	_character_layer.offset = character_baseline
+	_background_shake_root.position = background_root_baseline
+	_character_shake_root.position = character_root_baseline
+	_background_layer.offset = background_layer_baseline
+	_character_layer.offset = character_layer_baseline
 	_ui_layer.offset = ui_baseline
 
 	_start_fixture("shake_params.stla")
@@ -72,36 +80,64 @@ func test_shake_fixture_reaches_the_real_game_presenter() -> void:
 	assert_almost_eq(_effect_events[0]["params"].get("intensity", 0.0), 32.0, 0.001)
 	assert_almost_eq(_effect_events[0]["params"].get("duration", 0.0), 5.0, 0.001)
 	assert_not_null(_effects._shake_tween, "the production presenter must start a shake tween")
-	assert_true(_effects._shake_targets.has(_background_layer))
-	assert_true(_effects._shake_targets.has(_character_layer))
-	assert_false(_effects._shake_targets.has(_ui_layer), "UI must not be a shake target")
-	assert_eq(_effects._shake_baselines.get(_background_layer), background_baseline)
-	assert_eq(_effects._shake_baselines.get(_character_layer), character_baseline)
+	assert_true(_effects._shake_targets.has(_background_shake_root))
+	assert_true(_effects._shake_targets.has(_character_shake_root))
+	assert_eq(_effects._shake_targets.size(), 2, "UI must not be a shake target")
+	assert_eq(_effects._shake_baselines.get(_background_shake_root), background_root_baseline)
+	assert_eq(_effects._shake_baselines.get(_character_shake_root), character_root_baseline)
 
 	# Sample several random deltas. Their exact values are deliberately not
 	# asserted; only actual movement and the rigid-stage invariant are relevant.
 	var observed_movement := false
 	for _frame in range(4):
 		await get_tree().process_frame
-		var background_delta := _background_layer.offset - background_baseline
-		var character_delta := _character_layer.offset - character_baseline
+		var background_delta := _background_shake_root.position - background_root_baseline
+		var character_delta := _character_shake_root.position - character_root_baseline
 		observed_movement = observed_movement or background_delta.length() > 0.001
 		assert_lt(background_delta.distance_to(character_delta), 0.001)
 	assert_true(observed_movement, "shake must move the configured stage layers")
+	assert_eq(_background_layer.offset, background_layer_baseline)
+	assert_eq(_character_layer.offset, character_layer_baseline)
 	assert_eq(_ui_layer.offset, ui_baseline)
+
+	# Exercise real composition: camera/pan state can change after shake starts.
+	var updated_background_offset := Vector2(77.0, -25.0)
+	var updated_character_offset := Vector2(-33.0, 61.0)
+	_background_layer.offset = updated_background_offset
+	_character_layer.offset = updated_character_offset
+	await get_tree().process_frame
+	await get_tree().process_frame
+	assert_eq(_background_layer.offset, updated_background_offset)
+	assert_eq(_character_layer.offset, updated_character_offset)
 
 	SignalBus.advance_requested.emit()
 	if not await _wait_for_command(3, "shake fixture reaches its cleared checkpoint"):
 		return
 	assert_eq(_event_types(), ["shake", "off"])
 	assert_null(_effects._shake_tween)
-	assert_eq(_background_layer.offset, background_baseline)
-	assert_eq(_character_layer.offset, character_baseline)
+	assert_eq(_background_shake_root.position, background_root_baseline)
+	assert_eq(_character_shake_root.position, character_root_baseline)
+	assert_eq(_background_layer.offset, updated_background_offset)
+	assert_eq(_character_layer.offset, updated_character_offset)
 	assert_eq(_ui_layer.offset, ui_baseline)
 	await _finish_fixture()
 
 
 func test_flash_fixture_reaches_the_real_game_presenter() -> void:
+	var configured_flash_canvas: CanvasLayer = _effects.get_node("FlashCanvas")
+	assert_eq(_effects.flash_canvas_path, NodePath("FlashCanvas"))
+	assert_same(_effects._flash_canvas, configured_flash_canvas)
+	assert_false(_effects._owns_flash_canvas, "built-in scene should use its serialized host")
+	var highest_other_layer := -2147483648
+	for canvas in _game.find_children("*", "CanvasLayer", true, false):
+		if canvas != configured_flash_canvas:
+			highest_other_layer = maxi(highest_other_layer, (canvas as CanvasLayer).layer)
+	assert_gt(
+		configured_flash_canvas.layer,
+		highest_other_layer,
+		"built-in flash host must be above every other serialized CanvasLayer",
+	)
+
 	_start_fixture("flash_params.stla")
 	if not await _wait_for_command(1, "flash fixture reaches its active checkpoint"):
 		return
@@ -119,7 +155,9 @@ func test_flash_fixture_reaches_the_real_game_presenter() -> void:
 		var canvas := _find_canvas_ancestor(overlay)
 		assert_not_null(canvas)
 		if canvas != null:
-			assert_gt(canvas.layer, _ui_layer.layer, "flash must render above the UI")
+			assert_same(canvas, configured_flash_canvas)
+			assert_gt(canvas.layer, highest_other_layer, "flash must render above every scene layer")
+		assert_eq(overlay.z_index, RenderingServer.CANVAS_ITEM_Z_MAX)
 
 	SignalBus.advance_requested.emit()
 	if not await _wait_for_command(3, "flash fixture reaches its cleared checkpoint"):
@@ -135,8 +173,8 @@ func test_flash_fixture_reaches_the_real_game_presenter() -> void:
 func test_off_fixture_clears_shake_and_flash_together() -> void:
 	var background_baseline := Vector2(7.0, 4.0)
 	var character_baseline := Vector2(-8.0, 3.0)
-	_background_layer.offset = background_baseline
-	_character_layer.offset = character_baseline
+	_background_shake_root.position = background_baseline
+	_character_shake_root.position = character_baseline
 
 	_start_fixture("effect_off.stla")
 	if not await _wait_for_command(2, "off fixture reaches its active checkpoint"):
@@ -157,8 +195,8 @@ func test_off_fixture_clears_shake_and_flash_together() -> void:
 	assert_null(_effects._shake_tween)
 	assert_null(_effects._flash_tween)
 	assert_null(_effects._flash_overlay)
-	assert_eq(_background_layer.offset, background_baseline)
-	assert_eq(_character_layer.offset, character_baseline)
+	assert_eq(_background_shake_root.position, background_baseline)
+	assert_eq(_character_shake_root.position, character_baseline)
 	await _finish_fixture()
 
 

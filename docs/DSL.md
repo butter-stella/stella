@@ -251,9 +251,9 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
 @fade in 1.0
 ```
 
-**shake 参数**：`intensity` 是每帧 ± 偏移像素的幅度（默认 10），`duration` 是总时长秒（默认 0.3）。
+**shake 参数**：`intensity` 是每次采样 ± 偏移像素的幅度（默认 10），`duration` 是总时长秒（默认 0.3）。数值必须有限，时长不能为负；错误参数会产生带行号的解析诊断并安全地跳过该特效。负强度会取绝对值并产生警告；运行时还会按 `ScreenEffects.max_shake_intensity`（默认 4096）限制极端强度。
 
-**flash 参数**：`color` 接受 Godot 命名颜色（`white`/`red`/`black`/`blue`/...）或十六进制字符串（`#ff0000`），未知名会 fallback 到白色。`duration` 是淡出总时长秒（默认 0.2）。
+**flash 参数**：`color` 接受 Godot 命名颜色（`white`/`red`/`black`/`blue`/...）或十六进制字符串（`#ff0000`），未知名会 fallback 到白色。`duration` 是淡出总时长秒（默认 0.2），必须是非负有限数值。flash 的实际绘制层由游戏场景中的 `ScreenEffects` 配置决定；自定义场景的 shake 根节点与 flash 层级规范见[使用指南](USAGE.md)。
 
 ### 3.10 分支选择
 
