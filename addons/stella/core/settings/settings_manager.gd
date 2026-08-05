@@ -31,7 +31,20 @@ func load_settings() -> void:
 
 
 func reset_to_default() -> void:
-	settings = GameSettings.new()
+	var previous_values := settings.to_dict()
+	var default_values := GameSettings.new().to_dict()
+
+	# Keep the long-lived data model stable for consumers that retain a direct
+	# reference. Restore every field before notifying so observers never see a
+	# half-reset combination of settings.
+	for key in default_values:
+		settings[key] = default_values[key]
+
+	# GameSettings.to_dict() is the canonical public-field order. Emit only real
+	# changes after the atomic restore, keeping reset side effects deterministic.
+	for key in default_values:
+		if previous_values[key] != default_values[key]:
+			settings_changed.emit(key, default_values[key])
 
 
 func set_character_voice_volume(character_id: String, volume: float) -> void:
