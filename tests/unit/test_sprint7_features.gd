@@ -78,6 +78,32 @@ func test_unlock_snapshot():
 	assert_true(um2.is_unlocked("cg", "cg_01"))
 
 
+func test_unlock_restore_merges_categories_and_deduplicates_items():
+	var um = UnlockManager.new()
+	um.unlock("cg", "route_b_cg")
+	um.unlock("bgm", "route_b_theme")
+
+	# Simulate loading an older route-A save. Cross-playthrough unlocks are
+	# monotonic, so both the in-memory and loaded progress must remain available.
+	var old_snapshot := {
+		"cg": ["route_a_cg", "route_b_cg", "route_b_cg"],
+		"scene": ["route_a_ending"],
+	}
+	um.restore_snapshot(old_snapshot)
+
+	assert_true(um.is_unlocked("cg", "route_a_cg"), "loaded CG should be restored")
+	assert_true(um.is_unlocked("cg", "route_b_cg"), "newer CG unlock must survive")
+	assert_true(um.is_unlocked("bgm", "route_b_theme"), "unmentioned category must survive")
+	assert_true(um.is_unlocked("scene", "route_a_ending"), "loaded category should be added")
+	assert_eq(um.get_unlocked("cg").count("route_b_cg"), 1, "merged unlocks must stay unique")
+
+	um.restore_snapshot({})
+	assert_true(um.is_unlocked("bgm", "route_b_theme"), "empty snapshot must not clear progress")
+
+	old_snapshot["scene"].append("mutated_after_restore")
+	assert_false(um.is_unlocked("scene", "mutated_after_restore"), "snapshot arrays must not be aliased")
+
+
 # --- LocalizationManager ---
 
 func test_localization_get_text():

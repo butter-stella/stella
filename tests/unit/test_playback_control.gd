@@ -32,6 +32,23 @@ func test_read_flag_snapshot():
 	assert_true(rfm2.is_read("ch1", "s1", 0))
 
 
+func test_read_flag_restore_merges_cross_playthrough_progress():
+	var rfm = ReadFlagManager.new()
+	rfm.mark_read("route_b", "scene_2", 7)
+
+	# Loading an older save must add its read flags without erasing lines read
+	# in another playthrough after that save was created.
+	rfm.restore_snapshot({"route_a:scene_1:3": true})
+
+	assert_true(rfm.is_read("route_a", "scene_1", 3), "loaded flag should be restored")
+	assert_true(rfm.is_read("route_b", "scene_2", 7), "newer read progress must survive")
+
+	# An old save made before any dialogue was read is also monotonic: it must
+	# not act as a request to clear global progress.
+	rfm.restore_snapshot({})
+	assert_true(rfm.is_read("route_b", "scene_2", 7), "empty snapshot must not clear progress")
+
+
 # --- BacklogManager ---
 
 func _seg(text: String, voice: String = "") -> Dictionary:
