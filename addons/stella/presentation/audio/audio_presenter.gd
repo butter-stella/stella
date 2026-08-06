@@ -1,6 +1,8 @@
 ## Audio presenter — manages BGM, SE, Voice, and System SE playback.
 extends Node
 
+enum BgmTweenPurpose { NONE, SWITCH_FADE_OUT, FADE_IN, STOP_FADE_OUT }
+
 var _bgm_player: AudioStreamPlayer
 var _se_players: Array = []
 var _max_se_channels: int = 4
@@ -9,6 +11,7 @@ var _voice_player: AudioStreamPlayer
 var _system_se_player: AudioStreamPlayer
 var _current_voice_character: String = ""
 var _bgm_tween: Tween
+var _bgm_tween_purpose: int = BgmTweenPurpose.NONE
 
 
 func _ready():
@@ -58,31 +61,60 @@ func _process(_delta: float) -> void:
 
 # ─── Volume ───
 
-func _apply_volumes():
-	var master = StellaRuntime.get_setting("master_volume")
-	if master == null:
-		master = 1.0
+func _apply_volumes(changed_key: String = ""):
+	var master := _get_volume_setting("master_volume", 1.0)
+	var update_all := changed_key == ""
+	if update_all or changed_key in ["master_volume", "bgm_volume"]:
+		var bgm_target_db := _get_bgm_target_db()
+		# A fade-in captures its target when created. End it before applying a live
+		# setting so that it cannot later restore the old target. Fade-outs keep
+		# heading to silence; a switch computes the new track's target after it ends.
+		if _bgm_tween_purpose == BgmTweenPurpose.FADE_IN:
+			_cancel_bgm_tween()
+		if _bgm_tween_purpose == BgmTweenPurpose.NONE:
+			_bgm_player.volume_db = bgm_target_db
 
-	var bgm_vol = StellaRuntime.get_setting("bgm_volume")
-	if bgm_vol == null:
-		bgm_vol = 0.8
-	_bgm_player.volume_db = _to_db(master * bgm_vol)
+	if update_all or changed_key in ["master_volume", "se_volume"]:
+		var se_vol := _get_volume_setting("se_volume", 1.0)
+		for player in _se_players:
+			player.volume_db = _to_db(master * se_vol)
 
-	var se_vol = StellaRuntime.get_setting("se_volume")
-	if se_vol == null:
-		se_vol = 1.0
-	for player in _se_players:
-		player.volume_db = _to_db(master * se_vol)
+	if update_all or changed_key in [
+		"master_volume", "voice_volume",
+		"character_voice_volume", "character_voice_enabled",
+	]:
+		_voice_player.volume_db = _get_voice_target_db()
 
-	var voice_vol = StellaRuntime.get_setting("voice_volume")
-	if voice_vol == null:
-		voice_vol = 1.0
-	_voice_player.volume_db = _to_db(master * voice_vol)
+	if update_all or changed_key in ["master_volume", "system_se_volume"]:
+		var sys_se_vol := _get_volume_setting("system_se_volume", 1.0)
+		_system_se_player.volume_db = _to_db(master * sys_se_vol)
 
-	var sys_se_vol = StellaRuntime.get_setting("system_se_volume")
-	if sys_se_vol == null:
-		sys_se_vol = 1.0
-	_system_se_player.volume_db = _to_db(master * sys_se_vol)
+
+func _get_volume_setting(key: String, fallback: float) -> float:
+	var value = StellaRuntime.get_setting(key)
+	return fallback if value == null else float(value)
+
+
+func _get_bgm_target_db() -> float:
+	return _to_db(
+		_get_volume_setting("master_volume", 1.0)
+		* _get_volume_setting("bgm_volume", 0.8)
+	)
+
+
+func _get_voice_target_db() -> float:
+	var char_enabled = StellaRuntime.get_setting("character_voice_enabled")
+	if char_enabled is Dictionary and not bool(char_enabled.get(_current_voice_character, true)):
+		return -80.0
+
+	var final_volume := (
+		_get_volume_setting("master_volume", 1.0)
+		* _get_volume_setting("voice_volume", 1.0)
+	)
+	var char_volume = StellaRuntime.get_setting("character_voice_volume")
+	if char_volume is Dictionary:
+		final_volume *= float(char_volume.get(_current_voice_character, 1.0))
+	return _to_db(final_volume)
 
 
 func _to_db(linear: float) -> float:
@@ -94,7 +126,7 @@ func _to_db(linear: float) -> float:
 func _on_settings_changed(key: String, _value: Variant):
 	if key in ["master_volume", "bgm_volume", "se_volume", "voice_volume",
 			"system_se_volume", "character_voice_volume", "character_voice_enabled"]:
-		_apply_volumes()
+		_apply_volumes(key)
 
 
 # ─── BGM ───
@@ -109,42 +141,66 @@ func _on_bgm_play(asset: String, fade_duration: float):
 	# ResourceLoader instance shared by another player.
 	stream = _with_loop_setting(stream, true)
 
-	var master = StellaRuntime.get_setting("master_volume")
-	if master == null:
-		master = 1.0
-	var bgm_vol = StellaRuntime.get_setting("bgm_volume")
-	if bgm_vol == null:
-		bgm_vol = 0.8
-	var target_db = _to_db(master * bgm_vol)
-
 	# Kill any running BGM tween to avoid concurrent coroutines
-	if _bgm_tween and _bgm_tween.is_valid():
-		_bgm_tween.kill()
+	_cancel_bgm_tween()
 
 	if fade_duration > 0 and _bgm_player.playing:
 		var fade_out = create_tween()
 		_bgm_tween = fade_out
+		_bgm_tween_purpose = BgmTweenPurpose.SWITCH_FADE_OUT
 		fade_out.tween_property(_bgm_player, "volume_db", -80.0, fade_duration)
 		await fade_out.finished
 		# If another bgm_play killed our tween, abort this coroutine
 		if _bgm_tween != fade_out:
 			return
+		_bgm_tween = null
+		_bgm_tween_purpose = BgmTweenPurpose.NONE
 
 	_bgm_player.stream = stream
 	_bgm_player.volume_db = -80.0
 	_bgm_player.play()
-	_bgm_tween = create_tween()
-	_bgm_tween.tween_property(_bgm_player, "volume_db", target_db, fade_duration)
+	_start_bgm_fade_in(fade_duration)
+
+
+func _start_bgm_fade_in(duration: float) -> void:
+	_cancel_bgm_tween()
+	var target_db := _get_bgm_target_db()
+	if duration <= 0.0:
+		_bgm_player.volume_db = target_db
+		return
+
+	var fade_in := create_tween()
+	_bgm_tween = fade_in
+	_bgm_tween_purpose = BgmTweenPurpose.FADE_IN
+	fade_in.tween_property(_bgm_player, "volume_db", target_db, duration)
+	fade_in.finished.connect(func() -> void:
+		if _bgm_tween == fade_in:
+			_bgm_tween = null
+			_bgm_tween_purpose = BgmTweenPurpose.NONE
+	, CONNECT_ONE_SHOT)
 
 
 func _on_bgm_stop(fade_duration: float):
 	if not _bgm_player.playing:
 		return
+	_cancel_bgm_tween()
+	_bgm_tween = create_tween()
+	_bgm_tween_purpose = BgmTweenPurpose.STOP_FADE_OUT
+	_bgm_tween.tween_property(_bgm_player, "volume_db", -80.0, fade_duration)
+	var fade_out := _bgm_tween
+	_bgm_tween.tween_callback(func() -> void:
+		if _bgm_tween == fade_out:
+			_bgm_player.stop()
+			_bgm_tween = null
+			_bgm_tween_purpose = BgmTweenPurpose.NONE
+	)
+
+
+func _cancel_bgm_tween() -> void:
 	if _bgm_tween and _bgm_tween.is_valid():
 		_bgm_tween.kill()
-	_bgm_tween = create_tween()
-	_bgm_tween.tween_property(_bgm_player, "volume_db", -80.0, fade_duration)
-	_bgm_tween.tween_callback(func(): _bgm_player.stop())
+	_bgm_tween = null
+	_bgm_tween_purpose = BgmTweenPurpose.NONE
 
 
 # ─── SE ───
@@ -189,26 +245,13 @@ func _on_voice_play(asset: String, character: String = ""):
 		push_warning("AudioPresenter: Voice not found: %s" % asset)
 		return
 
-	# Check per-character mute
+	# Do not start a voice that is muted for this character. Live mute changes
+	# keep playback position and use -80 dB so a later reset can unmute it.
 	var char_enabled = StellaRuntime.get_setting("character_voice_enabled")
-	if char_enabled is Dictionary and char_enabled.has(_current_voice_character):
-		if not char_enabled[_current_voice_character]:
-			return
+	if char_enabled is Dictionary and not bool(char_enabled.get(_current_voice_character, true)):
+		return
 
-	# Apply per-character volume if available
-	var master = StellaRuntime.get_setting("master_volume")
-	if master == null:
-		master = 1.0
-	var voice_vol = StellaRuntime.get_setting("voice_volume")
-	if voice_vol == null:
-		voice_vol = 1.0
-	var final_vol = master * voice_vol
-
-	var char_vol = StellaRuntime.get_setting("character_voice_volume")
-	if char_vol is Dictionary and char_vol.has(_current_voice_character):
-		final_vol *= char_vol[_current_voice_character]
-
-	_voice_player.volume_db = _to_db(final_vol)
+	_voice_player.volume_db = _get_voice_target_db()
 	_voice_player.stream = stream
 	_voice_player.play()
 	SignalBus.voice_started.emit(_current_voice_character, asset)
