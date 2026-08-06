@@ -13,8 +13,8 @@ var _slot_count: int = 8
 
 func _ready():
 	_slot_count = StellaRuntime.config.save_slots
-	save_tab.pressed.connect(func(): _set_mode("save"))
-	load_tab.pressed.connect(func(): _set_mode("load"))
+	save_tab.pressed.connect(func(): set_mode("save"))
+	load_tab.pressed.connect(func(): set_mode("load"))
 	_update_tabs()
 	_refresh_slots()
 
@@ -23,12 +23,19 @@ func _close():
 	StellaRuntime.close_overlay()
 
 
-func set_mode(mode: String):
-	_mode = mode
+func set_mode(mode: String) -> void:
+	if mode != "save" and mode != "load":
+		push_warning("SaveLoadScreen: mode must be 'save' or 'load', got '%s'" % mode)
+		return
+	_set_mode(mode)
 
 
-func _set_mode(mode: String):
+## Extension hook for project-specific save/load screens.
+## Must remain safe when called before the node enters the scene tree.
+func _set_mode(mode: String) -> void:
 	_mode = mode
+	if not is_node_ready():
+		return
 	_update_tabs()
 	_refresh_slots()
 
@@ -41,6 +48,7 @@ func _update_tabs():
 
 func _refresh_slots():
 	for child in slots_container.get_children():
+		slots_container.remove_child(child)
 		child.queue_free()
 
 	var save_list = StellaRuntime.get_save_list()
