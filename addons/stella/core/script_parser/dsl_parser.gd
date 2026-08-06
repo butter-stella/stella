@@ -6,11 +6,19 @@ class_name DslParser extends RefCounted
 static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioData:
 	var data = ScenarioData.new()
 	data.id = scenario_id
+	var profile_collection := DialogueProfileParser.collect(tokens)
+	var dialogue_profiles: Dictionary = profile_collection["profiles"]
+	data.diagnostics.append_array(profile_collection["diagnostics"])
 
 	var current_scene: SceneData = null
 	var pending_options: Array = []
 	var choice_cmd: CommandData = null
 	var current_mode: String = "adv"  # adv / nvl / overlay
+	var current_dialogue_profile_name: String = ""
+	var current_dialogue_profile: Dictionary = {}
+	var current_declarative_presentation: bool = false
+	var adv_dialogue_profile_name: String = ""
+	var adv_dialogue_profile: Dictionary = {}
 
 	# @chapter state (issue #97). Tracks the most-recently-declared chapter so
 	# subsequent @scene declarations can be assigned to it. null until the
@@ -131,7 +139,14 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 						if_stack[-1]["branch"] = "else"
 				elif cmd_name == "end":
 					if in_combine:
-						var combine_cmd = _build_combine_command(combine_character, combine_segments, current_mode)
+						var combine_cmd = _build_combine_command(
+							combine_character,
+							combine_segments,
+							current_mode,
+							current_dialogue_profile_name,
+							current_dialogue_profile,
+							current_declarative_presentation,
+						)
 						combine_segments = []
 						combine_character = ""
 						combine_character_set = false
@@ -156,12 +171,39 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 						if if_stack.size() > 0:
 							current_scene = _close_if_block(if_stack.pop_back(), data)
 					# else: @end at scene level, ignore
-				elif cmd_name == "nvl":
-					var args = token.raw_text.substr(4).strip_edges()
-					current_mode = "adv" if args == "off" else "nvl"
-				elif cmd_name == "overlay":
-					var args = token.raw_text.substr(8).strip_edges()
-					current_mode = "adv" if args == "off" else "overlay"
+				elif cmd_name in ["adv", "nvl", "overlay"]:
+					var selection := DialogueProfileParser.parse_mode_directive(
+						token.raw_text, cmd_name, dialogue_profiles, token.line)
+					data.diagnostics.append_array(selection["diagnostics"])
+					if cmd_name == "adv":
+						current_mode = "adv"
+						adv_dialogue_profile_name = selection["profile_name"]
+						adv_dialogue_profile = selection["profile"]
+						current_dialogue_profile_name = adv_dialogue_profile_name
+						current_dialogue_profile = adv_dialogue_profile
+						# Explicit @adv opts into authored-baseline restoration even
+						# without a named profile.
+						current_declarative_presentation = true
+					elif selection["mode"] == "adv":
+						# @nvl off / @overlay off returns to the configured ADV
+						# profile, or to the exact authored baseline after a named
+						# non-ADV profile was active.
+						current_mode = "adv"
+						current_dialogue_profile_name = adv_dialogue_profile_name
+						current_dialogue_profile = adv_dialogue_profile
+						current_declarative_presentation = (
+							current_declarative_presentation
+							or not adv_dialogue_profile_name.is_empty()
+						)
+					else:
+						current_mode = selection["mode"]
+						current_dialogue_profile_name = selection["profile_name"]
+						current_dialogue_profile = selection["profile"]
+						current_declarative_presentation = not current_dialogue_profile_name.is_empty()
+				elif cmd_name == "dialogue_profile":
+					# Compile-time declaration; already collected in a pre-pass so
+					# profiles may be referenced before their declaration.
+					pass
 				elif cmd_name == "parallel":
 					in_parallel = true
 					parallel_commands.clear()
@@ -193,7 +235,13 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 				choice_cmd = null
 				pending_options = []
-				var cmd = _parse_dialogue(token, current_mode)
+				var cmd = _parse_dialogue(
+					token,
+					current_mode,
+					current_dialogue_profile_name,
+					current_dialogue_profile,
+					current_declarative_presentation,
+				)
 				if cmd and current_scene:
 					if in_combine:
 						var char_name = cmd.get_string("character", "")
@@ -217,7 +265,13 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 				choice_cmd = null
 				pending_options = []
-				var cmd = _parse_narration(token, current_mode)
+				var cmd = _parse_narration(
+					token,
+					current_mode,
+					current_dialogue_profile_name,
+					current_dialogue_profile,
+					current_declarative_presentation,
+				)
 				if cmd and current_scene:
 					if in_combine:
 						if not combine_character_set:
@@ -694,7 +748,13 @@ static func _parse_set_expression(expr: String) -> Dictionary:
 
 # --- Dialogue ---
 
-static func _parse_dialogue(token: DslToken, mode: String = "adv") -> CommandData:
+static func _parse_dialogue(
+	token: DslToken,
+	mode: String = "adv",
+	profile_name: String = "",
+	profile: Dictionary = {},
+	declarative_presentation: bool = false,
+) -> CommandData:
 	var raw = token.raw_text
 	var bracket_start = raw.find("\u300c")  # 「
 	var bracket_end = raw.rfind("\u300d")    # 」
@@ -713,15 +773,24 @@ static func _parse_dialogue(token: DslToken, mode: String = "adv") -> CommandDat
 	if voice_pos != -1:
 		voice = after_bracket.substr(voice_pos + voice_match.length()).strip_edges()
 
-	return _make_cmd("dialogue", {
+	var params := {
 		"character": character,
 		"text": text,
 		"voice": voice,
 		"mode": mode,
-	})
+	}
+	_attach_dialogue_profile(
+		params, profile_name, profile, declarative_presentation)
+	return _make_cmd("dialogue", params)
 
 
-static func _parse_narration(token: DslToken, mode: String = "adv") -> CommandData:
+static func _parse_narration(
+	token: DslToken,
+	mode: String = "adv",
+	profile_name: String = "",
+	profile: Dictionary = {},
+	declarative_presentation: bool = false,
+) -> CommandData:
 	var raw = token.raw_text
 	var bracket_start = raw.find("\u300c")
 	var bracket_end = raw.rfind("\u300d")
@@ -731,12 +800,15 @@ static func _parse_narration(token: DslToken, mode: String = "adv") -> CommandDa
 
 	var text = raw.substr(bracket_start + 1, bracket_end - bracket_start - 1)
 
-	return _make_cmd("dialogue", {
+	var params := {
 		"character": "",
 		"text": text,
 		"voice": "",
 		"mode": mode,
-	})
+	}
+	_attach_dialogue_profile(
+		params, profile_name, profile, declarative_presentation)
+	return _make_cmd("dialogue", params)
 
 
 static func _parse_monologue(token: DslToken) -> CommandData:
@@ -864,7 +936,14 @@ static func _close_if_block(ctx: Dictionary, data: ScenarioData) -> SceneData:
 
 # --- Helpers ---
 
-static func _build_combine_command(character: String, segments: Array, mode: String) -> CommandData:
+static func _build_combine_command(
+	character: String,
+	segments: Array,
+	mode: String,
+	profile_name: String = "",
+	profile: Dictionary = {},
+	declarative_presentation: bool = false,
+) -> CommandData:
 	if segments.size() == 0:
 		return null
 	# Concatenate segment text for typewriter display / backlog
@@ -873,13 +952,30 @@ static func _build_combine_command(character: String, segments: Array, mode: Str
 		full_text += String(seg.get("text", ""))
 	# Primary voice = first segment's voice (used by #voice: field / replay button)
 	var primary_voice := String(segments[0].get("voice", ""))
-	return _make_cmd("dialogue", {
+	var params := {
 		"character": character,
 		"text": full_text,
 		"voice": primary_voice,
 		"mode": mode,
 		"segments": segments.duplicate(true),
-	})
+	}
+	_attach_dialogue_profile(
+		params, profile_name, profile, declarative_presentation)
+	return _make_cmd("dialogue", params)
+
+
+static func _attach_dialogue_profile(
+	params: Dictionary,
+	profile_name: String,
+	profile: Dictionary,
+	declarative_presentation: bool,
+) -> void:
+	if declarative_presentation:
+		params["declarative_presentation"] = true
+	if profile_name.is_empty():
+		return
+	params["presentation_profile_name"] = profile_name
+	params["presentation_profile"] = profile.duplicate(true)
 
 
 static func _make_cmd(type: String, params: Dictionary) -> CommandData:
