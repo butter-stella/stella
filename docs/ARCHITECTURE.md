@@ -405,7 +405,7 @@ class_name GameSettings extends Resource
 @export var key_bindings: Dictionary = {}
 ```
 
-持久化使用 `user://settings.json`，各子系统订阅 `SignalBus.settings_changed` 动态响应。
+持久化使用 `user://settings.json`，各子系统订阅 `SignalBus.settings_changed` 动态响应。信号的 `value` 始终是触发通知时该设置的完整当前值；字典设置发送独立的完整快照，而不是单角色 patch。监听器可以在同步回调中再次修改设置，后续通知也会重新读取当前值，不会发送已过期的缓存值。
 
 ### 3.7 播放控制
 
