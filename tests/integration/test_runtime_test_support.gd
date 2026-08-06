@@ -157,6 +157,57 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 	assert_same(providers_by_id["flowchart_visited"], _runtime.flowchart_visited)
 
 
+func test_runtime_reset_immediately_reapplies_audio_defaults() -> void:
+	var audio_presenter: Node = _runtime.get_node("AudioPresenter")
+	var bgm_player: AudioStreamPlayer = audio_presenter._bgm_player
+	var se_players: Array = audio_presenter._se_players
+	var voice_player: AudioStreamPlayer = audio_presenter._voice_player
+	var system_se_player: AudioStreamPlayer = audio_presenter._system_se_player
+	for player: AudioStreamPlayer in [bgm_player, voice_player, system_se_player]:
+		player.stream = AudioStreamGenerator.new()
+		player.play()
+	for player: AudioStreamPlayer in se_players:
+		player.stream = AudioStreamGenerator.new()
+		player.play()
+
+	_runtime.settings_manager.set_value("master_volume", 0.5)
+	_runtime.settings_manager.set_value("bgm_volume", 0.4)
+	_runtime.settings_manager.set_value("se_volume", 0.3)
+	_runtime.settings_manager.set_value("system_se_volume", 0.2)
+	_runtime.settings_manager.set_value("voice_volume", 0.6)
+	audio_presenter._current_voice_character = "sakura"
+	_runtime.settings_manager.set_character_voice_volume("sakura", 0.25)
+
+	assert_almost_eq(bgm_player.volume_db, linear_to_db(0.5 * 0.4), 0.01)
+	for player: AudioStreamPlayer in se_players:
+		assert_almost_eq(player.volume_db, linear_to_db(0.5 * 0.3), 0.01)
+	assert_almost_eq(system_se_player.volume_db, linear_to_db(0.5 * 0.2), 0.01)
+	assert_almost_eq(voice_player.volume_db, linear_to_db(0.5 * 0.6 * 0.25), 0.01)
+
+	_runtime.settings_manager.set_character_voice_enabled("sakura", false)
+	assert_almost_eq(voice_player.volume_db, -80.0, 0.01,
+		"muting the current character should affect an active voice immediately")
+
+	# Exercise the stale-target race directly: resetting while a fade-in still
+	# targets the dirty volume must cancel that target before it can be applied.
+	bgm_player.volume_db = -80.0
+	audio_presenter._start_bgm_fade_in(0.05)
+	_runtime.reset_settings()
+
+	assert_almost_eq(bgm_player.volume_db, linear_to_db(0.8), 0.01)
+	for player: AudioStreamPlayer in se_players:
+		assert_almost_eq(player.volume_db, 0.0, 0.01)
+	assert_almost_eq(system_se_player.volume_db, 0.0, 0.01)
+	assert_almost_eq(voice_player.volume_db, 0.0, 0.01,
+		"reset clears the current character mute and volume overrides")
+	assert_eq(_runtime.settings_manager.settings.character_voice_volume, {})
+	assert_eq(_runtime.settings_manager.settings.character_voice_enabled, {})
+
+	await get_tree().create_timer(0.1).timeout
+	assert_almost_eq(bgm_player.volume_db, linear_to_db(0.8), 0.01,
+		"a killed fade-in must not restore its pre-reset target")
+
+
 func test_reset_for_test_does_not_leave_parallel_children_waiting() -> void:
 	var advance_connection_count := SignalBus.advance_requested.get_connections().size()
 	var abort_connection_count := SignalBus.engine_abort_requested.get_connections().size()
