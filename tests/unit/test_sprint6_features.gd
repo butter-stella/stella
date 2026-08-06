@@ -370,9 +370,55 @@ func _find_effect_diagnostic(data: ScenarioData, level: String, substring: Strin
 
 # --- ParallelHandler ---
 
+class CountingHandler extends CommandHandler:
+	var execution_count: int = 0
+
+	func get_command_type() -> String:
+		return "counting"
+
+	func execute(_data: CommandData, _context: ScenarioContext) -> void:
+		execution_count += 1
+
+
 func test_parallel_handler_type():
 	var handler = ParallelHandler.new()
 	assert_eq(handler.get_command_type(), "parallel")
+
+
+func test_parallel_handler_dispatches_with_live_registry():
+	var registry = CommandRegistry.new()
+	var parallel_handler = ParallelHandler.new()
+	var child_handler = CountingHandler.new()
+	parallel_handler.set_registry(registry)
+	registry.register(parallel_handler)
+	registry.register(child_handler)
+
+	var child_command = CommandData.new()
+	child_command.type = "counting"
+	var parallel_command = CommandData.new()
+	parallel_command.type = "parallel"
+	parallel_command.params = {"commands": [child_command]}
+
+	await parallel_handler.execute(parallel_command, ScenarioContext.new())
+
+	assert_eq(child_handler.execution_count, 1)
+
+
+func test_parallel_handler_releases_and_handles_expired_registry():
+	var registry = CommandRegistry.new()
+	var parallel_handler = ParallelHandler.new()
+	parallel_handler.set_registry(registry)
+	registry.register(parallel_handler)
+	var registry_ref = weakref(registry)
+
+	registry = null
+
+	assert_null(registry_ref.get_ref())
+	var parallel_command = CommandData.new()
+	parallel_command.type = "parallel"
+	parallel_command.params = {"commands": []}
+	await parallel_handler.execute(parallel_command, ScenarioContext.new())
+	assert_push_warning("ParallelHandler: no registry set, cannot dispatch sub-commands")
 
 
 func test_dsl_parser_parallel():

@@ -25,6 +25,33 @@ jobs:
         run: godot --headless --import 2>&1 || true
         timeout-minutes: 2
 
+      - name: Check clean shutdown
+        shell: bash
+        run: |
+          log_file="$RUNNER_TEMP/stella-clean-exit.log"
+          godot_status=0
+          godot --headless --path . --quit-after 5 >"$log_file" 2>&1 || godot_status=$?
+          cat "$log_file"
+
+          if (( godot_status != 0 )); then
+            exit "$godot_status"
+          fi
+
+          grep_status=0
+          grep -Fqi \
+            -e 'leaked at exit' \
+            -e 'resources still in use at exit' \
+            -e 'were never freed' \
+            "$log_file" || grep_status=$?
+
+          if (( grep_status == 0 )); then
+            echo "::error::Godot reported leaked objects or resources at shutdown"
+            exit 1
+          elif (( grep_status > 1 )); then
+            exit "$grep_status"
+          fi
+        timeout-minutes: 2
+
       - name: Run tests
         run: godot -s addons/gut/gut_cmdln.gd --headless 2>&1
         timeout-minutes: 5
