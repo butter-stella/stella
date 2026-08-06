@@ -3,7 +3,13 @@
 ## non-blocking commands first, then handle any that need await.
 class_name ParallelHandler extends CommandHandler
 
-var _registry: CommandRegistry
+## CommandRegistry owns this handler, so the back-reference must stay weak.
+## A strong reference here creates an uncollectable RefCounted cycle.
+var _registry_ref: WeakRef
+
+
+func set_registry(command_registry: CommandRegistry) -> void:
+	_registry_ref = weakref(command_registry) if command_registry != null else null
 
 
 func get_command_type() -> String:
@@ -12,7 +18,10 @@ func get_command_type() -> String:
 
 func execute(data: CommandData, context: ScenarioContext) -> void:
 	var sub_commands = data.params.get("commands", [])
-	if _registry == null:
+	var command_registry: CommandRegistry = null
+	if _registry_ref != null:
+		command_registry = _registry_ref.get_ref() as CommandRegistry
+	if command_registry == null:
 		push_warning("ParallelHandler: no registry set, cannot dispatch sub-commands")
 		return
 
@@ -22,7 +31,7 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 		# the new child could wait forever on a signal it already missed.
 		if context.is_finished:
 			return
-		var handler = _registry.get_handler(sub_cmd.type)
+		var handler = command_registry.get_handler(sub_cmd.type)
 		if handler:
 			await handler.execute(sub_cmd, context)
 			if context.is_finished:

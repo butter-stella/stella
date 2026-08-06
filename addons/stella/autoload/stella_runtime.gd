@@ -155,7 +155,7 @@ func _register_handlers():
 	registry.register(EffectHandler.new())
 	registry.register(CallHandler.new())
 	var parallel_handler = ParallelHandler.new()
-	parallel_handler._registry = registry
+	parallel_handler.set_registry(registry)
 	registry.register(parallel_handler)
 
 
