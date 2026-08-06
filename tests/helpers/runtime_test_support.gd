@@ -14,11 +14,6 @@ static func reset_for_test(runtime: Node, tree: SceneTree) -> void:
 
 	runtime.settings_manager.reset_to_default()
 	DisplayHelper.apply(runtime.settings_manager.settings)
-	# reset_to_default replaces the data model without emitting. Reuse the
-	# manager's long-lived bridge so AudioPresenter reapplies every volume from
-	# the fresh settings before presentation cleanup stops current playback.
-	runtime.settings_manager.settings_changed.emit(
-		"master_volume", runtime.settings_manager.settings.master_volume)
 
 	runtime._reset_presentation()
 	var audio_presenter: Node = runtime.get_node_or_null("AudioPresenter")
@@ -78,9 +73,7 @@ static func reset_for_test(runtime: Node, tree: SceneTree) -> void:
 static func _reset_audio_for_test(audio_presenter: Node) -> void:
 	if audio_presenter == null:
 		return
-	if audio_presenter._bgm_tween != null and audio_presenter._bgm_tween.is_valid():
-		audio_presenter._bgm_tween.kill()
-	audio_presenter._bgm_tween = null
+	audio_presenter._cancel_bgm_tween()
 	audio_presenter._bgm_player.stop()
 	audio_presenter._bgm_player.stream = null
 	for player: AudioStreamPlayer in audio_presenter._se_players:
