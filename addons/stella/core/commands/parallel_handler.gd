@@ -31,8 +31,10 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 		# the new child could wait forever on a signal it already missed.
 		if context.is_finished:
 			return
+		context.apply_dialogue_mode_events(sub_cmd.dialogue_mode_events_before)
 		var handler = command_registry.get_handler(sub_cmd.type)
 		if handler:
 			await handler.execute(sub_cmd, context)
 			if context.is_finished:
 				return
+		context.apply_dialogue_mode_events(sub_cmd.dialogue_mode_events_after)

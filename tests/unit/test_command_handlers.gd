@@ -61,7 +61,7 @@ func test_dialogue_handler_defaults():
 		received.append({
 			"mode": m,
 			"voice": segs[0]["voice"],
-			"nvl_block_key": _bus.current_dialogue_nvl_block_key(),
+			"nvl_page_key": _bus.current_dialogue_nvl_page_key(),
 		})
 	)
 
@@ -71,7 +71,7 @@ func test_dialogue_handler_defaults():
 
 	assert_eq(received[0]["mode"], "adv")
 	assert_eq(received[0]["voice"], "")
-	assert_eq(received[0]["nvl_block_key"], "")
+	assert_eq(received[0]["nvl_page_key"], "")
 
 
 func test_dialogue_handler_passes_segments_through():
@@ -108,7 +108,7 @@ func test_dialogue_handler_scopes_compiled_presentation_without_changing_signal_
 				"mode": mode,
 				"profile": _bus.current_dialogue_presentation_profile(),
 				"declarative": _bus.current_dialogue_uses_declarative_presentation(),
-				"nvl_block_key": _bus.current_dialogue_nvl_block_key(),
+				"nvl_page_key": _bus.current_dialogue_nvl_page_key(),
 			})
 	)
 	var cmd = _build_cmd("dialogue", {
@@ -116,7 +116,6 @@ func test_dialogue_handler_scopes_compiled_presentation_without_changing_signal_
 		"mode": "nvl",
 		"declarative_presentation": true,
 		"presentation_profile": {"line_spacing": 8},
-		"nvl_block_id": 7,
 	})
 
 	_bus.advance_requested.emit.call_deferred()
@@ -126,12 +125,30 @@ func test_dialogue_handler_scopes_compiled_presentation_without_changing_signal_
 	assert_eq(received[0]["mode"], "nvl")
 	assert_eq(received[0]["profile"], {"line_spacing": 8})
 	assert_true(received[0]["declarative"])
-	var expected_block_key := "%d:7" % _context.scenario_data.get_instance_id()
-	assert_eq(received[0]["nvl_block_key"], expected_block_key)
+	var expected_page_key := "%d:1" % _context.get_instance_id()
+	assert_eq(received[0]["nvl_page_key"], expected_page_key)
 	assert_eq(_bus.current_dialogue_presentation_profile(), {},
 		"profile metadata must not leak past synchronous signal dispatch")
-	assert_eq(_bus.current_dialogue_nvl_block_key(), "",
-		"NVL block metadata must not leak past synchronous signal dispatch")
+	assert_eq(_bus.current_dialogue_nvl_page_key(), "",
+		"NVL page metadata must not leak past synchronous signal dispatch")
+
+
+func test_dialogue_handler_keys_nvl_pages_by_runtime_activation() -> void:
+	var handler := DialogueHandler.new()
+	var page_keys: Array[String] = []
+	_bus.show_dialogue.connect(func(_c, _segments, mode):
+		if mode == "nvl":
+			page_keys.append(_bus.current_dialogue_nvl_page_key())
+	)
+
+	for mode in ["nvl", "nvl", "adv", "nvl"]:
+		var cmd := _build_cmd("dialogue", {"text": mode, "mode": mode})
+		_bus.advance_requested.emit.call_deferred()
+		await handler.execute(cmd, _context)
+
+	var scenario_key := str(_context.get_instance_id())
+	assert_eq(page_keys, ["%s:1" % scenario_key, "%s:1" % scenario_key, "%s:2" % scenario_key],
+		"repeating NVL keeps a page while leaving and re-entering advances it")
 
 
 # --- BgHandler ---
@@ -276,3 +293,26 @@ func test_condition_handler_jumps_to_else():
 	await handler.execute(cmd, _context)
 
 	assert_eq(_context.pending_jump, "bad_end")
+
+
+func test_condition_handler_applies_only_the_selected_branch_mode_events():
+	var store := VariableStore.new()
+	store.set_var("flag", false)
+	_context.variable_store = store
+	_context.current_dialogue_mode = "nvl"
+	_context.nvl_page_epoch = 4
+	var handler := ConditionHandler.new()
+	var cmd := _build_cmd("condition", {
+		"if": "flag",
+		"then_jump": "then_scene",
+		"else_jump": "else_scene",
+	})
+	cmd.dialogue_mode_events_on_true_branch.assign(["adv", "nvl", "adv", "nvl"])
+	cmd.dialogue_mode_events_on_false_branch.assign(["adv", "nvl"])
+
+	await handler.execute(cmd, _context)
+
+	assert_eq(_context.pending_jump, "else_scene")
+	assert_eq(_context.current_dialogue_mode, "nvl")
+	assert_eq(_context.nvl_page_epoch, 5,
+		"only the selected false edge may leave and re-enter NVL")

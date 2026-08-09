@@ -15,4 +15,64 @@
 「Third」
 @nvl off
 「Back in ADV」
+@jump runtime_fixture_done
 @end
+
+// Runtime page-boundary fixtures. Each entry scene jumps to a shared terminal
+// scene so tests can start it directly without falling through into the next
+// independent case.
+@scene jump_loop_entry
+@set jump_count = 0
+@jump jump_loop_page
+
+@scene jump_loop_page
+@nvl profile=novel
+「Jump page」
+@nvl off
+@set jump_count += 1
+@if jump_count < 2
+@jump jump_loop_page
+@end
+@jump runtime_fixture_done
+
+@scene repeated_call_entry
+@call called_nvl_page
+@call called_nvl_page
+@jump runtime_fixture_done
+
+@scene called_nvl_page
+@nvl profile=novel
+「Called page」
+@nvl off
+
+@scene branch_true_entry
+@set branch_flag = true
+@jump conditional_nvl_page
+
+@scene branch_false_entry
+@set branch_flag = false
+@jump conditional_nvl_page
+
+@scene conditional_nvl_page
+@if branch_flag
+@nvl off
+@nvl profile=novel
+「True branch」
+@else
+@nvl off
+@nvl profile=novel
+「False branch」
+@end
+「After branch」
+@nvl off
+@jump runtime_fixture_done
+
+@scene repeated_nvl_entry
+@nvl profile=novel
+「Repeated one」
+@nvl profile=novel
+「Repeated two」
+@nvl off
+@jump runtime_fixture_done
+
+@scene runtime_fixture_done

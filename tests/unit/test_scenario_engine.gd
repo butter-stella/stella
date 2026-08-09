@@ -29,6 +29,26 @@ class TrackingHandler extends CommandHandler:
 		executed.append(data)
 
 
+class ModeTrackingHandler extends CommandHandler:
+	var states: Array = []
+	var stop_after: int = -1
+	var _type: String = "mode_tracking"
+
+	func _init(type: String = "mode_tracking") -> void:
+		_type = type
+
+	func get_command_type() -> String:
+		return _type
+
+	func execute(_data: CommandData, context: ScenarioContext) -> void:
+		states.append({
+			"mode": context.current_dialogue_mode,
+			"epoch": context.nvl_page_epoch,
+		})
+		if stop_after > 0 and states.size() >= stop_after:
+			context.is_finished = true
+
+
 func _build_cmd(type: String, params: Dictionary = {}) -> CommandData:
 	var cmd = CommandData.new()
 	cmd.type = type
@@ -107,6 +127,113 @@ func test_engine_advances_to_next_scene():
 	assert_eq(handler.executed.size(), 2)
 	assert_eq(handler.executed[0].get_string("text"), "Scene1")
 	assert_eq(handler.executed[1].get_string("text"), "Scene2")
+
+
+func test_engine_applies_dialogue_mode_sidecars_without_addressable_commands():
+	var handler := ModeTrackingHandler.new()
+	_registry.register(handler)
+	var scenario := _build_scenario([{
+		"id": "start",
+		"commands": [{"type": "mode_tracking"}],
+	}])
+	var command: CommandData = scenario.scenes[0].commands[0]
+	command.dialogue_mode_events_before.assign(["nvl"])
+	command.dialogue_mode_events_after.assign(["adv", "nvl"])
+	scenario.scenes[0].dialogue_mode_events_on_exit.assign(["adv"])
+	var completed_states: Array = []
+	_engine.command_executed.connect(func(_command):
+		completed_states.append({
+			"mode": _engine.context.current_dialogue_mode,
+			"epoch": _engine.context.nvl_page_epoch,
+		})
+	)
+
+	_engine.load_scenario(scenario)
+	await _engine.run()
+
+	assert_eq(scenario.scenes[0].commands.size(), 1,
+		"mode sidecars do not consume persisted command indices")
+	assert_eq(handler.states, [{"mode": "nvl", "epoch": 1}],
+		"before events run before the real handler")
+	assert_eq(completed_states, [{"mode": "nvl", "epoch": 2}],
+		"after events complete before command_executed")
+	assert_eq(_engine.context.current_dialogue_mode, "adv",
+		"scene exit events run before natural fallthrough")
+	assert_eq(_engine.context.nvl_page_epoch, 2)
+
+
+func test_engine_applies_mode_only_else_edge_before_the_continuation():
+	var scenario := DslParser.parse(DslLexer.tokenize("""@chapter test
+@scene start
+@if flag
+@else
+@nvl off
+@nvl
+@end
+@bg marker"""), "mode_only_else")
+	assert_eq(scenario.diagnostics, [])
+	assert_eq(scenario.scenes.size(), 3,
+		"the false mode edge must not require an extra synthetic scene")
+	assert_null(scenario.get_scene("__if_start_3_else"))
+
+	var handler := ModeTrackingHandler.new("bg")
+	_registry.register(handler)
+	_registry.register(ConditionHandler.new())
+	_engine.load_scenario(scenario)
+	_engine.context.variable_store.set_var("flag", false)
+	_engine.context.current_dialogue_mode = "nvl"
+	_engine.context.nvl_page_epoch = 1
+
+	await _engine.run()
+
+	assert_eq(handler.states, [{"mode": "nvl", "epoch": 2}],
+		"the selected false edge must run before its continuation command")
+
+
+func test_engine_repeated_nvl_event_keeps_the_current_runtime_page():
+	var handler := ModeTrackingHandler.new()
+	_registry.register(handler)
+	var scenario := _build_scenario([{
+		"id": "start",
+		"commands": [
+			{"type": "mode_tracking"},
+			{"type": "mode_tracking"},
+		],
+	}])
+	scenario.scenes[0].commands[0].dialogue_mode_events_before.assign(["nvl"])
+	scenario.scenes[0].commands[1].dialogue_mode_events_before.assign(["nvl"])
+
+	_engine.load_scenario(scenario)
+	await _engine.run()
+
+	assert_eq(handler.states, [
+		{"mode": "nvl", "epoch": 1},
+		{"mode": "nvl", "epoch": 1},
+	], "the parser preserves both events, while runtime ignores the repeated mode")
+
+
+func test_engine_jump_loop_replays_entry_and_exit_events_on_every_visit():
+	var handler := ModeTrackingHandler.new()
+	handler.stop_after = 2
+	_registry.register(handler)
+	_registry.register(JumpTestHandler.new())
+	var scenario := _build_scenario([{
+		"id": "page",
+		"commands": [
+			{"type": "mode_tracking"},
+			{"type": "jump", "params": {"target": "page"}},
+		],
+	}])
+	scenario.scenes[0].commands[0].dialogue_mode_events_before.assign(["nvl"])
+	scenario.scenes[0].commands[1].dialogue_mode_events_before.assign(["adv"])
+
+	_engine.load_scenario(scenario)
+	await _engine.run()
+
+	assert_eq(handler.states, [
+		{"mode": "nvl", "epoch": 1},
+		{"mode": "nvl", "epoch": 2},
+	], "jumping back must replay both sidecars and create a fresh NVL page")
 
 
 func test_engine_handles_jump():

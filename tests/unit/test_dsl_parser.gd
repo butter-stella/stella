@@ -513,70 +513,258 @@ func test_combine_rejects_dialogue_mode_switch_without_mutating_mode():
 	assert_false(following_command.has_param("presentation_profile_name"))
 
 
-func test_nvl_block_metadata_is_stable_within_each_nvl_block():
+func test_nvl_mode_events_preserve_repeated_directives_for_runtime_state():
 	var data = _parse("""@chapter test
 @scene start
 @nvl
 「first」
 「second」
 @nvl
-「third」
-@nvl off
-@nvl
-@combine
-「fourth-a」
-「fourth-b」
-@end
-「fifth」""")
+「third」""")
 	assert_eq(data.diagnostics, [])
 	var commands: Array = data.scenes[0].commands
-	assert_eq(commands.size(), 5)
-	var first_block_id: int = commands[0].get_int("nvl_block_id", -1)
-	var second_block_id: int = commands[3].get_int("nvl_block_id", -1)
-	assert_gt(first_block_id, 0)
-	assert_eq(commands[1].get_int("nvl_block_id", -1), first_block_id,
-		"consecutive NVL entries remain in the same accumulation block")
-	assert_eq(commands[2].get_int("nvl_block_id", -1), first_block_id,
-		"repeating @nvl without leaving keeps the active block id")
-	assert_ne(second_block_id, first_block_id,
-		"off -> on creates a new accumulation block")
-	assert_eq(commands[3].params.get("segments", []).size(), 2)
-	assert_eq(commands[4].get_int("nvl_block_id", -1), second_block_id,
-		"a combined entry and following dialogue share the new block id")
+	assert_eq(commands.size(), 3,
+		"mode events must not become position-addressable scenario commands")
+	assert_eq(commands[0].dialogue_mode_events_before, ["nvl"])
+	assert_eq(commands[1].dialogue_mode_events_before, [])
+	assert_eq(commands[2].dialogue_mode_events_before, ["nvl"],
+		"a repeated @nvl remains an event so runtime state decides whether it resets")
+	for command in commands:
+		assert_false(command.has_param("nvl_block_id"),
+			"static source block identity must not leak into dialogue commands")
 
 
-func test_nvl_block_metadata_survives_conditional_branches_and_continuation():
+func test_nvl_off_then_on_events_keep_source_order_on_next_real_command():
+	var data = _parse("""@chapter test
+@scene start
+@nvl
+「first」
+@nvl off
+@nvl
+「second」""")
+	assert_eq(data.diagnostics, [])
+	var commands: Array = data.scenes[0].commands
+	assert_eq(commands.size(), 2)
+	assert_eq(commands[0].dialogue_mode_events_before, ["nvl"])
+	assert_eq(commands[1].dialogue_mode_events_before, ["adv", "nvl"],
+		"off -> on must replay as two ordered runtime transitions")
+	assert_eq(commands[0].dialogue_mode_events_after, [])
+	assert_eq(commands[1].dialogue_mode_events_after, [])
+
+
+func test_nvl_jump_loop_keeps_replayable_events_on_target_and_jump():
+	var data = _parse("""@chapter test
+@scene page
+@nvl
+「Entry」
+@nvl off
+@jump page""")
+	assert_eq(data.diagnostics, [])
+	var commands: Array = data.scenes[0].commands
+	assert_eq(commands.size(), 2,
+		"runtime boundaries must not shift the loop's saved command positions")
+	assert_eq(commands[0].type, "dialogue")
+	assert_eq(commands[0].dialogue_mode_events_before, ["nvl"],
+		"every visit to the target command must replay its NVL entry event")
+	assert_eq(commands[1].type, "jump")
+	assert_eq(commands[1].dialogue_mode_events_before, ["adv"],
+		"@nvl off must execute before the jump on every loop iteration")
+	assert_eq(data.scenes[0].dialogue_mode_events_on_exit, [])
+
+
+func test_nvl_mode_events_are_branch_local_across_if_elif_else_join():
 	var data = _parse("""@chapter test
 @scene start
 @nvl
 「old block」
+@if route == 1
 @nvl off
 @nvl
-@if branch
 「then entry」
+@elif route == 2
+@nvl off
+@nvl
+「elif entry」
 @else
+@nvl off
+@nvl
 「else entry」
 @end
 「continuation entry」""")
 	assert_eq(data.diagnostics, [])
-	var block_ids: Dictionary = {}
-	for scene in data.scenes:
-		for command in scene.commands:
-			if command.type == "dialogue":
-				block_ids[command.get_string("text")] = command.get_int(
-					"nvl_block_id", -1)
+	var old_entry := _find_dialogue_command(data, "old block")
+	var then_entry := _find_dialogue_command(data, "then entry")
+	var elif_entry := _find_dialogue_command(data, "elif entry")
+	var else_entry := _find_dialogue_command(data, "else entry")
+	var continuation := _find_dialogue_command(data, "continuation entry")
+	assert_not_null(old_entry)
+	assert_not_null(then_entry)
+	assert_not_null(elif_entry)
+	assert_not_null(else_entry)
+	assert_not_null(continuation)
+	if (old_entry == null or then_entry == null or elif_entry == null
+		or else_entry == null or continuation == null):
+		return
 
-	assert_eq(block_ids.size(), 4)
-	var new_block_id: int = block_ids["then entry"]
-	assert_gt(new_block_id, 0)
-	assert_ne(block_ids["old block"], new_block_id)
-	assert_eq(block_ids["else entry"], new_block_id,
-		"either runtime branch must retain the same NVL reset boundary")
-	assert_eq(block_ids["continuation entry"], new_block_id,
-		"an empty runtime branch may fall through to the continuation")
+	assert_eq(old_entry.dialogue_mode_events_before, ["nvl"])
+	assert_eq(then_entry.dialogue_mode_events_before, ["adv", "nvl"])
+	assert_eq(elif_entry.dialogue_mode_events_before, ["adv", "nvl"])
+	assert_eq(else_entry.dialogue_mode_events_before, ["adv", "nvl"])
+	assert_eq(continuation.dialogue_mode_events_before, [],
+		"the join must continue whichever runtime branch executed without a static reset")
+	for command in [old_entry, then_entry, elif_entry, else_entry, continuation]:
+		assert_false(command.has_param("nvl_block_id"))
+
+
+func test_mode_only_else_uses_false_edge_without_shifting_scenes_or_uids():
+	var with_events := _parse("""@chapter test
+@scene start
+@if flag
+@set branch = true
+@else
+@nvl off
+@nvl
+@end
+@set done = true
+@scene later
+@set later = true""")
+	var without_events := _parse("""@chapter test
+@scene start
+@if flag
+@set branch = true
+@else
+// legacy empty branch line 1
+// legacy empty branch line 2
+@end
+@set done = true
+@scene later
+@set later = true""")
+	assert_eq(with_events.diagnostics, [])
+	assert_eq(without_events.diagnostics, [])
+
+	var with_scene_ids: Array[String] = []
+	var without_scene_ids: Array[String] = []
+	for scene in with_events.scenes:
+		with_scene_ids.append(scene.id)
+	for scene in without_events.scenes:
+		without_scene_ids.append(scene.id)
+	assert_eq(with_scene_ids, without_scene_ids,
+		"a mode-only else must not create an addressable synthetic scene")
+	assert_eq(with_scene_ids, [
+		"start",
+		"__if_start_3_then",
+		"__if_start_3_cont",
+		"later",
+	])
+
+	var condition: CommandData = with_events.scenes[0].commands[0]
+	assert_eq(condition.type, "condition")
+	assert_eq(condition.dialogue_mode_events_on_true_branch, [])
+	assert_eq(condition.dialogue_mode_events_on_false_branch, ["adv", "nvl"])
+	assert_eq(condition.get_string("else_jump"), "__if_start_3_cont")
+
+	with_events.assign_command_uids()
+	without_events.assign_command_uids()
+	var with_later := with_events.get_scene("later")
+	var without_later := without_events.get_scene("later")
+	assert_eq(with_events.get_scene_index("later"),
+		without_events.get_scene_index("later"))
+	assert_eq(with_later.commands[0].uid, without_later.commands[0].uid,
+		"mode-only branch metadata must not shift later command identities")
+
+
+func test_mode_only_final_else_in_elif_chain_uses_false_edge_sidecar():
+	var data := _parse("""@chapter test
+@scene start
+@if route == 1
+@set branch = 1
+@elif route == 2
+@set branch = 2
+@else
+@nvl off
+@nvl
+@end
+@set done = true""")
+	assert_eq(data.diagnostics, [])
+	var elif_condition: CommandData = null
+	for scene in data.scenes:
+		assert_false(scene.id.begins_with("__elif_") and scene.id.ends_with("_else"),
+			"a mode-only final else must not add an elif else scene")
+		for command in scene.commands:
+			if command.type == "condition" \
+				and command.get_string("if") == "route == 2":
+				elif_condition = command
+	assert_not_null(elif_condition)
+	if elif_condition == null:
+		return
+	assert_eq(elif_condition.dialogue_mode_events_on_false_branch, ["adv", "nvl"])
+	assert_eq(elif_condition.get_string("else_jump"), "__if_start_3_cont")
+
+
+func test_nvl_mode_event_at_scene_tail_runs_on_exit_without_a_real_command():
+	var data = _parse("""@chapter test
+@scene called_page
+@nvl
+「Entry」
+@nvl off""")
+	assert_eq(data.diagnostics, [])
+	var scene: SceneData = data.scenes[0]
+	assert_eq(scene.commands.size(), 1)
+	assert_eq(scene.commands[0].dialogue_mode_events_before, ["nvl"])
+	assert_eq(scene.commands[0].dialogue_mode_events_after, [])
+	assert_eq(scene.dialogue_mode_events_on_exit, ["adv"],
+		"a called scene must leave NVL before ScenarioEngine returns to its caller")
+
+
+func test_nvl_mode_event_decorates_one_combined_command_without_changing_indices():
+	var data = _parse("""@chapter test
+@scene start
+@nvl
+@combine
+「first segment」
+「second segment」
+@end
+「next entry」""")
+	assert_eq(data.diagnostics, [])
+	var commands: Array = data.scenes[0].commands
+	assert_eq(commands.size(), 2,
+		"a mode event and @combine must still produce exactly two real dialogues")
+	assert_eq(commands[0].params.get("segments", []).size(), 2)
+	assert_eq(commands[0].dialogue_mode_events_before, ["nvl"])
+	assert_eq(commands[1].dialogue_mode_events_before, [])
+	assert_false(commands[0].has_param("nvl_block_id"))
+	assert_false(commands[1].has_param("nvl_block_id"))
+
+
+func test_parallel_tail_mode_event_runs_after_the_parallel_wrapper():
+	var data = _parse("""@chapter test
+@scene start
+@parallel
+@bg bg_school
+@nvl
+@end
+「after parallel」""")
+	assert_eq(data.diagnostics, [])
+	var commands: Array = data.scenes[0].commands
+	assert_eq(commands.size(), 2)
+	assert_eq(commands[0].type, "parallel")
+	assert_eq(commands[0].params.get("commands", []).size(), 1)
+	assert_eq(commands[0].dialogue_mode_events_before, [])
+	assert_eq(commands[0].dialogue_mode_events_after, ["nvl"],
+		"a mode event at the nested list tail must run after its parallel work")
+	assert_eq(commands[1].type, "dialogue")
+	assert_eq(commands[1].dialogue_mode_events_before, [])
 
 
 # ─── @chapter directive (issue #97) ───
+
+func _find_dialogue_command(data: ScenarioData, text: String) -> CommandData:
+	for scene in data.scenes:
+		for command in scene.commands:
+			if command.type == "dialogue" and command.get_string("text") == text:
+				return command
+	return null
+
 
 func _has_diagnostic(data: ScenarioData, level: String, substring: String) -> bool:
 	for d in data.diagnostics:

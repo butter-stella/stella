@@ -24,7 +24,7 @@ var _char_interval: float = 0.03  # seconds per character
 var _is_typing: bool = false
 var _nvl_text: String = ""  # current NVL page, including the active entry
 var _nvl_has_entries: bool = false
-var _active_nvl_block_key: String = ""
+var _active_nvl_page_key: String = ""
 var _current_mode: String = "adv"
 var _ui_hidden: bool = false
 var _ctrl_held: bool = false  # Ctrl key skip
@@ -395,13 +395,19 @@ func _mark_current_line_read() -> void:
 ##   are merged into global timelines with offset adjustment
 ## - Click-to-finish: snap text to end + cancel voice queue + apply final expression
 func _on_show_dialogue(character: String, segments: Array, mode: String) -> void:
-	var nvl_block_key := SignalBus.current_dialogue_nvl_block_key()
-	if mode == "nvl" and not nvl_block_key.is_empty() \
-		and nvl_block_key != _active_nvl_block_key:
-		_reset_nvl_accumulator()
-		_active_nvl_block_key = nvl_block_key
-	if _ui_hidden or segments.size() == 0:
+	if segments.size() == 0:
 		return
+	var nvl_page_key := SignalBus.current_dialogue_nvl_page_key()
+	if mode == "nvl" and not nvl_page_key.is_empty() \
+		and nvl_page_key != _active_nvl_page_key:
+		_reset_nvl_accumulator()
+		_active_nvl_page_key = nvl_page_key
+	# A soft hide is view-only. Auto-play or another external controller may
+	# already have advanced while the panel was hidden, so consume the new SHOW
+	# instead of leaving the engine parked on a dialogue the presenter dropped.
+	if _ui_hidden:
+		_ui_hidden = false
+		visible = true
 
 	_dialogue_gen += 1
 	var gen = _dialogue_gen
@@ -1084,7 +1090,7 @@ func _process_inline_effects(text: String) -> Dictionary:
 func _reset_nvl_accumulator() -> void:
 	_nvl_text = ""
 	_nvl_has_entries = false
-	_active_nvl_block_key = ""
+	_active_nvl_page_key = ""
 
 
 func _on_hide_dialogue():

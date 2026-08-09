@@ -2,6 +2,8 @@
 ## Fills smart defaults, expands @if/@else/@end into synthetic scenes.
 class_name DslParser extends RefCounted
 
+const INTERNAL_DIALOGUE_MODE_EVENT := "__dialogue_mode_event"
+
 
 static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioData:
 	var data = ScenarioData.new()
@@ -19,11 +21,9 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 	var current_declarative_presentation: bool = false
 	var adv_dialogue_profile_name: String = ""
 	var adv_dialogue_profile: Dictionary = {}
-	# Each source-level entry into NVL gets a stable block id. Every dialogue in
-	# that block carries the id so runtime control flow may choose any @if branch
-	# without losing the boundary that resets the presenter's accumulated page.
-	var current_nvl_block_id: int = -1
-	var next_nvl_block_id: int = 0
+	# Mode directives that appear before the first scene are lowered onto that
+	# scene's first addressable command once parsing is complete.
+	var pending_root_mode_events: Array[CommandData] = []
 
 	# @chapter state (issue #97). Tracks the most-recently-declared chapter so
 	# subsequent @scene declarations can be assigned to it. null until the
@@ -55,6 +55,9 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				choice_cmd = null
 				pending_options = []
 				current_scene = _parse_scene_directive(token)
+				if not pending_root_mode_events.is_empty():
+					current_scene.commands.append_array(pending_root_mode_events)
+					pending_root_mode_events.clear()
 				data.scenes.append(current_scene)
 				# Issue #97: 强制规范化 — every scene must belong to a chapter.
 				if current_chapter == null:
@@ -151,7 +154,6 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 							current_dialogue_profile_name,
 							current_dialogue_profile,
 							current_declarative_presentation,
-							current_nvl_block_id,
 						)
 						combine_segments = []
 						combine_character = ""
@@ -183,7 +185,6 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 							"DslParser: @%s is not allowed inside @combine block (line %d)"
 							% [cmd_name, token.line], token.line)
 					else:
-						var previous_mode := current_mode
 						var selection := DialogueProfileParser.parse_mode_directive(
 							token.raw_text, cmd_name, dialogue_profiles, token.line)
 						data.diagnostics.append_array(selection["diagnostics"])
@@ -212,12 +213,15 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 							current_dialogue_profile_name = selection["profile_name"]
 							current_dialogue_profile = selection["profile"]
 							current_declarative_presentation = not current_dialogue_profile_name.is_empty()
-						if current_mode == "nvl":
-							if previous_mode != "nvl":
-								next_nvl_block_id += 1
-								current_nvl_block_id = next_nvl_block_id
+						var mode_event := _make_cmd(
+							INTERNAL_DIALOGUE_MODE_EVENT, {"mode": current_mode})
+						mode_event.declared_line = token.line
+						if current_scene == null:
+							pending_root_mode_events.append(mode_event)
+						elif in_parallel:
+							parallel_commands.append(mode_event)
 						else:
-							current_nvl_block_id = -1
+							_add_command(mode_event, current_scene, if_stack)
 				elif cmd_name == "dialogue_profile":
 					# Compile-time declaration; already collected in a pre-pass so
 					# profiles may be referenced before their declaration.
@@ -259,7 +263,6 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 					current_dialogue_profile_name,
 					current_dialogue_profile,
 					current_declarative_presentation,
-					current_nvl_block_id if not in_combine else -1,
 				)
 				if cmd and current_scene:
 					if in_combine:
@@ -290,7 +293,6 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 					current_dialogue_profile_name,
 					current_dialogue_profile,
 					current_declarative_presentation,
-					current_nvl_block_id if not in_combine else -1,
 				)
 				if cmd and current_scene:
 					if in_combine:
@@ -324,6 +326,7 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 		i += 1
 
 	_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
+	_lower_dialogue_mode_events(data)
 
 	# Issue #97: post-parse validation — every chapter must own at least one
 	# scene. Use the chapter's declared_line so the error points back to the
@@ -351,6 +354,59 @@ static func _add_command(cmd: CommandData, scene: SceneData, if_stack: Array) ->
 			ctx["else_commands"].append(cmd)
 	else:
 		scene.commands.append(cmd)
+
+
+## Source dialogue-mode directives participate in control flow but must not
+## become addressable commands: inserting them into SceneData.commands would
+## shift persisted command indices, read flags, @call return points, and UIDs.
+## Parse with temporary sentinels, expand conditions, then lower each sentinel
+## onto the next real command on that exact runtime path.
+static func _lower_dialogue_mode_events(data: ScenarioData) -> void:
+	for scene_value in data.scenes:
+		var scene: SceneData = scene_value
+		var trailing_events := _lower_dialogue_mode_events_in_list(scene.commands)
+		scene.dialogue_mode_events_on_exit.append_array(trailing_events)
+
+
+static func _lower_dialogue_mode_events_in_list(commands: Array) -> Array[String]:
+	var lowered_commands: Array = []
+	var pending_events: Array[String] = []
+	for command_value in commands:
+		var command: CommandData = command_value
+		if command.type == INTERNAL_DIALOGUE_MODE_EVENT:
+			pending_events.append(command.get_string("mode", "adv"))
+			continue
+
+		if command.type == "parallel":
+			var child_commands: Array = command.params.get("commands", [])
+			var child_trailing := _lower_dialogue_mode_events_in_list(child_commands)
+			command.params["commands"] = child_commands
+			command.dialogue_mode_events_after.append_array(child_trailing)
+
+		command.dialogue_mode_events_before.append_array(pending_events)
+		pending_events.clear()
+		lowered_commands.append(command)
+
+	commands.clear()
+	commands.append_array(lowered_commands)
+	return pending_events
+
+
+## A branch containing only mode sentinels has runtime meaning but no
+## addressable commands. Move those transitions onto the condition edge before
+## synthetic-scene construction decides whether the branch needs its own scene.
+## Mixed branches remain untouched and are lowered normally after expansion.
+static func _extract_mode_only_branch_events(commands: Array) -> Array[String]:
+	var events: Array[String] = []
+	if commands.is_empty():
+		return events
+	for command_value in commands:
+		var command: CommandData = command_value
+		if command.type != INTERNAL_DIALOGUE_MODE_EVENT:
+			return []
+		events.append(command.get_string("mode", "adv"))
+	commands.clear()
+	return events
 
 
 static func _flush_choice(choice_cmd: CommandData, options: Array, scene: SceneData, if_stack: Array) -> void:
@@ -774,7 +830,6 @@ static func _parse_dialogue(
 	profile_name: String = "",
 	profile: Dictionary = {},
 	declarative_presentation: bool = false,
-	nvl_block_id: int = -1,
 ) -> CommandData:
 	var raw = token.raw_text
 	var bracket_start = raw.find("\u300c")  # 「
@@ -800,8 +855,7 @@ static func _parse_dialogue(
 		"voice": voice,
 		"mode": mode,
 	}
-	_attach_dialogue_profile(
-		params, profile_name, profile, declarative_presentation, nvl_block_id)
+	_attach_dialogue_profile(params, profile_name, profile, declarative_presentation)
 	return _make_cmd("dialogue", params)
 
 
@@ -811,7 +865,6 @@ static func _parse_narration(
 	profile_name: String = "",
 	profile: Dictionary = {},
 	declarative_presentation: bool = false,
-	nvl_block_id: int = -1,
 ) -> CommandData:
 	var raw = token.raw_text
 	var bracket_start = raw.find("\u300c")
@@ -828,8 +881,7 @@ static func _parse_narration(
 		"voice": "",
 		"mode": mode,
 	}
-	_attach_dialogue_profile(
-		params, profile_name, profile, declarative_presentation, nvl_block_id)
+	_attach_dialogue_profile(params, profile_name, profile, declarative_presentation)
 	return _make_cmd("dialogue", params)
 
 
@@ -878,6 +930,8 @@ static func _close_elif_into_parent(elif_ctx: Dictionary, parent_ctx: Dictionary
 	var parent_scene = parent_ctx.get("parent_scene")
 	if parent_scene != null:
 		inherit_chapter_id = parent_scene.chapter_id
+	var false_branch_mode_events := _extract_mode_only_branch_events(
+		elif_ctx["else_commands"])
 
 	var then_scene = SceneData.new()
 	then_scene.id = base_id + "_then"
@@ -904,6 +958,8 @@ static func _close_elif_into_parent(elif_ctx: Dictionary, parent_ctx: Dictionary
 		"then_jump": then_scene.id,
 		"else_jump": else_target,
 	})
+	condition_cmd.dialogue_mode_events_on_false_branch.append_array(
+		false_branch_mode_events)
 	parent_ctx["else_commands"].append(condition_cmd)
 
 
@@ -913,6 +969,8 @@ static func _close_if_block(ctx: Dictionary, data: ScenarioData) -> SceneData:
 	# Synthetic scenes inherit chapter_id from the enclosing scene's chapter
 	# (issue #97) — see _close_elif_into_parent for rationale.
 	var inherit_chapter_id := parent_scene.chapter_id if parent_scene else ""
+	var false_branch_mode_events := _extract_mode_only_branch_events(
+		ctx["else_commands"])
 
 	# Create synthetic scenes
 	var then_scene = SceneData.new()
@@ -949,6 +1007,8 @@ static func _close_if_block(ctx: Dictionary, data: ScenarioData) -> SceneData:
 		"then_jump": then_scene.id,
 		"else_jump": else_jump_target,
 	})
+	condition_cmd.dialogue_mode_events_on_false_branch.append_array(
+		false_branch_mode_events)
 	parent_scene.commands.append(condition_cmd)
 
 	# Continuation scene becomes the new current scene
@@ -965,7 +1025,6 @@ static func _build_combine_command(
 	profile_name: String = "",
 	profile: Dictionary = {},
 	declarative_presentation: bool = false,
-	nvl_block_id: int = -1,
 ) -> CommandData:
 	if segments.size() == 0:
 		return null
@@ -982,8 +1041,7 @@ static func _build_combine_command(
 		"mode": mode,
 		"segments": segments.duplicate(true),
 	}
-	_attach_dialogue_profile(
-		params, profile_name, profile, declarative_presentation, nvl_block_id)
+	_attach_dialogue_profile(params, profile_name, profile, declarative_presentation)
 	return _make_cmd("dialogue", params)
 
 
@@ -992,10 +1050,7 @@ static func _attach_dialogue_profile(
 	profile_name: String,
 	profile: Dictionary,
 	declarative_presentation: bool,
-	nvl_block_id: int = -1,
 ) -> void:
-	if nvl_block_id >= 0:
-		params["nvl_block_id"] = nvl_block_id
 	if declarative_presentation:
 		params["declarative_presentation"] = true
 	if profile_name.is_empty():

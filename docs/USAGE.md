@@ -155,7 +155,7 @@ Game
 
 只有项目加入自定义 frame、logo 等专属 UI 时，才需要在 Godot 的 Node > Groups 中给节点增加语义分组，并在 STLA 的 `show` / `hide` 中引用。极少数需要程序动态注入样式的项目仍可在 Inspector 中使用 `DialoguePresentationProfile` / `DialogueModeProfile` Resource，或调用 `DialoguePresenter.set_presentation_profile()`；这是高级兜底接口，不是常规创作流程。
 
-完全不写 `@dialogue_profile` 时，`@nvl` / `@overlay` 保持 Stella 原有布局行为，旧项目不需要迁移。离开 NVL 后，下一次进入会开始新的累积文本。
+完全不写 `@dialogue_profile` 时，`@nvl` / `@overlay` 保持 Stella 原有布局行为，旧项目不需要迁移。离开 NVL 后，下一次进入会开始新的累积文本；这一规则也适用于 `@jump` 循环、重复 `@call` 和条件分支的实际执行路径。未离开 NVL 时重复 `@nvl` 不会另起一页。
 
 ### Step 5 — 运行
 

@@ -14,10 +14,7 @@ func _input(event: InputEvent) -> void:
 
 	if event.button_index == MOUSE_BUTTON_LEFT:
 		# UI hidden: restore
-		if dialogue and dialogue._ui_hidden:
-			dialogue._ui_hidden = false
-			dialogue.visible = true
-			get_viewport().set_input_as_handled()
+		if _restore_soft_hidden_dialogue(dialogue):
 			return
 		# Skip if clicking on an interactive Control (button, slider, etc.)
 		var hovered = get_viewport().gui_get_hovered_control()
@@ -79,9 +76,15 @@ func _input(event: InputEvent) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if not event is InputEventKey:
 		return
+	var dialogue = _get_dialogue()
+	# Keyboard restore mirrors the hidden-state left click: the restoring key is
+	# consumed and must never also advance the scenario or start Ctrl skipping.
+	if (event.pressed and not event.echo
+		and event.keycode in [KEY_SPACE, KEY_ENTER, KEY_CTRL]
+		and _restore_soft_hidden_dialogue(dialogue)):
+		return
 	# Ctrl tracks press AND release — must not be blocked by pressed/echo guard
 	if event.keycode == KEY_CTRL:
-		var dialogue = _get_dialogue()
 		if dialogue:
 			dialogue._ctrl_held = event.pressed
 			# Ctrl pressed while text fully shown: advance immediately to start skipping
@@ -98,7 +101,6 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not StellaRuntime.game_state.is_playing():
 		return
 	if event.keycode == KEY_SPACE or event.keycode == KEY_ENTER:
-		var dialogue = _get_dialogue()
 		if dialogue and dialogue._is_typing:
 			dialogue._is_typing = false
 			dialogue.text_label.visible_characters = -1
@@ -108,3 +110,12 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _get_dialogue():
 	return get_node_or_null("%DialoguePanel")
+
+
+func _restore_soft_hidden_dialogue(dialogue) -> bool:
+	if dialogue == null or not dialogue._ui_hidden:
+		return false
+	dialogue._ui_hidden = false
+	dialogue.visible = true
+	get_viewport().set_input_as_handled()
+	return true

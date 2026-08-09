@@ -21,20 +21,23 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 		}]
 
 	var presentation_profile: Dictionary = data.params.get("presentation_profile", {})
-	var nvl_block_key := ""
-	var nvl_block_id := data.get_int("nvl_block_id", -1)
-	if nvl_block_id >= 0:
-		var scenario_instance_id := 0
-		if context != null and context.scenario_data != null:
-			scenario_instance_id = context.scenario_data.get_instance_id()
-		nvl_block_key = "%d:%d" % [scenario_instance_id, nvl_block_id]
+	var nvl_page_key := ""
+	if context != null:
+		# Defensive synchronization supports programmatically constructed commands,
+		# old compiled data, and snapshots that resume in the middle of a block.
+		context.apply_dialogue_mode(mode)
+		if mode == "nvl" and context.scenario_data != null:
+			nvl_page_key = "%d:%d" % [
+				context.get_instance_id(),
+				context.nvl_page_epoch,
+			]
 	SignalBus.emit_show_dialogue(
 		character,
 		segments,
 		mode,
 		presentation_profile,
 		data.get_bool("declarative_presentation", false),
-		nvl_block_key,
+		nvl_page_key,
 	)
 	# Race against engine_abort_requested so backlog jump can interrupt us.
 	await CommandHandler.await_with_abort(SignalBus.advance_requested)

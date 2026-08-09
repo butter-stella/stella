@@ -2,6 +2,7 @@ extends GutTest
 ## Synthetic coverage for declarative ADV/NVL/overlay presentation profiles.
 
 const FIXTURE := preload("res://tests/integration/fixtures/dialogue_presentation_profile.tscn")
+const GAME_SCENE := preload("res://addons/stella/scenes/game.tscn")
 const SCENARIO_PATH := "res://tests/fixtures/scenarios/dialogue/presentation_profile.stla"
 
 const AUTHORED_PANEL_ANCHORS := Vector4(0.07, 0.58, 0.93, 0.94)
@@ -15,11 +16,15 @@ const AUTHORED_BACKGROUND_MODULATE := Color(0.4, 0.5, 0.6, 0.75)
 
 var _presenter: Control
 var _engine: ScenarioEngine
+var _runtime_nvl_event_count: int = 0
+var _runtime_nvl_page_keys: Array[String] = []
 
 
 func before_each() -> void:
 	_presenter = null
 	_engine = null
+	_runtime_nvl_event_count = 0
+	_runtime_nvl_page_keys.clear()
 	StellaRuntime.auto_play.is_active = false
 	StellaRuntime.skip_controller.is_active = false
 
@@ -29,6 +34,8 @@ func after_each() -> void:
 		_engine.context.is_finished = true
 		SignalBus.engine_abort_requested.emit()
 		await get_tree().process_frame
+	if SignalBus.show_dialogue.is_connected(_capture_runtime_nvl_event):
+		SignalBus.show_dialogue.disconnect(_capture_runtime_nvl_event)
 
 
 func test_nvl_profile_accumulates_three_prefixed_entries_and_restores_authored_adv() -> void:
@@ -103,6 +110,103 @@ func test_nvl_profile_accumulates_three_prefixed_entries_and_restores_authored_a
 		"dialogue presentation fixture reaches @end",
 	)
 	assert_true(finished)
+
+
+func test_runtime_jump_reentry_starts_a_fresh_nvl_page_after_off() -> void:
+	await _start_runtime_fixture_at("jump_loop_entry")
+	if not await _wait_for_runtime_nvl(1, "・Jump page"):
+		return
+	var first_page_key := _runtime_nvl_page_keys[0]
+	var first_generation: int = _presenter._dialogue_gen
+	assert_eq(first_page_key, "%d:1" % _engine.context.get_instance_id())
+	assert_eq(_presenter._active_nvl_page_key, first_page_key)
+
+	SignalBus.advance_requested.emit()
+	if not await _wait_for_runtime_nvl(2, "・Jump page"):
+		return
+	var second_page_key := _runtime_nvl_page_keys[1]
+	assert_ne(second_page_key, first_page_key,
+		"jump re-entry must emit a distinct runtime page key")
+	assert_eq(second_page_key, "%d:2" % _engine.context.get_instance_id())
+	assert_gt(_presenter._dialogue_gen, first_generation,
+		"the second SHOW must be accepted by the presenter")
+	assert_eq(_presenter._active_nvl_page_key, second_page_key,
+		"the presenter must activate the second runtime page")
+	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "・Jump page",
+		"jumping back after @nvl off must activate a new runtime page")
+
+	await _advance_runtime_to_finish("jump-loop fixture")
+
+
+func test_repeated_call_activates_a_fresh_nvl_page_after_callee_off() -> void:
+	await _start_runtime_fixture_at("repeated_call_entry")
+	if not await _wait_for_runtime_nvl(1, "・Called page"):
+		return
+	var first_page_key := _runtime_nvl_page_keys[0]
+	var first_generation: int = _presenter._dialogue_gen
+	assert_eq(first_page_key, "%d:1" % _engine.context.get_instance_id())
+	assert_eq(_presenter._active_nvl_page_key, first_page_key)
+
+	SignalBus.advance_requested.emit()
+	if not await _wait_for_runtime_nvl(2, "・Called page"):
+		return
+	var second_page_key := _runtime_nvl_page_keys[1]
+	assert_ne(second_page_key, first_page_key,
+		"each call activation must emit a distinct runtime page key")
+	assert_eq(second_page_key, "%d:2" % _engine.context.get_instance_id())
+	assert_gt(_presenter._dialogue_gen, first_generation,
+		"the second SHOW must be accepted by the presenter")
+	assert_eq(_presenter._active_nvl_page_key, second_page_key,
+		"the presenter must activate the called scene's second runtime page")
+	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "・Called page",
+		"each @call activation must get a fresh page even for the same command")
+
+	await _advance_runtime_to_finish("repeated-call fixture")
+
+
+func test_true_branch_nvl_page_continues_after_the_conditional() -> void:
+	await _start_runtime_fixture_at("branch_true_entry")
+	if not await _wait_for_runtime_nvl(1, "・True branch"):
+		return
+
+	SignalBus.advance_requested.emit()
+	if not await _wait_for_runtime_nvl(2, "・True branch・After branch"):
+		return
+	assert_eq(_presenter.get_node("TextRegion/TextLabel").text,
+		"・True branch・After branch",
+		"the continuation must inherit the runtime page selected by the true branch")
+
+	await _advance_runtime_to_finish("true-branch fixture")
+
+
+func test_false_branch_nvl_page_continues_after_the_conditional() -> void:
+	await _start_runtime_fixture_at("branch_false_entry")
+	if not await _wait_for_runtime_nvl(1, "・False branch"):
+		return
+
+	SignalBus.advance_requested.emit()
+	if not await _wait_for_runtime_nvl(2, "・False branch・After branch"):
+		return
+	assert_eq(_presenter.get_node("TextRegion/TextLabel").text,
+		"・False branch・After branch",
+		"the continuation must inherit the runtime page selected by the false branch")
+
+	await _advance_runtime_to_finish("false-branch fixture")
+
+
+func test_repeated_nvl_directive_without_off_keeps_the_runtime_page() -> void:
+	await _start_runtime_fixture_at("repeated_nvl_entry")
+	if not await _wait_for_runtime_nvl(1, "・Repeated one"):
+		return
+
+	SignalBus.advance_requested.emit()
+	if not await _wait_for_runtime_nvl(2, "・Repeated one・Repeated two"):
+		return
+	assert_eq(_presenter.get_node("TextRegion/TextLabel").text,
+		"・Repeated one・Repeated two",
+		"repeating @nvl while already active must not create a new runtime page")
+
+	await _advance_runtime_to_finish("repeated-@nvl fixture")
 
 
 func test_no_profile_preserves_the_original_legacy_mode_layouts() -> void:
@@ -232,7 +336,7 @@ func test_leaving_nvl_for_overlay_or_adv_resets_the_accumulator() -> void:
 	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "After ADV")
 
 
-func test_new_nvl_block_resets_without_an_intervening_non_nvl_dialogue() -> void:
+func test_new_nvl_page_resets_without_an_intervening_non_nvl_dialogue() -> void:
 	_presenter = FIXTURE.instantiate()
 	add_child_autoqfree(_presenter)
 	await get_tree().process_frame
@@ -244,12 +348,12 @@ func test_new_nvl_block_resets_without_an_intervening_non_nvl_dialogue() -> void
 	if not await _emit_profiled_dialogue("", "New", "nvl", profile, "scenario-a:12"):
 		return
 	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "・New",
-		"a different compiled NVL block id starts a fresh page")
+		"a different runtime NVL page key starts a fresh page")
 
 	if not await _emit_profiled_dialogue("", "Continued", "nvl", profile, "scenario-a:12"):
 		return
 	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "・New・Continued",
-		"entries with the same block id keep accumulating")
+		"entries with the same page key keep accumulating")
 
 
 func test_nvl_decoration_does_not_mutate_segments_or_backlog_text() -> void:
@@ -521,6 +625,90 @@ func test_profile_state_is_restored_before_unprofiled_legacy_mode() -> void:
 	await get_tree().process_frame
 
 
+func test_soft_hidden_show_restores_and_renders_the_new_runtime_page() -> void:
+	_presenter = FIXTURE.instantiate()
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	_presenter._char_interval = 0.0
+	var profile := {"entry_prefix": "・", "entry_separator": ""}
+
+	if not await _emit_profiled_dialogue(
+		"", "Before soft hide", "nvl", profile, "soft-hide:1"):
+		return
+	_presenter._ui_hidden = true
+	_presenter.visible = false
+	var previous_generation: int = _presenter._dialogue_gen
+
+	if not await _emit_profiled_dialogue(
+		"", "After soft hide", "nvl", profile, "soft-hide:2"):
+		return
+	assert_false(_presenter._ui_hidden,
+		"a valid SHOW must restore a soft-hidden presenter")
+	assert_true(_presenter.visible)
+	assert_gt(_presenter._dialogue_gen, previous_generation,
+		"a SHOW received while soft-hidden must start a new presentation generation")
+	assert_eq(_presenter._active_nvl_page_key, "soft-hide:2")
+	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "・After soft hide",
+		"the hidden SHOW must render rather than leave the previous page on screen")
+
+
+func test_empty_segments_do_not_mutate_soft_hide_or_nvl_page_state() -> void:
+	_presenter = FIXTURE.instantiate()
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	_presenter._char_interval = 0.0
+	var profile := {"entry_prefix": "・", "entry_separator": ""}
+
+	if not await _emit_profiled_dialogue(
+		"", "Before empty SHOW", "nvl", profile, "empty-show:1"):
+		return
+	_presenter._ui_hidden = true
+	_presenter.visible = false
+	var previous_generation: int = _presenter._dialogue_gen
+	var previous_text: String = _presenter.get_node("TextRegion/TextLabel").text
+
+	SignalBus.emit_show_dialogue(
+		"", [], "nvl", profile, true, "empty-show:2")
+	assert_true(_presenter._ui_hidden,
+		"an empty SHOW must not restore a soft-hidden presenter")
+	assert_false(_presenter.visible)
+	assert_eq(_presenter._dialogue_gen, previous_generation)
+	assert_eq(_presenter._active_nvl_page_key, "empty-show:1")
+	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, previous_text,
+		"an empty SHOW must not clear or replace the active NVL page")
+
+
+func test_soft_hidden_keyboard_restore_does_not_advance_or_start_ctrl_skip() -> void:
+	var game := GAME_SCENE.instantiate()
+	add_child_autoqfree(game)
+	await get_tree().process_frame
+	var presenter: Control = game.get_node("%DialoguePanel")
+	var input_handler: Node = game.get_node("InputHandler")
+	var advances: Array[bool] = []
+	var on_advance := func(): advances.append(true)
+	SignalBus.advance_requested.connect(on_advance)
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+
+	for keycode in [KEY_SPACE, KEY_ENTER, KEY_CTRL]:
+		presenter._ui_hidden = true
+		presenter.visible = false
+		presenter._ctrl_held = false
+		var event := InputEventKey.new()
+		event.keycode = keycode
+		event.pressed = true
+		input_handler._unhandled_input(event)
+
+		assert_false(presenter._ui_hidden,
+			"%s restores the soft-hidden dialogue" % OS.get_keycode_string(keycode))
+		assert_true(presenter.visible)
+		assert_false(presenter._ctrl_held,
+			"the restoring key must not start Ctrl skipping")
+		assert_eq(advances.size(), 0,
+			"the key used to restore a soft-hidden dialogue must be consumed")
+
+	SignalBus.advance_requested.disconnect(on_advance)
+
+
 func test_hiding_dialogue_restores_profile_state_and_clears_active_profile() -> void:
 	_presenter = FIXTURE.instantiate()
 	add_child_autoqfree(_presenter)
@@ -611,7 +799,7 @@ func _emit_profiled_dialogue(
 	entry_text: String,
 	mode: String,
 	profile: Dictionary,
-	nvl_block_key: String = "",
+	nvl_page_key: String = "",
 ) -> bool:
 	SignalBus.emit_show_dialogue(
 		character,
@@ -619,7 +807,7 @@ func _emit_profiled_dialogue(
 		mode,
 		profile,
 		true,
-		nvl_block_key,
+		nvl_page_key,
 	)
 	# _on_show_dialogue marks typing active after its initial process-frame
 	# synchronization, so do not mistake the pre-typewriter false state for done.
@@ -655,6 +843,72 @@ func _start_scenario_fixture() -> void:
 	_engine.registry = StellaRuntime.registry
 	_engine.load_scenario(scenario)
 	_engine.run()
+
+
+func _start_runtime_fixture_at(entry_scene_id: String) -> void:
+	_presenter = FIXTURE.instantiate()
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	_presenter._char_interval = 0.0
+
+	var file := FileAccess.open(SCENARIO_PATH, FileAccess.READ)
+	assert_not_null(file, "fixture must exist: %s" % SCENARIO_PATH)
+	if file == null:
+		return
+	var source := file.get_as_text()
+	file.close()
+	var scenario := DslParser.parse(DslLexer.tokenize(source),
+		"dialogue_presentation_runtime_pages")
+	assert_eq(scenario.diagnostics, [], "runtime page fixture must parse cleanly")
+	if not scenario.diagnostics.is_empty():
+		return
+
+	_engine = ScenarioEngine.new()
+	_engine.registry = StellaRuntime.registry
+	_engine.load_scenario(scenario)
+	var selected := _engine.context.set_scene(entry_scene_id)
+	assert_true(selected, "runtime page fixture scene exists: %s" % entry_scene_id)
+	if not selected:
+		return
+	SignalBus.show_dialogue.connect(_capture_runtime_nvl_event)
+	_engine.run()
+
+
+func _capture_runtime_nvl_event(_character: String, _segments: Array, mode: String) -> void:
+	if mode == "nvl":
+		_runtime_nvl_event_count += 1
+		_runtime_nvl_page_keys.append(SignalBus.current_dialogue_nvl_page_key())
+
+
+func _wait_for_runtime_nvl(event_count: int, expected_text: String) -> bool:
+	# Let DialoguePresenter pass its initial pre-typewriter process-frame await;
+	# otherwise a zero interval can look complete before typing has even started.
+	await get_tree().process_frame
+	var reached: bool = await wait_until(
+		func():
+			return (
+				_runtime_nvl_event_count >= event_count
+				and _presenter.get_node("TextRegion/TextLabel").text == expected_text
+				and not _presenter._is_typing
+				and _presenter.get_node(
+					"TextRegion/TextLabel").visible_characters == -1
+			),
+		1.5,
+		"runtime NVL event %d displays '%s'" % [event_count, expected_text],
+	)
+	assert_true(reached,
+		"runtime NVL event %d displays '%s'" % [event_count, expected_text])
+	return reached
+
+
+func _advance_runtime_to_finish(fixture_name: String) -> void:
+	SignalBus.advance_requested.emit()
+	var finished: bool = await wait_until(
+		func(): return _engine.context.is_finished,
+		1.0,
+		"%s reaches its terminal jump" % fixture_name,
+	)
+	assert_true(finished, "%s reaches its terminal jump" % fixture_name)
 
 
 func _wait_for_dialogue(command_index: int, expected_text: String) -> bool:
