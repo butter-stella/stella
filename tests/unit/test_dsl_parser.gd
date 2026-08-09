@@ -65,6 +65,79 @@ sakura（这个人...好奇怪。）""")
 	assert_eq(cmd.get_string("mode"), "monologue")
 
 
+func test_dialogue_profile_parses_nvl_entry_affixes_as_strings():
+	var data = _parse("""@dialogue_profile compact entry_prefix="・" entry_separator=""
+@dialogue_profile spaced entry_separator=" "
+@dialogue_profile lines entry_prefix="" entry_separator="\\n"
+@chapter test
+@scene start
+@nvl profile=compact
+「compact」
+@nvl profile=spaced
+「spaced」
+@nvl profile=lines
+「lines」""")
+	assert_eq(data.diagnostics, [])
+
+	var compact_profile: Dictionary = data.scenes[0].commands[0].params["presentation_profile"]
+	assert_eq(compact_profile.get("entry_prefix"), "・")
+	assert_true(compact_profile.has("entry_separator"),
+		"an explicitly empty separator must remain distinguishable from an omitted property")
+	assert_eq(compact_profile.get("entry_separator"), "")
+
+	var spaced_profile: Dictionary = data.scenes[0].commands[1].params["presentation_profile"]
+	assert_false(spaced_profile.has("entry_prefix"),
+		"entry prefix and separator are independent profile properties")
+	assert_eq(spaced_profile.get("entry_separator"), " ")
+
+	var lines_profile: Dictionary = data.scenes[0].commands[2].params["presentation_profile"]
+	assert_true(lines_profile.has("entry_prefix"))
+	assert_eq(lines_profile.get("entry_prefix"), "")
+	assert_eq(lines_profile.get("entry_separator"), "\n")
+
+
+func test_dialogue_profile_rejects_invalid_nvl_entry_escape_with_source_line():
+	var data = _parse("""@dialogue_profile broken entry_prefix="\\q"
+@chapter test
+@scene start
+@nvl profile=broken
+「line」""")
+	assert_eq(data.diagnostics.size(), 1)
+	assert_eq(data.diagnostics[0]["line"], 1)
+	assert_string_contains(str(data.diagnostics[0]["message"]).to_lower(), "escape")
+	var profile: Dictionary = data.scenes[0].commands[0].params["presentation_profile"]
+	assert_false(profile.has("entry_prefix"),
+		"an invalid string must not be compiled into presentation data")
+
+
+func test_dialogue_profile_rejects_unterminated_nvl_entry_string_with_source_line():
+	var data = _parse("""@dialogue_profile broken entry_separator="unterminated
+@chapter test
+@scene start
+@nvl profile=broken
+「line」""")
+	assert_eq(data.diagnostics.size(), 1)
+	assert_eq(data.diagnostics[0]["line"], 1)
+	assert_string_contains(str(data.diagnostics[0]["message"]).to_lower(), "unterminated")
+	var profile: Dictionary = data.scenes[0].commands[0].params["presentation_profile"]
+	assert_false(profile.has("entry_separator"),
+		"an unterminated string must not be compiled into presentation data")
+
+
+func test_dialogue_profile_rejects_bbcode_in_nvl_entry_format():
+	var data = _parse("""@dialogue_profile broken entry_prefix="[b]・[/b]"
+@chapter test
+@scene start
+@nvl profile=broken
+「line」""")
+	assert_eq(data.diagnostics.size(), 1)
+	assert_eq(data.diagnostics[0]["line"], 1)
+	assert_string_contains(str(data.diagnostics[0]["message"]), "BBCode")
+	var profile: Dictionary = data.scenes[0].commands[0].params["presentation_profile"]
+	assert_false(profile.has("entry_prefix"),
+		"markup would make raw typewriter offsets diverge from visible characters")
+
+
 func test_bg_full_params():
 	var data = _parse("""@scene start
 @bg bg_school fade 0.8""")
@@ -223,6 +296,102 @@ sakura「继续...」""")
 			if cmd.type == "condition":
 				found_condition = true
 	assert_true(found_condition)
+
+
+func test_nested_if_condition_is_owned_by_the_outer_then_cfg():
+	var data := _parse("""@chapter test
+@scene start
+@if outer
+「outer before」
+@if inner
+「inner then」
+@else
+「inner else」
+@end
+「outer after」
+@else
+「outer else」
+@end
+「done」""")
+	assert_eq(data.diagnostics, [])
+
+	var start := data.get_scene("start")
+	assert_not_null(start)
+	if start == null:
+		return
+	assert_eq(start.commands.size(), 1,
+		"the author scene must enter the outer condition before any nested condition")
+	assert_eq(start.commands[0].type, "condition")
+	assert_eq(start.commands[0].get_string("if"), "outer")
+
+	var inner_condition_scene: SceneData = null
+	for scene in data.scenes:
+		for command in scene.commands:
+			if command.type == "condition" and command.get_string("if") == "inner":
+				inner_condition_scene = scene
+	assert_not_null(inner_condition_scene)
+	if inner_condition_scene != null:
+		assert_ne(inner_condition_scene.id, "start")
+		assert_true(inner_condition_scene.id.begins_with("__if_start_3_then"),
+			"the inner condition must only be reachable from the outer true branch")
+
+	var root_cont_id := "__if_start_3_cont"
+	assert_eq(data.scenes[-1].id, root_cont_id,
+		"the root continuation must be physically last in its compiled CFG")
+	for scene_index in range(1, data.scenes.size() - 1):
+		var synthetic_scene: SceneData = data.scenes[scene_index]
+		assert_true(synthetic_scene.id.begins_with("__"))
+		assert_false(synthetic_scene.commands.is_empty(),
+			"non-final synthetic scene %s needs an explicit transfer" % synthetic_scene.id)
+		if synthetic_scene.commands.is_empty():
+			continue
+		var terminal: CommandData = synthetic_scene.commands[-1]
+		assert_true(terminal.type in ["condition", "jump"],
+			"synthetic scene %s must not fall through to a sibling branch"
+			% synthetic_scene.id)
+		if terminal.type == "jump":
+			assert_not_null(data.get_scene(terminal.get_string("target")),
+				"synthetic jump target must exist")
+		else:
+			assert_not_null(data.get_scene(terminal.get_string("then_jump")),
+				"synthetic true target must exist")
+			assert_not_null(data.get_scene(terminal.get_string("else_jump")),
+				"synthetic false target must exist")
+
+
+func test_multi_elif_branches_join_the_root_if_continuation():
+	var data := _parse("""@chapter test
+@scene start
+@if route == 1
+「one」
+@elif route == 2
+「two」
+@elif route == 3
+「three」
+@else
+「four」
+@end
+「done」""")
+	assert_eq(data.diagnostics, [])
+	var root_cont_id := "__if_start_3_cont"
+	assert_not_null(data.get_scene(root_cont_id))
+
+	var branch_texts := ["one", "two", "three", "four"]
+	for branch_text in branch_texts:
+		var branch_scene: SceneData = null
+		for scene in data.scenes:
+			for command in scene.commands:
+				if command.type == "dialogue" \
+					and command.get_string("text") == branch_text:
+					branch_scene = scene
+		assert_not_null(branch_scene, "missing branch scene for %s" % branch_text)
+		if branch_scene == null:
+			continue
+		var terminal: CommandData = branch_scene.commands[-1]
+		assert_eq(terminal.type, "jump",
+			"branch %s must not fall through into another synthetic branch" % branch_text)
+		assert_eq(terminal.get_string("target"), root_cont_id,
+			"every elif-chain branch must join the root if continuation")
 
 
 func test_end_command():
@@ -440,7 +609,258 @@ func test_combine_rejects_dialogue_mode_switch_without_mutating_mode():
 	assert_false(following_command.has_param("presentation_profile_name"))
 
 
+func test_nvl_mode_events_preserve_repeated_directives_for_runtime_state():
+	var data = _parse("""@chapter test
+@scene start
+@nvl
+「first」
+「second」
+@nvl
+「third」""")
+	assert_eq(data.diagnostics, [])
+	var commands: Array = data.scenes[0].commands
+	assert_eq(commands.size(), 3,
+		"mode events must not become position-addressable scenario commands")
+	assert_eq(commands[0].dialogue_mode_events_before, ["nvl"])
+	assert_eq(commands[1].dialogue_mode_events_before, [])
+	assert_eq(commands[2].dialogue_mode_events_before, ["nvl"],
+		"a repeated @nvl remains an event so runtime state decides whether it resets")
+	for command in commands:
+		assert_false(command.has_param("nvl_block_id"),
+			"static source block identity must not leak into dialogue commands")
+
+
+func test_nvl_off_then_on_events_keep_source_order_on_next_real_command():
+	var data = _parse("""@chapter test
+@scene start
+@nvl
+「first」
+@nvl off
+@nvl
+「second」""")
+	assert_eq(data.diagnostics, [])
+	var commands: Array = data.scenes[0].commands
+	assert_eq(commands.size(), 2)
+	assert_eq(commands[0].dialogue_mode_events_before, ["nvl"])
+	assert_eq(commands[1].dialogue_mode_events_before, ["adv", "nvl"],
+		"off -> on must replay as two ordered runtime transitions")
+	assert_eq(commands[0].dialogue_mode_events_after, [])
+	assert_eq(commands[1].dialogue_mode_events_after, [])
+
+
+func test_nvl_jump_loop_keeps_replayable_events_on_target_and_jump():
+	var data = _parse("""@chapter test
+@scene page
+@nvl
+「Entry」
+@nvl off
+@jump page""")
+	assert_eq(data.diagnostics, [])
+	var commands: Array = data.scenes[0].commands
+	assert_eq(commands.size(), 2,
+		"runtime boundaries must not shift the loop's saved command positions")
+	assert_eq(commands[0].type, "dialogue")
+	assert_eq(commands[0].dialogue_mode_events_before, ["nvl"],
+		"every visit to the target command must replay its NVL entry event")
+	assert_eq(commands[1].type, "jump")
+	assert_eq(commands[1].dialogue_mode_events_before, ["adv"],
+		"@nvl off must execute before the jump on every loop iteration")
+	assert_eq(data.scenes[0].dialogue_mode_events_on_exit, [])
+
+
+func test_nvl_mode_events_are_branch_local_across_if_elif_else_join():
+	var data = _parse("""@chapter test
+@scene start
+@nvl
+「old block」
+@if route == 1
+@nvl off
+@nvl
+「then entry」
+@elif route == 2
+@nvl off
+@nvl
+「elif entry」
+@else
+@nvl off
+@nvl
+「else entry」
+@end
+「continuation entry」""")
+	assert_eq(data.diagnostics, [])
+	var old_entry := _find_dialogue_command(data, "old block")
+	var then_entry := _find_dialogue_command(data, "then entry")
+	var elif_entry := _find_dialogue_command(data, "elif entry")
+	var else_entry := _find_dialogue_command(data, "else entry")
+	var continuation := _find_dialogue_command(data, "continuation entry")
+	assert_not_null(old_entry)
+	assert_not_null(then_entry)
+	assert_not_null(elif_entry)
+	assert_not_null(else_entry)
+	assert_not_null(continuation)
+	if (old_entry == null or then_entry == null or elif_entry == null
+		or else_entry == null or continuation == null):
+		return
+
+	assert_eq(old_entry.dialogue_mode_events_before, ["nvl"])
+	assert_eq(then_entry.dialogue_mode_events_before, ["adv", "nvl"])
+	assert_eq(elif_entry.dialogue_mode_events_before, ["adv", "nvl"])
+	assert_eq(else_entry.dialogue_mode_events_before, ["adv", "nvl"])
+	assert_eq(continuation.dialogue_mode_events_before, [],
+		"the join must continue whichever runtime branch executed without a static reset")
+	for command in [old_entry, then_entry, elif_entry, else_entry, continuation]:
+		assert_false(command.has_param("nvl_block_id"))
+
+
+func test_mode_only_else_uses_false_edge_without_shifting_scenes_or_uids():
+	var with_events := _parse("""@chapter test
+@scene start
+@if flag
+@set branch = true
+@else
+@nvl off
+@nvl
+@end
+@set done = true
+@scene later
+@set later = true""")
+	var without_events := _parse("""@chapter test
+@scene start
+@if flag
+@set branch = true
+@else
+// legacy empty branch line 1
+// legacy empty branch line 2
+@end
+@set done = true
+@scene later
+@set later = true""")
+	assert_eq(with_events.diagnostics, [])
+	assert_eq(without_events.diagnostics, [])
+
+	var with_scene_ids: Array[String] = []
+	var without_scene_ids: Array[String] = []
+	for scene in with_events.scenes:
+		with_scene_ids.append(scene.id)
+	for scene in without_events.scenes:
+		without_scene_ids.append(scene.id)
+	assert_eq(with_scene_ids, without_scene_ids,
+		"a mode-only else must not create an addressable synthetic scene")
+	assert_eq(with_scene_ids, [
+		"start",
+		"__if_start_3_then",
+		"__if_start_3_cont",
+		"later",
+	])
+
+	var condition: CommandData = with_events.scenes[0].commands[0]
+	assert_eq(condition.type, "condition")
+	assert_eq(condition.dialogue_mode_events_on_true_branch, [])
+	assert_eq(condition.dialogue_mode_events_on_false_branch, ["adv", "nvl"])
+	assert_eq(condition.get_string("else_jump"), "__if_start_3_cont")
+
+	with_events.assign_command_uids()
+	without_events.assign_command_uids()
+	var with_later := with_events.get_scene("later")
+	var without_later := without_events.get_scene("later")
+	assert_eq(with_events.get_scene_index("later"),
+		without_events.get_scene_index("later"))
+	assert_eq(with_later.commands[0].uid, without_later.commands[0].uid,
+		"mode-only branch metadata must not shift later command identities")
+
+
+func test_mode_only_final_else_in_elif_chain_uses_false_edge_sidecar():
+	var data := _parse("""@chapter test
+@scene start
+@if route == 1
+@set branch = 1
+@elif route == 2
+@set branch = 2
+@else
+@nvl off
+@nvl
+@end
+@set done = true""")
+	assert_eq(data.diagnostics, [])
+	var elif_condition: CommandData = null
+	for scene in data.scenes:
+		assert_false(scene.id.begins_with("__elif_") and scene.id.ends_with("_else"),
+			"a mode-only final else must not add an elif else scene")
+		for command in scene.commands:
+			if command.type == "condition" \
+				and command.get_string("if") == "route == 2":
+				elif_condition = command
+	assert_not_null(elif_condition)
+	if elif_condition == null:
+		return
+	assert_eq(elif_condition.dialogue_mode_events_on_false_branch, ["adv", "nvl"])
+	assert_eq(elif_condition.get_string("else_jump"), "__if_start_3_cont")
+
+
+func test_nvl_mode_event_at_scene_tail_runs_on_exit_without_a_real_command():
+	var data = _parse("""@chapter test
+@scene called_page
+@nvl
+「Entry」
+@nvl off""")
+	assert_eq(data.diagnostics, [])
+	var scene: SceneData = data.scenes[0]
+	assert_eq(scene.commands.size(), 1)
+	assert_eq(scene.commands[0].dialogue_mode_events_before, ["nvl"])
+	assert_eq(scene.commands[0].dialogue_mode_events_after, [])
+	assert_eq(scene.dialogue_mode_events_on_exit, ["adv"],
+		"a called scene must leave NVL before ScenarioEngine returns to its caller")
+
+
+func test_nvl_mode_event_decorates_one_combined_command_without_changing_indices():
+	var data = _parse("""@chapter test
+@scene start
+@nvl
+@combine
+「first segment」
+「second segment」
+@end
+「next entry」""")
+	assert_eq(data.diagnostics, [])
+	var commands: Array = data.scenes[0].commands
+	assert_eq(commands.size(), 2,
+		"a mode event and @combine must still produce exactly two real dialogues")
+	assert_eq(commands[0].params.get("segments", []).size(), 2)
+	assert_eq(commands[0].dialogue_mode_events_before, ["nvl"])
+	assert_eq(commands[1].dialogue_mode_events_before, [])
+	assert_false(commands[0].has_param("nvl_block_id"))
+	assert_false(commands[1].has_param("nvl_block_id"))
+
+
+func test_parallel_tail_mode_event_runs_after_the_parallel_wrapper():
+	var data = _parse("""@chapter test
+@scene start
+@parallel
+@bg bg_school
+@nvl
+@end
+「after parallel」""")
+	assert_eq(data.diagnostics, [])
+	var commands: Array = data.scenes[0].commands
+	assert_eq(commands.size(), 2)
+	assert_eq(commands[0].type, "parallel")
+	assert_eq(commands[0].params.get("commands", []).size(), 1)
+	assert_eq(commands[0].dialogue_mode_events_before, [])
+	assert_eq(commands[0].dialogue_mode_events_after, ["nvl"],
+		"a mode event at the nested list tail must run after its parallel work")
+	assert_eq(commands[1].type, "dialogue")
+	assert_eq(commands[1].dialogue_mode_events_before, [])
+
+
 # ─── @chapter directive (issue #97) ───
+
+func _find_dialogue_command(data: ScenarioData, text: String) -> CommandData:
+	for scene in data.scenes:
+		for command in scene.commands:
+			if command.type == "dialogue" and command.get_string("text") == text:
+				return command
+	return null
+
 
 func _has_diagnostic(data: ScenarioData, level: String, substring: String) -> bool:
 	for d in data.diagnostics:

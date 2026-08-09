@@ -9,6 +9,10 @@ var pending_jump: String = ""
 var is_finished: bool = false
 var variable_store: VariableStore
 var return_stack: Array = []  # Array of {scene_index, command_index} for @call returns
+## Runtime dialogue mode follows the actually executed control-flow path.
+## nvl_page_epoch increments only when that path enters NVL from another mode.
+var current_dialogue_mode: String = "adv"
+var nvl_page_epoch: int = 0
 
 
 func _init(data: ScenarioData = null):
@@ -40,6 +44,8 @@ func capture_snapshot() -> Dictionary:
 		"command_index": current_command_index,
 		"is_finished": is_finished,
 		"return_stack": return_stack.duplicate(true),
+		"dialogue_mode": current_dialogue_mode,
+		"nvl_page_epoch": nvl_page_epoch,
 	}
 
 
@@ -51,6 +57,27 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 	return_stack.clear()
 	for entry in stack:
 		return_stack.append(entry)
+	current_dialogue_mode = str(snapshot.get("dialogue_mode", "adv"))
+	if current_dialogue_mode not in ["adv", "nvl", "overlay", "monologue"]:
+		current_dialogue_mode = "adv"
+	nvl_page_epoch = maxi(0, int(snapshot.get("nvl_page_epoch", 0)))
+
+
+## Apply a source-authored dialogue mode directive on the current runtime path.
+## Repeating @nvl while already in NVL keeps the current page; leaving and later
+## re-entering creates a new epoch even if execution jumps back to the same
+## source block.
+func apply_dialogue_mode(mode: String) -> void:
+	if mode == current_dialogue_mode:
+		return
+	current_dialogue_mode = mode
+	if mode == "nvl":
+		nvl_page_epoch += 1
+
+
+func apply_dialogue_mode_events(events: Array[String]) -> void:
+	for mode in events:
+		apply_dialogue_mode(mode)
 
 
 func advance() -> void:

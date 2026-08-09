@@ -38,6 +38,14 @@ extends Resource
 @export_enum("Off:0", "Arbitrary:1", "Word:2", "Word Smart:3") var autowrap_mode: int = TextServer.AUTOWRAP_WORD_SMART
 @export var clip_contents: bool = true
 
+@export_group("NVL Entry Formatting")
+## Prepended to every accumulated NVL dialogue record.
+@export var override_entry_prefix: bool = false
+@export_multiline var entry_prefix: String = ""
+## Inserted between accumulated NVL dialogue records.
+@export var override_entry_separator: bool = false
+@export_multiline var entry_separator: String = "\n"
+
 @export_group("Background")
 @export var override_background_visibility: bool = false
 @export var background_visible: bool = true
@@ -91,6 +99,12 @@ static func from_dictionary(data: Dictionary) -> DialogueModeProfile:
 			"scroll_following", profile.scroll_following)
 		profile.autowrap_mode = data.get("autowrap_mode", profile.autowrap_mode)
 		profile.clip_contents = data.get("clip_contents", profile.clip_contents)
+	if data.has("entry_prefix"):
+		profile.override_entry_prefix = true
+		profile.entry_prefix = data["entry_prefix"]
+	if data.has("entry_separator"):
+		profile.override_entry_separator = true
+		profile.entry_separator = data["entry_separator"]
 	if data.has("background_visible"):
 		profile.override_background_visibility = true
 		profile.background_visible = data["background_visible"]
@@ -121,6 +135,10 @@ func overrides_property(property_name: StringName) -> bool:
 		&"fit_content", &"scroll_active", &"scroll_following", \
 		&"autowrap_mode", &"clip_contents":
 			return override_text_overflow
+		&"entry_prefix":
+			return override_entry_prefix
+		&"entry_separator":
+			return override_entry_separator
 		&"background_visible":
 			return override_background_visibility
 		&"background_modulate":
@@ -130,6 +148,12 @@ func overrides_property(property_name: StringName) -> bool:
 
 func validation_errors() -> PackedStringArray:
 	var errors := PackedStringArray()
+	if override_entry_prefix \
+		and (entry_prefix.contains("[") or entry_prefix.contains("]")):
+		errors.append("entry_prefix is plain text and cannot contain BBCode brackets")
+	if override_entry_separator \
+		and (entry_separator.contains("[") or entry_separator.contains("]")):
+		errors.append("entry_separator is plain text and cannot contain BBCode brackets")
 	if override_panel_rect:
 		_validate_anchor_rect(panel_anchors, "panel_anchors", errors)
 		if not panel_offsets.is_finite():
