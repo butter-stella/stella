@@ -98,6 +98,7 @@ grow_horizontal = 2
 grow_vertical = 0
 mouse_filter = 2
 script = ExtResource("3")
+text_rect_target_path = NodePath("HBox")
 
 [node name="DialogueBg" type="Panel" parent="UILayer/DialoguePanel"]
 layout_mode = 1
@@ -116,6 +117,7 @@ layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
+offset_bottom = -45.0
 grow_horizontal = 2
 grow_vertical = 2
 
@@ -166,9 +168,19 @@ bbcode_enabled = true
 fit_content = true
 visible_characters = 0
 
-[node name="Toolbar" type="HBoxContainer" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox" unique_id=946234756]
+[node name="Toolbar" type="HBoxContainer" parent="UILayer/DialoguePanel" unique_id=946234756 groups=["quick_menu"]]
 unique_name_in_owner = true
-layout_mode = 2
+layout_mode = 1
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 300.0
+offset_top = -55.0
+offset_right = -30.0
+offset_bottom = -15.0
+grow_horizontal = 2
+grow_vertical = 0
 alignment = 2
 
 [node name="ChoicePanel" type="PanelContainer" parent="UILayer" unique_id=1398717553]

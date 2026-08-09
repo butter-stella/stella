@@ -126,6 +126,34 @@ Game
 
 如果不搭建自己的场景，引擎会使用内置的默认场景。
 
+#### 声明式配置 ADV / NVL / overlay 对话布局
+
+普通项目直接在 STLA 中声明并选择命名 Profile，不需要打开 Godot 场景：
+
+```stla
+@dialogue_profile novel panel_anchors=0,0,1,1 panel_offsets=0,0,0,0
+@dialogue_profile novel text_anchors=0.15,0.1,0.85,0.7 text_margins=20,20,20,20
+@dialogue_profile novel horizontal_alignment=left line_spacing=8
+@dialogue_profile novel background_visible=true background_modulate=#ffffff00
+@dialogue_profile novel show=quick_menu
+@dialogue_profile message panel_anchors=0,0.72,1,1
+
+@chapter prologue "序章"
+@scene start
+@adv profile=message
+@nvl profile=novel
+「第一行。」
+「第二行。」
+@nvl off
+「这里已经恢复 ADV。」
+```
+
+完整属性表和诊断规则见 [DSL.md](DSL.md#33-对话框模式切换)。内置场景已经提供可定位文字区域、`DialogueBg` 和 `quick_menu` 分组，常规 ADV、透明 NVL、书信、独白等版式都能只用 STLA 完成。Presenter 在就绪时保存 ADV 基线；配置过 `@adv profile=name` 时，`@nvl off` / `@overlay off` 恢复该 ADV Profile，否则恢复场景原始 ADV，并精确还原 panel、文字区域、文字样式、背景和分组 UI。
+
+只有项目加入自定义 frame、logo 等专属 UI 时，才需要在 Godot 的 Node > Groups 中给节点增加语义分组，并在 STLA 的 `show` / `hide` 中引用。极少数需要程序动态注入样式的项目仍可在 Inspector 中使用 `DialoguePresentationProfile` / `DialogueModeProfile` Resource，或调用 `DialoguePresenter.set_presentation_profile()`；这是高级兜底接口，不是常规创作流程。
+
+完全不写 `@dialogue_profile` 时，`@nvl` / `@overlay` 保持 Stella 原有布局行为，旧项目不需要迁移。
+
 ### Step 5 — 运行
 
 按 F5 运行。

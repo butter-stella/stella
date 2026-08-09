@@ -417,6 +417,29 @@ sakura「第一句。」 #voice:v1
 	assert_eq(data.scenes[0].commands[0].type, "dialogue")
 
 
+func test_combine_rejects_dialogue_mode_switch_without_mutating_mode():
+	var data = _parse("""@dialogue_profile novel horizontal_alignment=center
+@scene start
+@combine
+「第一段。」
+@nvl profile=novel
+「第二段。」
+@end
+「之后。」""")
+	assert_true(
+		_has_diagnostic(data, "warning", "@nvl is not allowed inside @combine"),
+		"dialogue mode switches inside combine must be rejected",
+	)
+	assert_eq(data.scenes[0].commands.size(), 2)
+	var combine_command: CommandData = data.scenes[0].commands[0]
+	assert_eq(combine_command.get_string("mode"), "adv")
+	assert_false(combine_command.has_param("presentation_profile_name"))
+	assert_eq(combine_command.params.get("segments", []).size(), 2)
+	var following_command: CommandData = data.scenes[0].commands[1]
+	assert_eq(following_command.get_string("mode"), "adv")
+	assert_false(following_command.has_param("presentation_profile_name"))
+
+
 # ─── @chapter directive (issue #97) ───
 
 func _has_diagnostic(data: ScenarioData, level: String, substring: String) -> bool:

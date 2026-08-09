@@ -298,11 +298,17 @@ func show_and_wait(data: ChoiceData) -> String:
 
 **对话框模式**：
 
+Stella 的常规创作边界是：`.stla` 是唯一编程界面。布局和演出能力应优先进入 DSL；只有自定义 Godot 控件、第三方插件集成等无法由通用 DSL 描述的极特殊需求，才进入场景或脚本扩展层。
+
 | 模式 | 说明 |
 |------|------|
 | `adv`（默认） | 底部对话框，标准 Galgame 模式 |
 | `nvl` | 全屏文本，文字逐行累积，适合独白、旁白、信件 |
 | `overlay` | 无对话框，文字直接叠在画面上（内心独白、回忆闪回） |
+
+布局策略首先由 STLA 的 `@dialogue_profile` 声明，并通过 `@adv profile=name` / `@nvl profile=name` / `@overlay profile=name` 选择。编译器把已验证、已解析的 Profile 副本写入每条 `CommandData`，DialogueHandler 在保持原有三参数 `show_dialogue` 信号兼容的同时，把同步的表现元数据交给 Presenter。因此回滚、跳转和存档恢复不依赖一个隐藏的全局 Profile 注册表。
+
+Profile 可声明 panel anchors/offsets、文字矩形与 margin、对齐/行距/溢出、背景可见性/颜色，以及场景内命名分组的显示策略。Presenter 就绪时捕获场景编排基线，并在每次声明式模式切换前恢复，再叠加当前模式的 opt-in 覆盖；`off` 因而能精确恢复 ADV。未声明 Profile 的旧 `@nvl` / `@overlay` 仍走原有硬编码布局。`DialoguePresentationProfile` Resource 和 `set_presentation_profile()` 只保留为高级程序化兜底，不是普通项目的必需入口。完整语法见 [DSL.md](DSL.md#33-对话框模式切换)。
 
 **对话框头像同步**：
 - 有立绘时：自动同步当前立绘表情

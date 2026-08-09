@@ -1,0 +1,419 @@
+extends GutTest
+## Synthetic coverage for declarative ADV/NVL/overlay presentation profiles.
+
+const FIXTURE := preload("res://tests/integration/fixtures/dialogue_presentation_profile.tscn")
+const SCENARIO_PATH := "res://tests/fixtures/scenarios/dialogue/presentation_profile.stla"
+
+const AUTHORED_PANEL_ANCHORS := Vector4(0.07, 0.58, 0.93, 0.94)
+const AUTHORED_PANEL_OFFSETS := Vector4(4.0, 5.0, -6.0, -7.0)
+const AUTHORED_TEXT_ANCHORS := Vector4(0.12, 0.18, 0.88, 0.79)
+const AUTHORED_TEXT_OFFSETS := Vector4(7.0, 8.0, -9.0, -10.0)
+const AUTHORED_BACKGROUND_ANCHORS := Vector4(0.02, 0.08, 0.98, 0.92)
+const AUTHORED_BACKGROUND_OFFSETS := Vector4(1.0, 2.0, -3.0, -4.0)
+const AUTHORED_PANEL_MODULATE := Color(0.9, 0.8, 0.7, 0.95)
+const AUTHORED_BACKGROUND_MODULATE := Color(0.4, 0.5, 0.6, 0.75)
+
+var _presenter: Control
+var _engine: ScenarioEngine
+
+
+func before_each() -> void:
+	_presenter = null
+	_engine = null
+	StellaRuntime.auto_play.is_active = false
+	StellaRuntime.skip_controller.is_active = false
+
+
+func after_each() -> void:
+	if _engine != null and _engine.context != null and not _engine.context.is_finished:
+		_engine.context.is_finished = true
+		SignalBus.engine_abort_requested.emit()
+		await get_tree().process_frame
+
+
+func test_nvl_profile_accumulates_three_lines_and_restores_authored_adv() -> void:
+	_presenter = FIXTURE.instantiate()
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	_presenter._char_interval = 0.0
+
+	_start_scenario_fixture()
+	if not await _wait_for_dialogue(0, "First"):
+		return
+	SignalBus.advance_requested.emit()
+	if not await _wait_for_dialogue(1, "First\nSecond"):
+		return
+	SignalBus.advance_requested.emit()
+	if not await _wait_for_dialogue(2, "First\nSecond\nThird"):
+		return
+
+	var text_label: RichTextLabel = _presenter.get_node("TextRegion/TextLabel")
+	var text_region: Control = _presenter.get_node("TextRegion")
+	var background: Control = _presenter.get_node("DialogueBg")
+	var adv_chrome: Control = _presenter.get_node("AdvChrome")
+	var quick_menu: Control = _presenter.get_node("Toolbar")
+	assert_eq(text_label.text, "First\nSecond\nThird")
+	assert_eq(_rect_anchors(_presenter), Vector4(0.0, 0.0, 1.0, 1.0))
+	assert_eq(_rect_offsets(_presenter), Vector4.ZERO)
+	assert_eq(_rect_anchors(text_region), Vector4(0.18, 0.12, 0.82, 0.62))
+	assert_eq(_rect_offsets(text_region), Vector4(18.0, 24.0, -30.0, -42.0))
+	assert_eq(text_label.horizontal_alignment, HORIZONTAL_ALIGNMENT_CENTER)
+	assert_eq(text_label.vertical_alignment, VERTICAL_ALIGNMENT_CENTER)
+	assert_eq(text_label.get_theme_constant("line_separation"), 9)
+	assert_false(text_label.fit_content)
+	assert_true(text_label.scroll_active)
+	assert_true(text_label.scroll_following)
+	assert_eq(text_label.autowrap_mode, TextServer.AUTOWRAP_WORD_SMART)
+	assert_true(text_label.clip_contents)
+	assert_true(background.visible)
+	assert_eq(background.modulate, Color(1.0, 1.0, 1.0, 0.0))
+	assert_false(adv_chrome.visible)
+	assert_true(quick_menu.visible)
+
+	SignalBus.advance_requested.emit()
+	if not await _wait_for_dialogue(3, "Back in ADV"):
+		return
+
+	assert_eq(text_label.text, "Back in ADV")
+	assert_eq(_presenter._nvl_text, "")
+	assert_eq(_rect_anchors(_presenter), AUTHORED_PANEL_ANCHORS)
+	assert_eq(_rect_offsets(_presenter), AUTHORED_PANEL_OFFSETS)
+	assert_eq(_presenter.modulate, AUTHORED_PANEL_MODULATE)
+	assert_eq(_rect_anchors(text_region), AUTHORED_TEXT_ANCHORS)
+	assert_eq(_rect_offsets(text_region), AUTHORED_TEXT_OFFSETS)
+	assert_eq(_rect_anchors(background), AUTHORED_BACKGROUND_ANCHORS)
+	assert_eq(_rect_offsets(background), AUTHORED_BACKGROUND_OFFSETS)
+	assert_eq(background.modulate, AUTHORED_BACKGROUND_MODULATE)
+	assert_true(background.visible)
+	assert_true(adv_chrome.visible)
+	assert_true(quick_menu.visible)
+	assert_eq(text_label.horizontal_alignment, HORIZONTAL_ALIGNMENT_LEFT)
+	assert_eq(text_label.vertical_alignment, VERTICAL_ALIGNMENT_TOP)
+	assert_eq(text_label.get_theme_constant("line_separation"), 3)
+	assert_false(text_label.fit_content)
+	assert_false(text_label.scroll_active)
+	assert_false(text_label.scroll_following)
+	assert_eq(text_label.autowrap_mode, TextServer.AUTOWRAP_WORD)
+	assert_false(text_label.clip_contents)
+
+	SignalBus.advance_requested.emit()
+	var finished: bool = await wait_until(
+		func(): return _engine.context.is_finished,
+		1.0,
+		"dialogue presentation fixture reaches @end",
+	)
+	assert_true(finished)
+
+
+func test_no_profile_preserves_the_original_legacy_mode_layouts() -> void:
+	_presenter = FIXTURE.instantiate()
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	_presenter._char_interval = 0.0
+
+	await _show_dialogue("Legacy NVL", "nvl")
+	var background: Control = _presenter.get_node("DialogueBg")
+	assert_eq(_rect_anchors(_presenter), Vector4(0.0, 0.0, 1.0, 1.0))
+	assert_eq(_rect_offsets(_presenter), Vector4.ZERO)
+	assert_almost_eq(_presenter.modulate.a, 0.9, 0.0001)
+	assert_eq(background.anchor_top, 0.0)
+	assert_eq(background.offset_top, 0.0)
+	assert_false(_presenter.get_node("Toolbar").visible)
+
+	await _show_dialogue("Legacy ADV", "adv")
+	assert_eq(_rect_anchors(_presenter), Vector4(0.0, 0.58, 1.0, 1.0))
+	assert_eq(_rect_offsets(_presenter), Vector4(0.0, 5.0, 0.0, 0.0))
+	assert_almost_eq(_presenter.modulate.a, 1.0, 0.0001)
+	assert_eq(background.anchor_top, 1.0)
+	assert_eq(background.offset_top, -220.0)
+	assert_true(_presenter.get_node("Toolbar").visible)
+
+
+func test_missing_nvl_profile_uses_legacy_layout_then_restores_toolbar_in_adv() -> void:
+	_presenter = FIXTURE.instantiate()
+	_presenter.presentation_profile = DialoguePresentationProfile.new()
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	_presenter._char_interval = 0.0
+
+	await _show_dialogue("Legacy", "nvl")
+	assert_eq(_rect_anchors(_presenter), Vector4(0.0, 0.0, 1.0, 1.0))
+	assert_eq(_rect_offsets(_presenter), Vector4.ZERO)
+	assert_almost_eq(_presenter.modulate.a, 0.9, 0.0001)
+	assert_false(_presenter.get_node("Toolbar").visible)
+
+	await _show_dialogue("ADV", "adv")
+	assert_eq(_rect_anchors(_presenter), AUTHORED_PANEL_ANCHORS)
+	assert_eq(_rect_offsets(_presenter), AUTHORED_PANEL_OFFSETS)
+	assert_eq(_presenter.modulate, AUTHORED_PANEL_MODULATE)
+	assert_true(_presenter.get_node("Toolbar").visible)
+
+
+func test_invalid_profile_reports_diagnostic_and_falls_back_safely() -> void:
+	var invalid_mode := DialogueModeProfile.new()
+	invalid_mode.override_panel_rect = true
+	invalid_mode.panel_anchors = Vector4(0.9, 0.0, 0.1, 1.0)
+	var profile := DialoguePresentationProfile.new()
+	profile.nvl = invalid_mode
+
+	_presenter = FIXTURE.instantiate()
+	_presenter.presentation_profile = profile
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	assert_push_warning(
+		"DialoguePresenter profile 'nvl': panel_anchors must be ordered left <= right and top <= bottom")
+
+	_presenter._char_interval = 0.0
+	await _show_dialogue("Fallback", "nvl")
+	assert_eq(_rect_anchors(_presenter), Vector4(0.0, 0.0, 1.0, 1.0))
+	assert_almost_eq(_presenter.modulate.a, 0.9, 0.0001)
+
+
+func test_stla_profile_validation_reports_source_lines_and_unknown_references() -> void:
+	var source := """@dialogue_profile broken panel_anchors=0.9,0,0.1,1
+@chapter test "Test"
+@scene start
+@nvl profile=missing
+「line」"""
+	var scenario := DslParser.parse(DslLexer.tokenize(source), "invalid_profile")
+	assert_eq(scenario.diagnostics.size(), 2)
+	assert_eq(scenario.diagnostics[0]["line"], 1)
+	assert_string_contains(
+		scenario.diagnostics[0]["message"],
+		"panel_anchors must be ordered",
+	)
+	assert_eq(scenario.diagnostics[1]["line"], 4)
+	assert_string_contains(
+		scenario.diagnostics[1]["message"],
+		"unknown dialogue profile 'missing'",
+	)
+
+
+func test_profile_selection_is_compiled_into_commands_and_off_keeps_restore_contract() -> void:
+	var source := """@chapter test "Test"
+@scene start
+@overlay profile=centered
+「overlay」
+@overlay off
+「adv」
+@dialogue_profile centered horizontal_alignment=center"""
+	var scenario := DslParser.parse(DslLexer.tokenize(source), "profile_selection")
+	assert_eq(scenario.diagnostics, [])
+	var overlay_command: CommandData = scenario.scenes[0].commands[0]
+	var adv_command: CommandData = scenario.scenes[0].commands[1]
+	assert_eq(overlay_command.get_string("mode"), "overlay")
+	assert_eq(overlay_command.get_string("presentation_profile_name"), "centered")
+	assert_true(overlay_command.get_bool("declarative_presentation"))
+	assert_eq(adv_command.get_string("mode"), "adv")
+	assert_false(adv_command.has_param("presentation_profile_name"))
+	assert_true(adv_command.get_bool("declarative_presentation"),
+		"@overlay off must restore the authored ADV baseline")
+
+
+func test_profile_declarations_merge_aliases_and_strip_whitespace_comments() -> void:
+	var source := """@dialogue_profile novel show=quick_menu\thide=adv_chrome\t// author note
+@dialogue_profile novel line_spacing=7 // another note
+@chapter test "Test"
+@scene start
+@nvl profile=novel // select the compiled profile
+「line」"""
+	var scenario := DslParser.parse(DslLexer.tokenize(source), "profile_comments")
+	assert_eq(scenario.diagnostics, [])
+	var command: CommandData = scenario.scenes[0].commands[0]
+	var profile: Dictionary = command.params["presentation_profile"]
+	assert_eq(profile["visibility_groups"], {
+		"quick_menu": true,
+		"adv_chrome": false,
+	})
+	assert_eq(profile["line_spacing"], 7)
+	assert_false(profile.has("show"), "show is only an STLA authoring alias")
+	assert_false(profile.has("hide"), "hide is only an STLA authoring alias")
+
+
+func test_stla_properties_are_independent_and_preserve_unwritten_authored_values() -> void:
+	_presenter = FIXTURE.instantiate()
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	_presenter._char_interval = 0.0
+
+	SignalBus.emit_show_dialogue(
+		"",
+		[{"text": ""}],
+		"nvl",
+		{"horizontal_alignment": HORIZONTAL_ALIGNMENT_CENTER},
+		true,
+	)
+
+	var text_label: RichTextLabel = _presenter.get_node("TextRegion/TextLabel")
+	var text_region: Control = _presenter.get_node("TextRegion")
+	assert_eq(_rect_anchors(_presenter), AUTHORED_PANEL_ANCHORS)
+	assert_eq(_rect_offsets(_presenter), AUTHORED_PANEL_OFFSETS)
+	assert_eq(_rect_anchors(text_region), AUTHORED_TEXT_ANCHORS)
+	assert_eq(_rect_offsets(text_region), AUTHORED_TEXT_OFFSETS)
+	assert_eq(text_label.horizontal_alignment, HORIZONTAL_ALIGNMENT_CENTER)
+	assert_eq(text_label.vertical_alignment, VERTICAL_ALIGNMENT_TOP,
+		"unwritten vertical alignment keeps its authored top value")
+	assert_eq(text_label.get_theme_constant("line_separation"), 3)
+	assert_false(text_label.fit_content)
+	assert_false(text_label.scroll_active)
+	assert_false(text_label.scroll_following)
+	assert_eq(text_label.autowrap_mode, TextServer.AUTOWRAP_WORD)
+	assert_false(text_label.clip_contents)
+	await get_tree().process_frame
+
+
+func test_profile_state_is_restored_before_unprofiled_legacy_mode() -> void:
+	_presenter = FIXTURE.instantiate()
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	_presenter._char_interval = 0.0
+
+	var text_label: RichTextLabel = _presenter.get_node("TextRegion/TextLabel")
+	var background: Control = _presenter.get_node("DialogueBg")
+	var adv_chrome: Control = _presenter.get_node("AdvChrome")
+	SignalBus.emit_show_dialogue(
+		"",
+		[{"text": ""}],
+		"nvl",
+		{
+			"horizontal_alignment": HORIZONTAL_ALIGNMENT_CENTER,
+			"background_visible": false,
+			"visibility_groups": {"adv_chrome": false},
+		},
+		true,
+	)
+	assert_eq(text_label.horizontal_alignment, HORIZONTAL_ALIGNMENT_CENTER)
+	assert_false(background.visible)
+	assert_false(adv_chrome.visible)
+
+	SignalBus.emit_show_dialogue("", [{"text": ""}], "overlay")
+	assert_eq(_rect_anchors(_presenter), Vector4(0.15, 0.3, 0.85, 0.7))
+	assert_eq(text_label.horizontal_alignment, HORIZONTAL_ALIGNMENT_LEFT)
+	assert_true(background.visible)
+	assert_eq(background.modulate, AUTHORED_BACKGROUND_MODULATE)
+	assert_true(adv_chrome.visible)
+	await get_tree().process_frame
+
+
+func test_hiding_dialogue_restores_profile_state_and_clears_active_profile() -> void:
+	_presenter = FIXTURE.instantiate()
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	_presenter._char_interval = 0.0
+
+	var text_label: RichTextLabel = _presenter.get_node("TextRegion/TextLabel")
+	var background: Control = _presenter.get_node("DialogueBg")
+	var adv_chrome: Control = _presenter.get_node("AdvChrome")
+	SignalBus.emit_show_dialogue(
+		"",
+		[{"text": ""}],
+		"nvl",
+		{
+			"horizontal_alignment": HORIZONTAL_ALIGNMENT_CENTER,
+			"background_visible": false,
+			"visibility_groups": {"adv_chrome": false},
+		},
+		true,
+	)
+
+	SignalBus.hide_dialogue.emit()
+	assert_false(_presenter.visible)
+	assert_eq(_rect_anchors(_presenter), AUTHORED_PANEL_ANCHORS)
+	assert_eq(_rect_offsets(_presenter), AUTHORED_PANEL_OFFSETS)
+	assert_eq(text_label.horizontal_alignment, HORIZONTAL_ALIGNMENT_LEFT)
+	assert_true(background.visible)
+	assert_eq(background.modulate, AUTHORED_BACKGROUND_MODULATE)
+	assert_true(adv_chrome.visible)
+	assert_null(_presenter._active_stla_mode_profile)
+	assert_false(_presenter._active_uses_stla_presentation)
+	await get_tree().process_frame
+
+
+func test_builtin_scenes_expose_stla_profile_targets_without_scene_editing() -> void:
+	for scene_path in [
+		"res://addons/stella/scenes/game.tscn",
+		"res://examples/demo/scenes/game.tscn",
+	]:
+		var game: Node = load(scene_path).instantiate()
+		var presenter: Control = game.get_node("UILayer/DialoguePanel")
+		var text_target: Control = presenter.get_node(presenter.text_rect_target_path)
+		var toolbar: Control = presenter.get_node("%Toolbar")
+		assert_eq(presenter.text_rect_target_path, NodePath("HBox"), scene_path)
+		assert_false(text_target.get_parent() is Container,
+			"the profile target must own its rect in %s" % scene_path)
+		assert_true(toolbar.is_in_group("quick_menu"), scene_path)
+		assert_false(text_target.is_ancestor_of(toolbar),
+			"quick menu must stay at the viewport bottom when the text rect moves")
+		game.free()
+
+
+func test_stla_can_configure_adv_and_restore_it_after_nvl() -> void:
+	var source := """@dialogue_profile message panel_anchors=0,0.6,1,1
+@dialogue_profile novel background_modulate=#ffffff00
+@chapter test "Test"
+@scene start
+@adv profile=message
+「adv before」
+@nvl profile=novel
+「nvl」
+@nvl off
+「adv after」"""
+	var scenario := DslParser.parse(DslLexer.tokenize(source), "adv_profile")
+	assert_eq(scenario.diagnostics, [])
+	var commands: Array = scenario.scenes[0].commands
+	assert_eq(commands[0].get_string("presentation_profile_name"), "message")
+	assert_eq(commands[1].get_string("presentation_profile_name"), "novel")
+	assert_eq(commands[2].get_string("presentation_profile_name"), "message")
+	assert_eq(commands[2].get_string("mode"), "adv")
+	assert_true(commands[2].get_bool("declarative_presentation"))
+
+
+func _show_dialogue(text: String, mode: String) -> void:
+	await _presenter._on_show_dialogue("", [{"text": text}], mode)
+
+
+func _start_scenario_fixture() -> void:
+	var file := FileAccess.open(SCENARIO_PATH, FileAccess.READ)
+	assert_not_null(file, "fixture must exist: %s" % SCENARIO_PATH)
+	if file == null:
+		return
+	var source := file.get_as_text()
+	file.close()
+	var scenario := DslParser.parse(DslLexer.tokenize(source), "dialogue_presentation_profile")
+	assert_eq(scenario.diagnostics, [], "fixture must parse without diagnostics")
+	var first_dialogue: CommandData = scenario.scenes[0].commands[0]
+	assert_eq(first_dialogue.get_string("presentation_profile_name"), "novel")
+	assert_true(first_dialogue.get_bool("declarative_presentation"))
+	assert_false(first_dialogue.params.get("presentation_profile", {}).is_empty(),
+		"the compiled command must own its resolved profile data")
+	_engine = ScenarioEngine.new()
+	_engine.registry = StellaRuntime.registry
+	_engine.load_scenario(scenario)
+	_engine.run()
+
+
+func _wait_for_dialogue(command_index: int, expected_text: String) -> bool:
+	var reached: bool = await wait_until(
+		func():
+			return (
+				_engine.context.current_command_index == command_index
+				and _presenter.get_node("TextRegion/TextLabel").text == expected_text
+				and not _presenter._is_typing
+			),
+		1.0,
+		"fixture presents command %d" % command_index,
+	)
+	assert_true(reached, "fixture presents command %d" % command_index)
+	return reached
+
+
+func _rect_anchors(control: Control) -> Vector4:
+	return Vector4(
+		control.anchor_left, control.anchor_top,
+		control.anchor_right, control.anchor_bottom)
+
+
+func _rect_offsets(control: Control) -> Vector4:
+	return Vector4(
+		control.offset_left, control.offset_top,
+		control.offset_right, control.offset_bottom)
