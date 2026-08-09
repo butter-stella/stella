@@ -4,6 +4,13 @@
 ## Handles skip (toolbar + Ctrl held) and auto-play.
 extends Control
 
+@export_group("Dialogue Presentation")
+## Advanced scene-side fallback. Normal projects declare profiles in STLA.
+@export var presentation_profile: DialoguePresentationProfile
+## Optional Control that receives the profile's text rectangle. When empty,
+## the TextLabel itself is used. Prefer a non-Container child for exact rects.
+@export_node_path("Control") var text_rect_target_path: NodePath
+
 @onready var name_label: Label = %NameLabel
 @onready var text_label: RichTextLabel = %TextLabel
 @onready var toolbar: HBoxContainer = %Toolbar
@@ -34,8 +41,14 @@ var _known_expressions: Dictionary = {}  # character_id -> current expression
 # Store original anchors for switching between ADV and NVL layout
 var _adv_anchor_top: float
 var _adv_offset_top: float
-var _dialogue_bg: Panel
+var _dialogue_bg: Control
 var _text_area: VBoxContainer
+var _text_rect_target: Control
+var _authored_presentation: Dictionary = {}
+var _auxiliary_visibility_baseline: Dictionary = {}
+var _profile_warning_keys: Dictionary = {}
+var _active_stla_mode_profile: DialogueModeProfile
+var _active_uses_stla_presentation: bool = false
 
 ## Icon paths — set these to customize toolbar button icons.
 var toolbar_icons: Dictionary = {
@@ -99,12 +112,15 @@ func _ready():
 	_avatar_container = get_node_or_null("%AvatarContainer")
 	if _avatar_container:
 		_avatar_texture = _avatar_container.get_node_or_null("AvatarTexture")
-	_dialogue_bg = get_node_or_null("DialogueBg")
+	_dialogue_bg = get_node_or_null("DialogueBg") as Control
 	_text_area = get_node_or_null("HBox/TextArea")
+	_text_rect_target = _resolve_text_rect_target()
 	visible = false
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
 	_setup_toolbar()
+	_capture_authored_presentation()
+	_validate_configured_profiles()
 
 
 func _setup_toolbar():
@@ -435,14 +451,23 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 
 	visible = true
 	_current_mode = mode
+	var stla_profile_data := SignalBus.current_dialogue_presentation_profile()
+	var uses_stla_presentation := SignalBus.current_dialogue_uses_declarative_presentation()
+	_active_uses_stla_presentation = uses_stla_presentation
+	_active_stla_mode_profile = (
+		DialogueModeProfile.from_dictionary(stla_profile_data)
+		if not stla_profile_data.is_empty()
+		else null
+	)
 
-	if toolbar:
+	var uses_presentation_profile := _apply_dialogue_mode_presentation(
+		mode, _active_stla_mode_profile, uses_stla_presentation)
+	if toolbar and not uses_presentation_profile:
 		toolbar.visible = (mode == "adv")
 
 	# Mode-specific text setup
 	var new_line_text: String = ""
 	if mode == "nvl":
-		_apply_nvl_layout()
 		name_label.visible = false
 		if character != "":
 			new_line_text = "%s：%s" % [character, full_text]
@@ -454,13 +479,11 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 		text_label.visible_characters = old_char_count
 		_nvl_text = combined + "\n"
 	elif mode == "overlay":
-		_apply_overlay_layout()
 		name_label.visible = false
 		new_line_text = full_text
 		text_label.text = full_text
 		text_label.visible_characters = 0
 	else:  # adv
-		_apply_adv_layout()
 		_nvl_text = ""
 		new_line_text = full_text
 		if character != "":
@@ -653,6 +676,292 @@ func _load_voice_stream(asset: String) -> AudioStream:
 	return null
 
 
+## Advanced programmatic fallback. Normal projects should use @dialogue_profile.
+## Scene-authored state is restored before the new profile applies.
+func set_presentation_profile(profile: DialoguePresentationProfile) -> void:
+	if is_node_ready():
+		_restore_authored_presentation()
+	presentation_profile = profile
+	_profile_warning_keys.clear()
+	_auxiliary_visibility_baseline.clear()
+	if not is_node_ready():
+		return
+	_text_rect_target = _resolve_text_rect_target()
+	_validate_configured_profiles()
+	if visible:
+		var uses_profile := _apply_dialogue_mode_presentation(
+			_current_mode, _active_stla_mode_profile,
+			_active_uses_stla_presentation)
+		if toolbar and not uses_profile:
+			toolbar.visible = (_current_mode == "adv")
+
+
+func _apply_dialogue_mode_presentation(
+	mode: String,
+	stla_mode_profile: DialogueModeProfile = null,
+	uses_stla_presentation: bool = false,
+) -> bool:
+	# Every transition starts from the exact scene-authored baseline. This also
+	# scrubs opt-in profile fields before returning to an unprofiled legacy mode.
+	_restore_authored_presentation()
+	if (not uses_stla_presentation
+		and stla_mode_profile == null and presentation_profile == null):
+		_apply_legacy_mode_layout(mode)
+		return false
+
+	var mode_profile := stla_mode_profile
+	if mode_profile == null and presentation_profile != null:
+		mode_profile = presentation_profile.get_mode(mode)
+	if mode_profile == null:
+		if mode == "adv":
+			return true
+		_apply_legacy_mode_layout(mode)
+		return false
+
+	var errors := mode_profile.validation_errors()
+	if not errors.is_empty():
+		for error in errors:
+			_profile_warning(mode, String(error))
+		if mode == "adv":
+			return true
+		_apply_legacy_mode_layout(mode)
+		return false
+
+	_apply_mode_profile(mode, mode_profile)
+	return true
+
+
+func _apply_mode_profile(mode: String, profile: DialogueModeProfile) -> void:
+	var override_panel_anchors := profile.overrides_property(&"panel_anchors")
+	var override_panel_offsets := profile.overrides_property(&"panel_offsets")
+	if override_panel_anchors or override_panel_offsets:
+		var panel_rect := _capture_control_rect(self)
+		_apply_control_rect(
+			self,
+			profile.panel_anchors if override_panel_anchors else panel_rect["anchors"],
+			profile.panel_offsets if override_panel_offsets else panel_rect["offsets"],
+		)
+	if profile.overrides_property(&"panel_modulate"):
+		modulate = profile.panel_modulate
+
+	var override_text_anchors := profile.overrides_property(&"text_anchors")
+	var override_text_offsets := profile.overrides_property(&"text_offsets")
+	var override_text_margins := profile.overrides_property(&"text_margins")
+	if override_text_anchors or override_text_offsets or override_text_margins:
+		if _text_rect_target == null:
+			_profile_warning(mode,
+				"text_rect_target_path '%s' does not resolve to a Control" % text_rect_target_path)
+		else:
+			if _text_rect_target.get_parent() is Container:
+				_profile_warning(mode,
+					"text rectangle target '%s' is managed by a Container; use a free Control wrapper for exact layout"
+					% _text_rect_target.get_path())
+			var text_rect := _capture_control_rect(_text_rect_target)
+			var anchors: Vector4 = (
+				profile.text_anchors if override_text_anchors else text_rect["anchors"])
+			var offsets: Vector4 = (
+				profile.text_offsets if override_text_offsets else text_rect["offsets"])
+			if override_text_margins:
+				offsets.x += profile.text_margins.x
+				offsets.y += profile.text_margins.y
+				offsets.z -= profile.text_margins.z
+				offsets.w -= profile.text_margins.w
+			_apply_control_rect(_text_rect_target, anchors, offsets)
+
+	if profile.overrides_property(&"horizontal_alignment"):
+		text_label.horizontal_alignment = profile.horizontal_alignment
+	if profile.overrides_property(&"vertical_alignment"):
+		text_label.vertical_alignment = profile.vertical_alignment
+	if profile.overrides_property(&"line_spacing"):
+		text_label.add_theme_constant_override("line_separation", profile.line_spacing)
+	if profile.overrides_property(&"fit_content"):
+		text_label.fit_content = profile.fit_content
+	if profile.overrides_property(&"scroll_active"):
+		text_label.scroll_active = profile.scroll_active
+	if profile.overrides_property(&"scroll_following"):
+		text_label.scroll_following = profile.scroll_following
+	if profile.overrides_property(&"autowrap_mode"):
+		text_label.autowrap_mode = profile.autowrap_mode
+	if profile.overrides_property(&"clip_contents"):
+		text_label.clip_contents = profile.clip_contents
+
+	if profile.overrides_property(&"background_visible"):
+		if _dialogue_bg == null:
+			_profile_warning(mode, "background visibility override requires a DialogueBg Control")
+		else:
+			_dialogue_bg.visible = profile.background_visible
+	if profile.overrides_property(&"background_modulate"):
+		if _dialogue_bg == null:
+			_profile_warning(mode, "background modulation override requires a DialogueBg Control")
+		else:
+			_dialogue_bg.modulate = profile.background_modulate
+
+	for group_name_value in profile.visibility_groups:
+		var group_name := StringName(group_name_value)
+		var nodes := _find_auxiliary_group_nodes(group_name)
+		if nodes.is_empty():
+			_profile_warning(mode,
+				"visibility group '%s' has no CanvasItem descendants under DialoguePanel" % group_name)
+			continue
+		for node in nodes:
+			_capture_auxiliary_visibility(node)
+			node.visible = bool(profile.visibility_groups[group_name_value])
+
+
+func _apply_legacy_mode_layout(mode: String) -> void:
+	match mode:
+		"nvl":
+			_apply_nvl_layout()
+		"overlay":
+			_apply_overlay_layout()
+		_:
+			_apply_adv_layout()
+
+
+func _capture_authored_presentation() -> void:
+	_authored_presentation = {
+		"panel_rect": _capture_control_rect(self),
+		"panel_modulate": modulate,
+		"text_alignment_horizontal": text_label.horizontal_alignment,
+		"text_alignment_vertical": text_label.vertical_alignment,
+		"line_spacing_overridden": text_label.has_theme_constant_override("line_separation"),
+		"line_spacing": text_label.get_theme_constant("line_separation"),
+		"fit_content": text_label.fit_content,
+		"scroll_active": text_label.scroll_active,
+		"scroll_following": text_label.scroll_following,
+		"autowrap_mode": text_label.autowrap_mode,
+		"clip_contents": text_label.clip_contents,
+	}
+	if toolbar:
+		_authored_presentation["toolbar_visible"] = toolbar.visible
+	if _dialogue_bg:
+		_authored_presentation["background_rect"] = _capture_control_rect(_dialogue_bg)
+		_authored_presentation["background_visible"] = _dialogue_bg.visible
+		_authored_presentation["background_modulate"] = _dialogue_bg.modulate
+	if _text_rect_target:
+		_authored_presentation["text_rect"] = _capture_control_rect(_text_rect_target)
+	if _text_area:
+		_authored_presentation["text_area_size_flags_vertical"] = _text_area.size_flags_vertical
+
+
+func _restore_authored_presentation() -> void:
+	if _authored_presentation.is_empty():
+		return
+	_restore_control_rect(self, _authored_presentation["panel_rect"])
+	modulate = _authored_presentation["panel_modulate"]
+	text_label.horizontal_alignment = _authored_presentation["text_alignment_horizontal"]
+	text_label.vertical_alignment = _authored_presentation["text_alignment_vertical"]
+	if _authored_presentation["line_spacing_overridden"]:
+		text_label.add_theme_constant_override(
+			"line_separation", _authored_presentation["line_spacing"])
+	else:
+		text_label.remove_theme_constant_override("line_separation")
+	text_label.fit_content = _authored_presentation["fit_content"]
+	text_label.scroll_active = _authored_presentation["scroll_active"]
+	text_label.scroll_following = _authored_presentation["scroll_following"]
+	text_label.autowrap_mode = _authored_presentation["autowrap_mode"]
+	text_label.clip_contents = _authored_presentation["clip_contents"]
+	if toolbar and _authored_presentation.has("toolbar_visible"):
+		toolbar.visible = _authored_presentation["toolbar_visible"]
+	if _dialogue_bg and _authored_presentation.has("background_rect"):
+		_restore_control_rect(_dialogue_bg, _authored_presentation["background_rect"])
+		_dialogue_bg.visible = _authored_presentation["background_visible"]
+		_dialogue_bg.modulate = _authored_presentation["background_modulate"]
+	if _text_rect_target and _authored_presentation.has("text_rect"):
+		_restore_control_rect(_text_rect_target, _authored_presentation["text_rect"])
+	if _text_area and _authored_presentation.has("text_area_size_flags_vertical"):
+		_text_area.size_flags_vertical = _authored_presentation["text_area_size_flags_vertical"]
+	for entry_value in _auxiliary_visibility_baseline.values():
+		var entry: Dictionary = entry_value
+		var node: CanvasItem = entry["node"]
+		if is_instance_valid(node):
+			node.visible = entry["visible"]
+
+
+func _capture_control_rect(control: Control) -> Dictionary:
+	return {
+		"anchors": Vector4(
+			control.anchor_left, control.anchor_top,
+			control.anchor_right, control.anchor_bottom),
+		"offsets": Vector4(
+			control.offset_left, control.offset_top,
+			control.offset_right, control.offset_bottom),
+	}
+
+
+func _restore_control_rect(control: Control, state: Dictionary) -> void:
+	_apply_control_rect(control, state["anchors"], state["offsets"])
+
+
+func _apply_control_rect(control: Control, anchors: Vector4, offsets: Vector4) -> void:
+	control.anchor_left = anchors.x
+	control.anchor_top = anchors.y
+	control.anchor_right = anchors.z
+	control.anchor_bottom = anchors.w
+	control.offset_left = offsets.x
+	control.offset_top = offsets.y
+	control.offset_right = offsets.z
+	control.offset_bottom = offsets.w
+
+
+func _resolve_text_rect_target() -> Control:
+	if text_rect_target_path.is_empty():
+		return text_label
+	return get_node_or_null(text_rect_target_path) as Control
+
+
+func _find_auxiliary_group_nodes(group_name: StringName) -> Array[CanvasItem]:
+	var result: Array[CanvasItem] = []
+	for node in find_children("*", "CanvasItem", true, false):
+		if node.is_in_group(group_name):
+			result.append(node as CanvasItem)
+	return result
+
+
+func _capture_auxiliary_visibility(node: CanvasItem) -> void:
+	var instance_id := node.get_instance_id()
+	if _auxiliary_visibility_baseline.has(instance_id):
+		return
+	_auxiliary_visibility_baseline[instance_id] = {
+		"node": node,
+		"visible": node.visible,
+	}
+
+
+func _validate_configured_profiles() -> void:
+	if presentation_profile == null:
+		return
+	for mode in ["adv", "nvl", "overlay"]:
+		var mode_profile := presentation_profile.get_mode(mode)
+		if mode_profile == null:
+			continue
+		for error in mode_profile.validation_errors():
+			_profile_warning(mode, String(error))
+		if mode_profile.override_text_rect and _text_rect_target == null:
+			_profile_warning(mode,
+				"text_rect_target_path '%s' does not resolve to a Control" % text_rect_target_path)
+		elif mode_profile.override_text_rect and _text_rect_target.get_parent() is Container:
+			_profile_warning(mode,
+				"text rectangle target '%s' is managed by a Container; use a free Control wrapper for exact layout"
+				% _text_rect_target.get_path())
+		if ((mode_profile.override_background_visibility
+			or mode_profile.override_background_modulate) and _dialogue_bg == null):
+			_profile_warning(mode, "background overrides require a DialogueBg Control")
+		for group_name_value in mode_profile.visibility_groups:
+			var group_name := StringName(group_name_value)
+			if _find_auxiliary_group_nodes(group_name).is_empty():
+				_profile_warning(mode,
+					"visibility group '%s' has no CanvasItem descendants under DialoguePanel" % group_name)
+
+
+func _profile_warning(mode: String, message: String) -> void:
+	var warning_key := "%s:%s" % [mode, message]
+	if _profile_warning_keys.has(warning_key):
+		return
+	_profile_warning_keys[warning_key] = true
+	push_warning("DialoguePresenter profile '%s': %s" % [mode, message])
+
+
 
 func _apply_nvl_layout():
 	anchor_left = 0.0
@@ -742,6 +1051,11 @@ func _on_hide_dialogue():
 	# reset and mark its line in the replacement ReadFlagManager.
 	_dialogue_gen += 1
 	_is_typing = false
+	_restore_authored_presentation()
+	_auxiliary_visibility_baseline.clear()
+	_active_stla_mode_profile = null
+	_active_uses_stla_presentation = false
+	_current_mode = "adv"
 	_current_scenario_id = ""
 	_current_scene_id = ""
 	_current_command_index = -1
