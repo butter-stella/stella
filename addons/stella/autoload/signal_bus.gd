@@ -15,6 +15,38 @@ signal show_dialogue(character: String, segments: Array, mode: String)
 signal hide_dialogue()
 signal advance_requested()
 
+# Stack-scoped metadata keeps the legacy three-argument signal compatible
+# while DialogueHandler can synchronously attach an STLA presentation profile.
+# DialoguePresenter copies the current value before its first await.
+var _dialogue_presentation_stack: Array[Dictionary] = []
+
+
+func emit_show_dialogue(
+	character: String,
+	segments: Array,
+	mode: String,
+	presentation_profile: Dictionary = {},
+	declarative_presentation: bool = false,
+) -> void:
+	_dialogue_presentation_stack.append({
+		"profile": presentation_profile.duplicate(true),
+		"declarative": declarative_presentation,
+	})
+	show_dialogue.emit(character, segments, mode)
+	_dialogue_presentation_stack.pop_back()
+
+
+func current_dialogue_presentation_profile() -> Dictionary:
+	if _dialogue_presentation_stack.is_empty():
+		return {}
+	return _dialogue_presentation_stack[-1]["profile"].duplicate(true)
+
+
+func current_dialogue_uses_declarative_presentation() -> bool:
+	if _dialogue_presentation_stack.is_empty():
+		return false
+	return _dialogue_presentation_stack[-1]["declarative"]
+
 # Character
 signal char_show(character: String, expression: String, position: String)
 signal char_hide(character: String)

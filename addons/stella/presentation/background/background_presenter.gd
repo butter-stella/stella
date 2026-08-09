@@ -3,8 +3,8 @@
 ## Supports: fade, dissolve, wipe, slide_{left,right,up,down} transitions.
 extends CanvasLayer
 
-@onready var bg_front: TextureRect = $BgFront
-@onready var bg_back: TextureRect = $BgBack
+@onready var bg_front: TextureRect = _get_stage_texture("BgFront")
+@onready var bg_back: TextureRect = _get_stage_texture("BgBack")
 
 var _dissolve_shader: Shader
 var _wipe_shader: Shader
@@ -13,6 +13,15 @@ var _transition_generation: int = 0
 var _front_rest_position: Vector2
 var _back_rest_position: Vector2
 var _has_active_transition: bool = false
+
+
+func _get_stage_texture(node_name: String) -> TextureRect:
+	var nested := get_node_or_null("ShakeRoot/%s" % node_name) as TextureRect
+	if nested != null:
+		return nested
+	# Compatibility with custom scenes created before dedicated ShakeRoot nodes
+	# were introduced. Those scenes keep the textures directly under this layer.
+	return get_node(node_name) as TextureRect
 
 
 func _ready():

@@ -5,14 +5,14 @@ extends GutTest
 ## previous choice with scenario / variable / presentation state rolled back.
 
 
+const RuntimeTestSupport = preload("res://tests/helpers/runtime_test_support.gd")
+
 var _runtime: Node
 
 
-func before_each():
+func before_each() -> void:
 	_runtime = get_tree().root.get_node("StellaRuntime")
-	_runtime.backlog_manager.clear()
-	_runtime.choice_history_manager.clear()
-	_runtime.flowchart_state.clear()
+	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
 
 
 func _advance(n: int) -> void:

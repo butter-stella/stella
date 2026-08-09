@@ -3,12 +3,14 @@ extends GutTest
 ## Tests overlay open/close lifecycle, state transitions, and jump-via-UI.
 
 
+const RuntimeTestSupport = preload("res://tests/helpers/runtime_test_support.gd")
+
 var _runtime: Node
 
 
-func before_each():
+func before_each() -> void:
 	_runtime = get_tree().root.get_node("StellaRuntime")
-	_runtime.backlog_manager.clear()
+	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
 
 
 func _build_scenario() -> ScenarioData:

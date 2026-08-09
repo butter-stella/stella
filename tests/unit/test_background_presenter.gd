@@ -32,11 +32,40 @@ func after_each():
 
 
 func _bg_front() -> TextureRect:
-	return _game_scene.get_node("BackgroundLayer/BgFront")
+	return _game_scene.get_node("BackgroundLayer/ShakeRoot/BgFront")
 
 
 func _bg_back() -> TextureRect:
-	return _game_scene.get_node("BackgroundLayer/BgBack")
+	return _game_scene.get_node("BackgroundLayer/ShakeRoot/BgBack")
+
+
+func test_builtin_shake_root_preserves_viewport_anchored_background_layout() -> void:
+	var shake_root: Control = _game_scene.get_node("BackgroundLayer/ShakeRoot")
+	var viewport_size := _game_scene.get_viewport().get_visible_rect().size
+	assert_eq(shake_root.size, viewport_size, "ShakeRoot must supply the viewport anchor rect")
+	assert_eq(shake_root.mouse_filter, Control.MOUSE_FILTER_IGNORE)
+	for background in [_bg_front(), _bg_back()]:
+		var rect: Rect2 = (background as TextureRect).get_global_rect()
+		assert_true(rect.position.x <= 0.0 and rect.position.y <= 0.0)
+		assert_true(
+			rect.end.x >= viewport_size.x and rect.end.y >= viewport_size.y,
+			"anchored backgrounds must still cover the viewport",
+		)
+
+
+func test_legacy_direct_child_scene_still_resolves_background_nodes() -> void:
+	var layer := CanvasLayer.new()
+	layer.set_script(load("res://addons/stella/presentation/background/background_presenter.gd"))
+	var front := TextureRect.new()
+	front.name = "BgFront"
+	layer.add_child(front)
+	var back := TextureRect.new()
+	back.name = "BgBack"
+	layer.add_child(back)
+	add_child_autoqfree(layer)
+	await get_tree().process_frame
+	assert_same(layer.bg_front, front)
+	assert_same(layer.bg_back, back)
 
 
 func _seed_bg(asset: String) -> void:

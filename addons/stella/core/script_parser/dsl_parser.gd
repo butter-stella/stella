@@ -6,11 +6,19 @@ class_name DslParser extends RefCounted
 static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioData:
 	var data = ScenarioData.new()
 	data.id = scenario_id
+	var profile_collection := DialogueProfileParser.collect(tokens)
+	var dialogue_profiles: Dictionary = profile_collection["profiles"]
+	data.diagnostics.append_array(profile_collection["diagnostics"])
 
 	var current_scene: SceneData = null
 	var pending_options: Array = []
 	var choice_cmd: CommandData = null
 	var current_mode: String = "adv"  # adv / nvl / overlay
+	var current_dialogue_profile_name: String = ""
+	var current_dialogue_profile: Dictionary = {}
+	var current_declarative_presentation: bool = false
+	var adv_dialogue_profile_name: String = ""
+	var adv_dialogue_profile: Dictionary = {}
 
 	# @chapter state (issue #97). Tracks the most-recently-declared chapter so
 	# subsequent @scene declarations can be assigned to it. null until the
@@ -131,7 +139,14 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 						if_stack[-1]["branch"] = "else"
 				elif cmd_name == "end":
 					if in_combine:
-						var combine_cmd = _build_combine_command(combine_character, combine_segments, current_mode)
+						var combine_cmd = _build_combine_command(
+							combine_character,
+							combine_segments,
+							current_mode,
+							current_dialogue_profile_name,
+							current_dialogue_profile,
+							current_declarative_presentation,
+						)
 						combine_segments = []
 						combine_character = ""
 						combine_character_set = false
@@ -156,12 +171,44 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 						if if_stack.size() > 0:
 							current_scene = _close_if_block(if_stack.pop_back(), data)
 					# else: @end at scene level, ignore
-				elif cmd_name == "nvl":
-					var args = token.raw_text.substr(4).strip_edges()
-					current_mode = "adv" if args == "off" else "nvl"
-				elif cmd_name == "overlay":
-					var args = token.raw_text.substr(8).strip_edges()
-					current_mode = "adv" if args == "off" else "overlay"
+				elif cmd_name in ["adv", "nvl", "overlay"]:
+					if in_combine:
+						_record_diagnostic(data, "warning",
+							"DslParser: @%s is not allowed inside @combine block (line %d)"
+							% [cmd_name, token.line], token.line)
+					else:
+						var selection := DialogueProfileParser.parse_mode_directive(
+							token.raw_text, cmd_name, dialogue_profiles, token.line)
+						data.diagnostics.append_array(selection["diagnostics"])
+						if cmd_name == "adv":
+							current_mode = "adv"
+							adv_dialogue_profile_name = selection["profile_name"]
+							adv_dialogue_profile = selection["profile"]
+							current_dialogue_profile_name = adv_dialogue_profile_name
+							current_dialogue_profile = adv_dialogue_profile
+							# Explicit @adv opts into authored-baseline restoration even
+							# without a named profile.
+							current_declarative_presentation = true
+						elif selection["mode"] == "adv":
+							# @nvl off / @overlay off returns to the configured ADV
+							# profile, or to the exact authored baseline after a named
+							# non-ADV profile was active.
+							current_mode = "adv"
+							current_dialogue_profile_name = adv_dialogue_profile_name
+							current_dialogue_profile = adv_dialogue_profile
+							current_declarative_presentation = (
+								current_declarative_presentation
+								or not adv_dialogue_profile_name.is_empty()
+							)
+						else:
+							current_mode = selection["mode"]
+							current_dialogue_profile_name = selection["profile_name"]
+							current_dialogue_profile = selection["profile"]
+							current_declarative_presentation = not current_dialogue_profile_name.is_empty()
+				elif cmd_name == "dialogue_profile":
+					# Compile-time declaration; already collected in a pre-pass so
+					# profiles may be referenced before their declaration.
+					pass
 				elif cmd_name == "parallel":
 					in_parallel = true
 					parallel_commands.clear()
@@ -172,7 +219,7 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 					combine_character_set = false
 					combine_pending_expr = ""
 				else:
-					var cmd = _parse_at_command(token)
+					var cmd = _parse_at_command(token, data)
 					if cmd:
 						cmd.declared_line = token.line
 					if cmd and current_scene:
@@ -193,7 +240,14 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 				choice_cmd = null
 				pending_options = []
-				var cmd = _parse_dialogue(token, current_mode, data)
+				var cmd = _parse_dialogue(
+					token,
+					current_mode,
+					data,
+					current_dialogue_profile_name,
+					current_dialogue_profile,
+					current_declarative_presentation,
+				)
 				if cmd and current_scene:
 					if in_combine:
 						var char_name = cmd.get_string("character", "")
@@ -221,7 +275,14 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 				choice_cmd = null
 				pending_options = []
-				var cmd = _parse_narration(token, current_mode, data)
+				var cmd = _parse_narration(
+					token,
+					current_mode,
+					data,
+					current_dialogue_profile_name,
+					current_dialogue_profile,
+					current_declarative_presentation,
+				)
 				if cmd and current_scene:
 					if in_combine:
 						if not combine_character_set:
@@ -349,16 +410,19 @@ static func _record_diagnostic(data: ScenarioData, level: String, message: Strin
 
 static func _get_at_command_name(raw: String) -> String:
 	var after_at = raw.substr(1).strip_edges()
-	var space_pos = after_at.find(" ")
-	if space_pos == -1:
-		return after_at
-	return after_at.substr(0, space_pos)
+	for index in range(after_at.length()):
+		if _is_inline_whitespace(after_at.substr(index, 1)):
+			return after_at.substr(0, index)
+	return after_at
 
 
-static func _parse_at_command(token: DslToken) -> CommandData:
+static func _parse_at_command(token: DslToken, data: ScenarioData) -> CommandData:
 	var raw = token.raw_text
 	var name = _get_at_command_name(raw)
-	var args = raw.substr(raw.find(name) + name.length()).strip_edges()
+	var name_position := raw.find(name, 1)
+	var args = _strip_inline_comment(
+		raw.substr(name_position + name.length()).strip_edges()
+	)
 	var parts = _split_args(args)
 
 	match name:
@@ -454,28 +518,152 @@ static func _parse_at_command(token: DslToken) -> CommandData:
 				"duration": 0.5,
 			})
 		"effect":
-			if parts.size() > 0 and parts[0] == "off":
-				return _make_cmd("effect", {"off": true, "effect_type": "off"})
-			var effect_type = parts[0] if parts.size() > 0 else ""
+			if parts.is_empty():
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: @effect is missing an effect type (line %d)" % token.line,
+					token.line,
+				)
+				return null
+			var effect_type: String = parts[0]
 			match effect_type:
+				"off":
+					if parts.size() > 1:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @effect off does not accept arguments (line %d)"
+							% token.line,
+							token.line,
+						)
+						return null
+					return _make_cmd("effect", {"off": true, "effect_type": "off"})
 				"shake":
+					if parts.size() > 3:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @effect shake accepts at most intensity and duration (line %d)"
+							% token.line,
+							token.line,
+						)
+						return null
+					var intensity_value: Variant = 10.0
+					var duration_value: Variant = 0.3
+					if parts.size() > 1:
+						intensity_value = _parse_effect_number(
+							parts[1], "shake", "intensity", token, data
+						)
+					if parts.size() > 2:
+						duration_value = _parse_effect_number(
+							parts[2], "shake", "duration", token, data
+						)
+
+					if intensity_value == null or duration_value == null:
+						return null
+					var intensity := float(intensity_value)
+					var duration := float(duration_value)
+					if intensity < 0.0:
+						_record_diagnostic(
+							data,
+							"warning",
+							"DslParser: @effect shake intensity is negative; using its absolute value (line %d)"
+							% token.line,
+							token.line,
+						)
+						intensity = absf(intensity)
+					if duration < 0.0:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @effect shake duration must be non-negative (line %d)"
+							% token.line,
+							token.line,
+						)
+						return null
 					return _make_cmd("effect", {
 						"effect_type": "shake",
-						"intensity": float(parts[1]) if parts.size() > 1 else 10.0,
-						"duration": float(parts[2]) if parts.size() > 2 else 0.3,
+						"intensity": intensity,
+						"duration": duration,
 					})
 				"flash":
+					if parts.size() > 3:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @effect flash accepts at most color and duration (line %d)"
+							% token.line,
+							token.line,
+						)
+						return null
+					var duration_value: Variant = 0.2
+					if parts.size() > 2:
+						duration_value = _parse_effect_number(
+							parts[2], "flash", "duration", token, data
+						)
+					if duration_value == null:
+						return null
+					var duration := float(duration_value)
+					if duration < 0.0:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @effect flash duration must be non-negative (line %d)"
+							% token.line,
+							token.line,
+						)
+						return null
 					return _make_cmd("effect", {
 						"effect_type": "flash",
 						"color": parts[1] if parts.size() > 1 else "white",
-						"duration": float(parts[2]) if parts.size() > 2 else 0.2,
+						"duration": duration,
 					})
 				_:
-					return _make_cmd("effect", {"effect_type": effect_type})
+					_record_diagnostic(
+						data,
+						"warning",
+						"DslParser: @effect '%s' is not built in; forwarding it to custom listeners (line %d)"
+						% [effect_type, token.line],
+						token.line,
+					)
+					return _make_cmd("effect", {
+						"effect_type": effect_type,
+						"args": parts.slice(1),
+					})
 		"end":
 			return null  # Handled by if_stack or ignored
 		_:
 			return null
+
+
+static func _parse_effect_number(
+	raw_value: String,
+	effect_type: String,
+	parameter_name: String,
+	token: DslToken,
+	data: ScenarioData,
+) -> Variant:
+	if not raw_value.is_valid_float():
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @effect %s %s must be a finite number, got '%s' (line %d)"
+			% [effect_type, parameter_name, raw_value, token.line],
+			token.line,
+		)
+		return null
+	var value := raw_value.to_float()
+	if not is_finite(value):
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @effect %s %s must be finite, got '%s' (line %d)"
+			% [effect_type, parameter_name, raw_value, token.line],
+			token.line,
+		)
+		return null
+	return value
 
 
 static func _parse_set_command(args: String) -> CommandData:
@@ -579,6 +767,9 @@ static func _parse_dialogue(
 	token: DslToken,
 	mode: String,
 	data: ScenarioData,
+	profile_name: String = "",
+	profile: Dictionary = {},
+	declarative_presentation: bool = false,
 ) -> CommandData:
 	var raw = token.raw_text
 	var bracket_start = raw.find("\u300c")  # 「
@@ -597,7 +788,7 @@ static func _parse_dialogue(
 	var transition = _extract_metadata_tag(raw, bracket_end, "transition")
 	var duration_ms = _extract_duration_ms(raw, bracket_end, data, token.line)
 
-	return _make_cmd("dialogue", {
+	var params := {
 		"character": character,
 		"text": text,
 		"voice": voice,
@@ -606,13 +797,19 @@ static func _parse_dialogue(
 		"transition": transition if transition != "" else "cut",
 		"duration_ms": duration_ms,
 		"mode": mode,
-	})
+	}
+	_attach_dialogue_profile(
+		params, profile_name, profile, declarative_presentation)
+	return _make_cmd("dialogue", params)
 
 
 static func _parse_narration(
 	token: DslToken,
 	mode: String,
 	data: ScenarioData,
+	profile_name: String = "",
+	profile: Dictionary = {},
+	declarative_presentation: bool = false,
 ) -> CommandData:
 	var raw = token.raw_text
 	var bracket_start = raw.find("\u300c")
@@ -630,7 +827,7 @@ static func _parse_narration(
 	var transition = _extract_metadata_tag(raw, bracket_end, "transition")
 	var duration_ms = _extract_duration_ms(raw, bracket_end, data, token.line)
 
-	return _make_cmd("dialogue", {
+	var params := {
 		"character": "",
 		"text": text,
 		"voice": voice,
@@ -639,7 +836,10 @@ static func _parse_narration(
 		"transition": transition if transition != "" else "cut",
 		"duration_ms": duration_ms,
 		"mode": mode,
-	})
+	}
+	_attach_dialogue_profile(
+		params, profile_name, profile, declarative_presentation)
+	return _make_cmd("dialogue", params)
 
 
 static func _parse_monologue(token: DslToken, data: ScenarioData) -> CommandData:
@@ -778,7 +978,14 @@ static func _close_if_block(ctx: Dictionary, data: ScenarioData) -> SceneData:
 
 # --- Helpers ---
 
-static func _build_combine_command(character: String, segments: Array, mode: String) -> CommandData:
+static func _build_combine_command(
+	character: String,
+	segments: Array,
+	mode: String,
+	profile_name: String = "",
+	profile: Dictionary = {},
+	declarative_presentation: bool = false,
+) -> CommandData:
 	if segments.size() == 0:
 		return null
 	# Concatenate segment text for typewriter display / backlog
@@ -787,14 +994,31 @@ static func _build_combine_command(character: String, segments: Array, mode: Str
 		full_text += String(seg.get("text", ""))
 	# Primary voice = first segment's voice (used by #voice: field / replay button)
 	var primary_voice := String(segments[0].get("voice", ""))
-	return _make_cmd("dialogue", {
+	var params := {
 		"character": character,
 		"text": full_text,
 		"voice": primary_voice,
 		"avatar": String(segments[0].get("avatar", "")),
 		"mode": mode,
 		"segments": segments.duplicate(true),
-	})
+	}
+	_attach_dialogue_profile(
+		params, profile_name, profile, declarative_presentation)
+	return _make_cmd("dialogue", params)
+
+
+static func _attach_dialogue_profile(
+	params: Dictionary,
+	profile_name: String,
+	profile: Dictionary,
+	declarative_presentation: bool,
+) -> void:
+	if declarative_presentation:
+		params["declarative_presentation"] = true
+	if profile_name.is_empty():
+		return
+	params["presentation_profile_name"] = profile_name
+	params["presentation_profile"] = profile.duplicate(true)
 
 
 static func _make_cmd(type: String, params: Dictionary) -> CommandData:
@@ -806,10 +1030,17 @@ static func _make_cmd(type: String, params: Dictionary) -> CommandData:
 
 static func _split_args(text: String) -> Array:
 	var result: Array = []
-	for part in text.split(" "):
-		var stripped = part.strip_edges()
-		if stripped != "":
-			result.append(stripped)
+	var current := ""
+	for index in range(text.length()):
+		var character := text.substr(index, 1)
+		if _is_inline_whitespace(character):
+			if not current.is_empty():
+				result.append(current)
+				current = ""
+		else:
+			current += character
+	if not current.is_empty():
+		result.append(current)
 	return result
 
 
@@ -875,3 +1106,34 @@ static func _decode_text_escapes(text: String) -> String:
 				result += "\\" + escaped
 		i += 2
 	return result
+
+
+static func _strip_inline_comment(text: String) -> String:
+	if text.length() < 2:
+		return text
+	var closing_quote := ""
+	var escaped := false
+	for index in range(text.length() - 1):
+		var character := text.substr(index, 1)
+		if not closing_quote.is_empty():
+			if escaped:
+				escaped = false
+			elif character == "\\":
+				escaped = true
+			elif character == closing_quote:
+				closing_quote = ""
+			continue
+		match character:
+			"\"", "'":
+				closing_quote = character
+			"“":
+				closing_quote = "”"
+			"/":
+				if text.substr(index + 1, 1) == "/" \
+					and (index == 0 or _is_inline_whitespace(text.substr(index - 1, 1))):
+					return text.substr(0, index).strip_edges()
+	return text
+
+
+static func _is_inline_whitespace(character: String) -> bool:
+	return not character.is_empty() and character.strip_edges().is_empty()

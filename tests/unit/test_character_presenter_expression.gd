@@ -17,7 +17,40 @@ func _get_char_layer() -> CanvasLayer:
 
 
 func _get_slot_left() -> Control:
-	return _game_scene.get_node("CharacterLayer/SlotLeft")
+	return _game_scene.get_node("CharacterLayer/ShakeRoot/SlotLeft")
+
+
+func test_builtin_shake_root_preserves_character_anchor_layout() -> void:
+	var shake_root: Control = _game_scene.get_node("CharacterLayer/ShakeRoot")
+	var viewport_size := _game_scene.get_viewport().get_visible_rect().size
+	assert_eq(shake_root.size, viewport_size, "ShakeRoot must supply the viewport anchor rect")
+	assert_eq(shake_root.mouse_filter, Control.MOUSE_FILTER_IGNORE)
+	for slot_name in ["SlotLeft", "SlotCenter", "SlotRight"]:
+		var slot: Control = shake_root.get_node(slot_name)
+		var expected_size := Vector2(
+			(slot.anchor_right - slot.anchor_left) * viewport_size.x
+				+ slot.offset_right - slot.offset_left,
+			(slot.anchor_bottom - slot.anchor_top) * viewport_size.y
+				+ slot.offset_bottom - slot.offset_top,
+		)
+		assert_eq(slot.size, expected_size, "%s anchors must resolve against the viewport" % slot_name)
+		assert_true(slot.size.x > 0.0 and slot.size.y > 0.0)
+
+
+func test_legacy_direct_child_scene_still_resolves_character_slots() -> void:
+	var layer := CanvasLayer.new()
+	layer.set_script(load("res://addons/stella/presentation/character/character_presenter.gd"))
+	var slots: Array[Control] = []
+	for node_name in ["SlotLeft", "SlotCenter", "SlotRight"]:
+		var slot := Control.new()
+		slot.name = node_name
+		layer.add_child(slot)
+		slots.append(slot)
+	add_child_autoqfree(layer)
+	await get_tree().process_frame
+	assert_same(layer.slot_left, slots[0])
+	assert_same(layer.slot_center, slots[1])
+	assert_same(layer.slot_right, slots[2])
 
 
 func test_char_show_creates_sprite_node_with_texture():

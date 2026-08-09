@@ -99,8 +99,20 @@ sakura「那个人就是..{wait:500}{speed:0.3}你吗？」
 ### 3.3 对话框模式切换
 
 ```
-// 切换到全屏文本模式（独白、信件、旁白）
-@nvl
+// 在 STLA 顶部声明一套可复用的 NVL 表现 Profile。
+// 同名声明会按书写顺序合并，便于按职责拆行。
+@dialogue_profile novel panel_anchors=0,0,1,1 panel_offsets=0,0,0,0
+@dialogue_profile novel text_anchors=0.15,0.1,0.85,0.7 text_margins=20,20,20,20
+@dialogue_profile novel horizontal_alignment=left vertical_alignment=top line_spacing=8
+@dialogue_profile novel background_visible=true background_modulate=#ffffff00
+@dialogue_profile novel show=quick_menu hide=adv_chrome
+
+// ADV 也可以选择命名 Profile；未写 @adv 时使用场景原始 ADV。
+@dialogue_profile message panel_anchors=0,0.72,1,1
+@adv profile=message
+
+// 选择命名 Profile，切换到 NVL 模式。
+@nvl profile=novel
 「那是一个寒冷的冬天。」
 「风呼啸着穿过空旷的街道。」
 「没有人知道，一切即将改变。」
@@ -112,7 +124,30 @@ sakura「那个人就是..{wait:500}{speed:0.3}你吗？」
 @overlay off
 ```
 
-`@nvl` / `@overlay` 作为模式开关，之后的所有对话都使用该模式，直到 `off` 或切换。不需要每句都写 `mode`。
+`@adv` / `@nvl` / `@overlay` 作为模式开关，之后的所有对话都使用该模式，直到 `off` 或切换。不需要每句都写 `mode`。不带 `profile` 的旧 `@nvl` / `@overlay` 保持旧版默认表现；`profile=<name>` 从当前 STLA 文件的 `@dialogue_profile` 声明中选择一套表现。Profile 是编译期数据，可以写在引用之后，但建议统一放在文件顶部。若先用 `@adv profile=message` 配置 ADV，`@nvl off` / `@overlay off` 会恢复 `message`；否则恢复场景编排的 ADV 基线。
+
+同一个 Profile 可以拆成多行声明，后写属性覆盖同名旧属性。每个属性都独立生效；未写的属性保留场景编排值，不会因为只修改行距而顺带重置对齐、区域或滚动策略：
+
+| 属性 | 值 | 作用 |
+|------|----|------|
+| `panel_anchors` / `panel_offsets` | `left,top,right,bottom` | 对话面板锚点（0..1）与像素偏移 |
+| `panel_modulate` | `#RRGGBBAA` | 整个对话面板的颜色调制 |
+| `text_anchors` / `text_offsets` | `left,top,right,bottom` | 文字区域锚点与像素偏移 |
+| `text_margins` | `left,top,right,bottom` | 文字区域四边内缩，必须非负 |
+| `horizontal_alignment` | `left/center/right/fill` | 水平对齐 |
+| `vertical_alignment` | `top/center/bottom/fill` | 垂直对齐 |
+| `line_spacing` | 整数 | 行距像素值 |
+| `fit_content` | `true/false` | 文字控件是否跟随内容高度 |
+| `scroll_active` / `scroll_following` | `true/false` | 是否允许滚动、是否跟随新增文字 |
+| `autowrap_mode` | `off/arbitrary/word/word_smart` | 自动换行策略 |
+| `clip_contents` | `true/false` | 是否裁剪超出文字区域的内容 |
+| `background_visible` | `true/false` | 对话背景是否可见 |
+| `background_modulate` | `#RRGGBBAA` | 对话背景颜色；alpha `00` 为透明 |
+| `show` / `hide` | 逗号分隔的分组名 | 显示或隐藏附属 UI 分组 |
+
+内置场景已提供 `quick_menu` 分组，并将默认文字布局根作为可定位区域，所以常见 NVL/overlay 版式只需要写 STLA。只有项目新增了特殊 frame、logo 或其他自定义 UI 时，才需要在 Godot 场景里给这些节点分组，例如 `adv_chrome`。
+
+无效数字、越界/倒置 anchors、负 margin、非法枚举、未知属性或不存在的 Profile 都会生成包含 STLA 行号的解析诊断。编译后的每条对话命令都持有已解析 Profile 的独立副本，因此存档、回滚和跳转不依赖隐藏的全局样式状态；`off` 会恢复进入声明式模式前的 ADV 场景基线。
 
 ### 3.4 背景
 
@@ -248,8 +283,6 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
 @effect flash red 0.25
 // 也支持十六进制颜色
 @effect flash #ff0000 0.25
-// 模糊
-@effect blur 0.5
 // 清除所有特效
 @effect off
 
@@ -259,9 +292,11 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
 @fade in 1.0
 ```
 
-**shake 参数**：`intensity` 是每帧 ± 偏移像素的幅度（默认 10），`duration` 是总时长秒（默认 0.3）。
+**shake 参数**：`intensity` 是每次采样 ± 偏移像素的幅度（默认 10），`duration` 是总时长秒（默认 0.3）。数值必须有限，时长不能为负；错误参数会产生带行号的解析诊断并安全地跳过该特效，不会中断已经播放中的效果。负强度会取绝对值并产生警告；运行时还会按 `ScreenEffects.max_shake_intensity`（默认 4096）以及框架固定的 4096 绝对安全上限限制极端强度。
 
-**flash 参数**：`color` 接受 Godot 命名颜色（`white`/`red`/`black`/`blue`/...）或十六进制字符串（`#ff0000`），未知名会 fallback 到白色。`duration` 是淡出总时长秒（默认 0.2）。
+**flash 参数**：`color` 接受 Godot 命名颜色（`white`/`red`/`black`/`blue`/...）或十六进制字符串（`#ff0000`），未知名会 fallback 到白色。`duration` 是淡出总时长秒（默认 0.2），必须是非负有限数值。flash 的实际绘制层由游戏场景中的 `ScreenEffects` 配置决定；自定义场景的 shake 根节点与 flash 层级规范见[使用指南](USAGE.md)。
+
+当前内置效果只有 `shake`、`flash` 和 `off`。其它 effect type 会产生 warning，并连同原始位置参数数组 `args` 转发给 `SignalBus.effect_requested`，供项目自定义监听器处理；拼写错误因此不会再静默消失。内置效果如果参数过多会产生 error 并跳过。
 
 ### 3.10 分支选择
 
@@ -372,7 +407,7 @@ sakura「我数学肯定完蛋了。」 #voice:sakura_019
 
 - 块内只允许 `@expr` 和 dialogue 行（角色名必须一致，或全为旁白）
 - 其它指令（`@bg`、`@anim` 等）不允许出现在块内
-- 不支持 NVL / overlay 模式下的特殊行为（按普通合并处理）
+- 跟随当前 NVL / overlay 模式及其命名 Profile
 
 ### 3.15 等待
 
@@ -486,9 +521,11 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | CG | `@cg asset [mode] [transition] [duration]` | `@cg asset` |
 | BGM | `@bgm asset fadein` | `@bgm asset` |
 | 音效 | `@se asset` | `@se asset` |
-| 全屏对话 | `@nvl ... @nvl off` | — |
-| 无框叠字 | `@overlay ... @overlay off` | — |
-| 特效 | `@effect type` | — |
+| 对话 Profile | `@dialogue_profile name key=value...` | — |
+| ADV 对话 | `@adv profile=name` | `@adv` |
+| 全屏对话 | `@nvl profile=name ... @nvl off` | `@nvl` |
+| 无框叠字 | `@overlay profile=name ... @overlay off` | `@overlay` |
+| 特效 | `@effect shake/flash/off ...` | — |
 | 黑屏 | `@fade out/in duration` | `@fade out/in` |
 | 选择 | `@choice` + 选项列表 | — |
 | 变量 | `@set var = value` | — |

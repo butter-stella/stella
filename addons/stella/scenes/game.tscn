@@ -14,7 +14,16 @@
 layer = 0
 script = ExtResource("1")
 
-[node name="BgFront" type="TextureRect" parent="BackgroundLayer" unique_id=484532639]
+[node name="ShakeRoot" type="Control" parent="BackgroundLayer"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="BgFront" type="TextureRect" parent="BackgroundLayer/ShakeRoot" unique_id=484532639]
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
@@ -22,7 +31,7 @@ grow_horizontal = 2
 grow_vertical = 2
 stretch_mode = 6
 
-[node name="BgBack" type="TextureRect" parent="BackgroundLayer" unique_id=1696053110]
+[node name="BgBack" type="TextureRect" parent="BackgroundLayer/ShakeRoot" unique_id=1696053110]
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
@@ -33,7 +42,16 @@ stretch_mode = 6
 [node name="CharacterLayer" type="CanvasLayer" parent="." unique_id=1295087027]
 script = ExtResource("2")
 
-[node name="SlotLeft" type="Control" parent="CharacterLayer" unique_id=1373131325]
+[node name="ShakeRoot" type="Control" parent="CharacterLayer"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="SlotLeft" type="Control" parent="CharacterLayer/ShakeRoot" unique_id=1373131325]
 layout_mode = 3
 anchor_left = -0.2
 anchor_top = 0.2
@@ -44,7 +62,7 @@ offset_top = -133.0
 offset_right = 287.0
 offset_bottom = -133.0
 
-[node name="SlotCenter" type="Control" parent="CharacterLayer" unique_id=683235921]
+[node name="SlotCenter" type="Control" parent="CharacterLayer/ShakeRoot" unique_id=683235921]
 layout_mode = 3
 anchor_left = 0.1
 anchor_top = 0.2
@@ -55,7 +73,7 @@ offset_top = -136.0
 offset_right = 2.0
 offset_bottom = -136.0
 
-[node name="SlotRight" type="Control" parent="CharacterLayer" unique_id=407592576]
+[node name="SlotRight" type="Control" parent="CharacterLayer/ShakeRoot" unique_id=407592576]
 layout_mode = 3
 anchor_left = 0.6
 anchor_top = 0.2
@@ -80,6 +98,7 @@ grow_horizontal = 2
 grow_vertical = 0
 mouse_filter = 2
 script = ExtResource("3")
+text_rect_target_path = NodePath("HBox")
 
 [node name="DialogueBg" type="Panel" parent="UILayer/DialoguePanel"]
 layout_mode = 1
@@ -98,6 +117,7 @@ layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
+offset_bottom = -45.0
 grow_horizontal = 2
 grow_vertical = 2
 
@@ -148,9 +168,19 @@ bbcode_enabled = true
 fit_content = true
 visible_characters = 0
 
-[node name="Toolbar" type="HBoxContainer" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox" unique_id=946234756]
+[node name="Toolbar" type="HBoxContainer" parent="UILayer/DialoguePanel" unique_id=946234756 groups=["quick_menu"]]
 unique_name_in_owner = true
-layout_mode = 2
+layout_mode = 1
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 300.0
+offset_top = -55.0
+offset_right = -30.0
+offset_bottom = -15.0
+grow_horizontal = 2
+grow_vertical = 0
 alignment = 2
 
 [node name="ChoicePanel" type="PanelContainer" parent="UILayer" unique_id=1398717553]
@@ -205,4 +235,9 @@ script = ExtResource("5")
 
 [node name="ScreenEffects" type="Node" parent="." unique_id=191658614]
 script = ExtResource("8")
-shake_target_paths = Array[NodePath]([NodePath("../BackgroundLayer"), NodePath("../CharacterLayer")])
+shake_target_paths = Array[NodePath]([NodePath("../BackgroundLayer/ShakeRoot"), NodePath("../CharacterLayer/ShakeRoot")])
+shake_coverage_target_paths = Array[NodePath]([NodePath("../BackgroundLayer/ShakeRoot")])
+flash_canvas_path = NodePath("FlashCanvas")
+
+[node name="FlashCanvas" type="CanvasLayer" parent="ScreenEffects"]
+layer = 100
