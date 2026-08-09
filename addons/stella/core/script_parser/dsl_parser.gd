@@ -172,34 +172,39 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 							current_scene = _close_if_block(if_stack.pop_back(), data)
 					# else: @end at scene level, ignore
 				elif cmd_name in ["adv", "nvl", "overlay"]:
-					var selection := DialogueProfileParser.parse_mode_directive(
-						token.raw_text, cmd_name, dialogue_profiles, token.line)
-					data.diagnostics.append_array(selection["diagnostics"])
-					if cmd_name == "adv":
-						current_mode = "adv"
-						adv_dialogue_profile_name = selection["profile_name"]
-						adv_dialogue_profile = selection["profile"]
-						current_dialogue_profile_name = adv_dialogue_profile_name
-						current_dialogue_profile = adv_dialogue_profile
-						# Explicit @adv opts into authored-baseline restoration even
-						# without a named profile.
-						current_declarative_presentation = true
-					elif selection["mode"] == "adv":
-						# @nvl off / @overlay off returns to the configured ADV
-						# profile, or to the exact authored baseline after a named
-						# non-ADV profile was active.
-						current_mode = "adv"
-						current_dialogue_profile_name = adv_dialogue_profile_name
-						current_dialogue_profile = adv_dialogue_profile
-						current_declarative_presentation = (
-							current_declarative_presentation
-							or not adv_dialogue_profile_name.is_empty()
-						)
+					if in_combine:
+						_record_diagnostic(data, "warning",
+							"DslParser: @%s is not allowed inside @combine block (line %d)"
+							% [cmd_name, token.line], token.line)
 					else:
-						current_mode = selection["mode"]
-						current_dialogue_profile_name = selection["profile_name"]
-						current_dialogue_profile = selection["profile"]
-						current_declarative_presentation = not current_dialogue_profile_name.is_empty()
+						var selection := DialogueProfileParser.parse_mode_directive(
+							token.raw_text, cmd_name, dialogue_profiles, token.line)
+						data.diagnostics.append_array(selection["diagnostics"])
+						if cmd_name == "adv":
+							current_mode = "adv"
+							adv_dialogue_profile_name = selection["profile_name"]
+							adv_dialogue_profile = selection["profile"]
+							current_dialogue_profile_name = adv_dialogue_profile_name
+							current_dialogue_profile = adv_dialogue_profile
+							# Explicit @adv opts into authored-baseline restoration even
+							# without a named profile.
+							current_declarative_presentation = true
+						elif selection["mode"] == "adv":
+							# @nvl off / @overlay off returns to the configured ADV
+							# profile, or to the exact authored baseline after a named
+							# non-ADV profile was active.
+							current_mode = "adv"
+							current_dialogue_profile_name = adv_dialogue_profile_name
+							current_dialogue_profile = adv_dialogue_profile
+							current_declarative_presentation = (
+								current_declarative_presentation
+								or not adv_dialogue_profile_name.is_empty()
+							)
+						else:
+							current_mode = selection["mode"]
+							current_dialogue_profile_name = selection["profile_name"]
+							current_dialogue_profile = selection["profile"]
+							current_declarative_presentation = not current_dialogue_profile_name.is_empty()
 				elif cmd_name == "dialogue_profile":
 					# Compile-time declaration; already collected in a pre-pass so
 					# profiles may be referenced before their declaration.

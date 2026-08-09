@@ -262,6 +262,73 @@ func test_stla_properties_are_independent_and_preserve_unwritten_authored_values
 	await get_tree().process_frame
 
 
+func test_profile_state_is_restored_before_unprofiled_legacy_mode() -> void:
+	_presenter = FIXTURE.instantiate()
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	_presenter._char_interval = 0.0
+
+	var text_label: RichTextLabel = _presenter.get_node("TextRegion/TextLabel")
+	var background: Control = _presenter.get_node("DialogueBg")
+	var adv_chrome: Control = _presenter.get_node("AdvChrome")
+	SignalBus.emit_show_dialogue(
+		"",
+		[{"text": ""}],
+		"nvl",
+		{
+			"horizontal_alignment": HORIZONTAL_ALIGNMENT_CENTER,
+			"background_visible": false,
+			"visibility_groups": {"adv_chrome": false},
+		},
+		true,
+	)
+	assert_eq(text_label.horizontal_alignment, HORIZONTAL_ALIGNMENT_CENTER)
+	assert_false(background.visible)
+	assert_false(adv_chrome.visible)
+
+	SignalBus.emit_show_dialogue("", [{"text": ""}], "overlay")
+	assert_eq(_rect_anchors(_presenter), Vector4(0.15, 0.3, 0.85, 0.7))
+	assert_eq(text_label.horizontal_alignment, HORIZONTAL_ALIGNMENT_LEFT)
+	assert_true(background.visible)
+	assert_eq(background.modulate, AUTHORED_BACKGROUND_MODULATE)
+	assert_true(adv_chrome.visible)
+	await get_tree().process_frame
+
+
+func test_hiding_dialogue_restores_profile_state_and_clears_active_profile() -> void:
+	_presenter = FIXTURE.instantiate()
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	_presenter._char_interval = 0.0
+
+	var text_label: RichTextLabel = _presenter.get_node("TextRegion/TextLabel")
+	var background: Control = _presenter.get_node("DialogueBg")
+	var adv_chrome: Control = _presenter.get_node("AdvChrome")
+	SignalBus.emit_show_dialogue(
+		"",
+		[{"text": ""}],
+		"nvl",
+		{
+			"horizontal_alignment": HORIZONTAL_ALIGNMENT_CENTER,
+			"background_visible": false,
+			"visibility_groups": {"adv_chrome": false},
+		},
+		true,
+	)
+
+	SignalBus.hide_dialogue.emit()
+	assert_false(_presenter.visible)
+	assert_eq(_rect_anchors(_presenter), AUTHORED_PANEL_ANCHORS)
+	assert_eq(_rect_offsets(_presenter), AUTHORED_PANEL_OFFSETS)
+	assert_eq(text_label.horizontal_alignment, HORIZONTAL_ALIGNMENT_LEFT)
+	assert_true(background.visible)
+	assert_eq(background.modulate, AUTHORED_BACKGROUND_MODULATE)
+	assert_true(adv_chrome.visible)
+	assert_null(_presenter._active_stla_mode_profile)
+	assert_false(_presenter._active_uses_stla_presentation)
+	await get_tree().process_frame
+
+
 func test_builtin_scenes_expose_stla_profile_targets_without_scene_editing() -> void:
 	for scene_path in [
 		"res://addons/stella/scenes/game.tscn",

@@ -701,14 +701,14 @@ func _apply_dialogue_mode_presentation(
 	stla_mode_profile: DialogueModeProfile = null,
 	uses_stla_presentation: bool = false,
 ) -> bool:
+	# Every transition starts from the exact scene-authored baseline. This also
+	# scrubs opt-in profile fields before returning to an unprofiled legacy mode.
+	_restore_authored_presentation()
 	if (not uses_stla_presentation
 		and stla_mode_profile == null and presentation_profile == null):
 		_apply_legacy_mode_layout(mode)
 		return false
 
-	# Every configured transition starts from the exact scene-authored baseline,
-	# so mode-specific overrides never leak into the next mode.
-	_restore_authored_presentation()
 	var mode_profile := stla_mode_profile
 	if mode_profile == null and presentation_profile != null:
 		mode_profile = presentation_profile.get_mode(mode)
@@ -1051,6 +1051,11 @@ func _on_hide_dialogue():
 	# reset and mark its line in the replacement ReadFlagManager.
 	_dialogue_gen += 1
 	_is_typing = false
+	_restore_authored_presentation()
+	_auxiliary_visibility_baseline.clear()
+	_active_stla_mode_profile = null
+	_active_uses_stla_presentation = false
+	_current_mode = "adv"
 	_current_scenario_id = ""
 	_current_scene_id = ""
 	_current_command_index = -1
