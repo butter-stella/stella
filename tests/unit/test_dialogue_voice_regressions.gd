@@ -295,7 +295,7 @@ func test_backlog_replay_does_not_change_named_stage_layers():
 	}], true)
 	await get_tree().process_frame
 	var layer := _get_stage_presenter().get_layer_node("sakura")
-	var sprite := layer.get_node("Composite/AssetSprite") as Sprite2D
+	var sprite := layer.find_child("AssetSprite", true, false) as Sprite2D
 	assert_not_null(sprite)
 	var initial_texture := sprite.texture
 

@@ -89,7 +89,11 @@ func _emit_operations(operations: Array, force_cut: bool = true) -> void:
 
 
 func _sprite(layer: Node2D, channel: String) -> Sprite2D:
-	return layer.get_node("Composite/%sSprite" % channel.capitalize()) as Sprite2D
+	return layer.find_child(
+		"%sSprite" % channel.capitalize(),
+		true,
+		false,
+	) as Sprite2D
 
 
 func test_default_and_demo_scenes_have_one_dynamic_stage_layer() -> void:
@@ -130,12 +134,12 @@ func test_named_layer_mounts_under_shake_root_and_projects_state() -> void:
 		"rotation": 37.0,
 		"z_index": 12,
 		"opacity": 0.45,
-		"redraw": {
-			"grayscale": 0.4,
-			"blur": [2.0, 3.0],
-			"tint": "#80ffffff",
-			"flip_x": true,
-		},
+		"flip_x": true,
+		"redraw": [
+			{"type": "grayscale", "amount": 0.4},
+			{"type": "blur", "radius": [2, 3]},
+			{"type": "tint", "color": "#80ffffff"},
+		],
 	})])
 
 	var layer: Node2D = _presenter.get_layer_node(layer_id)
@@ -216,6 +220,225 @@ func test_hundreds_of_face_updates_preserve_resident_nodes_and_textures() -> voi
 	assert_same(_sprite(hero_layer, "body"), body_sprite)
 	assert_same(body_sprite.texture, body_texture)
 	assert_same(_sprite(hero_layer, "face"), face_sprite)
+
+
+func test_face_only_update_reuses_redraw_material_and_mask_texture() -> void:
+	var mask_path := "res://tests/fixtures/stage/redraw_mask.png"
+	_emit_operations([_operation("show", "hero", {
+		"body": "stage:bg_cafe",
+		"face": "res://addons/gut/images/yellow.png",
+		"redraw": [
+			{
+				"type": "color_overlay",
+				"color": "#2a5c8e40",
+				"blend": "soft_light",
+			},
+			{"type": "brightness_contrast", "brightness": 17, "contrast": -24},
+			{
+				"type": "clip",
+				"asset": mask_path,
+				"offset": [2.0, 1.0],
+				"fit": "native",
+			},
+		],
+	})])
+
+	var layer := _presenter.get_layer_node("hero")
+	var body_sprite := _sprite(layer, "body")
+	var body_texture := body_sprite.texture
+	var source := layer.find_child("Source", true, false)
+	var record: Dictionary = _presenter._layers["hero"]
+	var material := record["redraw_material"] as ShaderMaterial
+	var mask_texture := record["redraw_mask_texture"] as Texture2D
+	assert_not_null(mask_texture)
+	assert_same(
+		material.get_shader_parameter("clip_texture"),
+		mask_texture,
+	)
+
+	_emit_operations([_operation("update", "hero", {
+		"face": "res://addons/gut/images/green.png",
+	})])
+
+	assert_same(_presenter.get_layer_node("hero"), layer)
+	assert_same(layer.find_child("Source", true, false), source)
+	assert_same(_sprite(layer, "body"), body_sprite)
+	assert_same(body_sprite.texture, body_texture)
+	var updated_record: Dictionary = _presenter._layers["hero"]
+	assert_same(updated_record["redraw_material"], material)
+	assert_same(updated_record["redraw_mask_texture"], mask_texture)
+	assert_same(
+		material.get_shader_parameter("clip_texture"),
+		mask_texture,
+	)
+
+
+func test_blur_keeps_its_authored_index_in_one_stable_material() -> void:
+	_emit_operations([_operation("show", "blurred", {
+		"asset": "stage:bg_cafe",
+		"redraw": [
+			{"type": "grayscale", "amount": 1.0},
+			{"type": "blur", "radius": [2, 3]},
+			{"type": "tint", "color": "#ffffffff"},
+		],
+	})])
+	var record: Dictionary = _presenter._layers["blurred"]
+	var layer := _presenter.get_layer_node("blurred")
+	var composite := layer.get_node("Composite") as CanvasGroup
+	var source := layer.get_node("Composite/Source") as Node2D
+	var material := record["redraw_material"] as ShaderMaterial
+	var parameters := material.get_shader_parameter(
+		"effect_parameters"
+	) as PackedVector4Array
+	assert_same(composite.material, material)
+	assert_same(source.get_parent(), composite)
+	assert_eq(material.get_shader_parameter("effect_count"), 3)
+	assert_eq(material.get_shader_parameter("blur_effect_index"), 1)
+	assert_eq(material.get_shader_parameter("blur_radius"), Vector2(2.0, 3.0))
+	assert_eq([parameters[0].x, parameters[1].x, parameters[2].x], [3.0, 6.0, 4.0])
+
+
+func test_transform_only_update_recomputes_global_blur_margin() -> void:
+	var redraw := [{"type": "blur", "radius": [2, 0]}]
+	_emit_operations([_operation("show", "scaled_blur", {
+		"asset": "stage:bg_cafe",
+		"redraw": redraw,
+	})])
+	var layer := _presenter.get_layer_node("scaled_blur")
+	var composite := layer.get_node("Composite") as CanvasGroup
+	var record: Dictionary = _presenter._layers["scaled_blur"]
+	var material := record["redraw_material"] as ShaderMaterial
+	assert_almost_eq(composite.fit_margin, 4.0, 0.001)
+
+	_emit_operations([_operation("update", "scaled_blur", {
+		"scale": [3.0, 3.0],
+	})])
+	assert_same(record["redraw_material"], material)
+	assert_almost_eq(composite.fit_margin, 8.0, 0.001)
+
+
+func test_viewport_resize_finishes_stale_tweens_and_reprojects_fit_and_clip() -> void:
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(200, 100)
+	add_child_autoqfree(viewport)
+	var presenter := StagePresenter.new()
+	viewport.add_child(presenter)
+	await get_tree().process_frame
+
+	presenter._apply_operations([_operation("show", "resized", {
+		"asset": "res://tests/fixtures/stage/redraw_source.png",
+		"fit": "stretch",
+		"redraw": [{
+			"type": "clip",
+			"asset": "res://tests/fixtures/stage/redraw_mask.png",
+			"offset": [0.0, 0.0],
+			"fit": "stretch",
+		}],
+	})], true)
+	var initial_record: Dictionary = presenter._layers["resized"]
+	var initial_material := initial_record["redraw_material"] as ShaderMaterial
+	var initial_mask := initial_record["redraw_mask_texture"] as Texture2D
+	presenter._apply_operations([_operation("update", "resized", {
+		"opacity": 0.5,
+	}, "fade", 10.0)], false)
+	assert_true(presenter._layer_tweens.has("resized"))
+
+	var completions: Array = []
+	presenter.layer_transition_finished.connect(
+		func(layer_id: String) -> void: completions.append(layer_id)
+	)
+	viewport.size = Vector2i(100, 50)
+	presenter._on_viewport_size_changed()
+
+	var layer := presenter.get_layer_node("resized")
+	var asset := _sprite(layer, "asset")
+	var record: Dictionary = presenter._layers["resized"]
+	var material := record["redraw_material"] as ShaderMaterial
+	assert_false(presenter._layer_tweens.has("resized"))
+	assert_eq(completions, ["resized"])
+	assert_same(material, initial_material)
+	assert_same(record["redraw_mask_texture"], initial_mask)
+	assert_eq(asset.position, Vector2(50.0, 25.0))
+	assert_eq(asset.scale, Vector2(6.25, 6.25))
+	assert_eq(
+		material.get_shader_parameter("clip_rect"),
+		Vector4(0.0, 0.0, 100.0, 50.0),
+	)
+	assert_almost_eq(
+		(layer.get_node("Composite") as CanvasGroup).self_modulate.a,
+		0.5,
+		0.001,
+	)
+
+	# Pending removes have no canonical target to re-layout and must complete.
+	presenter._apply_operations([_operation("show", "removed", {
+		"asset": "res://tests/fixtures/stage/redraw_source.png",
+	})], true)
+	presenter._apply_operations([
+		_operation("remove", "removed", {}, "fade", 10.0),
+	], false)
+	assert_true(presenter._layer_tweens.has("removed"))
+	presenter._on_viewport_size_changed()
+	assert_null(presenter.get_layer_node("removed"))
+	assert_false(presenter._layer_tweens.has("removed"))
+
+
+func test_changing_and_clearing_clip_releases_the_old_record_reference() -> void:
+	var first_path := "res://tests/fixtures/stage/redraw_mask.png"
+	var second_path := "res://tests/fixtures/stage/redraw_source.png"
+	_emit_operations([_operation("show", "masked", {
+		"asset": "stage:bg_cafe",
+		"redraw": [{
+			"type": "clip",
+			"asset": first_path,
+			"offset": [0.0, 0.0],
+			"fit": "native",
+		}],
+	})])
+	var record: Dictionary = _presenter._layers["masked"]
+	var material := record["redraw_material"] as ShaderMaterial
+	var first_texture := record["redraw_mask_texture"] as Texture2D
+	assert_not_null(first_texture)
+
+	_emit_operations([_operation("update", "masked", {"redraw": [{
+		"type": "clip",
+		"asset": second_path,
+		"offset": [0.0, 0.0],
+		"fit": "native",
+	}]})])
+	record = _presenter._layers["masked"]
+	assert_eq(record["redraw_mask_asset"], second_path)
+	assert_not_same(record["redraw_mask_texture"], first_texture)
+	assert_same(record["redraw_material"], material)
+
+	_emit_operations([_operation("update", "masked", {"redraw": []})])
+	record = _presenter._layers["masked"]
+	assert_eq(record["redraw_mask_asset"], "")
+	assert_null(record["redraw_mask_texture"])
+	assert_same(record["redraw_material"], material)
+	assert_null((_presenter.get_layer_node("masked").get_node(
+		"Composite"
+	) as CanvasGroup).material)
+
+
+func test_missing_clip_texture_configures_a_fail_closed_pass() -> void:
+	var missing_path := "res://tests/fixtures/stage/does_not_exist.png"
+	_emit_operations([_operation("show", "missing_mask", {
+		"asset": "stage:bg_cafe",
+		"redraw": [{
+			"type": "clip",
+			"asset": missing_path,
+			"offset": [0.0, 0.0],
+			"fit": "native",
+		}],
+	})])
+	assert_push_warning(
+		"StagePresenter: redraw texture not found: %s" % missing_path
+	)
+	var record: Dictionary = _presenter._layers["missing_mask"]
+	var material := record["redraw_material"] as ShaderMaterial
+	assert_false(bool(material.get_shader_parameter("clip_available")))
+	assert_null(material.get_shader_parameter("clip_texture"))
 
 
 func test_hide_retains_layer_while_remove_and_clear_release_it() -> void:
@@ -351,12 +574,13 @@ func test_fade_crossfades_textures_and_hides_by_opacity() -> void:
 	_emit_operations([_operation("update", "hero", {
 		"asset": "stage:bg_hallway",
 	}, "fade", 0.08)], false)
-	assert_eq(composite.get_child_count(), 4, "outgoing texture remains for crossfade")
+	var source := layer.find_child("Source", true, false)
+	assert_eq(source.get_child_count(), 4, "outgoing texture remains for crossfade")
 	assert_almost_eq(asset_sprite.modulate.a, 0.0, 0.001)
 	var tween: Tween = _presenter._layer_tweens["hero"]
 	tween.custom_step(1.0)
 	assert_false(_presenter._layer_transition_tokens.has("hero"))
-	assert_eq(composite.get_child_count(), 3)
+	assert_eq(source.get_child_count(), 3)
 	assert_almost_eq(asset_sprite.modulate.a, 1.0, 0.001)
 	assert_true(asset_sprite.texture.resource_path.ends_with("bg_hallway.png"))
 

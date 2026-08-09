@@ -15,6 +15,26 @@ func _op(
 	}
 
 
+func _redraw_pipeline() -> Array:
+	return [
+		{
+			"type": "color_overlay",
+			"color": "#2A5C8E40",
+			"blend": "soft_light",
+		},
+		{"type": "brightness_contrast", "brightness": 17, "contrast": -24},
+		{"type": "grayscale", "amount": 0.25},
+		{"type": "tint", "color": "#80ff40"},
+		{"type": "blur", "radius": [2, 3]},
+		{
+			"type": "clip",
+			"asset": "stage:synthetic_alpha_mask",
+			"offset": [12, 34],
+			"fit": "contain",
+		},
+	]
+
+
 func test_show_normalizes_complete_json_safe_state():
 	var layers := StageLayerState.reduce({}, [
 		_op("show", "hero/main", {
@@ -29,8 +49,8 @@ func test_show_normalizes_complete_json_safe_state():
 			"depth_scale": 0.8,
 			"z": 12,
 			"opacity": 0.6,
-			"grayscale": 0.25,
-			"blur": [2, 3],
+			"flip_x": true,
+			"redraw": _redraw_pipeline(),
 		}),
 	])
 
@@ -43,7 +63,22 @@ func test_show_normalizes_complete_json_safe_state():
 	assert_almost_eq(state["depth_scale"], 0.8, 0.001)
 	assert_eq(state["z_index"], 12)
 	assert_almost_eq(state["opacity"], 0.6, 0.001)
-	assert_eq(state["redraw"]["blur"], [2.0, 3.0])
+	assert_true(state["flip_x"])
+	assert_false(state["flip_y"])
+	assert_eq(state["redraw"].size(), 6)
+	assert_eq(state["redraw"][0], {
+		"type": "color_overlay",
+		"color": "#2a5c8e40",
+		"blend": "soft_light",
+	})
+	assert_eq(state["redraw"][1], {
+		"type": "brightness_contrast",
+		"brightness": 17,
+		"contrast": -24,
+	})
+	assert_eq(state["redraw"][3]["color"], "#80ff40ff")
+	assert_eq(state["redraw"][4]["radius"], [2, 3])
+	assert_eq(state["redraw"][5]["offset"], [12.0, 34.0])
 	assert_ne(JSON.stringify(layers), "", "stage snapshots must serialize as JSON")
 
 
@@ -99,6 +134,144 @@ func test_face_patch_preserves_body_and_unmentioned_transform():
 	assert_eq(layers["hero"]["body"], "stage:body")
 	assert_eq(layers["hero"]["face"], "stage:face_299")
 	assert_eq(layers["hero"]["position"], [100.0, 200.0])
+
+
+func test_redraw_patch_replaces_ordered_pipeline_while_omission_preserves_it():
+	var original_redraw := [
+		{"type": "brightness_contrast", "brightness": -17, "contrast": 23},
+		{"type": "brightness_contrast", "brightness": 5, "contrast": 10},
+	]
+	var layers := StageLayerState.reduce({}, [
+		_op("show", "hero", {"asset": "stage:hero", "redraw": original_redraw}),
+	])
+	assert_eq(layers["hero"]["redraw"], original_redraw)
+
+	layers = StageLayerState.reduce(layers, [
+		_op("update", "hero", {"opacity": 0.5}),
+	])
+	assert_eq(layers["hero"]["redraw"], original_redraw)
+
+	var replacement := [
+		{"type": "grayscale", "amount": 1.0},
+		{"type": "grayscale", "amount": 0.25},
+	]
+	layers = StageLayerState.reduce(layers, [
+		_op("update", "hero", {"redraw": replacement}),
+	])
+	assert_eq(layers["hero"]["redraw"], replacement)
+
+	layers = StageLayerState.reduce(layers, [
+		_op("update", "hero", {"redraw": []}),
+	])
+	assert_true(layers["hero"]["redraw"].is_empty())
+
+
+func test_redraw_schema_is_closed_and_rejects_the_whole_operation():
+	var layers := StageLayerState.reduce({}, [
+		_op("show", "hero", {"asset": "stage:hero"}),
+	])
+	var original := layers.duplicate(true)
+	var invalid_redraw_values: Array = [
+		{"grayscale": 1.0},
+		[{"type": "unknown_effect", "brightness": -17, "contrast": 23}],
+		[{"type": "color_overlay", "color": "#2a5c8e40"}],
+		[{
+			"type": "color_overlay",
+			"color": "#2a5c8e40",
+			"blend": "normal",
+			"opacity": 1.0,
+		}],
+		[{"type": "color_overlay", "color": 0xff2a5c8e, "blend": "normal"}],
+		[{"type": "color_overlay", "color": "#2a5c8e40", "blend": 20}],
+		[{"type": "color_overlay", "color": "#2a5c8e40", "blend": "screen"}],
+		[{"type": "brightness_contrast", "brightness": -256, "contrast": 0}],
+		[{"type": "brightness_contrast", "brightness": 0, "contrast": 101}],
+		[{"type": "grayscale", "amount": NAN}],
+		[{"type": "tint", "color": "red"}],
+		[{"type": "blur", "radius": [1.5, 2]}],
+		[
+			{"type": "blur", "radius": [1, 1]},
+			{"type": "blur", "radius": [2, 2]},
+		],
+		[
+			{
+				"type": "clip",
+				"asset": "stage:synthetic_alpha_mask_a",
+				"offset": [0.0, 0.0],
+				"fit": "native",
+			},
+			{
+				"type": "clip",
+				"asset": "stage:synthetic_alpha_mask_b",
+				"offset": [0.0, 0.0],
+				"fit": "native",
+			},
+		],
+		[{
+			"type": "clip",
+			"asset": "",
+			"offset": [0.0, 0.0],
+			"fit": "native",
+		}],
+		[{
+			"type": "clip",
+			"asset": "stage:synthetic_alpha_mask",
+			"offset": [0.0, INF],
+			"fit": "native",
+		}],
+		[{
+			"type": "clip",
+			"asset": "stage:synthetic_alpha_mask",
+			"offset": [0.0, 0.0],
+			"fit": "tile",
+		}],
+	]
+	for invalid_redraw in invalid_redraw_values:
+		var operation := _op("update", "hero", {
+			"opacity": 0.25,
+			"redraw": invalid_redraw,
+		})
+		assert_false(StageLayerState.validate_operation(operation, false))
+		layers = StageLayerState.reduce(layers, [operation], false)
+		assert_eq(layers, original)
+
+	var too_many: Array = []
+	for _index in range(StageLayerState.MAX_REDRAW_EFFECTS):
+		too_many.append({"type": "grayscale", "amount": 0.5})
+	assert_true(StageLayerState.validate_operation(
+		_op("update", "hero", {"redraw": too_many}),
+		false,
+	))
+	too_many.append({"type": "grayscale", "amount": 0.5})
+	assert_false(StageLayerState.validate_operation(
+		_op("update", "hero", {"redraw": too_many}),
+		false,
+	))
+
+
+func test_redraw_boundary_values_and_soft_light_are_valid():
+	var operation := _op("show", "hero", {"redraw": [
+		{"type": "color_overlay", "color": "#00000000", "blend": "normal"},
+		{"type": "color_overlay", "color": "#ffffffff", "blend": "soft_light"},
+		{"type": "brightness_contrast", "brightness": -255, "contrast": -100},
+		{"type": "brightness_contrast", "brightness": 255, "contrast": 100},
+		{"type": "grayscale", "amount": 0.0},
+		{"type": "grayscale", "amount": 1.0},
+		{
+			"type": "blur",
+			"radius": [0, StageLayerState.MAX_BLUR_RADIUS],
+		},
+		{
+			"type": "clip",
+			"asset": "background:synthetic_alpha_mask",
+			"offset": [-100.5, 200.25],
+			"fit": "stretch",
+		},
+	]})
+	assert_true(StageLayerState.validate_operation(operation, false))
+	var layers := StageLayerState.reduce({}, [operation], false)
+	assert_eq(layers["hero"]["redraw"].size(), 8)
+	assert_eq(layers["hero"]["redraw"][7]["offset"], [-100.5, 200.25])
 
 
 func test_hide_retains_resources_while_remove_and_clear_release_state():
@@ -182,7 +355,7 @@ func test_invalid_and_non_finite_values_preserve_json_safe_state():
 		}),
 	])
 
-	assert_eq(layers["hero"]["position"], [100.0, 999.0])
+	assert_eq(layers["hero"]["position"], [100.0, 200.0])
 	assert_eq(layers["hero"]["scale"], [0.5, 0.75])
 	assert_almost_eq(layers["hero"]["opacity"], 0.8, 0.001)
 	assert_true(layers["hero"]["visible"])
@@ -202,7 +375,14 @@ func test_stage_layer_handler_emits_one_atomic_operation():
 	command.params = {
 		"action": "show",
 		"id": "hero",
-		"properties": {"face": "stage:sad"},
+		"properties": {
+			"face": "stage:sad",
+			"redraw": [{
+				"type": "brightness_contrast",
+				"brightness": 17,
+				"contrast": -24,
+			}],
+		},
 		"transition": "fade",
 		"duration": 0.25,
 	}
@@ -212,6 +392,10 @@ func test_stage_layer_handler_emits_one_atomic_operation():
 	assert_false(received[0]["force_cut"])
 	assert_eq(received[0]["operations"][0]["id"], "hero")
 	assert_eq(received[0]["operations"][0]["properties"]["face"], "stage:sad")
+	assert_eq(
+		received[0]["operations"][0]["properties"]["redraw"][0]["brightness"],
+		17,
+	)
 	SignalBus.stage_operations_requested.disconnect(callback)
 	StellaRuntime.clear_stage_layers()
 

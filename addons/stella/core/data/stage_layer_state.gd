@@ -8,6 +8,8 @@ class_name StageLayerState extends RefCounted
 
 const MIN_Z_INDEX := -4096
 const MAX_Z_INDEX := 4096
+const MAX_REDRAW_EFFECTS := 16
+const MAX_BLUR_RADIUS := 32
 const VALID_ACTIONS := ["show", "update", "hide", "remove", "clear"]
 const VALID_TRANSITIONS := [
 	"cut", "none", "fade", "move",
@@ -23,13 +25,13 @@ const _KNOWN_OPERATION_KEYS := {
 }
 const _PAIR_PROPERTY_KEYS := [
 	"position", "origin", "scale", "zoom",
-	"asset_offset", "body_offset", "face_offset", "blur",
+	"asset_offset", "body_offset", "face_offset",
 ]
 const _NUMBER_PROPERTY_KEYS := [
 	"x", "y", "origin_x", "origin_y", "scale_x", "scale_y",
 	"zoom_x", "zoom_y", "asset_x", "asset_y", "body_x", "body_y",
-	"face_x", "face_y", "blur_x", "blur_y", "depth", "depth_scale",
-	"rotation", "rotation_degrees", "z", "z_index", "opacity", "grayscale",
+	"face_x", "face_y", "depth", "depth_scale",
+	"rotation", "rotation_degrees", "z", "z_index", "opacity",
 ]
 const _BOOL_PROPERTY_KEYS := ["visible", "flip_x", "flip_y"]
 
@@ -69,23 +71,23 @@ const _KNOWN_PROPERTY_KEYS := {
 	"opacity": true,
 	"fit": true,
 	"redraw": true,
-	"grayscale": true,
-	"blur": true,
-	"blur_x": true,
-	"blur_y": true,
-	"tint": true,
 	"flip_x": true,
 	"flip_y": true,
 	"metadata": true,
 }
-const _KNOWN_REDRAW_KEYS := {
-	"grayscale": true,
-	"blur": true,
-	"blur_x": true,
-	"blur_y": true,
-	"tint": true,
-	"flip_x": true,
-	"flip_y": true,
+const VALID_COLOR_OVERLAY_BLEND_MODES := ["normal", "soft_light"]
+const _REDRAW_EFFECT_KEYS := {
+	"color_overlay": {"type": true, "color": true, "blend": true},
+	"brightness_contrast": {"type": true, "brightness": true, "contrast": true},
+	"grayscale": {"type": true, "amount": true},
+	"tint": {"type": true, "color": true},
+	"blur": {"type": true, "radius": true},
+	"clip": {
+		"type": true,
+		"asset": true,
+		"offset": true,
+		"fit": true,
+	},
 }
 
 
@@ -108,13 +110,9 @@ static func default_state() -> Dictionary:
 		"visible": true,
 		"opacity": 1.0,
 		"fit": "native",
-		"redraw": {
-			"grayscale": 0.0,
-			"blur": [0.0, 0.0],
-			"tint": "#ffffffff",
-			"flip_x": false,
-			"flip_y": false,
-		},
+		"flip_x": false,
+		"flip_y": false,
+		"redraw": [],
 		"metadata": {},
 	}
 
@@ -142,9 +140,9 @@ static func apply_patch(
 	)
 
 
-## Validate the operation envelope shared by state trackers and presenters.
-## Property value validation remains part of apply_patch; this function covers
-## action/id/property-shape rules that decide whether an operation exists at all.
+## Validate the complete operation shared by state trackers and presenters.
+## The full property payload is checked here so every consumer can reject an
+## invalid operation before any part of it is applied.
 static func validate_operation(
 	raw_operation: Variant,
 	report_warnings: bool = true,
@@ -187,14 +185,8 @@ static func validate_operation(
 				report_warnings,
 			)
 			return false
-	if properties.has("redraw") and properties["redraw"] is Dictionary:
-		for raw_key in (properties["redraw"] as Dictionary):
-			if not _KNOWN_REDRAW_KEYS.has(str(raw_key)):
-				_warn(
-					"unknown redraw property '%s'" % str(raw_key),
-					report_warnings,
-				)
-				return false
+	if not _validate_property_values(properties, report_warnings):
+		return false
 	var raw_transition = operation.get("transition", "cut")
 	if not raw_transition is String and not raw_transition is StringName:
 		_warn("operation transition must be a String", report_warnings)
@@ -294,10 +286,12 @@ static func _apply_patch_to_normalized(
 	report_warnings: bool,
 ) -> Dictionary:
 	var result := base.duplicate(true)
-	_validate_property_values(patch, report_warnings)
 	for key in patch:
 		if not _KNOWN_PROPERTY_KEYS.has(str(key)):
 			_warn("unknown layer property '%s'" % str(key), report_warnings)
+			return result
+	if not _validate_property_values(patch, report_warnings):
+		return result
 
 	for key in ["kind", "asset", "body", "face"]:
 		if patch.has(key):
@@ -376,22 +370,15 @@ static func _apply_patch_to_normalized(
 		else:
 			result["fit"] = fit
 
-	var redraw: Dictionary = result["redraw"].duplicate(true)
 	if patch.has("redraw"):
-		if patch["redraw"] is Dictionary:
-			_validate_property_values(patch["redraw"], report_warnings)
-			redraw = _apply_redraw_patch(
-				redraw,
-				patch["redraw"],
-				report_warnings,
-				true,
-			)
-		elif str(patch["redraw"]).to_lower() in ["none", "clear", "off"]:
-			redraw = default_state()["redraw"]
-		else:
-			_warn("redraw must be a Dictionary or 'none'", report_warnings)
-	redraw = _apply_redraw_patch(redraw, patch, report_warnings)
-	result["redraw"] = redraw
+		result["redraw"] = _normalize_redraw_effects(
+			patch["redraw"],
+			report_warnings,
+		)
+	if patch.has("flip_x"):
+		result["flip_x"] = _as_bool(patch["flip_x"])
+	if patch.has("flip_y"):
+		result["flip_y"] = _as_bool(patch["flip_y"])
 
 	if patch.has("metadata"):
 		if patch["metadata"] is Dictionary:
@@ -405,63 +392,281 @@ static func _apply_patch_to_normalized(
 	return result
 
 
-static func _apply_redraw_patch(
-	current: Dictionary,
-	patch: Dictionary,
-	report_warnings: bool,
-	validate_keys: bool = false,
-) -> Dictionary:
-	var result := current.duplicate(true)
-	if validate_keys:
-		for key in patch:
-			if not _KNOWN_REDRAW_KEYS.has(str(key)):
-				_warn(
-					"unknown redraw property '%s'" % str(key),
-					report_warnings,
-				)
-	if patch.has("grayscale"):
-		var grayscale := _as_float(patch["grayscale"], result["grayscale"])
-		if grayscale < 0.0 or grayscale > 1.0:
-			_warn("grayscale is clamped to 0..1", report_warnings)
-		result["grayscale"] = clampf(grayscale, 0.0, 1.0)
-	if patch.has("blur") or patch.has("blur_x") or patch.has("blur_y"):
-		var blur := _patched_pair(
-			result["blur"], patch, "blur", "blur_x", "blur_y"
-		)
-		if float(blur[0]) < 0.0 or float(blur[1]) < 0.0:
-			_warn("blur components must be non-negative", report_warnings)
-		blur[0] = maxf(0.0, float(blur[0]))
-		blur[1] = maxf(0.0, float(blur[1]))
-		result["blur"] = blur
-	if patch.has("tint"):
-		var tint := str(patch["tint"])
-		var invalid_color := Color(-1.0, -1.0, -1.0, -1.0)
-		if Color.from_string(tint, invalid_color) == invalid_color:
-			_warn("tint must be a valid color", report_warnings)
-		else:
-			result["tint"] = tint
-	if patch.has("flip_x"):
-		if _is_valid_bool(patch["flip_x"]):
-			result["flip_x"] = _as_bool(patch["flip_x"])
-	if patch.has("flip_y"):
-		if _is_valid_bool(patch["flip_y"]):
-			result["flip_y"] = _as_bool(patch["flip_y"])
-	return result
-
-
 static func _validate_property_values(
 	patch: Dictionary,
 	report_warnings: bool,
-) -> void:
+) -> bool:
+	var valid := true
 	for key in _PAIR_PROPERTY_KEYS:
 		if patch.has(key) and not _is_valid_pair(patch[key]):
 			_warn("%s must be a finite number or numeric pair" % key, report_warnings)
+			valid = false
 	for key in _NUMBER_PROPERTY_KEYS:
 		if patch.has(key) and not _is_valid_number(patch[key]):
 			_warn("%s must be a finite number" % key, report_warnings)
+			valid = false
 	for key in _BOOL_PROPERTY_KEYS:
 		if patch.has(key) and not _is_valid_bool(patch[key]):
 			_warn("%s must be a boolean" % key, report_warnings)
+			valid = false
+	for key in ["kind", "asset", "body", "face"]:
+		if patch.has(key) and not patch[key] is String:
+			_warn("%s must be a String" % key, report_warnings)
+			valid = false
+	for key in ["scale", "zoom"]:
+		if patch.has(key):
+			var pair := [0.0, 0.0]
+			if _is_valid_number(patch[key]):
+				var scalar := float(patch[key])
+				pair = [scalar, scalar]
+			else:
+				pair = _as_pair(patch[key], pair)
+			if float(pair[0]) <= 0.0 or float(pair[1]) <= 0.0:
+				_warn("%s components must be positive" % key, report_warnings)
+				valid = false
+	for key in ["scale_x", "scale_y", "zoom_x", "zoom_y", "depth", "depth_scale"]:
+		if patch.has(key) and (
+			not _is_valid_number(patch[key]) or float(patch[key]) <= 0.0
+		):
+			_warn("%s must be a positive finite number" % key, report_warnings)
+			valid = false
+	if patch.has("opacity") and (
+		not _is_valid_number(patch["opacity"])
+		or float(patch["opacity"]) < 0.0
+		or float(patch["opacity"]) > 1.0
+	):
+		_warn("opacity must be between 0 and 1", report_warnings)
+		valid = false
+	if patch.has("z") or patch.has("z_index"):
+		var raw_z = patch.get("z_index", patch.get("z", 0))
+		if (
+			not _is_valid_number(raw_z)
+			or int(float(raw_z)) < MIN_Z_INDEX
+			or int(float(raw_z)) > MAX_Z_INDEX
+		):
+			_warn("z_index is outside Godot's supported range", report_warnings)
+			valid = false
+	if patch.has("fit") and str(patch["fit"]).to_lower() not in VALID_FIT_MODES:
+		_warn("unknown fit mode '%s'" % str(patch["fit"]), report_warnings)
+		valid = false
+	if patch.has("metadata") and not patch["metadata"] is Dictionary:
+		_warn("metadata must be a Dictionary", report_warnings)
+		valid = false
+	if patch.has("redraw") and not _validate_redraw_effects(
+		patch["redraw"],
+		report_warnings,
+	):
+		valid = false
+	return valid
+
+
+static func _validate_redraw_effects(
+	raw_effects: Variant,
+	report_warnings: bool,
+) -> bool:
+	if not raw_effects is Array:
+		_warn("redraw must be an Array", report_warnings)
+		return false
+	var effects: Array = raw_effects
+	if effects.size() > MAX_REDRAW_EFFECTS:
+		_warn(
+			"redraw accepts at most %d effects" % MAX_REDRAW_EFFECTS,
+			report_warnings,
+		)
+		return false
+	var singleton_counts := {"blur": 0, "clip": 0}
+	for index in range(effects.size()):
+		var raw_effect = effects[index]
+		if not raw_effect is Dictionary:
+			_warn("redraw effect %d must be a Dictionary" % index, report_warnings)
+			return false
+		var effect: Dictionary = raw_effect
+		if not effect.get("type", null) is String:
+			_warn("redraw effect %d type must be a String" % index, report_warnings)
+			return false
+		var effect_type := String(effect["type"]).strip_edges().to_lower()
+		if not _REDRAW_EFFECT_KEYS.has(effect_type):
+			_warn(
+				"unknown redraw effect type '%s'" % String(effect["type"]),
+				report_warnings,
+			)
+			return false
+		if singleton_counts.has(effect_type):
+			singleton_counts[effect_type] += 1
+			if int(singleton_counts[effect_type]) > 1:
+				_warn(
+					"redraw accepts at most one %s effect" % effect_type,
+					report_warnings,
+				)
+				return false
+		var known_keys: Dictionary = _REDRAW_EFFECT_KEYS[effect_type]
+		for raw_key in effect:
+			if not raw_key is String or not known_keys.has(String(raw_key)):
+				_warn(
+					"unknown %s redraw field '%s'"
+					% [effect_type, str(raw_key)],
+					report_warnings,
+				)
+				return false
+		for required_key in known_keys:
+			if not effect.has(required_key):
+				_warn(
+					"%s redraw effect is missing '%s'"
+					% [effect_type, required_key],
+					report_warnings,
+				)
+				return false
+
+		match effect_type:
+			"color_overlay", "tint":
+				if _normalize_hex_color(effect["color"]) == "":
+					_warn(
+						"%s redraw color must be #RRGGBB or #RRGGBBAA"
+						% effect_type,
+						report_warnings,
+					)
+					return false
+				if effect_type == "color_overlay" and (
+					not effect["blend"] is String
+					or String(effect["blend"]).to_lower()
+						not in VALID_COLOR_OVERLAY_BLEND_MODES
+				):
+					_warn("color_overlay blend must be 'normal' or 'soft_light'", report_warnings)
+					return false
+			"brightness_contrast":
+				if (
+					not _is_integer_number(effect["brightness"])
+					or int(effect["brightness"]) < -255
+					or int(effect["brightness"]) > 255
+				):
+					_warn("brightness_contrast effect brightness must be an integer from -255 to 255", report_warnings)
+					return false
+				if (
+					not _is_integer_number(effect["contrast"])
+					or int(effect["contrast"]) < -100
+					or int(effect["contrast"]) > 100
+				):
+					_warn("brightness_contrast effect contrast must be an integer from -100 to 100", report_warnings)
+					return false
+			"grayscale":
+				if (
+					not _is_json_number(effect["amount"])
+					or float(effect["amount"]) < 0.0
+					or float(effect["amount"]) > 1.0
+				):
+					_warn("grayscale amount must be between 0 and 1", report_warnings)
+					return false
+			"blur":
+				if not _is_integer_pair_in_range(
+					effect["radius"],
+					0,
+					MAX_BLUR_RADIUS,
+				):
+					_warn(
+						"blur radius must be two integers from 0 to %d"
+						% MAX_BLUR_RADIUS,
+						report_warnings,
+					)
+					return false
+			"clip":
+				if (
+					not effect["asset"] is String
+					or String(effect["asset"]).strip_edges() == ""
+				):
+					_warn("clip asset must be a non-empty String", report_warnings)
+					return false
+				if not _is_exact_json_pair(effect["offset"]):
+					_warn("clip offset must be a two-number Array", report_warnings)
+					return false
+				if (
+					not effect["fit"] is String
+					or String(effect["fit"]).to_lower() not in VALID_FIT_MODES
+				):
+					_warn("clip fit must be a supported fit mode", report_warnings)
+					return false
+	return true
+
+
+static func _normalize_redraw_effects(
+	raw_effects: Variant,
+	report_warnings: bool,
+) -> Array:
+	if not _validate_redraw_effects(raw_effects, report_warnings):
+		return []
+	var normalized: Array = []
+	var effects: Array = raw_effects
+	for raw_effect in effects:
+		var effect: Dictionary = raw_effect
+		var effect_type := String(effect["type"]).strip_edges().to_lower()
+		var canonical := {"type": effect_type}
+		match effect_type:
+			"color_overlay", "tint":
+				canonical["color"] = _normalize_hex_color(effect["color"])
+				if effect_type == "color_overlay":
+					canonical["blend"] = String(effect["blend"]).to_lower()
+			"brightness_contrast":
+				canonical["brightness"] = int(effect["brightness"])
+				canonical["contrast"] = int(effect["contrast"])
+			"grayscale":
+				canonical["amount"] = float(effect["amount"])
+			"blur":
+				var radius: Array = effect["radius"]
+				canonical["radius"] = [int(radius[0]), int(radius[1])]
+			"clip":
+				var offset: Array = effect["offset"]
+				canonical["asset"] = String(effect["asset"]).strip_edges()
+				canonical["offset"] = [float(offset[0]), float(offset[1])]
+				canonical["fit"] = String(effect["fit"]).to_lower()
+		normalized.append(canonical)
+	return normalized
+
+
+static func _normalize_hex_color(value: Variant) -> String:
+	if not value is String:
+		return ""
+	var encoded := String(value).strip_edges().to_lower()
+	if not encoded.begins_with("#") or encoded.length() not in [7, 9]:
+		return ""
+	for index in range(1, encoded.length()):
+		if encoded.substr(index, 1) not in "0123456789abcdef":
+			return ""
+	if encoded.length() == 7:
+		encoded += "ff"
+	return encoded
+
+
+static func _is_json_number(value: Variant) -> bool:
+	return (value is int or value is float) and is_finite(float(value))
+
+
+static func _is_integer_number(value: Variant) -> bool:
+	return _is_json_number(value) and float(value) == floorf(float(value))
+
+
+static func _is_exact_json_pair(value: Variant) -> bool:
+	return (
+		value is Array
+		and value.size() == 2
+		and _is_json_number(value[0])
+		and _is_json_number(value[1])
+	)
+
+
+static func _is_integer_pair_in_range(
+	value: Variant,
+	minimum: int,
+	maximum: int,
+) -> bool:
+	if not value is Array or value.size() != 2:
+		return false
+	for component in value:
+		if (
+			not _is_integer_number(component)
+			or int(component) < minimum
+			or int(component) > maximum
+		):
+			return false
+	return true
 
 
 static func _is_valid_pair(value: Variant) -> bool:

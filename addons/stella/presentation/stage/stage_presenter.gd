@@ -12,6 +12,18 @@ const REDRAW_SHADER_PATH := (
 )
 const TEXTURE_EXTENSIONS := [".png", ".jpg", ".jpeg", ".webp", ".svg", ".tres", ".res"]
 const DEFAULT_VIEWPORT_SIZE := Vector2(1920.0, 1080.0)
+const REDRAW_EFFECT_TYPE_CODES := {
+	"color_overlay": 1.0,
+	"brightness_contrast": 2.0,
+	"grayscale": 3.0,
+	"tint": 4.0,
+	"clip": 5.0,
+	"blur": 6.0,
+}
+const COLOR_OVERLAY_BLEND_CODES := {
+	"normal": 0.0,
+	"soft_light": 1.0,
+}
 
 static var _next_transition_token: int = 1
 
@@ -479,6 +491,11 @@ func _ensure_layer(layer_id: String) -> Dictionary:
 	var composite := CanvasGroup.new()
 	composite.name = "Composite"
 	root.add_child(composite)
+	var source := Node2D.new()
+	source.name = "Source"
+	composite.add_child(source)
+	var redraw_material := ShaderMaterial.new()
+	redraw_material.shader = _redraw_shader
 
 	var sprites := {}
 	var asset_ids := {}
@@ -487,16 +504,21 @@ func _ensure_layer(layer_id: String) -> Dictionary:
 		sprite.name = "%sSprite" % channel.capitalize()
 		sprite.centered = false
 		sprite.z_index = {"asset": 0, "body": 1, "face": 2}[channel]
-		composite.add_child(sprite)
+		source.add_child(sprite)
 		sprites[channel] = sprite
 		asset_ids[channel] = ""
 
 	var record := {
 		"root": root,
 		"composite": composite,
+		"source": source,
 		"sprites": sprites,
 		"asset_ids": asset_ids,
 		"outgoing": [],
+		"redraw": [],
+		"redraw_material": redraw_material,
+		"redraw_mask_asset": "",
+		"redraw_mask_texture": null,
 	}
 	_layers[layer_id] = record
 	_layer_generations[layer_id] = 0
@@ -633,7 +655,7 @@ func _set_channel_texture(
 	if crossfade and tween != null and sprite.texture != null:
 		var outgoing := _clone_sprite(sprite)
 		outgoing.name = "Outgoing_%s" % channel
-		(record["composite"] as CanvasGroup).add_child(outgoing)
+		(record["source"] as Node2D).add_child(outgoing)
 		(record["outgoing"] as Array).append(outgoing)
 		tween.tween_property(outgoing, "modulate:a", 0.0, duration)
 
@@ -723,10 +745,9 @@ func _apply_transform_cut(record: Dictionary, state: Dictionary) -> void:
 		RenderingServer.CANVAS_ITEM_Z_MAX,
 	)
 	composite.position = _composite_origin_position(state)
-	var redraw := state.get("redraw", {}) as Dictionary
 	composite.scale = Vector2(
-		-1.0 if bool(redraw.get("flip_x", false)) else 1.0,
-		-1.0 if bool(redraw.get("flip_y", false)) else 1.0,
+		-1.0 if bool(state.get("flip_x", false)) else 1.0,
+		-1.0 if bool(state.get("flip_y", false)) else 1.0,
 	)
 
 
@@ -759,10 +780,9 @@ func _tween_transform(
 		_composite_origin_position(state),
 		duration,
 	)
-	var redraw := state.get("redraw", {}) as Dictionary
 	composite.scale = Vector2(
-		-1.0 if bool(redraw.get("flip_x", false)) else 1.0,
-		-1.0 if bool(redraw.get("flip_y", false)) else 1.0,
+		-1.0 if bool(state.get("flip_x", false)) else 1.0,
+		-1.0 if bool(state.get("flip_y", false)) else 1.0,
 	)
 
 
@@ -779,47 +799,264 @@ func _state_scale(state: Dictionary) -> Vector2:
 
 func _composite_origin_position(state: Dictionary) -> Vector2:
 	var origin := _array_to_vector2(state.get("origin", [0.0, 0.0]))
-	var redraw_value = state.get("redraw", {})
-	var redraw: Dictionary = redraw_value if redraw_value is Dictionary else {}
 	var flip := Vector2(
-		-1.0 if bool(redraw.get("flip_x", false)) else 1.0,
-		-1.0 if bool(redraw.get("flip_y", false)) else 1.0,
+		-1.0 if bool(state.get("flip_x", false)) else 1.0,
+		-1.0 if bool(state.get("flip_y", false)) else 1.0,
 	)
 	return -(flip * origin)
 
 
-func _apply_redraw(record: Dictionary, state: Dictionary) -> void:
-	var composite := record["composite"] as CanvasGroup
-	var redraw_value = state.get("redraw", {})
-	var redraw: Dictionary = redraw_value if redraw_value is Dictionary else {}
-	var grayscale := clampf(float(redraw.get("grayscale", 0.0)), 0.0, 1.0)
-	var blur := _array_to_vector2(redraw.get("blur", [0.0, 0.0])).abs()
-	var tint := _to_color(redraw.get("tint", "#ffffffff"))
-	var needs_material := (
-		grayscale > 0.0001
-		or blur.x > 0.0001
-		or blur.y > 0.0001
-		or not tint.is_equal_approx(Color.WHITE)
-	)
-	if not needs_material or _redraw_shader == null:
-		composite.material = null
-		composite.use_mipmaps = false
-		composite.fit_margin = 10.0
-		composite.clear_margin = 10.0
+func _apply_redraw(
+	record: Dictionary,
+	state: Dictionary,
+	force_layout: bool = false,
+) -> void:
+	var redraw_value = state.get("redraw", [])
+	var redraw: Array = redraw_value if redraw_value is Array else []
+	var previous_redraw = record.get("redraw", [])
+	if previous_redraw is Array and previous_redraw == redraw:
+		if force_layout:
+			_set_redraw_parameters(record, redraw, state)
+		else:
+			_update_redraw_margin(record, redraw, state)
 		return
 
-	var material := composite.material as ShaderMaterial
-	if material == null or material.shader != _redraw_shader:
-		material = ShaderMaterial.new()
+	_set_redraw_parameters(record, redraw, state)
+	record["redraw"] = redraw.duplicate(true)
+
+
+func _set_redraw_parameters(
+	record: Dictionary,
+	redraw: Array,
+	state: Dictionary,
+) -> void:
+	var composite := record["composite"] as CanvasGroup
+	var material := record["redraw_material"] as ShaderMaterial
+	if material.shader == null:
 		material.shader = _redraw_shader
-		composite.material = material
-	material.set_shader_parameter("grayscale_amount", grayscale)
-	material.set_shader_parameter("blur_radius", blur)
-	material.set_shader_parameter("tint_color", tint)
-	var margin := maxf(10.0, maxf(blur.x, blur.y) + 2.0)
+	composite.use_mipmaps = false
+	var parameters := PackedVector4Array()
+	var colors := PackedVector4Array()
+	var blur_effect_index := -1
+	var blur_radius := Vector2.ZERO
+	var clip_effect: Dictionary = {}
+	for effect_value in redraw:
+		if not effect_value is Dictionary:
+			push_warning("StagePresenter: redraw effect is not a Dictionary")
+			continue
+		var effect: Dictionary = effect_value
+		var effect_type := String(effect.get("type", ""))
+		if not REDRAW_EFFECT_TYPE_CODES.has(effect_type):
+			push_warning(
+				"StagePresenter: unknown redraw effect '%s'" % effect_type
+			)
+			continue
+		var color := Color.WHITE
+		var parameter := Vector4(
+			float(REDRAW_EFFECT_TYPE_CODES[effect_type]),
+			0.0,
+			0.0,
+			0.0,
+		)
+		match effect_type:
+			"color_overlay":
+				color = _to_color(effect.get("color", "#00000000"))
+				parameter.y = float(COLOR_OVERLAY_BLEND_CODES.get(
+					String(effect.get("blend", "normal")),
+					0.0,
+				))
+			"brightness_contrast":
+				parameter.y = float(effect.get("brightness", 0))
+				parameter.z = float(effect.get("contrast", 0))
+			"grayscale":
+				parameter.y = float(effect.get("amount", 0.0))
+			"tint":
+				color = _to_color(effect.get("color", "#ffffffff"))
+			"clip":
+				clip_effect = effect
+			"blur":
+				blur_effect_index = parameters.size()
+				blur_radius = _array_to_vector2(
+					effect.get("radius", [0.0, 0.0])
+				).abs()
+		parameters.append(parameter)
+		colors.append(Vector4(color.r, color.g, color.b, color.a))
+
+	var effect_count := parameters.size()
+	while parameters.size() < 16:
+		parameters.append(Vector4.ZERO)
+		colors.append(Vector4.ONE)
+
+	var clip_texture: Texture2D = null
+	var clip_rect := Rect2(Vector2.ZERO, Vector2.ONE)
+	if not clip_effect.is_empty():
+		var clip_asset := String(clip_effect.get("asset", ""))
+		clip_texture = _redraw_texture(record, clip_asset)
+		clip_rect = _clip_rect(clip_texture, clip_effect)
+	else:
+		record["redraw_mask_asset"] = ""
+		record["redraw_mask_texture"] = null
+
+	material.set_shader_parameter("effect_count", effect_count)
+	material.set_shader_parameter("effect_parameters", parameters)
+	material.set_shader_parameter("effect_colors", colors)
+	material.set_shader_parameter("blur_effect_index", blur_effect_index)
+	material.set_shader_parameter("blur_radius", blur_radius)
+	material.set_shader_parameter("clip_texture", clip_texture)
+	material.set_shader_parameter("clip_available", clip_texture != null)
+	material.set_shader_parameter(
+		"clip_rect",
+		Vector4(
+			clip_rect.position.x,
+			clip_rect.position.y,
+			clip_rect.size.x,
+			clip_rect.size.y,
+		),
+	)
+	_update_redraw_margin(record, redraw, state)
+	composite.material = material if effect_count > 0 else null
+
+
+func _update_redraw_margin(
+	record: Dictionary,
+	redraw: Array,
+	state: Dictionary,
+) -> void:
+	var composite := record["composite"] as CanvasGroup
+	var blur_radius := Vector2.ZERO
+	var has_blur := false
+	for effect_value in redraw:
+		if not effect_value is Dictionary:
+			continue
+		var effect: Dictionary = effect_value
+		if String(effect.get("type", "")) != "blur":
+			continue
+		blur_radius = _array_to_vector2(
+			effect.get("radius", [0.0, 0.0])
+		).abs()
+		has_blur = true
+		break
+	if not has_blur:
+		composite.fit_margin = 1.0
+		composite.clear_margin = 1.0
+		return
+
+	var root := record["root"] as Node2D
+	var parent_transform := root.get_canvas_transform()
+	var root_parent := root.get_parent()
+	if root_parent is CanvasItem:
+		parent_transform = (
+			root_parent as CanvasItem
+		).get_global_transform_with_canvas()
+	var current_transform := composite.get_global_transform_with_canvas()
+	var target_transform := parent_transform * _target_redraw_basis(state)
+	var current_extent := _transformed_blur_extent(
+		current_transform,
+		blur_radius,
+	)
+	var target_extent := _transformed_blur_extent(
+		target_transform,
+		blur_radius,
+	)
+
+	# Scale and rotation tween independently. Bound every intermediate rotation
+	# by the transformed half-diagonal instead of assuming the endpoint bases
+	# are the widest orientation.
+	var current_scale := root.scale.abs()
+	var target_scale := _state_scale(state).abs()
+	var widest_scale := Vector2(
+		maxf(current_scale.x, target_scale.x),
+		maxf(current_scale.y, target_scale.y),
+	)
+	var parent_row_norm := maxf(
+		absf(parent_transform.x.x) + absf(parent_transform.y.x),
+		absf(parent_transform.x.y) + absf(parent_transform.y.y),
+	)
+	var transition_extent := parent_row_norm * Vector2(
+		widest_scale.x * blur_radius.x,
+		widest_scale.y * blur_radius.y,
+	).length()
+	var margin := maxf(
+		maxf(current_extent, target_extent),
+		transition_extent,
+	) + 2.0
 	composite.fit_margin = margin
 	composite.clear_margin = margin
-	composite.use_mipmaps = maxf(blur.x, blur.y) > 2.0
+
+
+func _target_redraw_basis(state: Dictionary) -> Transform2D:
+	var angle := deg_to_rad(float(state.get("rotation", 0.0)))
+	var scale := _state_scale(state)
+	var root_basis := Transform2D(
+		Vector2(cos(angle) * scale.x, sin(angle) * scale.x),
+		Vector2(-sin(angle) * scale.y, cos(angle) * scale.y),
+		Vector2.ZERO,
+	)
+	var flip := Vector2(
+		-1.0 if bool(state.get("flip_x", false)) else 1.0,
+		-1.0 if bool(state.get("flip_y", false)) else 1.0,
+	)
+	return root_basis * Transform2D(
+		Vector2(flip.x, 0.0),
+		Vector2(0.0, flip.y),
+		Vector2.ZERO,
+	)
+
+
+func _transformed_blur_extent(
+	transform: Transform2D,
+	radius: Vector2,
+) -> float:
+	var x_offset := transform.x * radius.x
+	var y_offset := transform.y * radius.y
+	return maxf(
+		absf(x_offset.x) + absf(y_offset.x),
+		absf(x_offset.y) + absf(y_offset.y),
+	)
+
+
+func _redraw_texture(record: Dictionary, asset_id: String) -> Texture2D:
+	if String(record.get("redraw_mask_asset", "")) == asset_id:
+		return record.get("redraw_mask_texture") as Texture2D
+	var texture: Texture2D = null
+	if asset_id != "":
+		texture = _load_stage_texture(asset_id)
+	record["redraw_mask_asset"] = asset_id
+	record["redraw_mask_texture"] = texture
+	if texture == null:
+		push_warning("StagePresenter: redraw texture not found: %s" % asset_id)
+	return texture
+
+
+func _clip_rect(texture: Texture2D, effect: Dictionary) -> Rect2:
+	var offset := _array_to_vector2(effect.get("offset", [0.0, 0.0]))
+	if texture == null:
+		return Rect2(offset, Vector2.ONE)
+	var texture_size := texture.get_size()
+	if texture_size.x <= 0.0 or texture_size.y <= 0.0:
+		return Rect2(offset, Vector2.ONE)
+	var fit := String(effect.get("fit", "native"))
+	if fit == "native":
+		return Rect2(offset, texture_size)
+	var viewport_size := _viewport_size()
+	var fitted_size := texture_size
+	match fit:
+		"contain":
+			fitted_size *= minf(
+				viewport_size.x / texture_size.x,
+				viewport_size.y / texture_size.y,
+			)
+		"cover":
+			fitted_size *= maxf(
+				viewport_size.x / texture_size.x,
+				viewport_size.y / texture_size.y,
+			)
+		"stretch":
+			fitted_size = viewport_size
+		_:
+			push_warning("StagePresenter: unknown clip fit '%s'" % fit)
+			return Rect2(offset, texture_size)
+	return Rect2((viewport_size - fitted_size) * 0.5 + offset, fitted_size)
 
 
 func _slide_delta(transition: String) -> Vector2:
@@ -913,11 +1150,41 @@ func _viewport_size() -> Vector2:
 
 
 func _on_viewport_size_changed() -> void:
-	for layer_id in _states:
-		if not _layers.has(layer_id):
+	_begin_completion_batch()
+	for raw_layer_id in _layers.keys().duplicate():
+		var layer_id := String(raw_layer_id)
+		var had_active_transition := _layer_tweens.has(layer_id)
+		var generation := int(_layer_generations.get(layer_id, 0))
+		if had_active_transition or not _states.has(layer_id):
+			generation = _begin_layer_change(layer_id)
+
+		# A remove drops canonical state before its visual fade finishes. A
+		# viewport resize is a new projection boundary, so finish that removal
+		# instead of leaving an old tween targeting stale viewport coordinates.
+		if not _states.has(layer_id):
+			_free_layer(layer_id)
+			if had_active_transition:
+				_emit_or_queue_transition_finished(layer_id, generation, false)
 			continue
+
 		var record: Dictionary = _layers[layer_id]
-		_apply_channel_layout(record, "asset", _states[layer_id])
+		var state: Dictionary = _states[layer_id]
+		if had_active_transition:
+			# Tween tracks cache their target values when created. Reproject the
+			# canonical target synchronously so a later tick cannot restore layout
+			# computed for the old viewport.
+			_apply_channels_cut(record, state)
+			_apply_transform_cut(record, state)
+		else:
+			_apply_channel_layout(record, "asset", state)
+		_apply_redraw(record, state, true)
+		(record["root"] as Node2D).visible = bool(state.get("visible", true))
+		(record["composite"] as CanvasGroup).self_modulate.a = clampf(
+			float(state.get("opacity", 1.0)), 0.0, 1.0
+		)
+		if had_active_transition:
+			_emit_or_queue_transition_finished(layer_id, generation, true)
+	_end_completion_batch()
 
 ## Cancel visual work without changing authored target state. Removed layers
 ## finish removal immediately; retained layers snap to their current target.

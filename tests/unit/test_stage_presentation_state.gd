@@ -30,7 +30,20 @@ func test_stage_operations_are_tracked_and_json_roundtrip_exactly() -> void:
 			"body": "stage:bg_cafe",
 			"face": "stage:bg_hallway",
 			"position": [640.0, 720.0],
-			"redraw": {"blur": [2.0, 3.0]},
+			"redraw": [
+				{
+					"type": "color_overlay",
+					"color": "#2a5c8e40",
+					"blend": "soft_light",
+				},
+				{"type": "brightness_contrast", "brightness": 17, "contrast": -24},
+				{
+					"type": "clip",
+					"asset": "stage:synthetic_alpha_mask",
+					"offset": [2.0, 3.0],
+					"fit": "native",
+				},
+			],
 		},
 		"transition": "cut",
 		"duration": 0.0,
@@ -47,7 +60,20 @@ func test_stage_operations_are_tracked_and_json_roundtrip_exactly() -> void:
 	assert_eq(restored.stage_layers["hero"]["body"], "stage:bg_cafe")
 	assert_eq(restored.stage_layers["hero"]["face"], "stage:bg_outside")
 	assert_eq(restored.stage_layers["hero"]["position"], [640.0, 720.0])
-	assert_eq(restored.stage_layers["hero"]["redraw"]["blur"], [2.0, 3.0])
+	assert_eq(restored.stage_layers["hero"]["redraw"], [
+		{
+			"type": "color_overlay",
+			"color": "#2a5c8e40",
+			"blend": "soft_light",
+		},
+		{"type": "brightness_contrast", "brightness": 17, "contrast": -24},
+		{
+			"type": "clip",
+			"asset": "stage:synthetic_alpha_mask",
+			"offset": [2.0, 3.0],
+			"fit": "native",
+		},
+	])
 	state.disconnect_signals()
 
 

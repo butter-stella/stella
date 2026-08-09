@@ -23,7 +23,7 @@ func test_stage_show_and_update_parse_typed_properties():
 	var data := _parse("""@chapter test
 @scene start
 @stage base show kind=background asset=background:room fit=cover z=-1000
-@stage hero show kind=character body=stage:hero_body face=stage:smile x=960 y=120 origin=500,1000 scale=0.75 opacity=0.8
+@stage hero show kind=character body=stage:hero_body face=stage:smile x=960 y=120 origin=500,1000 scale=0.75 opacity=0.8 redraw=color_overlay(#2A5C8E40,soft_light) redraw=brightness_contrast(17,-24)
 @stage hero update face=stage:sad transition=fade duration=0.3""")
 	assert_eq(data.scenes[0].commands.size(), 3)
 	var show_command: CommandData = data.scenes[0].commands[1]
@@ -32,6 +32,14 @@ func test_stage_show_and_update_parse_typed_properties():
 	assert_eq(show_command.get_string("id"), "hero")
 	assert_eq(show_command.params["properties"]["origin"], [500.0, 1000.0])
 	assert_almost_eq(show_command.params["properties"]["scale"], 0.75, 0.001)
+	assert_eq(show_command.params["properties"]["redraw"], [
+		{
+			"type": "color_overlay",
+			"color": "#2a5c8e40",
+			"blend": "soft_light",
+		},
+		{"type": "brightness_contrast", "brightness": 17, "contrast": -24},
+	])
 
 	var update_command: CommandData = data.scenes[0].commands[2]
 	assert_eq(update_command.get_string("action"), "update")
@@ -53,7 +61,7 @@ func test_stage_clear_is_a_command_without_layer_id():
 func test_stage_rejects_invalid_typed_values_and_transition():
 	var data := _parse("""@chapter test
 @scene start
-@stage hero show x=abc position=1,bad opacity=NaN visible=maybe fit=warp scale=0 depth_scale=-1 z=99999 grayscale=2 blur=-1 tint=not-a-color transition=warp""")
+@stage hero show x=abc position=1,bad opacity=NaN visible=maybe fit=warp scale=0 depth_scale=-1 z=99999 transition=warp""")
 	var command: CommandData = data.scenes[0].commands[0]
 	assert_eq(command.params["properties"], {})
 	assert_eq(command.get_string("transition"), "cut")
@@ -65,9 +73,6 @@ func test_stage_rejects_invalid_typed_values_and_transition():
 	assert_true(_has_diagnostic(data, "warning", "scale value"))
 	assert_true(_has_diagnostic(data, "warning", "depth_scale value"))
 	assert_true(_has_diagnostic(data, "warning", "z value"))
-	assert_true(_has_diagnostic(data, "warning", "grayscale value"))
-	assert_true(_has_diagnostic(data, "warning", "blur value"))
-	assert_true(_has_diagnostic(data, "warning", "tint='not-a-color'"))
 	assert_true(_has_diagnostic(data, "warning", "transition 'warp'"))
 	var fit_diagnostic: Dictionary = {}
 	for diagnostic in data.diagnostics:
@@ -75,6 +80,113 @@ func test_stage_rejects_invalid_typed_values_and_transition():
 			fit_diagnostic = diagnostic
 			break
 	assert_eq(fit_diagnostic.get("line"), 3)
+
+
+func test_stage_redraw_pipeline_is_ordered_typed_and_canonical():
+	var data := _parse("""@chapter test
+@scene start
+@stage hero show redraw=color_overlay(#112233) redraw=clip(stage:synthetic_mask,-4.5,8) redraw=color_overlay(#44556680,soft_light) redraw=brightness_contrast(37,-12) redraw=grayscale(0.25) redraw=tint(#AABBCC) redraw=blur(2,3)
+@stage overlay show redraw=clip(background:synthetic_mask,0,0,cover)
+@stage hero update redraw=clear""")
+	assert_true(data.diagnostics.is_empty(), str(data.diagnostics))
+	assert_eq(data.scenes[0].commands.size(), 3)
+	var redraw: Array = data.scenes[0].commands[0].params["properties"]["redraw"]
+	assert_eq(redraw, [
+		{"type": "color_overlay", "color": "#112233ff", "blend": "normal"},
+		{
+			"type": "clip",
+			"asset": "stage:synthetic_mask",
+			"offset": [-4.5, 8.0],
+			"fit": "native",
+		},
+		{
+			"type": "color_overlay",
+			"color": "#44556680",
+			"blend": "soft_light",
+		},
+		{"type": "brightness_contrast", "brightness": 37, "contrast": -12},
+		{"type": "grayscale", "amount": 0.25},
+		{"type": "tint", "color": "#aabbccff"},
+		{"type": "blur", "radius": [2, 3]},
+	])
+	assert_eq(
+		data.scenes[0].commands[1].params["properties"]["redraw"],
+		[{
+			"type": "clip",
+			"asset": "background:synthetic_mask",
+			"offset": [0.0, 0.0],
+			"fit": "cover",
+		}],
+	)
+	assert_eq(
+		data.scenes[0].commands[2].params["properties"]["redraw"],
+		[],
+	)
+
+
+func test_stage_rejects_duplicate_blur_and_clip_effects():
+	for redraw_tokens in [
+		"redraw=blur(1,1) redraw=blur(2,2)",
+		(
+			"redraw=clip(stage:synthetic_mask_a,0,0) "
+			+ "redraw=clip(stage:synthetic_mask_b,0,0)"
+		),
+	]:
+		var duplicate_data := _parse("""@chapter test
+@scene start
+@stage hero show %s""" % redraw_tokens)
+		assert_true(duplicate_data.scenes[0].commands.is_empty(), redraw_tokens)
+		assert_true(
+			_has_diagnostic(duplicate_data, "error", "at most one"),
+			redraw_tokens,
+		)
+
+
+func test_stage_rejects_invalid_redraw_effects_and_clear_mixing():
+	var invalid_values := [
+		"color_overlay(#2a5c8e40,20)",
+		"color_overlay(4280966286)",
+		"brightness_contrast(-256,0)",
+		"brightness_contrast(0,101)",
+		"brightness_contrast(1.5,0)",
+		"grayscale(1.1)",
+		"tint(red)",
+		"blur(1.5,2)",
+		"blur(33,0)",
+		"clip(,0,0,native)",
+		"clip(stage:synthetic_mask,0,0,tile)",
+		"unknown_effect(-17,23)",
+		"none",
+		"off",
+	]
+	for invalid_value in invalid_values:
+		var invalid_data := _parse("""@chapter test
+@scene start
+@stage hero show redraw=%s""" % invalid_value)
+		assert_true(invalid_data.scenes[0].commands.is_empty(), invalid_value)
+		assert_true(_has_diagnostic(invalid_data, "error", "redraw"), invalid_value)
+
+	for mixed_values in [
+		"redraw=clear redraw=brightness_contrast(0,0)",
+		"redraw=brightness_contrast(0,0) redraw=clear",
+		"redraw=clear redraw=clear",
+	]:
+		var mixed_data := _parse("""@chapter test
+@scene start
+@stage hero update %s""" % mixed_values)
+		assert_true(mixed_data.scenes[0].commands.is_empty(), mixed_values)
+		assert_true(_has_diagnostic(mixed_data, "error", "cannot be mixed"))
+
+
+func test_stage_rejects_more_than_maximum_redraw_effects():
+	var effects := ""
+	for _index in range(StageLayerState.MAX_REDRAW_EFFECTS + 1):
+		effects += " redraw=grayscale(0.5)"
+	var data := _parse("""@chapter test
+@scene start
+@stage hero show%s""" % effects)
+	assert_true(data.scenes[0].commands.is_empty())
+	assert_true(_has_diagnostic(data, "error", "at most %d redraw effects" % StageLayerState.MAX_REDRAW_EFFECTS))
 
 
 func test_unknown_directive_reports_an_error_without_a_runtime_command():

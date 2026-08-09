@@ -192,7 +192,21 @@ StellaRuntime.show_stage_layer("hero", {
 # 补丁只修改给出的字段，body 节点与纹理保持复用
 StellaRuntime.update_stage_layer("hero", {
 	"face": "stage:hero/sad",
-	"redraw": {"grayscale": 0.4},
+	"redraw": [
+		{
+			"type": "color_overlay",
+			"color": "#355c7d80",
+			"blend": "soft_light",
+		},
+		{"type": "brightness_contrast", "brightness": 12, "contrast": -20},
+		{"type": "grayscale", "amount": 0.4},
+		{
+			"type": "clip",
+			"asset": "stage:hero/mask",
+			"offset": [0.0, 0.0],
+			"fit": "native",
+		},
+	],
 }, "fade", 0.2)
 
 StellaRuntime.hide_stage_layer("hero", "fade", 0.2)  # 保留节点和资源
@@ -201,6 +215,10 @@ StellaRuntime.clear_stage_layers()                    # 删除全部命名舞台
 ```
 
 多个操作可通过 `apply_stage_operations(operations, force_cut)` 同批提交。`force_cut=true` 会先归约整批操作，再同步投影最终状态，适合快进、点击补全和读档。所有人物与其他舞台图片都同步进入同一份 `PresentationState.stage_layers`；`hide` 的层仍在快照中，`remove` / `clear` 则会移除状态。
+
+`redraw` 是有序的完整操作数组，而不是按类型合并的字典；更新它会原子替换整条管线，传 `[]` 会清空。支持 `color_overlay`、`brightness_contrast`、`grayscale`、`tint`、`blur` 和 `clip`，其中每条管线最多一个 `blur` 和一个 `clip`。`clip.asset` 继续使用 `background:` / `character:` / `stage:` / `res://` 或裸 stage 路径，并与普通纹理共享 `ResourceLoader` 缓存；快照只保存逻辑资源 ID，不保存 `Texture2D`。
+
+Godot 4.6 的 redraw 像素管线使用 Forward+ 或 Mobile renderer。macOS 上如需使用 Compatibility renderer，请升级到 Godot 4.7 或更新版本，以避开 4.6 的 CanvasGroup screen-backbuffer 缺陷。
 
 ### 存档/读档
 

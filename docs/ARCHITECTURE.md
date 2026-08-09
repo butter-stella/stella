@@ -334,11 +334,13 @@ NVL 的前缀和分隔符属于表现元数据：Presenter 按“记录间分隔
 
 `StagePresenter` 是背景碎片、人物、事件图、SD 和特效图片共用的单一动态渲染器。它按稳定 ID 创建任意数量的层，不预设位置或容量。每层包含稳定的 `Asset`、`Body`、`Face` Sprite；face-only patch 不会重建或重新加载未变化的 body/背景资源。
 
-- 规范状态：素材引用、offset、position/origin、scale/zoom/depth、rotation、z、visibility、opacity、fit、redraw 与 metadata
+- 规范状态：素材引用、offset、position/origin、scale/zoom/depth、rotation、z、visibility、opacity、fit、有序 redraw 操作列表与 metadata
 - 生命周期：`show` / `update` / `hide` / `remove` / `clear`
 - 动画：每层独立 generation 与 Tween，支持 cut、fade/crossfade、move 和 slide；批量 cut 先归约最终状态再投影
-- 滤镜：CanvasGroup 合成后的灰度、模糊、tint 与翻转
-- 资源：`ResourceLoader.CACHE_MODE_REUSE`，隐藏保留引用，删除才释放层
+- redraw：按作者顺序复合 color_overlay（normal/soft-light）、brightness_contrast、grayscale、tint、一个 9-tap blur 与一个 alpha-mask clip；整列替换保留顺序和重复的逐像素操作
+- 渲染：稳定 `Source` 先合成 Asset/Body/Face，再由单个稳定 `Composite` CanvasGroup/ShaderMaterial 处理完整 redraw；这避免了多个 screen-read CanvasGroup 共用 backbuffer 时的非确定组合
+- 坐标：`flip_x` / `flip_y` 是围绕 authored origin 的几何变换；clip 在层合成空间中按遮罩 alpha 相乘，遮罩矩形外始终透明
+- 资源：素材与 clip 遮罩都用逻辑 ID 和 `ResourceLoader.CACHE_MODE_REUSE`；只改 face 或数值操作不重载未变的 body/背景/遮罩
 
 人物层与其他命名层使用完全相同的生命周期和状态；`kind=character` 只是用途标记，不会启用另一套 presenter、位置槽或存档结构。句内方括号表情只属于对话框头像，舞台上的 `Asset` / `Body` / `Face` 必须通过 `@stage` 更新。
 

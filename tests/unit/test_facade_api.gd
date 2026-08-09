@@ -116,11 +116,23 @@ func test_apply_stage_operations_deep_copies_caller_batch():
 	var operations := [{
 		"action": "show",
 		"id": "event",
-		"properties": {"asset": "stage:flash"},
+		"properties": {
+			"asset": "stage:flash",
+			"redraw": [{
+				"type": "brightness_contrast",
+				"brightness": -17,
+				"contrast": 23,
+			}],
+		},
 	}]
 	runtime.apply_stage_operations(operations, true)
 	operations[0]["properties"]["asset"] = "changed-after-emit"
+	operations[0]["properties"]["redraw"][0]["brightness"] = 255
 	assert_eq(received[0][0]["properties"]["asset"], "stage:flash")
+	assert_eq(
+		received[0][0]["properties"]["redraw"][0]["brightness"],
+		-17,
+	)
 	SignalBus.stage_operations_requested.disconnect(callback)
 	runtime.clear_stage_layers()
 

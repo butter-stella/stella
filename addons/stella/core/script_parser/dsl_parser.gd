@@ -11,16 +11,16 @@ const _STAGE_TRANSITIONS := [
 const _STAGE_FIT_MODES := ["native", "contain", "cover", "stretch"]
 const _STAGE_PAIR_KEYS := [
 	"position", "origin", "scale", "zoom",
-	"asset_offset", "body_offset", "face_offset", "blur",
+	"asset_offset", "body_offset", "face_offset",
 ]
 const _STAGE_NUMBER_KEYS := [
 	"x", "y", "origin_x", "origin_y", "scale_x", "scale_y",
 	"zoom_x", "zoom_y", "asset_x", "asset_y", "body_x", "body_y",
-	"face_x", "face_y", "blur_x", "blur_y", "depth", "depth_scale",
-	"rotation", "rotation_degrees", "z", "z_index", "opacity", "grayscale",
+	"face_x", "face_y", "depth", "depth_scale", "rotation",
+	"rotation_degrees", "z", "z_index", "opacity",
 ]
 const _STAGE_BOOL_KEYS := ["visible", "flip_x", "flip_y"]
-const _STAGE_STRING_KEYS := ["kind", "asset", "body", "face", "tint"]
+const _STAGE_STRING_KEYS := ["kind", "asset", "body", "face"]
 
 
 static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioData:
@@ -862,6 +862,10 @@ static func _parse_stage_command(
 			)
 			return null
 	var properties: Dictionary = {}
+	var redraw_effects: Array = []
+	var redraw_seen := false
+	var redraw_cleared := false
+	var redraw_singletons_seen: Dictionary = {}
 	var transition := "cut"
 	var duration := 0.0
 	var invalid_operation := false
@@ -921,6 +925,72 @@ static func _parse_stage_command(
 					% [raw_value, line],
 					line,
 				)
+		elif key == "redraw":
+			if action in ["hide", "remove", "clear"]:
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: @stage %s does not accept layer property 'redraw' (line %d)"
+					% [action, line],
+					line,
+				)
+				invalid_operation = true
+				continue
+			if raw_value.to_lower() == "clear":
+				if redraw_seen:
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @stage redraw=clear cannot be mixed with other redraw values (line %d)"
+						% line,
+						line,
+					)
+					invalid_operation = true
+				redraw_seen = true
+				redraw_cleared = true
+				continue
+			if redraw_cleared:
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: @stage redraw=clear cannot be mixed with other redraw values (line %d)"
+					% line,
+					line,
+				)
+				invalid_operation = true
+				continue
+			redraw_seen = true
+			var redraw_effect = _parse_stage_redraw_effect(
+				raw_value,
+				line,
+				data,
+			)
+			if redraw_effect == null:
+				invalid_operation = true
+				continue
+			var redraw_effect_type := String(redraw_effect.get("type", ""))
+			if redraw_effect_type in ["blur", "clip"]:
+				if redraw_singletons_seen.has(redraw_effect_type):
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @stage redraw accepts at most one %s effect (line %d)"
+						% [redraw_effect_type, line],
+						line,
+					)
+					invalid_operation = true
+					continue
+				redraw_singletons_seen[redraw_effect_type] = true
+			redraw_effects.append(redraw_effect)
+			if redraw_effects.size() > StageLayerState.MAX_REDRAW_EFFECTS:
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: @stage accepts at most %d redraw effects (line %d)"
+					% [StageLayerState.MAX_REDRAW_EFFECTS, line],
+					line,
+				)
+				invalid_operation = true
 		else:
 			if not _is_known_stage_property(key):
 				_record_diagnostic(
@@ -953,6 +1023,8 @@ static func _parse_stage_command(
 
 	if invalid_operation:
 		return null
+	if redraw_seen:
+		properties["redraw"] = redraw_effects
 
 	return _make_cmd("stage_layer", {
 		"action": action,
@@ -961,6 +1033,198 @@ static func _parse_stage_command(
 		"transition": transition,
 		"duration": duration,
 	})
+
+
+static func _parse_stage_redraw_effect(
+	encoded: String,
+	line: int,
+	data: ScenarioData,
+) -> Variant:
+	var open_paren := encoded.find("(")
+	if open_paren <= 0 or not encoded.ends_with(")"):
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: invalid @stage redraw effect '%s' (line %d)"
+			% [encoded, line],
+			line,
+		)
+		return null
+	var effect_type := encoded.substr(0, open_paren).strip_edges().to_lower()
+	var arguments_text := encoded.substr(
+		open_paren + 1,
+		encoded.length() - open_paren - 2,
+	)
+	var arguments: Array = []
+	if not arguments_text.is_empty():
+		for argument in arguments_text.split(",", true):
+			arguments.append(String(argument).strip_edges())
+
+	match effect_type:
+		"color_overlay":
+			if arguments.size() not in [1, 2]:
+				return _invalid_stage_redraw_arguments(effect_type, line, data)
+			var color := _canonical_stage_redraw_color(String(arguments[0]))
+			if color == "":
+				return _invalid_stage_redraw_value(
+					effect_type, "color", String(arguments[0]), line, data
+				)
+			var blend := (
+				String(arguments[1]).to_lower()
+				if arguments.size() == 2
+				else "normal"
+			)
+			if blend not in StageLayerState.VALID_COLOR_OVERLAY_BLEND_MODES:
+				return _invalid_stage_redraw_value(
+					effect_type, "blend", blend, line, data
+				)
+			return {"type": effect_type, "color": color, "blend": blend}
+		"tint":
+			if arguments.size() != 1:
+				return _invalid_stage_redraw_arguments(effect_type, line, data)
+			var color := _canonical_stage_redraw_color(String(arguments[0]))
+			if color == "":
+				return _invalid_stage_redraw_value(
+					effect_type, "color", String(arguments[0]), line, data
+				)
+			return {"type": effect_type, "color": color}
+		"brightness_contrast":
+			if arguments.size() != 2:
+				return _invalid_stage_redraw_arguments(effect_type, line, data)
+			if (
+				not String(arguments[0]).is_valid_int()
+				or int(arguments[0]) < -255
+				or int(arguments[0]) > 255
+			):
+				return _invalid_stage_redraw_value(
+					effect_type, "brightness", String(arguments[0]), line, data
+				)
+			if (
+				not String(arguments[1]).is_valid_int()
+				or int(arguments[1]) < -100
+				or int(arguments[1]) > 100
+			):
+				return _invalid_stage_redraw_value(
+					effect_type, "contrast", String(arguments[1]), line, data
+				)
+			return {
+				"type": effect_type,
+				"brightness": int(arguments[0]),
+				"contrast": int(arguments[1]),
+			}
+		"grayscale":
+			if arguments.size() != 1:
+				return _invalid_stage_redraw_arguments(effect_type, line, data)
+			if (
+				not _is_finite_stage_number(String(arguments[0]))
+				or float(arguments[0]) < 0.0
+				or float(arguments[0]) > 1.0
+			):
+				return _invalid_stage_redraw_value(
+					effect_type, "amount", String(arguments[0]), line, data
+				)
+			return {"type": effect_type, "amount": float(arguments[0])}
+		"blur":
+			if arguments.size() != 2:
+				return _invalid_stage_redraw_arguments(effect_type, line, data)
+			for argument in arguments:
+				if (
+					not String(argument).is_valid_int()
+					or int(argument) < 0
+					or int(argument) > StageLayerState.MAX_BLUR_RADIUS
+				):
+					return _invalid_stage_redraw_value(
+						effect_type, "radius", String(argument), line, data
+					)
+			return {
+				"type": effect_type,
+				"radius": [int(arguments[0]), int(arguments[1])],
+			}
+		"clip":
+			if arguments.size() not in [3, 4]:
+				return _invalid_stage_redraw_arguments(effect_type, line, data)
+			var asset := String(arguments[0]).strip_edges()
+			if asset == "":
+				return _invalid_stage_redraw_value(
+					effect_type, "asset", asset, line, data
+				)
+			for argument_index in [1, 2]:
+				if not _is_finite_stage_number(String(arguments[argument_index])):
+					return _invalid_stage_redraw_value(
+						effect_type,
+						"offset",
+						String(arguments[argument_index]),
+						line,
+						data,
+					)
+			var clip_fit := (
+				String(arguments[3]).to_lower()
+				if arguments.size() == 4
+				else "native"
+			)
+			if clip_fit not in _STAGE_FIT_MODES:
+				return _invalid_stage_redraw_value(
+					effect_type, "fit", clip_fit, line, data
+				)
+			return {
+				"type": effect_type,
+				"asset": asset,
+				"offset": [float(arguments[1]), float(arguments[2])],
+				"fit": clip_fit,
+			}
+		_:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: unknown @stage redraw effect '%s' (line %d)"
+				% [effect_type, line],
+				line,
+			)
+			return null
+
+
+static func _invalid_stage_redraw_arguments(
+	effect_type: String,
+	line: int,
+	data: ScenarioData,
+) -> Variant:
+	_record_diagnostic(
+		data,
+		"error",
+		"DslParser: invalid arguments for @stage redraw %s (line %d)"
+		% [effect_type, line],
+		line,
+	)
+	return null
+
+
+static func _invalid_stage_redraw_value(
+	effect_type: String,
+	field: String,
+	value: String,
+	line: int,
+	data: ScenarioData,
+) -> Variant:
+	_record_diagnostic(
+		data,
+		"error",
+		"DslParser: invalid @stage redraw %s %s '%s' (line %d)"
+		% [effect_type, field, value, line],
+		line,
+	)
+	return null
+
+
+static func _canonical_stage_redraw_color(encoded: String) -> String:
+	var color := encoded.strip_edges().to_lower()
+	if not color.begins_with("#") or color.length() not in [7, 9]:
+		return ""
+	for index in range(1, color.length()):
+		if color.substr(index, 1) not in "0123456789abcdef":
+			return ""
+	if color.length() == 7:
+		color += "ff"
+	return color
 
 
 static func _parse_stage_property_value(
@@ -972,17 +1236,6 @@ static func _parse_stage_property_value(
 	var lower := encoded.to_lower()
 	if key in ["asset", "body", "face"] and lower in ["none", "null", "off"]:
 		return ""
-	if key == "redraw" and lower in ["none", "clear", "off"]:
-		return lower
-	if key == "redraw":
-		_record_diagnostic(
-			data,
-			"warning",
-			"DslParser: @stage redraw accepts only none/clear/off; use flattened filter properties (line %d)"
-			% line,
-			line,
-		)
-		return null
 	if key == "fit":
 		if lower in _STAGE_FIT_MODES:
 			return lower
@@ -1037,18 +1290,6 @@ static func _parse_stage_property_value(
 			)
 			return null
 		return int(encoded) if encoded.is_valid_int() else float(encoded)
-	if key == "tint":
-		var invalid_color := Color(-1.0, -1.0, -1.0, -1.0)
-		if Color.from_string(encoded, invalid_color) == invalid_color:
-			_record_diagnostic(
-				data,
-				"warning",
-				"DslParser: invalid color for @stage tint='%s' (line %d)"
-				% [encoded, line],
-				line,
-			)
-			return null
-		return encoded
 	if encoded.is_valid_int():
 		return int(encoded)
 	if _is_finite_stage_number(encoded):
@@ -1062,7 +1303,7 @@ static func _is_known_stage_property(key: String) -> bool:
 		or key in _STAGE_BOOL_KEYS
 		or key in _STAGE_PAIR_KEYS
 		or key in _STAGE_NUMBER_KEYS
-		or key in ["fit", "redraw"]
+		or key == "fit"
 	)
 
 
@@ -1078,13 +1319,8 @@ static func _is_stage_property_in_range(
 		valid = float(pair[0]) > 0.0 and float(pair[1]) > 0.0
 	elif key in ["scale_x", "scale_y", "zoom_x", "zoom_y", "depth", "depth_scale"]:
 		valid = float(value) > 0.0
-	elif key in ["opacity", "grayscale"]:
+	elif key == "opacity":
 		valid = float(value) >= 0.0 and float(value) <= 1.0
-	elif key == "blur":
-		var blur_pair: Array = value if value is Array else [value, value]
-		valid = float(blur_pair[0]) >= 0.0 and float(blur_pair[1]) >= 0.0
-	elif key in ["blur_x", "blur_y"]:
-		valid = float(value) >= 0.0
 	elif key in ["z", "z_index"]:
 		valid = (
 			int(value) >= StageLayerState.MIN_Z_INDEX

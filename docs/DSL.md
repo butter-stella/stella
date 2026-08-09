@@ -192,7 +192,7 @@ warning，并按普通文本显示。
 
 ```stla
 @stage base show kind=background asset=background:bg_room fit=cover z=-1000
-@stage hero show kind=character body=stage:hero/body face=stage:hero/smile x=960 y=1050 origin=500,1000
+@stage hero show kind=character body=stage:hero/body face=stage:hero/smile x=960 y=1050 origin=500,1000 redraw=color_overlay(#355c7d80,soft_light) redraw=brightness_contrast(12,-20)
 @stage hero update face=stage:hero/sad transition=fade duration=0.3
 @stage hero hide transition=fade duration=0.2
 @stage hero show transition=fade duration=0.2
@@ -223,10 +223,28 @@ warning，并按普通文本显示。
 | `z_index` | 舞台内绘制顺序，别名 `z`，范围 `-4096..4096` | `0` |
 | `visible` / `opacity` | 可见性和 `0..1` 透明度 | `true` / `1` |
 | `fit` | `native`、`contain`、`cover` 或 `stretch` | `native` |
-| `grayscale` / `blur` / `tint` | 灰度、二维模糊与颜色调制 | 无效果 |
+| `redraw` | 可重复书写的有序像素操作；见下表 | `[]` |
 | `flip_x` / `flip_y` | 围绕 authored origin 翻转 | `false` |
 
 成对数值写成 `x,y`；`scale=0.75` 这样的标量会同时作用于两轴。`asset=none`、`body=none` 或 `face=none` 会显式清空对应纹理。非法数值、布尔值、枚举或 transition 会生成带 STLA 行号的诊断，不会静默写入快照。
+
+`redraw=` 可在同一条命令中重复，执行顺序就是书写顺序，每层最多 16 个操作。每条管线最多包含一个 `blur` 和一个 `clip`，但它们可以放在任意作者顺序位置。只要给出任意 `redraw=`，该命令就会原子替换该层的完整重绘管线；省略它会保留原管线，`redraw=clear` 则清空。函数参数内不能包含空格。
+
+| 重绘操作 | 语义 |
+|----------|------|
+| `redraw=color_overlay(#RRGGBBAA,blend)` | 以 `normal` 或 `soft_light` 模式叠色；blend 省略时为 `normal` |
+| `redraw=brightness_contrast(brightness,contrast)` | 8-bit 明度/对比度；范围分别为 `-255..255`、`-100..100` |
+| `redraw=grayscale(amount)` | 灰度混合量 `0..1` |
+| `redraw=tint(#RRGGBBAA)` | 逐通道乘色 |
+| `redraw=blur(x,y)` | 稳定的 9-tap 层本地模糊；`x,y` 是各轴取样间距，为 `0..32` 整数 |
+| `redraw=clip(asset,x,y,fit)` | 以图片 alpha 裁剪整层；遮罩矩形外 alpha 为 0 |
+
+`clip` 的 `x,y` 是层合成空间中的左上角偏移；`fit` 可省略，默认 `native`，也可为 `contain`、`cover` 或 `stretch`。遮罩和普通舞台素材使用完全相同的资源前缀与缓存规则；遮罩缺失时该层会 fail-closed 为透明，并输出资源警告。重绘数组会原样进入 JSON 存档，所以顺序、重复操作、有符号 brightness/contrast 参数和逻辑遮罩 ID 都会被精确恢复。
+
+```stla
+@stage dusk show asset=stage:portrait redraw=color_overlay(#355c7d80,soft_light) redraw=brightness_contrast(12,-20) redraw=grayscale(0.2) redraw=clip(stage:soft_edge_mask,0,0,native)
+@stage dusk update redraw=clear
+```
 
 `transition` / `duration` 属于 operation，不进入持久层状态。支持 `cut` / `none`、`fade`、`move` 和 `slide_left/right/up/down`；每层拥有独立 Tween。快进、点击补全和读档会以强制 cut 一次投影最终状态。
 

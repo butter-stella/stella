@@ -55,3 +55,35 @@ jobs:
       - name: Run tests
         run: godot -s addons/gut/gut_cmdln.gd --headless 2>&1
         timeout-minutes: 5
+
+  rendering:
+    name: Stage Rendering Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.6.1
+          use-dotnet: false
+
+      - name: Install software rendering dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          xvfb xauth mesa-vulkan-drivers
+
+      - name: Import project
+        run: godot --headless --import 2>&1
+        timeout-minutes: 2
+
+      - name: Run stage pixel tests with Mesa Lavapipe
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: >-
+          xvfb-run -a godot --path . --rendering-method mobile
+          -s addons/gut/gut_cmdln.gd -gconfig=
+          -gdir=res://tests/rendering -gexit 2>&1
+        timeout-minutes: 5
