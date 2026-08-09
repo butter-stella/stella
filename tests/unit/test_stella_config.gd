@@ -16,6 +16,7 @@ func test_defaults_when_no_file():
 
 	assert_eq(config.backgrounds_path, "res://art/backgrounds/")
 	assert_eq(config.characters_path, "res://art/characters/")
+	assert_eq(config.stage_path, "res://art/stage/")
 	assert_eq(config.bgm_path, "res://audio/bgm/")
 	assert_eq(config.se_path, "res://audio/se/")
 	assert_eq(config.voice_path, "res://audio/voice/")
@@ -36,6 +37,7 @@ func test_load_from_config_file():
 	cf.set_value("game", "scenario", "res://my_scenario.stla")
 	cf.set_value("paths", "backgrounds", "res://my/bg/")
 	cf.set_value("paths", "characters", "res://my/chars/")
+	cf.set_value("paths", "stage", "res://my/stage/")
 	cf.set_value("features", "cg_gallery", true)
 	cf.set_value("features", "save_slots", 12)
 	cf.set_value("overrides", "title_scene", "res://my_title.tscn")
@@ -47,6 +49,7 @@ func test_load_from_config_file():
 	assert_eq(config.scenario_path, "res://my_scenario.stla")
 	assert_eq(config.backgrounds_path, "res://my/bg/")
 	assert_eq(config.characters_path, "res://my/chars/")
+	assert_eq(config.stage_path, "res://my/stage/")
 	assert_eq(config.cg_gallery, true)
 	assert_eq(config.save_slots, 12)
 	assert_eq(config.title_scene, "res://my_title.tscn")
@@ -100,6 +103,7 @@ func test_runtime_applies_config_paths():
 	var cf = ConfigFile.new()
 	cf.set_value("paths", "backgrounds", "res://custom/bg/")
 	cf.set_value("paths", "characters", "res://custom/chars/")
+	cf.set_value("paths", "stage", "res://custom/stage/")
 	cf.set_value("paths", "bgm", "res://custom/bgm/")
 	cf.set_value("paths", "se", "res://custom/se/")
 	cf.set_value("paths", "voice", "res://custom/voice/")
@@ -108,6 +112,7 @@ func test_runtime_applies_config_paths():
 	# Save originals to restore later
 	var orig_bg = runtime.backgrounds_path
 	var orig_chars = runtime.characters_path
+	var orig_stage = runtime.stage_assets_path
 	var orig_bgm = runtime.bgm_path
 	var orig_se = runtime.se_path
 	var orig_voice = runtime.voice_path
@@ -117,6 +122,7 @@ func test_runtime_applies_config_paths():
 
 	assert_eq(runtime.backgrounds_path, "res://custom/bg/")
 	assert_eq(runtime.characters_path, "res://custom/chars/")
+	assert_eq(runtime.stage_assets_path, "res://custom/stage/")
 	assert_eq(runtime.bgm_path, "res://custom/bgm/")
 	assert_eq(runtime.se_path, "res://custom/se/")
 	assert_eq(runtime.voice_path, "res://custom/voice/")
@@ -124,6 +130,7 @@ func test_runtime_applies_config_paths():
 	# Restore
 	runtime.backgrounds_path = orig_bg
 	runtime.characters_path = orig_chars
+	runtime.stage_assets_path = orig_stage
 	runtime.bgm_path = orig_bgm
 	runtime.se_path = orig_se
 	runtime.voice_path = orig_voice

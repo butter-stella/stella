@@ -76,9 +76,9 @@ Godot 目前没有成熟的、功能完整的日式 AVG/Galgame 框架。现有�
 
 ```
 @bg bg_school fade 0.8
-@show sakura smile center
+@stage sakura show kind=character asset=character:sakura/smile position=960,80
 sakura「你好。」 #voice:sakura_001
-@expr sakura surprised
+@stage sakura update asset=character:sakura/surprised
 @choice
   - "你好" -> scene_a {affection += 5}
   - "……" -> scene_b
@@ -129,14 +129,14 @@ label start:
 |------|---------|--------|-----|-----|
 | 智能默认值 | **核心设计** | 部分 | 无 | N/A |
 | 日式括号 `「」` | **原生** | 无 | 无 | 无 |
-| 句内表情切换 `[expr]` | 有 | 无 | 无 | 无 |
+| 句内表情切换 `[expr:name]` | 有 | 无 | 无 | 无 |
 | 句内效果 `{wait}` | 有 | 无 | 无 | 无 |
 | 语音绑定在对话行 | `#voice:id` | 单独语句 | 单独标签 | 无 |
 | 并行执行 | `@parallel` | `with`（有限）| 手动 | 线程（叙事） |
 | ADV/NVL 切换 | `@nvl` 开关 | 角色类型 | 层配置 | N/A |
 | 条件选项 | `?if expr` | `if` 守卫 | TJS | `{condition}` |
 | 选项+副作用 | `{var += 5}` 内联 | `$` Python | TJS | `~ var += 5` |
-| CG 系统 | `@cg`（全屏/SD/动态/差分）| 自定义 | 自定义 | N/A |
+| 插画 / SD / 动态差分 | `@stage` 命名层与局部更新 | 自定义 | 自定义 | N/A |
 | 运行时 | **Godot** | 独立（Python）| Windows | 任意 |
 | 面向人群 | 编剧优先 | 编剧→程序员 | 程序员 | 纯写作 |
 | 授权 | 开源 | MIT | 开源 | MIT |

@@ -278,19 +278,15 @@ func test_nvl_profile_accepts_a_space_separator() -> void:
 	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "›One ›Two")
 
 
-func test_nvl_prefix_is_the_first_typed_character_and_offsets_inline_markers() -> void:
+func test_nvl_prefix_is_the_first_typed_character_and_avatar_marker_is_local() -> void:
 	_presenter = FIXTURE.instantiate()
 	add_child_autoqfree(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 1.0
-	var expressions: Array[String] = []
-	var expression_listener := func(_character: String, expression: String) -> void:
-		expressions.append(expression)
-	SignalBus.char_expression_changed.connect(expression_listener)
 
 	SignalBus.emit_show_dialogue(
 		"narrator",
-		[{"text": "[thoughtful]Text", "voice": "", "expression": ""}],
+		[{"text": "[expr:thoughtful]Text", "voice": ""}],
 		"nvl",
 		{"entry_prefix": "・", "entry_separator": ""},
 		true,
@@ -303,11 +299,10 @@ func test_nvl_prefix_is_the_first_typed_character_and_offsets_inline_markers() -
 	await get_tree().process_frame
 	assert_eq(text_label.visible_characters, 1,
 		"the first typewriter step reveals only the entry prefix")
-	assert_eq(expressions, [],
-		"a marker at authored offset zero must not fire while the prefix is typed")
+	assert_eq(_presenter._avatar_expressions.get("narrator"), "thoughtful",
+		"a zero-offset marker should initialize dialogue avatar state only")
 
 	SignalBus.hide_dialogue.emit()
-	SignalBus.char_expression_changed.disconnect(expression_listener)
 
 
 func test_nvl_typewriter_keeps_history_visible_and_types_only_the_new_entry() -> void:
@@ -322,7 +317,7 @@ func test_nvl_typewriter_keeps_history_visible_and_types_only_the_new_entry() ->
 	_presenter._char_interval = 1.0
 	SignalBus.emit_show_dialogue(
 		"",
-		[{"text": "New", "voice": "", "expression": ""}],
+		[{"text": "New", "voice": ""}],
 		"nvl",
 		profile,
 		true,
@@ -384,7 +379,6 @@ func test_nvl_decoration_does_not_mutate_segments_or_backlog_text() -> void:
 	var segments := [{
 		"text": "Original source text",
 		"voice": "",
-		"expression": "",
 	}]
 
 	SignalBus.emit_show_dialogue(
@@ -823,7 +817,7 @@ func _emit_profiled_dialogue(
 ) -> bool:
 	SignalBus.emit_show_dialogue(
 		character,
-		[{"text": entry_text, "voice": "", "expression": ""}],
+		[{"text": entry_text, "voice": ""}],
 		mode,
 		profile,
 		true,

@@ -209,7 +209,7 @@ func test_jump_restores_variables():
 
 
 func test_jump_restores_presentation_state():
-	# A scenario that shows a character + bg before the second dialogue.
+	# A scenario that shows a named layer + bg before the second dialogue.
 	# After playing through, jump back to the FIRST dialogue and verify
 	# PresentationState reflects the empty initial state, not the later one.
 	var data = ScenarioData.new()
@@ -228,8 +228,14 @@ func test_jump_restores_presentation_state():
 	s.commands.append(bg)
 
 	var show = CommandData.new()
-	show.type = "char_show"
-	show.params = {"character": "sakura", "expression": "smile", "position": "left"}
+	show.type = "stage_layer"
+	show.params = {
+		"action": "show",
+		"id": "sakura",
+		"properties": {"asset": "character:sakura/smile"},
+		"transition": "cut",
+		"duration": 0.0,
+	}
 	s.commands.append(show)
 
 	var d1 = CommandData.new()
@@ -248,7 +254,7 @@ func test_jump_restores_presentation_state():
 	await _advance(1)  # → 2 entries
 
 	assert_eq(_runtime.presentation_state.current_bg, "park")
-	assert_true(_runtime.presentation_state.visible_characters.has("sakura"))
+	assert_true(_runtime.presentation_state.stage_layers.has("sakura"))
 
 	# Jump back to entry 0 — bg/char should be empty
 	_runtime.jump_from_backlog(0)
@@ -257,8 +263,8 @@ func test_jump_restores_presentation_state():
 
 	assert_eq(_runtime.presentation_state.current_bg, "",
 		"bg rewound to pre-bg-command state")
-	assert_false(_runtime.presentation_state.visible_characters.has("sakura"),
-		"character rewound to pre-show state")
+	assert_false(_runtime.presentation_state.stage_layers.has("sakura"),
+		"named layer rewound to pre-show state")
 
 	await _stop_engine()
 

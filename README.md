@@ -1,17 +1,18 @@
 # Stella
 
-Godot AVG / Galgame framework — the first open-source Godot framework with commercial-grade Japanese visual novel features.
+A Godot 4.6 visual-novel framework built around a typed authoring DSL and
+independent presentation systems.
 
 ## Features
 
 - **Custom DSL** (`.stla`) — writer-friendly scripting with smart defaults
-- **Scenario Engine** — command-pattern architecture, fully extensible (22 built-in handlers)
-- **Dialogue System** — typewriter, ADV/NVL/overlay modes, inline `[expression]` and `{wait}/{speed}` markers
-- **`@combine` blocks** — group multiple voice + expression segments into one logical dialogue with a continuous typewriter and a single shared progress bar
-- **Character System** — show/hide/move/animate, sprite + layered (body+face) rendering, position presets, dialogue avatar from `avatar_rect` crop
+- **Scenario Engine** — extensible command-pattern architecture
+- **Dialogue System** — typewriter, ADV/NVL/overlay modes, inline `[expr:expression]` and `{wait}/{speed}` markers
+- **`@combine` blocks** — group multiple voice segments and named-stage cues into one logical dialogue with a continuous typewriter and shared progress
+- **Named Stage System** — arbitrary reusable character/event/SD layers, stable asset/body/face channels, transforms, redraw filters, transitions, and exact save-state projection
+- **Dialogue Avatars** — inline `[expr:expression]` markers update the cropped dialogue portrait without implicitly mutating the stage
 - **Background System** — double-buffered fade / dissolve / wipe transitions
 - **Audio System** — BGM/SE/voice with per-character volume, sequential voice queue, replay, voice progress signal
-- **CG System** — fullscreen / SD / animated CG
 - **Choice System** — abstract presenter, supports custom UI styles
 - **Variable System** — 3 scopes (global / scenario / temp), expression evaluator
 - **Save System** — snapshot-based save/load with multiple slots, auto-save, quick-save, continue
@@ -19,14 +20,13 @@ Godot AVG / Galgame framework — the first open-source Godot framework with com
 - **Playback Control** — auto-play, skip (read-only), read-flag tracking, backlog with sequential voice replay
 - **Game State Machine** — title / playing / save-load / backlog / settings overlays
 - **Voice Bookmarks** — collect and replay voice lines
-- **Gallery System** — CG / BGM / scene unlock tracking
+- **Gallery System** — illustration / BGM / scene unlock tracking
 - **Localization** — multi-locale key-value translation
 
 ## Tech Stack
 
 - Godot 4.6+, GDScript
-- GUT for testing (439 tests, all green)
-- Rust via gdext (for performance extensions, when needed)
+- GUT for unit and integration testing
 
 ## Quick Start
 
@@ -46,19 +46,19 @@ addons/stella/                        ← 框架插件（一般不需要修改�
 │   ├── data/                          ← 数据模型（CommandData, ScenarioData 等）
 │   ├── script_parser/                 ← DSL 解析器（.stla → 内部数据结构）
 │   ├── scenario_engine/               ← 剧情引擎（主循环、上下文、等待控制）
-│   ├── commands/                      ← 22 个命令处理器（对话/背景/立绘/音频/特效...）
+│   ├── commands/                      ← 命令处理器（对话/舞台/背景/音频/特效...）
 │   ├── variable_system/               ← 变量系统 + 表达式求值
 │   ├── save_system/                   ← 存档/读档
 │   ├── settings/                      ← 游戏设置
 │   ├── playback/                      ← 自动播放/快进/已读/Backlog
 │   ├── state/                         ← 游戏状态机
 │   ├── bookmark/                      ← 语音收藏
-│   ├── gallery/                       ← CG/BGM 解锁管理
+│   ├── gallery/                       ← 插画/BGM 解锁管理
 │   └── localization/                  ← 多语言本地化
 ├── presentation/                      ← 表现层（Godot UI/渲染/音频）
 │   ├── dialogue/                      ← 对话框 + 打字机 + NVL/overlay
 │   ├── background/                    ← 背景 + fade 转场
-│   ├── character/                     ← 立绘 + 动画 + 移动
+│   ├── stage/                         ← 动态命名舞台层 + 转场/滤镜
 │   ├── choice/                        ← 选项按钮
 │   ├── audio/                         ← BGM/SE/voice 播放
 │   ├── effects/                       ← 屏幕淡入淡出 + shake/flash
@@ -71,9 +71,9 @@ addons/stella/                        ← 框架插件（一般不需要修改�
 stella.cfg                            ← 项目配置文件（标题/路径/功能开关）
 examples/demo/                         ← 示例项目
 ├── scenarios/                         ← .stla 剧本
-└── art/                               ← 素材（背景/立绘）
+└── art/                               ← 素材（背景/头像/舞台层）
 
-tests/                                 ← GUT 测试（439 个测试用例，全绿）
+tests/                                 ← GUT 测试
 ├── unit/                              ← 单元测试
 └── integration/                       ← 端到端集成测试
 ```

@@ -34,6 +34,7 @@ var scenario_graph: ScenarioGraph
 ## Resource base paths — populated from config, can be overridden manually.
 var backgrounds_path: String = "res://art/backgrounds/"
 var characters_path: String = "res://art/characters/"
+var stage_assets_path: String = "res://art/stage/"
 var bgm_path: String = "res://audio/bgm/"
 var se_path: String = "res://audio/se/"
 var voice_path: String = "res://audio/voice/"
@@ -124,6 +125,7 @@ func _apply_config() -> void:
 	if config.has_config_file:
 		backgrounds_path = config.backgrounds_path
 		characters_path = config.characters_path
+		stage_assets_path = config.stage_path
 		bgm_path = config.bgm_path
 		se_path = config.se_path
 		voice_path = config.voice_path
@@ -137,9 +139,7 @@ func _apply_config() -> void:
 func _register_handlers():
 	registry.register(DialogueHandler.new())
 	registry.register(BgHandler.new())
-	registry.register(CharShowHandler.new())
-	registry.register(CharHideHandler.new())
-	registry.register(CharExprHandler.new())
+	registry.register(StageLayerHandler.new())
 	registry.register(JumpHandler.new())
 	registry.register(SetHandler.new())
 	registry.register(ConditionHandler.new())
@@ -149,9 +149,6 @@ func _register_handlers():
 	registry.register(VoiceHandler.new())
 	registry.register(FadeHandler.new())
 	registry.register(WaitHandler.new())
-	registry.register(AnimHandler.new())
-	registry.register(MoveHandler.new())
-	registry.register(CgHandler.new())
 	registry.register(EffectHandler.new())
 	registry.register(CallHandler.new())
 	var parallel_handler = ParallelHandler.new()
@@ -262,6 +259,7 @@ func start_scenario(scenario_path: String) -> void:
 
 func _start_scenario_internal(scenario_path: String) -> void:
 	_prepare_scenario(scenario_path)
+	SignalBus.reset_stage_visuals()
 	presentation_state.clear()
 	engine.run()
 
@@ -311,9 +309,16 @@ func _prepare_scenario(scenario_path: String) -> void:
 			push_warning(msg)
 	flowchart_state.clear()
 	# Capture INITIAL_SNAPSHOT immediately after scenario load, before
-	# engine.run() mutates any state. Used as fallback for jump_to_chapter
-	# when the target chapter has never been visited (author debug mode).
-	flowchart_state.initial_snapshot = _capture_rollback_snapshot()
+	# engine.run() mutates any state. A scenario always starts from an explicitly
+	# empty presentation; title visuals or a previous playthrough must never leak
+	# into the fallback used for an unvisited chapter.
+	var initial_snapshot := _capture_rollback_snapshot()
+	initial_snapshot["presentation_state"] = {
+		"bg": "",
+		"stage_layers": {},
+		"bgm": "",
+	}
+	flowchart_state.initial_snapshot = initial_snapshot
 
 
 ## Load scenario, restore snapshot, restore presentation, then run.
@@ -343,7 +348,7 @@ func _is_on_title_screen() -> bool:
 ## Reset current presentation state (for in-scene reload).
 func _reset_presentation() -> void:
 	SignalBus.effect_requested.emit("off", {})
-	SignalBus.char_hide.emit("all")
+	SignalBus.reset_stage_visuals()
 	SignalBus.bgm_stop.emit(0.0)
 	SignalBus.hide_dialogue.emit()
 	presentation_state.clear()
@@ -637,6 +642,97 @@ func is_skipping() -> bool:
 	return skip_controller.is_active
 
 
+# ─── Facade API: Named Stage Layers ───
+
+## Apply an atomic batch of named-stage operations. Each operation uses the
+## same schema as the `stage_layer` CommandData payload: action, id,
+## properties, transition, and duration.
+func apply_stage_operations(
+	operations: Array,
+	force_cut: bool = false,
+) -> void:
+	var authored_operations: Array = []
+	for raw_operation in operations:
+		if raw_operation is Dictionary:
+			var operation: Dictionary = raw_operation
+			var layer_id := String(operation.get("id", "")).strip_edges()
+			var authored_operation := operation.duplicate(true)
+			authored_operation["id"] = layer_id
+			authored_operations.append(authored_operation)
+		else:
+			authored_operations.append(raw_operation)
+	if authored_operations.is_empty() and not operations.is_empty():
+		return
+	SignalBus.emit_stage_operations(
+		authored_operations.duplicate(true),
+		force_cut,
+	)
+
+
+func show_stage_layer(
+	layer_id: String,
+	properties: Dictionary,
+	transition: String = "cut",
+	duration: float = 0.0,
+) -> void:
+	_emit_stage_operation(
+		"show", layer_id, properties, transition, duration
+	)
+
+
+func update_stage_layer(
+	layer_id: String,
+	properties: Dictionary,
+	transition: String = "cut",
+	duration: float = 0.0,
+) -> void:
+	_emit_stage_operation(
+		"update", layer_id, properties, transition, duration
+	)
+
+
+func hide_stage_layer(
+	layer_id: String,
+	transition: String = "cut",
+	duration: float = 0.0,
+) -> void:
+	_emit_stage_operation("hide", layer_id, {}, transition, duration)
+
+
+func remove_stage_layer(
+	layer_id: String,
+	transition: String = "cut",
+	duration: float = 0.0,
+) -> void:
+	_emit_stage_operation("remove", layer_id, {}, transition, duration)
+
+
+func clear_stage_layers(
+	transition: String = "cut",
+	duration: float = 0.0,
+) -> void:
+	_emit_stage_operation("clear", "", {}, transition, duration)
+
+
+func _emit_stage_operation(
+	action: String,
+	layer_id: String,
+	properties: Dictionary,
+	transition: String,
+	duration: float,
+) -> void:
+	if action != "clear" and layer_id.strip_edges() == "":
+		push_warning("StellaRuntime: stage operation requires a layer id")
+		return
+	apply_stage_operations([{
+		"action": action,
+		"id": layer_id,
+		"properties": properties.duplicate(true),
+		"transition": transition,
+		"duration": duration,
+	}])
+
+
 # ─── Facade API: UI Overlays ───
 
 ## Show the backlog overlay.
@@ -719,9 +815,9 @@ func get_backlog() -> Array:
 ## 1. Close any overlay + transition to PLAYING state.
 ## 2. Build a fresh ScenarioContext that reuses the old VariableStore
 ##    instance — dropping the store would lose Scope.GLOBAL (#98).
-## 3. Reset visuals to a clean slate. char_hide + bgm_stop trigger the
-##    PresentationState signal listeners; restore_snapshot then overwrites
-##    them. fade("in",0) drops any lingering screen-fade overlay.
+## 3. Reset visuals to a clean slate. bgm_stop triggers the PresentationState
+##    signal listener; restore_snapshot then overwrites it. fade("in",0) drops
+##    any lingering screen-fade overlay.
 ## 4. Restore scenario_context + scenario-scope vars + presentation_state
 ##    from the snapshot. Scope-only var restore so Scope.GLOBAL stays intact.
 ## 5. If override_scene_id is non-empty, set_scene to it AFTER the snapshot
@@ -748,7 +844,7 @@ func _restore_runtime_from_snapshot(snap: Dictionary, override_scene_id: String 
 	var new_ctx = ScenarioContext.new(scenario_data)
 	new_ctx.variable_store = engine.context.variable_store
 
-	SignalBus.char_hide.emit("all")
+	SignalBus.reset_stage_visuals()
 	SignalBus.bgm_stop.emit(0.0)
 	SignalBus.hide_dialogue.emit()
 	SignalBus.fade_requested.emit("in", 0.0)

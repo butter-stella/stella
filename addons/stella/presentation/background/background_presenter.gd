@@ -8,6 +8,11 @@ extends CanvasLayer
 
 var _dissolve_shader: Shader
 var _wipe_shader: Shader
+var _active_tween: Tween
+var _transition_generation: int = 0
+var _front_rest_position: Vector2
+var _back_rest_position: Vector2
+var _has_active_transition: bool = false
 
 
 func _get_stage_texture(node_name: String) -> TextureRect:
@@ -26,20 +31,27 @@ func _ready():
 
 
 func _on_bg_changed(asset: String, transition: String, duration: float):
+	if asset == "":
+		_begin_transition()
+		_transition_clear()
+		return
 	var texture = _load_bg_texture(asset)
 	if texture == null:
 		push_warning("BackgroundPresenter: texture not found: %s" % asset)
 		return
 
+	var generation = _begin_transition()
 	match transition:
+		"cut", "none":
+			_transition_cut(texture)
 		"dissolve":
-			await _transition_dissolve(texture, duration)
+			_transition_dissolve(texture, duration, generation)
 		"wipe":
-			await _transition_wipe(texture, duration)
+			_transition_wipe(texture, duration, generation)
 		"slide_left", "slide_right", "slide_up", "slide_down":
-			await _transition_slide(texture, duration, transition)
+			_transition_slide(texture, duration, transition, generation)
 		_:  # "fade" or default
-			await _transition_fade(texture, duration)
+			_transition_fade(texture, duration, generation)
 
 
 func _load_bg_texture(asset: String) -> Texture2D:
@@ -51,7 +63,61 @@ func _load_bg_texture(asset: String) -> Texture2D:
 	return null
 
 
-func _transition_fade(texture: Texture2D, duration: float):
+## Cancel the previous transition and normalize both buffers before a new
+## request takes ownership. No stale tween is allowed to keep mutating nodes
+## after a cut or a newer transition starts.
+func _begin_transition() -> int:
+	_transition_generation += 1
+
+	if _active_tween and _active_tween.is_valid():
+		_active_tween.kill()
+	_active_tween = null
+
+	if _has_active_transition:
+		bg_front.position = _front_rest_position
+		bg_back.position = _back_rest_position
+
+	bg_front.material = null
+	bg_back.material = null
+	bg_front.modulate.a = 1.0
+	bg_back.modulate.a = 0.0
+
+	_front_rest_position = bg_front.position
+	_back_rest_position = bg_back.position
+	_has_active_transition = true
+	return _transition_generation
+
+
+func _transition_cut(texture: Texture2D) -> void:
+	bg_front.material = null
+	bg_back.material = null
+	bg_front.texture = texture
+	bg_back.texture = texture
+	bg_front.modulate.a = 1.0
+	bg_back.modulate.a = 0.0
+	_has_active_transition = false
+
+
+func _transition_clear() -> void:
+	bg_front.material = null
+	bg_back.material = null
+	bg_front.texture = null
+	bg_back.texture = null
+	bg_front.modulate.a = 1.0
+	bg_back.modulate.a = 0.0
+	bg_front.position = _front_rest_position
+	bg_back.position = _back_rest_position
+	_active_tween = null
+	_has_active_transition = false
+
+
+func _transition_fade(texture: Texture2D, duration: float, generation: int = -1):
+	if generation < 0:
+		generation = _begin_transition()
+	if duration <= 0.0:
+		_transition_cut(texture)
+		return
+
 	# Reset any shader materials
 	bg_front.material = null
 	bg_back.material = null
@@ -60,16 +126,25 @@ func _transition_fade(texture: Texture2D, duration: float):
 	bg_back.modulate.a = 0.0
 
 	var tween = create_tween().set_parallel(true)
+	_active_tween = tween
+	# BgBack is drawn above BgFront. Keep the old frame opaque and fade only
+	# the new frame in; fading both buffers exposes the black viewport midway.
 	tween.tween_property(bg_back, "modulate:a", 1.0, duration)
-	tween.tween_property(bg_front, "modulate:a", 0.0, duration)
-	await tween.finished
+	tween.finished.connect(func():
+		if generation != _transition_generation:
+			return
+		_transition_cut(texture)
+		_active_tween = null
+	)
 
-	bg_front.texture = texture
-	bg_front.modulate.a = 1.0
-	bg_back.modulate.a = 0.0
 
+func _transition_dissolve(texture: Texture2D, duration: float, generation: int = -1):
+	if generation < 0:
+		generation = _begin_transition()
+	if duration <= 0.0:
+		_transition_cut(texture)
+		return
 
-func _transition_dissolve(texture: Texture2D, duration: float):
 	bg_front.material = null
 
 	bg_back.texture = texture
@@ -79,7 +154,6 @@ func _transition_dissolve(texture: Texture2D, duration: float):
 	if _dissolve_shader:
 		var mat = ShaderMaterial.new()
 		mat.shader = _dissolve_shader
-		# Generate noise texture for dissolve pattern
 		var noise_tex = NoiseTexture2D.new()
 		noise_tex.width = 256
 		noise_tex.height = 256
@@ -91,29 +165,35 @@ func _transition_dissolve(texture: Texture2D, duration: float):
 		bg_front.material = mat
 
 		var tween = create_tween()
+		_active_tween = tween
 		tween.tween_method(func(val): mat.set_shader_parameter("progress", val), 0.0, 1.0, duration)
-		await tween.finished
+		tween.finished.connect(func():
+			if generation != _transition_generation:
+				return
+			_transition_cut(texture)
+			_active_tween = null
+		)
 	else:
-		await _transition_fade(texture, duration)
+		_transition_fade(texture, duration, generation)
+
+
+func _transition_slide(
+	texture: Texture2D,
+	duration: float,
+	direction: String,
+	generation: int = -1,
+):
+	if generation < 0:
+		generation = _begin_transition()
+	if duration <= 0.0:
+		_transition_cut(texture)
 		return
 
-	bg_front.texture = texture
-	bg_front.material = null
-	bg_back.modulate.a = 0.0
-
-
-func _transition_slide(texture: Texture2D, duration: float, direction: String):
 	# Convention: direction names the way content moves.
-	#   slide_left  → old exits to the left, new enters from the right.
-	#   slide_right → mirror of slide_left.
-	#   slide_up / slide_down → vertical equivalents.
 	var viewport_size = get_viewport().get_visible_rect().size
 	if viewport_size == Vector2.ZERO:
-		# Viewport not yet laid out (e.g. first-frame autoplay). Slide would
-		# be invisible because delta is zero; fall back to fade so the bg
-		# switch at least happens.
 		push_warning("BackgroundPresenter: viewport size is zero, falling back to fade for slide")
-		await _transition_fade(texture, duration)
+		_transition_fade(texture, duration, generation)
 		return
 
 	bg_front.material = null
@@ -138,25 +218,31 @@ func _transition_slide(texture: Texture2D, duration: float, direction: String):
 		_:
 			delta = Vector2(-viewport_size.x, 0)
 
-	# New layer starts off-screen on the opposite side of delta; slides in to origin.
 	bg_back.position = back_origin - delta
 
 	var tween = create_tween().set_parallel(true)
+	_active_tween = tween
 	tween.tween_property(bg_front, "position", front_origin + delta, duration) \
 		.set_trans(Tween.TRANS_QUART).set_ease(Tween.EASE_OUT)
 	tween.tween_property(bg_back, "position", back_origin, duration) \
 		.set_trans(Tween.TRANS_QUART).set_ease(Tween.EASE_OUT)
-	await tween.finished
+	tween.finished.connect(func():
+		if generation != _transition_generation:
+			return
+		bg_front.position = _front_rest_position
+		bg_back.position = _back_rest_position
+		_transition_cut(texture)
+		_active_tween = null
+	)
 
-	# Commit new texture to front, reset both to origin.
-	bg_front.texture = texture
-	bg_front.modulate.a = 1.0
-	bg_front.position = front_origin
-	bg_back.modulate.a = 0.0
-	bg_back.position = back_origin
 
+func _transition_wipe(texture: Texture2D, duration: float, generation: int = -1):
+	if generation < 0:
+		generation = _begin_transition()
+	if duration <= 0.0:
+		_transition_cut(texture)
+		return
 
-func _transition_wipe(texture: Texture2D, duration: float):
 	bg_front.material = null
 
 	bg_back.texture = texture
@@ -166,16 +252,17 @@ func _transition_wipe(texture: Texture2D, duration: float):
 		var mat = ShaderMaterial.new()
 		mat.shader = _wipe_shader
 		mat.set_shader_parameter("progress", 0.0)
-		mat.set_shader_parameter("direction", 0)  # left to right
+		mat.set_shader_parameter("direction", 0)
 		bg_front.material = mat
 
 		var tween = create_tween()
+		_active_tween = tween
 		tween.tween_method(func(val): mat.set_shader_parameter("progress", val), 0.0, 1.0, duration)
-		await tween.finished
+		tween.finished.connect(func():
+			if generation != _transition_generation:
+				return
+			_transition_cut(texture)
+			_active_tween = null
+		)
 	else:
-		await _transition_fade(texture, duration)
-		return
-
-	bg_front.texture = texture
-	bg_front.material = null
-	bg_back.modulate.a = 0.0
+		_transition_fade(texture, duration, generation)

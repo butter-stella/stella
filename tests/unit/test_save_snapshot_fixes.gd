@@ -88,48 +88,6 @@ func test_presentation_state_tracks_bg():
 	assert_eq(ps.current_bg, "forest.png")
 
 
-func test_presentation_state_tracks_char_show():
-	var ps = PresentationState.new()
-	ps.connect_signals()
-	SignalBus.char_show.emit("alice", "happy", "left")
-	assert_true(ps.visible_characters.has("alice"))
-	assert_eq(ps.visible_characters["alice"]["expression"], "happy")
-	assert_eq(ps.visible_characters["alice"]["position"], "left")
-
-
-func test_presentation_state_tracks_char_hide():
-	var ps = PresentationState.new()
-	ps.connect_signals()
-	SignalBus.char_show.emit("alice", "happy", "left")
-	SignalBus.char_hide.emit("alice")
-	assert_false(ps.visible_characters.has("alice"))
-
-
-func test_presentation_state_tracks_char_hide_all():
-	var ps = PresentationState.new()
-	ps.connect_signals()
-	SignalBus.char_show.emit("alice", "happy", "left")
-	SignalBus.char_show.emit("bob", "neutral", "right")
-	SignalBus.char_hide.emit("all")
-	assert_eq(ps.visible_characters.size(), 0)
-
-
-func test_presentation_state_tracks_expression_change():
-	var ps = PresentationState.new()
-	ps.connect_signals()
-	SignalBus.char_show.emit("alice", "happy", "left")
-	SignalBus.char_expression_changed.emit("alice", "sad")
-	assert_eq(ps.visible_characters["alice"]["expression"], "sad")
-
-
-func test_presentation_state_tracks_char_move():
-	var ps = PresentationState.new()
-	ps.connect_signals()
-	SignalBus.char_show.emit("alice", "happy", "left")
-	SignalBus.char_move_requested.emit("alice", "center", 0.5)
-	assert_eq(ps.visible_characters["alice"]["position"], "center")
-
-
 func test_presentation_state_tracks_bgm():
 	var ps = PresentationState.new()
 	ps.connect_signals()
@@ -149,7 +107,11 @@ func test_presentation_state_snapshot_roundtrip():
 	var ps = PresentationState.new()
 	ps.connect_signals()
 	SignalBus.bg_changed.emit("forest.png", "fade", 0.5)
-	SignalBus.char_show.emit("alice", "happy", "left")
+	SignalBus.emit_stage_operations([{
+		"action": "show",
+		"id": "alice",
+		"properties": {"asset": "character:alice/happy"},
+	}], true)
 	SignalBus.bgm_play.emit("theme.ogg", 1.0)
 
 	var snap = ps.capture_snapshot()
@@ -158,34 +120,37 @@ func test_presentation_state_snapshot_roundtrip():
 	ps2.restore_snapshot(snap)
 	assert_eq(ps2.current_bg, "forest.png")
 	assert_eq(ps2.current_bgm, "theme.ogg")
-	assert_true(ps2.visible_characters.has("alice"))
-	assert_eq(ps2.visible_characters["alice"]["expression"], "happy")
+	assert_true(ps2.stage_layers.has("alice"))
+	assert_eq(ps2.stage_layers["alice"]["asset"], "character:alice/happy")
 
 
 func test_presentation_state_restore_emits_signals():
 	var ps = PresentationState.new()
 	ps.current_bg = "forest.png"
 	ps.current_bgm = "theme.ogg"
-	ps.visible_characters = {"alice": {"expression": "happy", "position": "left"}}
+	ps.stage_layers = {
+		"alice": StageLayerState.normalize_full({"asset": "character:alice/happy"}),
+	}
 
 	var bg_received := []
-	var char_received := []
+	var stage_received := []
 	var bgm_received := []
 	var bg_cb = func(a, _t, _d): bg_received.append(a)
-	var char_cb = func(c, _e, _p): char_received.append(c)
+	var stage_cb = func(layers): stage_received.append(layers)
 	var bgm_cb = func(a, _f): bgm_received.append(a)
 	SignalBus.bg_changed.connect(bg_cb)
-	SignalBus.char_show.connect(char_cb)
+	SignalBus.stage_state_apply_requested.connect(stage_cb)
 	SignalBus.bgm_play.connect(bgm_cb)
 
 	ps.apply_to_presenters()
 
 	assert_eq(bg_received, ["forest.png"])
-	assert_eq(char_received, ["alice"])
+	assert_eq(stage_received.size(), 1)
+	assert_eq(stage_received[0]["alice"]["asset"], "character:alice/happy")
 	assert_eq(bgm_received, ["theme.ogg"])
 
 	SignalBus.bg_changed.disconnect(bg_cb)
-	SignalBus.char_show.disconnect(char_cb)
+	SignalBus.stage_state_apply_requested.disconnect(stage_cb)
 	SignalBus.bgm_play.disconnect(bgm_cb)
 
 
@@ -203,6 +168,18 @@ func test_presentation_state_restore_uses_zero_duration():
 	SignalBus.bg_changed.disconnect(cb)
 
 
+func test_presentation_state_restore_projects_empty_bgm_as_stop():
+	var ps = PresentationState.new()
+	var stop_durations := []
+	var cb = func(duration): stop_durations.append(duration)
+	SignalBus.bgm_stop.connect(cb)
+
+	ps.apply_to_presenters()
+
+	SignalBus.bgm_stop.disconnect(cb)
+	assert_eq(stop_durations, [0.0])
+
+
 func test_presentation_state_disconnect_signals():
 	var ps = PresentationState.new()
 	ps.connect_signals()
@@ -215,11 +192,11 @@ func test_presentation_state_clear():
 	var ps = PresentationState.new()
 	ps.current_bg = "forest.png"
 	ps.current_bgm = "theme.ogg"
-	ps.visible_characters = {"alice": {"expression": "happy", "position": "left"}}
+	ps.stage_layers = {"alice": StageLayerState.default_state()}
 	ps.clear()
 	assert_eq(ps.current_bg, "")
 	assert_eq(ps.current_bgm, "")
-	assert_eq(ps.visible_characters.size(), 0)
+	assert_eq(ps.stage_layers.size(), 0)
 
 
 # ─── Engine Load Flow ───

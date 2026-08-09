@@ -1,7 +1,7 @@
 # Stella DSL 详细设计
 
 > **设计理念：脚本即演出。** 编剧写完 DSL 脚本就能完成 90% 的演出效果，程序员只负责特殊定制。
-> DSL 与 YAML 双向等价转换，DSL 是编剧的书写层，YAML 是框架的存储层/IR。
+> `.stla` 是当前唯一的剧本源格式；解析器直接生成框架运行时数据模型。
 
 ## 1. 设计原则
 
@@ -50,7 +50,7 @@ sakura「你好。」
 @jump scene_branch_a
 
 @scene scene_branch_a       // 内部场景，没有显示名
-@expr sakura smile
+@stage sakura update asset=character:sakura/smile transition=fade duration=0.15
 sakura「真巧，我们又见面了。」
 @jump chapter1_intro
 
@@ -76,17 +76,23 @@ sakura（这个人...好奇怪。）
 // 附带语音
 sakura「你好，初次见面。」 #voice:sakura_001
 
-// 句内表情切换 — 编剧只需标注语义位置
-sakura「我本来很开心的...[surprised]但是听到这个消息...[cry]呜呜...」
+// 句内头像表情提示
+sakura「我本来很开心的...[expr:surprised]但是听到这个消息...[expr:cry]呜呜...」
 
 // 句内内联效果
-sakura「那个人就是..{wait:500}{speed:0.3}你吗？」
+sakura「那个人就是..{wait:500}{speed:30}你吗？」
 ```
 
 **默认行为**：
 - 打字机速度使用全局设置
 - 自动等待玩家点击后推进
 - 如有语音，自动播放
+
+方括号标记（如 `[expr:surprised]`）只更新对话框头像，不会修改舞台图片。人物立绘、身体和脸部差分都由 `@stage` 显式管理；需要让舞台表情与某段语音同步时，在 `@combine` 中把对应 `@stage ... update` 写在该段对话之前。头像标签必须使用显式的 `expr:` 前缀；其他方括号内容按普通文字显示，正文不解析 BBCode，字体与布局由 Dialogue Profile 或 Theme 配置。
+
+`{wait:...}` 与 `{speed:...}` 都使用毫秒：`{wait:500}` 暂停 500ms，
+`{speed:30}` 把后续每字间隔设为 30ms。未知标签、非数字或负数会产生
+warning，并按普通文本显示。
 
 ### 3.3 对话框模式切换
 
@@ -117,7 +123,7 @@ sakura「那个人就是..{wait:500}{speed:0.3}你吗？」
 @overlay off
 ```
 
-`@adv` / `@nvl` / `@overlay` 作为模式开关，之后的所有对话都使用该模式，直到 `off` 或切换。不需要每句都写 `mode`。不带 `profile` 的旧 `@nvl` / `@overlay` 保持旧版默认表现；`profile=<name>` 从当前 STLA 文件的 `@dialogue_profile` 声明中选择一套表现。Profile 是编译期数据，可以写在引用之后，但建议统一放在文件顶部。若先用 `@adv profile=message` 配置 ADV，`@nvl off` / `@overlay off` 会恢复 `message`；否则恢复场景编排的 ADV 基线。
+`@adv` / `@nvl` / `@overlay` 作为模式开关，之后的所有对话都使用该模式，直到 `off` 或切换。不需要每句都写 `mode`。不带 `profile` 时使用内置模式表现；`profile=<name>` 从当前 STLA 文件的 `@dialogue_profile` 声明中选择一套表现。Profile 是编译期数据，可以写在引用之后，但建议统一放在文件顶部。若先用 `@adv profile=message` 配置 ADV，`@nvl off` / `@overlay off` 会恢复 `message`；否则恢复场景编排的 ADV 基线。
 
 模式开关按实际运行路径生效：经过 `@nvl off` 或切到其他模式后，再通过顺序执行、`@jump`、`@call` 或条件分支进入 `@nvl`，都会开始新的 NVL 页面；没有离开 NVL 时重复写 `@nvl` 则继续当前页面。条件分支若改变模式，应在各分支汇合前选择相同模式，或在汇合后显式重新选择，避免后续对话的编译期 Profile 含义不明确。
 
@@ -142,9 +148,9 @@ sakura「那个人就是..{wait:500}{speed:0.3}你吗？」
 | `entry_prefix` | 引号纯文本字符串 | 每条 NVL 记录的前缀；默认 `""` |
 | `entry_separator` | 引号纯文本字符串 | 相邻 NVL 记录之间的分隔符；默认 `"\n"` |
 
-`entry_prefix` 和 `entry_separator` 只影响 NVL 的屏幕累积文本。每条记录按“前缀 → 角色名（若有）→ 正文”的顺序显示，分隔符只插入相邻记录之间；例如 `entry_prefix="・" entry_separator=""` 会把两句旁白显示为 `・第一句。・第二句。`。显式的空字符串表示不插入内容，与省略属性时采用兼容默认值不同。`@combine` 块在 NVL 中仍是一条记录，因此只添加一次前缀，Backlog 中保存的也仍是原始对话文本，不会混入屏幕排版用的前缀或分隔符。
+`entry_prefix` 和 `entry_separator` 只影响 NVL 的屏幕累积文本。每条记录按“前缀 → 角色名（若有）→ 正文”的顺序显示，分隔符只插入相邻记录之间；例如 `entry_prefix="・" entry_separator=""` 会把两句旁白显示为 `・第一句。・第二句。`。显式的空字符串表示不插入内容，与省略属性时采用默认值不同。`@combine` 块在 NVL 中仍是一条记录，因此只添加一次前缀，Backlog 中保存的也仍是原始对话文本，不会混入屏幕排版用的前缀或分隔符。
 
-这两个属性支持带引号的纯文本字符串及常用转义：`\\`、`\"`、`\n`、`\r`、`\t`。例如 `entry_separator="\n\n"` 会在记录间留出一个空行。这里不支持 BBCode 标签，方括号会产生解析诊断；样式仍应通过 Profile 的文字属性或场景 theme 配置。未配置时继续使用旧版 NVL 行为：前缀为空、记录之间换行。
+这两个属性支持带引号的纯文本字符串及常用转义：`\\`、`\"`、`\n`、`\r`、`\t`。例如 `entry_separator="\n\n"` 会在记录间留出一个空行。这里不支持 BBCode 标签，方括号会产生解析诊断；样式仍应通过 Profile 的文字属性或场景 theme 配置。未配置时前缀为空、记录之间换行。
 
 内置场景已提供 `quick_menu` 分组，并将默认文字布局根作为可定位区域，所以常见 NVL/overlay 版式只需要写 STLA。只有项目新增了特殊 frame、logo 或其他自定义 UI 时，才需要在 Godot 场景里给这些节点分组，例如 `adv_chrome`。
 
@@ -172,87 +178,63 @@ sakura「那个人就是..{wait:500}{speed:0.3}你吗？」
 
 **省略规则**：不写转场类型和时间 = `fade 0.5`。
 
-### 3.5 立绘
+### 3.5 动态命名舞台层（@stage）
+
+`@stage` 是人物立绘、身体/脸部差分、事件图、SD 与前景图片的统一舞台接口。它通过稳定 ID 管理任意数量的动态层，不预建位置槽，也不限制同时显示的人物数量。ID 区分大小写且必须非空；`clear` 是无 ID 的全舞台动作。
 
 ```
-// 显示 — 默认居中、默认表情、默认 fade 入场
-@show sakura
-
-// 指定表情和位置
-@show sakura smile left
-@show kaito default right
-
-// 隐藏
-@hide sakura
-@hide all
-
-// 切换表情（立绘已显示时）
-@expr sakura surprised
-@expr sakura cry
+@stage <layer-id> show key=value ...
+@stage <layer-id> update key=value ...
+@stage <layer-id> hide [transition=...] [duration=...]
+@stage <layer-id> remove [transition=...] [duration=...]
+@stage clear [transition=...] [duration=...]
 ```
 
-**省略规则**：
-- 不写表情 = 使用角色配置的 `default`
-- 不写位置 = `center`
-- 不写过渡 = `fade 0.3`
-
-### 3.6 立绘动画
-
-```
-// 移动
-@move sakura right          // 移动到预设位置，默认 0.5s
-@move sakura right 0.3      // 指定时间
-@move sakura 0.7 0.5        // 自定义坐标 (x, y)
-
-// 预设动画 — 一个词搞定
-@anim sakura jump
-@anim sakura shake
-@anim sakura nod
-@anim sakura bounce
-
-// 带参数
-@anim sakura shake strong    // 预设强度别名
-@anim sakura shake 10 0.5    // 自定义 intensity duration
+```stla
+@stage base show kind=background asset=background:bg_room fit=cover z=-1000
+@stage hero show kind=character body=stage:hero/body face=stage:hero/smile x=960 y=1050 origin=500,1000
+@stage hero update face=stage:hero/sad transition=fade duration=0.3
+@stage hero hide transition=fade duration=0.2
+@stage hero show transition=fade duration=0.2
+@stage hero remove
+@stage clear
 ```
 
-**强度别名**：`light` / `normal`（默认）/ `strong`，编剧不需要记数值。
+| 动作 | 语义 |
+|------|------|
+| `show` | 不存在时创建层；存在时按补丁更新；最后令 `visible=true` |
+| `update` | 只更新已存在层；未给出的属性保持不变，未知 ID 不会隐式创建 |
+| `hide` | 隐藏但保留层节点、纹理和规范化状态，后续 `show` 可复用 |
+| `remove` | 删除该 ID 的状态和节点 |
+| `clear` | 删除全部命名舞台层 |
 
-### 3.7 CG 系统
+属性 schema：
 
-CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
+| 属性 | 值与含义 | 默认值 |
+|------|----------|--------|
+| `kind` | 层用途标记，如 `image/background/character/event/sd` | `image` |
+| `asset` | 通用单图通道 | 空 |
+| `body` / `face` | 独立身体与表情通道；更新 face 不会重建 body | 空 |
+| `asset_offset` / `body_offset` / `face_offset` | 对应素材的 `x,y` 偏移，也可拆成 `*_x/y` | `0,0` |
+| `position` | 画布位置，也可写 `x/y` | `0,0` |
+| `origin` | 变换原点，也可写 `origin_x/y` | `0,0` |
+| `scale` / `zoom` / `depth_scale` | 二维缩放、额外缩放和正数景深缩放 | `1` |
+| `rotation` | 顺时针角度（度） | `0` |
+| `z_index` | 舞台内绘制顺序，别名 `z`，范围 `-4096..4096` | `0` |
+| `visible` / `opacity` | 可见性和 `0..1` 透明度 | `true` / `1` |
+| `fit` | `native`、`contain`、`cover` 或 `stretch` | `native` |
+| `grayscale` / `blur` / `tint` | 灰度、二维模糊与颜色调制 | 无效果 |
+| `flip_x` / `flip_y` | 围绕 authored origin 翻转 | `false` |
 
-```
-// 全屏 CG — 替换背景，隐藏立绘，全屏展示
-@cg sakura_confession
-@cg sakura_confession fade 1.0    // 指定转场
+成对数值写成 `x,y`；`scale=0.75` 这样的标量会同时作用于两轴。`asset=none`、`body=none` 或 `face=none` 会显式清空对应纹理。非法数值、布尔值、枚举或 transition 会生成带 STLA 行号的诊断，不会静默写入快照。
 
-// SD CG — 对话框旁弹出 Q 版小图
-@cg sakura_chibi_angry sd
-@cg sakura_chibi_laugh sd 1.5s    // 自动消失
+`transition` / `duration` 属于 operation，不进入持久层状态。支持 `cut` / `none`、`fade`、`move` 和 `slide_left/right/up/down`；每层拥有独立 Tween。快进、点击补全和读档会以强制 cut 一次投影最终状态。
 
-// 动态 CG — 带动画/粒子效果
-@cg sakura_rain animated
+资源引用可使用 `background:`、`character:`、`stage:` 或完整 `res://` 前缀。没有前缀的相对路径从 `[paths] stage` / `StellaRuntime.stage_assets_path` 解析；扩展名可省略。层 ID 应是稳定业务名称，而不是资源路径或场景节点路径。
 
-// 差分 CG — 切换同一张 CG 的不同状态
-@cg sakura_confession:smile       // asset:variant 语法
-@cg sakura_confession:cry
+`@bg` 仍是独立的基础背景功能，由 `BackgroundPresenter` 管理；`@stage` 不会隐式修改背景。需要多块背景、前景遮罩或可单独变换的场景碎片时，再把它们作为命名舞台层创建。
 
-// 关闭 CG（恢复之前的背景/立绘状态）
-@cg off
-@cg off fade 0.5
-```
-
-**CG 模式**：
-
-| 模式 | 关键字 | 行为 |
-|------|--------|------|
-| 全屏 | （默认） | 替换背景层，自动隐藏立绘，点击推进后恢复 |
-| SD | `sd` | 小图弹出在对话框旁，不影响背景和立绘 |
-| 动态 | `animated` | 全屏 CG + 附加动画效果（粒子、摇晃等） |
-
-**省略规则**：不写模式 = 全屏 CG，不写转场 = `fade 0.5`，SD 模式不写位置 = `dialogue_right`，不写动画 = `pop`。
-
-### 3.8 音频
+### 3.6 音频
 
 ```
 // BGM — 默认淡入
@@ -270,7 +252,7 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
 @voice sakura_001
 ```
 
-### 3.9 转场与特效
+### 3.7 转场与特效
 
 ```
 // 屏幕特效
@@ -299,7 +281,7 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
 
 当前内置效果只有 `shake`、`flash` 和 `off`。其它 effect type 会产生 warning，并连同原始位置参数数组 `args` 转发给 `SignalBus.effect_requested`，供项目自定义监听器处理；拼写错误因此不会再静默消失。内置效果如果参数过多会产生 error 并跳过。
 
-### 3.10 分支选择
+### 3.8 分支选择
 
 ```
 // 基本选择
@@ -323,7 +305,7 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
   - "今天有点忙..." -> scene_busy
 ```
 
-### 3.11 变量与条件
+### 3.9 变量与条件
 
 ```
 // 赋值
@@ -331,7 +313,7 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
 @set sakura_affection += 5
 
 // 条件跳转
-@if sakura_affection >= 10
+@if sakura_affection >= 5
   @jump good_ending
 @elif sakura_affection >= 5
   @jump normal_ending
@@ -349,7 +331,7 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
 
 条件块可以嵌套；内层 `@end` 会回到当前外层分支继续执行，外层各分支最后再汇合到同一个 continuation。每个 `@if`（包括带 `@elif` / `@else` 的条件链）都必须用自己的 `@end` 闭合。
 
-### 3.12 流程控制
+### 3.10 流程控制
 
 ```
 // 跳转场景
@@ -358,80 +340,87 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
 // 调用子场景（执行完后返回）
 @call flashback_001
 
-// 结束当前剧本
-@end
+// 场景命令耗尽后按声明顺序进入下一 scene；需要改变流程时显式跳转
+@jump scene_002
 ```
 
-### 3.13 并行指令
+`@end` 只用于闭合 `@if`、`@parallel` 和 `@combine` 块，不是终止指令。
+最后一个 scene 的命令执行完毕后，剧本自然结束。
+
+### 3.11 并行指令
 
 ```
 // 同时执行多个操作
 @parallel
   @bg bg_sunset dissolve 1.0
-  @move sakura center 0.5
-  @anim kaito shake
+  @stage sakura update position=960,80 transition=move duration=0.5
+  @stage kaito update opacity=0.5 transition=fade duration=0.5
 @end
 ```
 
 编剧只有在需要"多件事同时发生"时才用 `@parallel`，日常演出不需要。
 
-### 3.14 合并对话（@combine）
+### 3.12 合并对话（@combine）
 
-一句台词在演出上是一整句，但声优录音被拆成了多段，每段之间还要切表情：
+一句台词在演出上是一整句，但声优录音被拆成了多段，每段之间还要切换舞台差分：
 
 ```
 @combine
-@expr sakura sad
-sakura「我本来很开心的...」 #voice:sakura_013
-@expr sakura surprised
-sakura「但是听说下周要期中考...」 #voice:sakura_018
-@expr sakura sad
-sakura「我数学肯定完蛋了。」 #voice:sakura_019
+@stage sakura update face=stage:sakura/sad transition=fade duration=0.2
+sakura「[expr:sad]我本来很开心的...」 #voice:sakura_013
+@stage rain update opacity=0.6 transition=fade duration=0.2
+@stage sakura update face=stage:sakura/surprised transition=fade duration=0.2
+sakura「[expr:surprised]但是听说下周要期中考...」 #voice:sakura_018
+@stage sakura update face=stage:sakura/sad transition=fade duration=0.2
+sakura「[expr:sad]我数学肯定完蛋了。」 #voice:sakura_019
 @end
 ```
 
 **语义：**
 
 - 块内所有 dialogue 行合并为**一句对话**，玩家视角上打字机从头连续打到尾
-- 块内 `@expr` 绑定到紧随其后的 segment，在该段语音开始播放时触发
-- 语音按顺序排队：第 1 段播完 → 第 2 段立即接上 + 切立绘/头像 → ...
-- 左键点击：整句结束（文本全显、立绘定格在最后一段表情）
+- 块内一个或多个 `@stage` 都绑定到紧随其后的 segment
+- 每个 segment 的舞台批次先提交，再播放该段语音
+- 方括号表情标记随打字机更新对话框头像，不会写入舞台层
+- 语音按顺序排队：第 1 段播完 → 应用下一段舞台批次 → 第 2 段立即接上 → ...
+- 左键点击：整句结束，所有 segment 的舞台操作按原顺序归约后一次 cut 到最终态
 - 快进模式：整段作为一句跳过
 - Backlog：记为一条
 
 **限制：**
 
-- 块内只允许 `@expr` 和 dialogue 行（角色名必须一致，或全为旁白）
-- 其它指令（`@bg`、`@anim` 等）不允许出现在块内
+- 块内只允许 `@stage` 和 dialogue 行（角色名必须一致，或全为旁白）
+- `@stage` 后必须有 dialogue segment 承接
+- 其它指令（如 `@bg`、`@effect`）不允许出现在块内
 - 跟随当前 NVL / overlay 模式及其命名 Profile
 - 在 NVL 中整个块算一条记录，`entry_prefix` 只添加一次
 
-### 3.15 等待
+### 3.13 等待
 
 ```
 @wait 1.5                   // 等待 1.5 秒
 @wait click                  // 等待玩家点击
 ```
 
-大部分情况不需要手写 `@wait` — 对话自动等待点击，动画自动等待完成。
+大部分情况不需要手写 `@wait`；对话会自动等待点击。
 
 ## 4. 完整示例
 
 ```
 // demo.stla
+@chapter prologue "序章"
 @scene start "序章"
 
 // 背景和角色登场
 @bg bg_school_gate
-@show sakura smile left
-@show kaito default right
+@stage sakura show kind=character asset=character:sakura/smile position=480,80 origin=720,0 scale=0.8 z=10 transition=fade duration=0.3
+@stage kaito show kind=character asset=character:kaito/default position=1440,80 origin=720,0 scale=0.8 z=11 transition=fade duration=0.3
 
 // 日常对话
 sakura「今天天气真好呢。」 #voice:sakura_001
 kaito「是啊。」
 
-// 演出：sakura 开心地跳了一下
-@anim sakura jump
+// 继续对话
 sakura「对了！放学后一起去新开的咖啡店吧！」 #voice:sakura_002
 
 // 选择分支
@@ -443,12 +432,13 @@ sakura「对了！放学后一起去新开的咖啡店吧！」 #voice:sakura_00
 @scene scene_cafe "咖啡店"
 
 @bg bg_cafe fade 1.0
-@show sakura smile center
+@stage kaito remove transition=fade duration=0.2
+@stage sakura update asset=character:sakura/smile position=960,80 transition=move duration=0.5
 
 sakura「你看你看，这个蛋糕好可爱！」 #voice:sakura_010
-@cg sakura_chibi_excited sd 2s
-@anim sakura bounce
+@stage cafe_sd show kind=sd asset=stage:sakura_chibi_excited position=1450,700 z=30 transition=fade duration=0.2
 sakura「我要点这个！」 #voice:sakura_011
+@stage cafe_sd remove transition=fade duration=0.2
 
 // 回忆闪回
 @fade out 0.5
@@ -457,20 +447,25 @@ sakura「我要点这个！」 #voice:sakura_011
 @overlay off
 @fade in 0.5
 
-// 表情变化的长台词
-sakura「我一直很喜欢这种店呢。[default]不过...[sad]自从那件事之后就没怎么来过了。」 #voice:sakura_012
+// 舞台差分和头像提示同步到分段语音
+@combine
+@stage sakura update asset=character:sakura/default transition=fade duration=0.15
+sakura「[expr:default]我一直很喜欢这种店呢。」 #voice:sakura_012a
+@stage sakura update asset=character:sakura/sad transition=fade duration=0.15
+sakura「[expr:sad]不过...自从那件事之后就没怎么来过了。」 #voice:sakura_012b
+@end
 
 @if sakura_affection >= 10
   @jump good_ending
 @else
   @jump normal_ending
+@end
 
 //========================================
 @scene scene_reject "拒绝"
 
-@expr sakura sad
+@stage sakura update asset=character:sakura/sad transition=fade duration=0.15
 sakura「这样啊...那没关系。」 #voice:sakura_020
-@anim sakura nod
 
 @jump normal_ending
 
@@ -485,20 +480,25 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 
 // END
 @bg bg_sakura dissolve 2.0
-@hide all
+@stage clear transition=fade duration=0.3
 「—— Good End ——」
-@end
+@jump scenario_done
 
 //========================================
 @scene normal_ending "Normal End"
 
+@stage clear transition=fade duration=0.3
 @nvl
 「日子一天天过去，一切都没有改变。」
 「但是那个春天的记忆，我一直没有忘记。」
 @nvl off
 
 「—— Normal End ——」
-@end
+@jump scenario_done
+
+//========================================
+@scene scenario_done
+@fade out 0.5
 ```
 
 ## 5. 语法速查表
@@ -509,13 +509,12 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | 旁白 | `「文本」` | `「文本」` |
 | 独白 | `角色（文本）` | `角色（文本）` |
 | 背景 | `@bg asset transition duration` | `@bg asset` |
-| 显示立绘 | `@show char expr pos` | `@show char` |
-| 隐藏立绘 | `@hide char` | `@hide all` |
-| 表情 | `@expr char expression` | — |
-| 句内表情 | `[expression]` | — |
-| 移动 | `@move char pos duration` | `@move char pos` |
-| 动画 | `@anim char type intensity` | `@anim char type` |
-| CG | `@cg asset [mode] [transition] [duration]` | `@cg asset` |
+| 显示舞台层 | `@stage id show key=value...` | `@stage id show` |
+| 更新舞台层 | `@stage id update key=value...` | — |
+| 隐藏舞台层 | `@stage id hide transition=... duration=...` | `@stage id hide` |
+| 删除舞台层 | `@stage id remove transition=... duration=...` | `@stage id remove` |
+| 清空舞台层 | `@stage clear` | `@stage clear` |
+| 句内头像表情 | `[expr:expression]` | — |
 | BGM | `@bgm asset fadein` | `@bgm asset` |
 | 音效 | `@se asset` | `@se asset` |
 | 对话 Profile | `@dialogue_profile name key=value...` | — |
@@ -529,7 +528,7 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | 条件 | `@if ... @elif ... @else ... @end` | — |
 | 跳转 | `@jump scene_id` | — |
 | 并行 | `@parallel ... @end` | — |
-| 合并 | `@combine ... @end` | 多段语音+表情合并为一句对话 |
+| 合并 | `@combine ... @end` | 多段语音、头像提示与舞台操作合并为一句对话 |
 | 等待 | `@wait duration/click` | — |
 | 场景 | `@scene id "title"` | `@scene id` |
 
@@ -537,16 +536,9 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| 转场类型 | `fade` | 背景/立绘切换 |
-| 转场时长 | `0.5s`（背景）/ `0.3s`（立绘） | 可在项目配置中全局修改 |
-| 立绘位置 | `center` | 第一个角色默认居中 |
-| 立绘表情 | `default` | 取角色配置中的 default |
-| 动画强度 | `normal` | light / normal / strong |
-| 动画时长 | 预设自带 | jump=0.4s, shake=0.3s, nod=0.3s, bounce=0.35s |
-| CG 模式 | 全屏 | 不写 mode 时为全屏 CG |
-| CG 转场 | `fade 0.5` | 全屏 CG 默认转场 |
-| SD CG 位置 | `dialogue_right` | 对话框右侧 |
-| SD CG 动画 | `pop` | 弹出效果 |
+| 背景转场 | `fade 0.5s` | `@bg` 的默认切换方式 |
+| 舞台层动作 | `show` | `@stage id key=value` 等价于 `@stage id show key=value` |
+| 舞台层转场 | `cut 0s` | 通过 `transition` / `duration` 显式启用动画 |
 | BGM 淡入 | `1.0s` | — |
 | BGM 淡出 | `1.0s` | — |
 | 对话推进 | 等待点击 | 有语音时可配置等语音播完 |
@@ -557,34 +549,34 @@ DSL 是唯一的脚本格式，引擎直接解析 `.stla` 为内部数据结构�
 
 ```
 ScriptParser/
-├── DslLexer.cs                -- 词法分析：将 .stla 文本分割为 Token 流
-├── DslParser.cs               -- 语法分析：Token 流 → ScenarioData（填充默认值、展开简写）
-├── DslScenarioLoader.cs       -- IScenarioLoader 实现：读取 .stla 文件
-├── DslParseException.cs       -- 解析错误（携带行号信息）
-├── DslValidator.cs            -- 静态检查：未定义的角色/场景引用、死路检测
-└── DslToken.cs                -- Token 类型定义
+├── dsl_lexer.gd               -- 词法分析：将 .stla 文本分割为 Token 流
+├── dsl_parser.gd              -- 语法分析：Token 流 → ScenarioData
+├── dsl_token.gd               -- Token 类型定义
+├── dialogue_profile_parser.gd -- 对话 Profile 解析与校验
+└── scenario_graph_builder.gd  -- 从 ScenarioData 构建流程图
 ```
 
 ### 解析示例
 
-DSL（3 行）：
+完整 DSL（2 行容器声明 + 3 行场景正文）：
 ```
-@show sakura
+@chapter demo
+@scene intro
+@stage sakura show kind=character asset=character:sakura/default position=960,80 origin=720,0 scale=0.8
 sakura「你好。」
-@anim sakura jump
+@stage sakura update asset=character:sakura/smile transition=fade duration=0.15
 ```
 
-解析器自动填充默认值，生成等价的 CommandData 序列（12 个参数）：
+解析器填充省略值并生成等价的 `CommandData` 序列：
 ```
-CommandData("char_show",  { character: "sakura", expression: "default", position: "center" })
+CommandData("stage_layer", { action: "show", id: "sakura", properties: { asset: "character:sakura/default", ... } })
 CommandData("dialogue",   { character: "sakura", text: "你好。", mode: "adv" })
-CommandData("char_anim",  { character: "sakura", anim: "jump", intensity: "normal" })
+CommandData("stage_layer", { action: "update", id: "sakura", properties: { asset: "character:sakura/smile" }, transition: "fade", duration: 0.15 })
 ```
 
-### 静态检查
+### 诊断
 
-`DslValidator` 在解析时自动检查：
-- 引用了未定义的角色 → 警告
-- `@jump` 指向不存在的场景 → 错误
-- 场景无出口（无 jump/choice/end）→ 死路警告
-- 变量在 `@if` 中使用但从未 `@set` → 警告
+`DslParser` 会把缺失章节、重复 ID、未闭合块、非法参数和未知指令等问题
+写入带源码行号的 diagnostics。`ScenarioGraphBuilder` 随后检查未知跳转目标、
+跨章节跳到非入口场景，以及没有出口的章节内部循环。运行时加载剧本时会统一
+输出这些 diagnostics；解析与图校验直接作用于同一份 `ScenarioData`。

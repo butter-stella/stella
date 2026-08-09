@@ -8,19 +8,21 @@ func test_start_scenario_resets_presentation_signals():
 	var fade_received: Array = []
 	bus.fade_requested.connect(func(d, dur): fade_received.append(d))
 
-	var hide_received: Array = []
-	bus.char_hide.connect(func(c): hide_received.append(c))
+	var stage_reset_received: Array = []
+	bus.stage_visuals_reset_requested.connect(
+		func(): stage_reset_received.append(true)
+	)
 
 	var hide_dialogue: Array = []
 	bus.hide_dialogue.connect(func(): hide_dialogue.append(true))
 
 	# Simulate a reset
 	SignalBus.fade_requested.emit("in", 0.0)
-	SignalBus.char_hide.emit("all")
+	SignalBus.reset_stage_visuals()
 	SignalBus.hide_dialogue.emit()
 
 	assert_true(fade_received.has("in"))
-	assert_true(hide_received.has("all"))
+	assert_eq(stage_reset_received.size(), 1)
 	assert_eq(hide_dialogue.size(), 1)
 
 

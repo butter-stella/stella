@@ -68,6 +68,78 @@ func test_auto_play_and_skip_mutually_exclusive():
 	runtime.toggle_skip()
 
 
+## --- Named Stage Facade ---
+
+func test_named_stage_facade_emits_canonical_operations():
+	var runtime = get_tree().root.get_node("StellaRuntime")
+	var received: Array = []
+	var callback = func(operations, force_cut):
+		received.append({
+			"operations": operations.duplicate(true),
+			"force_cut": force_cut,
+		})
+	SignalBus.stage_operations_requested.connect(callback)
+
+	runtime.show_stage_layer(
+		"hero",
+		{"body": "stage:hero_body", "position": [400.0, 600.0]},
+		"fade",
+		0.25,
+	)
+	runtime.update_stage_layer("hero", {"face": "stage:hero_sad"})
+	runtime.hide_stage_layer("hero", "fade", 0.1)
+	runtime.remove_stage_layer("hero")
+	runtime.clear_stage_layers()
+
+	assert_eq(received.size(), 5)
+	assert_eq(received[0]["operations"][0]["action"], "show")
+	assert_eq(received[0]["operations"][0]["id"], "hero")
+	assert_eq(
+		received[0]["operations"][0]["properties"]["body"],
+		"stage:hero_body",
+	)
+	assert_eq(received[0]["operations"][0]["transition"], "fade")
+	assert_almost_eq(received[0]["operations"][0]["duration"], 0.25, 0.001)
+	assert_eq(received[1]["operations"][0]["action"], "update")
+	assert_eq(received[2]["operations"][0]["action"], "hide")
+	assert_eq(received[3]["operations"][0]["action"], "remove")
+	assert_eq(received[4]["operations"][0]["action"], "clear")
+	SignalBus.stage_operations_requested.disconnect(callback)
+
+
+func test_apply_stage_operations_deep_copies_caller_batch():
+	var runtime = get_tree().root.get_node("StellaRuntime")
+	var received: Array = []
+	var callback = func(operations, _force_cut):
+		received.append(operations)
+	SignalBus.stage_operations_requested.connect(callback)
+	var operations := [{
+		"action": "show",
+		"id": "event",
+		"properties": {"asset": "stage:flash"},
+	}]
+	runtime.apply_stage_operations(operations, true)
+	operations[0]["properties"]["asset"] = "changed-after-emit"
+	assert_eq(received[0][0]["properties"]["asset"], "stage:flash")
+	SignalBus.stage_operations_requested.disconnect(callback)
+	runtime.clear_stage_layers()
+
+
+func test_named_stage_facade_canonicalizes_layer_id_whitespace():
+	var runtime = get_tree().root.get_node("StellaRuntime")
+	var received: Array = []
+	var callback = func(operations, _force_cut):
+		received.append(operations)
+	SignalBus.stage_operations_requested.connect(callback)
+
+	runtime.show_stage_layer("  hero  ", {"asset": "stage:hero"})
+
+	assert_eq(received.size(), 1)
+	assert_eq(received[0][0]["id"], "hero")
+	SignalBus.stage_operations_requested.disconnect(callback)
+	runtime.clear_stage_layers()
+
+
 ## --- UI State Facade ---
 
 func test_show_backlog_transitions_state():
@@ -362,9 +434,7 @@ func test_continue_from_save_overlay_not_closed_before_scene_change():
 
 ## Helper: disconnect game scene presenters from SignalBus to prevent test contamination.
 func _disconnect_game_presenters():
-	for sig_name in ["bg_changed", "char_show", "char_hide",
-			"char_expression_changed", "char_anim_requested", "char_move_requested",
-			"bgm_play", "bgm_stop", "se_play", "se_stop",
+	for sig_name in ["bg_changed", "bgm_play", "bgm_stop", "se_play", "se_stop",
 			"voice_play", "system_se_play",
 			"show_dialogue", "hide_dialogue", "choice_show", "choice_selected",
 			"fade_requested", "effect_requested",

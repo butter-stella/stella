@@ -6,7 +6,7 @@ AVG 游戏需要"点击任意位置推进剧本"，但工具栏按钮（自动�
 
 Godot 的输入传播顺序：`_input` → GUI (`_gui_input`) → `_unhandled_input`
 
-- **`_unhandled_input`** 是 Godot 推荐的游戏输入处理方式，按钮的 `MOUSE_FILTER_STOP` 会自动消费点击，`_unhandled_input` 不会触发。但 AVG 游戏场景中有大量装饰性 Control 节点（背景 TextureRect、立绘 Slot 等），它们默认 `STOP` 也会消费鼠标事件，导致 `_unhandled_input` 收不到任何鼠标点击。
+- **`_unhandled_input`** 是 Godot 推荐的游戏输入处理方式，按钮的 `MOUSE_FILTER_STOP` 会自动消费点击，`_unhandled_input` 不会触发。但 AVG 游戏场景中有大量装饰性 Control 节点（背景 TextureRect、舞台图片等），它们默认 `STOP` 也会消费鼠标事件，导致 `_unhandled_input` 收不到任何鼠标点击。
 - **`_input`** 能收到所有事件，但在 GUI 之前执行，无法知道当前点击是否会命中按钮。
 
 ## 解决方案
@@ -34,7 +34,7 @@ _unhandled_input:
 
 | 方案 | 问题 |
 |------|------|
-| `_unhandled_input` | 背景/立绘等装饰 Control 的 `STOP` 消费鼠标，收不到事件 |
+| `_unhandled_input` | 背景/舞台图片等装饰 Control 的 `STOP` 消费鼠标，收不到事件 |
 | 给装饰节点设 `MOUSE_FILTER_IGNORE` | 用户自定义场景时容易遗漏或冲突 |
 | 全屏透明 ColorRect 浮层 | 对话框子节点仍然 STOP 挡住浮层 |
 | `_input` + `call_deferred` / `_process` | 按钮回调时序不确定，headless 模式下 GUI 不触发 |
@@ -63,4 +63,4 @@ _unhandled_input:
 
 AVG 标准行为：打字未完成时点击 = 完成打字（不推进），打字完成后点击 = 推进。
 
-实现：`_input` 中打字完成调用 `set_input_as_handled()` 消费事件，阻止后续 GUI 处理和推进。
+实现：`_input` 中打字完成会同步补全当前对话剩余的 `@combine` 舞台操作，并调用 `set_input_as_handled()` 消费事件，阻止后续 GUI 处理和推进。舞台操作按声明顺序归约后以 cut 投影最终状态，因此点击补全不会留下跨到下一句的 Tween。

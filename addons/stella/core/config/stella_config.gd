@@ -14,6 +14,7 @@ var title_bgm: String = ""  # BGM asset name for title screen
 # [paths]
 var backgrounds_path: String = "res://art/backgrounds/"
 var characters_path: String = "res://art/characters/"
+var stage_path: String = "res://art/stage/"
 var bgm_path: String = "res://audio/bgm/"
 var se_path: String = "res://audio/se/"
 var voice_path: String = "res://audio/voice/"
@@ -53,6 +54,7 @@ func load_from_path(path: String) -> void:
 	# [paths]
 	backgrounds_path = cf.get_value("paths", "backgrounds", backgrounds_path)
 	characters_path = cf.get_value("paths", "characters", characters_path)
+	stage_path = cf.get_value("paths", "stage", stage_path)
 	bgm_path = cf.get_value("paths", "bgm", bgm_path)
 	se_path = cf.get_value("paths", "se", se_path)
 	voice_path = cf.get_value("paths", "voice", voice_path)

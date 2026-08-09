@@ -74,14 +74,38 @@ func test_dialogue_handler_defaults():
 	assert_eq(received[0]["nvl_page_key"], "")
 
 
+func test_dialogue_handler_wraps_single_dialogue_stage_operations():
+	var handler = DialogueHandler.new()
+	var received: Array = []
+	_bus.show_dialogue.connect(func(_c, segments, _m): received.append(segments))
+	var stage_ops := [{
+		"action": "show",
+		"id": "event",
+		"properties": {"asset": "stage:flash"},
+	}]
+	var cmd = _build_cmd("dialogue", {
+		"text": "Cue",
+		"stage_ops": stage_ops,
+	})
+
+	_bus.advance_requested.emit.call_deferred()
+	await handler.execute(cmd, _context)
+	stage_ops[0]["properties"]["asset"] = "mutated"
+
+	assert_eq(
+		received[0][0]["stage_ops"][0]["properties"]["asset"],
+		"stage:flash",
+	)
+
+
 func test_dialogue_handler_passes_segments_through():
 	var handler = DialogueHandler.new()
 	var received: Array = []
 	_bus.show_dialogue.connect(func(_c, segs, _m): received.append(segs))
 
 	var segments = [
-		{"text": "一", "voice": "v1", "expression": "sad"},
-		{"text": "二", "voice": "v2", "expression": "happy"},
+		{"text": "一", "voice": "v1", "stage_ops": []},
+		{"text": "二", "voice": "v2", "stage_ops": []},
 	]
 	var cmd = _build_cmd("dialogue", {
 		"character": "sakura",
@@ -97,7 +121,7 @@ func test_dialogue_handler_passes_segments_through():
 	assert_eq(received.size(), 1)
 	assert_eq(received[0].size(), 2)
 	assert_eq(received[0][0]["voice"], "v1")
-	assert_eq(received[0][1]["expression"], "happy")
+	assert_eq(received[0][1]["stage_ops"], [])
 
 
 func test_dialogue_handler_scopes_compiled_presentation_without_changing_signal_shape():
@@ -151,6 +175,33 @@ func test_dialogue_handler_keys_nvl_pages_by_runtime_activation() -> void:
 		"repeating NVL keeps a page while leaving and re-entering advances it")
 
 
+# --- StageLayerHandler ---
+
+func test_stage_layer_handler_emits_canonical_operation_batch():
+	var handler = StageLayerHandler.new()
+	var received: Array = []
+	var callback = func(operations, force_cut):
+		received.append([operations.duplicate(true), force_cut])
+	_bus.stage_operations_requested.connect(callback)
+	var cmd = _build_cmd("stage_layer", {
+		"action": "show",
+		"id": " hero ",
+		"properties": {"asset": "stage:hero"},
+		"transition": "fade",
+		"duration": 0.25,
+	})
+
+	await handler.execute(cmd, _context)
+
+	assert_eq(received.size(), 1)
+	assert_eq(received[0][0][0]["id"], "hero")
+	assert_eq(received[0][0][0]["properties"]["asset"], "stage:hero")
+	assert_eq(received[0][0][0]["transition"], "fade")
+	assert_almost_eq(received[0][0][0]["duration"], 0.25, 0.001)
+	assert_false(received[0][1])
+	_bus.stage_operations_requested.disconnect(callback)
+
+
 # --- BgHandler ---
 
 func test_bg_handler_emits_signal():
@@ -177,62 +228,6 @@ func test_bg_handler_defaults():
 
 	assert_eq(received[0]["transition"], "fade")
 	assert_almost_eq(received[0]["duration"], 0.5, 0.001)
-
-
-# --- CharShowHandler ---
-
-func test_char_show_handler_emits_signal():
-	var handler = CharShowHandler.new()
-	var received: Array = []
-	_bus.char_show.connect(func(c, e, p): received.append({"character": c, "expression": e, "position": p}))
-
-	var cmd = _build_cmd("char_show", {"character": "sakura", "expression": "smile", "position": "left"})
-	await handler.execute(cmd, _context)
-
-	assert_eq(received.size(), 1)
-	assert_eq(received[0]["character"], "sakura")
-	assert_eq(received[0]["expression"], "smile")
-	assert_eq(received[0]["position"], "left")
-
-
-func test_char_show_handler_defaults():
-	var handler = CharShowHandler.new()
-	var received: Array = []
-	_bus.char_show.connect(func(c, e, p): received.append({"expression": e, "position": p}))
-
-	var cmd = _build_cmd("char_show", {"character": "sakura"})
-	await handler.execute(cmd, _context)
-
-	assert_eq(received[0]["expression"], "default")
-	assert_eq(received[0]["position"], "center")
-
-
-# --- CharHideHandler ---
-
-func test_char_hide_handler_emits_signal():
-	var handler = CharHideHandler.new()
-	var received: Array = []
-	_bus.char_hide.connect(func(c): received.append(c))
-
-	var cmd = _build_cmd("char_hide", {"character": "sakura"})
-	await handler.execute(cmd, _context)
-
-	assert_eq(received, ["sakura"])
-
-
-# --- CharExprHandler ---
-
-func test_char_expr_handler_emits_signal():
-	var handler = CharExprHandler.new()
-	var received: Array = []
-	_bus.char_expression_changed.connect(func(c, e): received.append({"character": c, "expression": e}))
-
-	var cmd = _build_cmd("char_expr", {"character": "sakura", "expression": "sad"})
-	await handler.execute(cmd, _context)
-
-	assert_eq(received.size(), 1)
-	assert_eq(received[0]["character"], "sakura")
-	assert_eq(received[0]["expression"], "sad")
 
 
 # --- JumpHandler ---

@@ -1,6 +1,21 @@
 extends GutTest
 ## Integration test: DSL → Lexer → Parser → Engine end-to-end.
 
+var _original_presentation_snapshot: Dictionary
+
+
+func before_each() -> void:
+	_original_presentation_snapshot = (
+		StellaRuntime.presentation_state.capture_snapshot()
+	)
+	StellaRuntime.presentation_state.clear()
+
+
+func after_each() -> void:
+	StellaRuntime.presentation_state.restore_snapshot(
+		_original_presentation_snapshot
+	)
+
 
 # Auto-advancing handlers for testing (no player input needed)
 class AutoDialogueHandler extends CommandHandler:
@@ -35,14 +50,16 @@ class AutoChoiceHandler extends CommandHandler:
 func _setup_engine(source: String, scenario_id: String = "demo") -> ScenarioEngine:
 	var tokens = DslLexer.tokenize(source)
 	var scenario = DslParser.parse(tokens, scenario_id)
+	assert_true(
+		scenario.diagnostics.is_empty(),
+		"integration fixture must parse without diagnostics: %s" % [scenario.diagnostics],
+	)
 
 	var registry = CommandRegistry.new()
 	var store = VariableStore.new()
 
 	registry.register(BgHandler.new())
-	registry.register(CharShowHandler.new())
-	registry.register(CharHideHandler.new())
-	registry.register(CharExprHandler.new())
+	registry.register(StageLayerHandler.new())
 	registry.register(JumpHandler.new())
 	registry.register(SetHandler.new())
 	registry.register(ConditionHandler.new())
@@ -57,28 +74,28 @@ func _setup_engine(source: String, scenario_id: String = "demo") -> ScenarioEngi
 
 
 func test_poc_demo_runs_to_completion():
-	var source = """@scene start
+	var source = """@chapter test
+@scene start
 @bg bg_school_gate fade 0.8
-@show sakura smile center
+@stage sakura show kind=character asset=character:sakura/smile position=960,80
 sakura「你好！」
 @choice
   - "你好" -> friendly {affection += 5}
   - "……" -> cold
 
 @scene friendly
-@expr sakura happy
+@stage sakura update asset=character:sakura/happy
 sakura「太好了！」
 @jump ending
 
 @scene cold
-@expr sakura sad
+@stage sakura update asset=character:sakura/sad
 sakura「这样啊...」
 @jump ending
 
 @scene ending
 「（第一天结束了。）」
-@hide sakura
-@end"""
+@stage sakura remove"""
 
 	var engine = _setup_engine(source)
 
@@ -91,3 +108,32 @@ sakura「这样啊...」
 	assert_eq(scenes_visited[0], "start")
 	assert_eq(scenes_visited[-1], "ending")
 	assert_true(scenes_visited.has("friendly"))
+
+
+func test_named_stage_runs_from_dsl_through_scenario_engine():
+	var source = """@chapter test
+@scene start
+@stage base show kind=background asset=stage:room z=-10
+@stage hero show kind=character body=stage:hero_body face=stage:smile position=320,480
+@stage hero update face=stage:sad"""
+	var emitted_batches: Array = []
+	var callback = func(operations, force_cut):
+		emitted_batches.append([operations.duplicate(true), force_cut])
+	SignalBus.stage_operations_requested.connect(callback)
+	var engine := _setup_engine(source, "named_stage_e2e")
+
+	await engine.run()
+
+	assert_true(engine.context.is_finished)
+	assert_eq(emitted_batches.size(), 3)
+	assert_eq(emitted_batches[0][0][0]["id"], "base")
+	assert_eq(emitted_batches[1][0][0]["id"], "hero")
+	assert_eq(emitted_batches[2][0][0]["action"], "update")
+	assert_false(emitted_batches[2][1])
+	var stage_layers: Dictionary = (
+		StellaRuntime.presentation_state.capture_snapshot()["stage_layers"]
+	)
+	assert_eq(stage_layers["hero"]["position"], [320.0, 480.0])
+	assert_eq(stage_layers["hero"]["body"], "stage:hero_body")
+	assert_eq(stage_layers["hero"]["face"], "stage:sad")
+	SignalBus.stage_operations_requested.disconnect(callback)

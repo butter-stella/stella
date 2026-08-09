@@ -59,7 +59,7 @@ func test_at_command():
 
 
 func test_at_commands_various():
-	for cmd in ["@show sakura smile left", "@hide sakura", "@expr sakura sad",
+	for cmd in ["@stage sakura show asset=character:sakura/smile", "@stage sakura hide",
 				 "@set talked = true", "@jump ending", "@if affection >= 10",
 				 "@else", "@end"]:
 		var tokens = DslLexer.tokenize(cmd)
@@ -125,7 +125,7 @@ sakura「你好。」
 func test_mixed_scene():
 	var source = """@scene start "序章"
 @bg bg_school_gate
-@show sakura smile center
+@stage sakura show kind=character asset=character:sakura/smile
 sakura「你好！」 #voice:sakura_001
 @choice
   - "你好" -> friendly {affection += 5}
@@ -134,7 +134,7 @@ sakura「你好！」 #voice:sakura_001
 	assert_eq(tokens.size(), 7)
 	assert_eq(tokens[0].type, DslToken.Type.SCENE_DIRECTIVE)
 	assert_eq(tokens[1].type, DslToken.Type.AT_COMMAND)  # @bg
-	assert_eq(tokens[2].type, DslToken.Type.AT_COMMAND)  # @show
+	assert_eq(tokens[2].type, DslToken.Type.AT_COMMAND)  # @stage
 	assert_eq(tokens[3].type, DslToken.Type.DIALOGUE)
 	assert_eq(tokens[4].type, DslToken.Type.AT_COMMAND)  # @choice
 	assert_eq(tokens[5].type, DslToken.Type.CHOICE_OPTION)

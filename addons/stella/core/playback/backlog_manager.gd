@@ -111,40 +111,12 @@ func clear() -> void:
 
 ## Strip typewriter/timeline directives from segment text so the backlog
 ## displays only what the player actually sees:
-## - `[expression]` single-word bracketed expression markers
-## - `{key:value}` inline effects (`{wait:500}`, `{speed:fast}`, ...)
+## - `[expr:expression]` single-word bracketed expression markers
+## - `{key:value}` inline effects (`{wait:500}`, `{speed:30}`, ...)
 ##
-## Mirrors the parsing in DialoguePresenter._process_inline_effects and
-## ExpressionTimeline.extract_from_text. Kept local to BacklogManager to
-## avoid pulling presentation code into Core.
+## Uses the same Core parser as DialoguePresenter so backlog text cannot drift
+## from the text the player actually saw.
 static func _strip_inline_markers(text: String) -> String:
-	# Pass 1: drop [expression] tags. Match the presenter's rule — only
-	# bracket pairs whose tag is a single word with no colon and no space
-	# count as expression markers; anything else is left intact.
-	var pass1 := ""
-	var i := 0
-	while i < text.length():
-		if text[i] == "[":
-			var close = text.find("]", i)
-			if close != -1:
-				var tag = text.substr(i + 1, close - i - 1)
-				if tag.find(":") == -1 and tag.find(" ") == -1:
-					i = close + 1
-					continue
-		pass1 += text[i]
-		i += 1
-
-	# Pass 2: drop {key:value} inline effects.
-	var pass2 := ""
-	i = 0
-	while i < pass1.length():
-		if pass1[i] == "{":
-			var close = pass1.find("}", i)
-			if close != -1:
-				var tag = pass1.substr(i + 1, close - i - 1)
-				if tag.find(":") != -1:
-					i = close + 1
-					continue
-		pass2 += pass1[i]
-		i += 1
-	return pass2
+	return String(
+		ExpressionTimeline.parse_inline_annotations(text).get("visible_text", text)
+	)
