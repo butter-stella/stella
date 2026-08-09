@@ -5,9 +5,9 @@ extends CanvasLayer
 
 enum SlotState { EMPTY, SHOWING, VISIBLE, HIDING }
 
-@onready var slot_left: Control = $SlotLeft
-@onready var slot_center: Control = $SlotCenter
-@onready var slot_right: Control = $SlotRight
+@onready var slot_left: Control = _get_stage_slot("SlotLeft")
+@onready var slot_center: Control = _get_stage_slot("SlotCenter")
+@onready var slot_right: Control = _get_stage_slot("SlotRight")
 
 var _character_positions: Dictionary = {}   # character_id -> position_name
 var _character_expressions: Dictionary = {} # character_id -> expression
@@ -15,6 +15,15 @@ var _character_bodies: Dictionary = {}      # character_id -> body_name
 var _config_loader: CharacterConfigLoader
 var _slot_states: Dictionary = {}           # slot -> SlotState
 var _slot_tweens: Dictionary = {}           # slot -> Tween
+
+
+func _get_stage_slot(node_name: String) -> Control:
+	var nested := get_node_or_null("ShakeRoot/%s" % node_name) as Control
+	if nested != null:
+		return nested
+	# Compatibility with custom scenes created before dedicated ShakeRoot nodes
+	# were introduced. Those scenes keep the slots directly under this layer.
+	return get_node(node_name) as Control
 
 
 func _ready():

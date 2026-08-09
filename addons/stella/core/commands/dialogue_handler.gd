@@ -24,6 +24,13 @@ func execute(data: CommandData, _context: ScenarioContext) -> void:
 			"duration_ms": data.get_float("duration_ms", 0.0),
 		}]
 
-	SignalBus.show_dialogue.emit(character, segments, mode)
+	var presentation_profile: Dictionary = data.params.get("presentation_profile", {})
+	SignalBus.emit_show_dialogue(
+		character,
+		segments,
+		mode,
+		presentation_profile,
+		data.get_bool("declarative_presentation", false),
+	)
 	# Race against engine_abort_requested so backlog jump can interrupt us.
 	await CommandHandler.await_with_abort(SignalBus.advance_requested)

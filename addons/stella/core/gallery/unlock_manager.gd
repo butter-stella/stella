@@ -30,5 +30,11 @@ func capture_snapshot() -> Dictionary:
 	return _unlocked.duplicate(true)
 
 
+## Gallery unlocks are global, cross-playthrough progress. Loading an older
+## save unions its items into the current state instead of rolling progress back.
+## Durable cross-session storage still requires a separate global progress file.
 func restore_snapshot(snapshot: Dictionary) -> void:
-	_unlocked = snapshot.duplicate(true)
+	for category in snapshot:
+		var loaded_items: Array = snapshot[category]
+		for item_id in loaded_items:
+			unlock(category, item_id)

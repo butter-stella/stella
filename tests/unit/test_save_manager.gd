@@ -113,6 +113,38 @@ func test_multiple_save_slots():
 	assert_eq(provider.data["slot"], "second")
 
 
+func test_load_merges_real_monotonic_providers():
+	var old_read_flags = ReadFlagManager.new()
+	old_read_flags.mark_read("route_a", "scene_1", 3)
+	var old_unlocks = UnlockManager.new()
+	old_unlocks.unlock("cg", "route_a_cg")
+	old_unlocks.unlock("cg", "shared_cg")
+	_manager.register_provider(old_read_flags)
+	_manager.register_provider(old_unlocks)
+	_manager.save(1)
+
+	# Replace providers to model a later playthrough whose global state came
+	# from another source. register_provider() swaps providers with the same ID.
+	var current_read_flags = ReadFlagManager.new()
+	current_read_flags.mark_read("route_b", "scene_2", 7)
+	var current_unlocks = UnlockManager.new()
+	current_unlocks.unlock("cg", "route_b_cg")
+	current_unlocks.unlock("cg", "shared_cg")
+	current_unlocks.unlock("bgm", "route_b_theme")
+	_manager.register_provider(current_read_flags)
+	_manager.register_provider(current_unlocks)
+
+	assert_true(_manager.load_save(1))
+	assert_true(_manager.load_save(1), "loading the same old save twice should be idempotent")
+
+	assert_true(current_read_flags.is_read("route_a", "scene_1", 3))
+	assert_true(current_read_flags.is_read("route_b", "scene_2", 7))
+	assert_true(current_unlocks.is_unlocked("cg", "route_a_cg"))
+	assert_true(current_unlocks.is_unlocked("cg", "route_b_cg"))
+	assert_true(current_unlocks.is_unlocked("bgm", "route_b_theme"))
+	assert_eq(current_unlocks.get_unlocked("cg").count("shared_cg"), 1)
+
+
 func test_load_nonexistent_slot_returns_false():
 	assert_false(_manager.load_save(999))
 

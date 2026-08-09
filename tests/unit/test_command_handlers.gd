@@ -127,6 +127,34 @@ func test_dialogue_handler_passes_segments_through():
 	assert_almost_eq(float(received[0][1]["duration_ms"]), 250.0, 0.001)
 
 
+func test_dialogue_handler_scopes_compiled_presentation_without_changing_signal_shape():
+	var handler = DialogueHandler.new()
+	var received: Array = []
+	_bus.show_dialogue.connect(func(_c, _segments, mode):
+		received.append({
+			"mode": mode,
+			"profile": _bus.current_dialogue_presentation_profile(),
+			"declarative": _bus.current_dialogue_uses_declarative_presentation(),
+		})
+	)
+	var cmd = _build_cmd("dialogue", {
+		"text": "Configured",
+		"mode": "nvl",
+		"declarative_presentation": true,
+		"presentation_profile": {"line_spacing": 8},
+	})
+
+	_bus.advance_requested.emit.call_deferred()
+	await handler.execute(cmd, _context)
+
+	assert_eq(received.size(), 1)
+	assert_eq(received[0]["mode"], "nvl")
+	assert_eq(received[0]["profile"], {"line_spacing": 8})
+	assert_true(received[0]["declarative"])
+	assert_eq(_bus.current_dialogue_presentation_profile(), {},
+		"profile metadata must not leak past synchronous signal dispatch")
+
+
 # --- BgHandler ---
 
 func test_bg_handler_emits_signal():
