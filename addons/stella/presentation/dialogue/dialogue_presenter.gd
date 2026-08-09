@@ -4,6 +4,9 @@
 ## Handles skip (toolbar + Ctrl held) and auto-play.
 extends Control
 
+const DEFAULT_NVL_ENTRY_PREFIX := ""
+const DEFAULT_NVL_ENTRY_SEPARATOR := "\n"
+
 @export_group("Dialogue Presentation")
 ## Advanced scene-side fallback. Normal projects declare profiles in STLA.
 @export var presentation_profile: DialoguePresentationProfile
@@ -19,7 +22,9 @@ var _avatar_container: Control
 
 var _char_interval: float = 0.03  # seconds per character
 var _is_typing: bool = false
-var _nvl_text: String = ""  # accumulated NVL text (already shown)
+var _nvl_text: String = ""  # current NVL page, including the active entry
+var _nvl_has_entries: bool = false
+var _active_nvl_block_key: String = ""
 var _current_mode: String = "adv"
 var _ui_hidden: bool = false
 var _ctrl_held: bool = false  # Ctrl key skip
@@ -390,6 +395,11 @@ func _mark_current_line_read() -> void:
 ##   are merged into global timelines with offset adjustment
 ## - Click-to-finish: snap text to end + cancel voice queue + apply final expression
 func _on_show_dialogue(character: String, segments: Array, mode: String) -> void:
+	var nvl_block_key := SignalBus.current_dialogue_nvl_block_key()
+	if mode == "nvl" and not nvl_block_key.is_empty() \
+		and nvl_block_key != _active_nvl_block_key:
+		_reset_nvl_accumulator()
+		_active_nvl_block_key = nvl_block_key
 	if _ui_hidden or segments.size() == 0:
 		return
 
@@ -467,24 +477,30 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 
 	# Mode-specific text setup
 	var new_line_text: String = ""
+	var authored_text_offset: int = 0
 	if mode == "nvl":
 		name_label.visible = false
-		if character != "":
-			new_line_text = "%s：%s" % [character, full_text]
-		else:
-			new_line_text = full_text
-		var combined = _nvl_text + new_line_text
+		var entry_format := _resolve_nvl_entry_format()
+		var entry_prefix: String = entry_format["prefix"]
+		var speaker_prefix := "%s：" % character if not character.is_empty() else ""
+		new_line_text = entry_prefix + speaker_prefix + full_text
+		authored_text_offset = entry_prefix.length() + speaker_prefix.length()
+		var separator: String = (
+			entry_format["separator"] if _nvl_has_entries else "")
+		var previously_visible := _nvl_text + separator
+		var combined := previously_visible + new_line_text
 		text_label.text = combined
-		var old_char_count = _nvl_text.length()
-		text_label.visible_characters = old_char_count
-		_nvl_text = combined + "\n"
+		text_label.visible_characters = previously_visible.length()
+		_nvl_text = combined
+		_nvl_has_entries = true
 	elif mode == "overlay":
+		_reset_nvl_accumulator()
 		name_label.visible = false
 		new_line_text = full_text
 		text_label.text = full_text
 		text_label.visible_characters = 0
 	else:  # adv
-		_nvl_text = ""
+		_reset_nvl_accumulator()
 		new_line_text = full_text
 		if character != "":
 			name_label.text = character
@@ -543,19 +559,22 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 
 		text_label.visible_characters = start_visible + i + 1
 
-		var expr = timeline.get_expression_at_char(i)
-		if expr != "" and character != "":
-			SignalBus.char_expression_changed.emit(character, expr)
+		var authored_index := i - authored_text_offset
+		if authored_index >= 0:
+			var expr = timeline.get_expression_at_char(authored_index)
+			if expr != "" and character != "":
+				SignalBus.char_expression_changed.emit(character, expr)
 
 		var delay = _char_interval
-		for effect in all_effects:
-			if effect["pos"] == i:
-				if effect["type"] == "wait":
-					await get_tree().create_timer(effect["value"] / 1000.0).timeout
-					if gen != _dialogue_gen:
-						return
-				elif effect["type"] == "speed":
-					delay = effect["value"] / 1000.0
+		if authored_index >= 0:
+			for effect in all_effects:
+				if effect["pos"] == authored_index:
+					if effect["type"] == "wait":
+						await get_tree().create_timer(effect["value"] / 1000.0).timeout
+						if gen != _dialogue_gen:
+							return
+					elif effect["type"] == "speed":
+						delay = effect["value"] / 1000.0
 
 		await get_tree().create_timer(delay).timeout
 		if gen != _dialogue_gen:
@@ -729,6 +748,23 @@ func _apply_dialogue_mode_presentation(
 
 	_apply_mode_profile(mode, mode_profile)
 	return true
+
+
+func _resolve_nvl_entry_format() -> Dictionary:
+	var prefix := DEFAULT_NVL_ENTRY_PREFIX
+	var separator := DEFAULT_NVL_ENTRY_SEPARATOR
+	var mode_profile := _active_stla_mode_profile
+	if mode_profile == null and presentation_profile != null:
+		mode_profile = presentation_profile.get_mode("nvl")
+	# Invalid profiles use the same all-or-nothing legacy fallback as layout.
+	# In particular, never re-read an invalid BBCode affix after validation
+	# rejected it in _apply_dialogue_mode_presentation().
+	if mode_profile != null and mode_profile.validation_errors().is_empty():
+		if mode_profile.overrides_property(&"entry_prefix"):
+			prefix = mode_profile.entry_prefix
+		if mode_profile.overrides_property(&"entry_separator"):
+			separator = mode_profile.entry_separator
+	return {"prefix": prefix, "separator": separator}
 
 
 func _apply_mode_profile(mode: String, profile: DialogueModeProfile) -> void:
@@ -1045,6 +1081,12 @@ func _process_inline_effects(text: String) -> Dictionary:
 	return {"text": clean, "effects": effects}
 
 
+func _reset_nvl_accumulator() -> void:
+	_nvl_text = ""
+	_nvl_has_entries = false
+	_active_nvl_block_key = ""
+
+
 func _on_hide_dialogue():
 	# Invalidate every async branch of the current dialogue before clearing the
 	# visible state. Without this, an old typewriter can finish after a runtime
@@ -1060,7 +1102,8 @@ func _on_hide_dialogue():
 	_current_scene_id = ""
 	_current_command_index = -1
 	visible = false
-	_nvl_text = ""
+	_ui_hidden = false
+	_reset_nvl_accumulator()
 	_current_character = ""
 	_voice_playing = false
 	# Dialogue state — clear so the toolbar replay button hides

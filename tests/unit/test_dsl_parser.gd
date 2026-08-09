@@ -65,6 +65,79 @@ sakura（这个人...好奇怪。）""")
 	assert_eq(cmd.get_string("mode"), "monologue")
 
 
+func test_dialogue_profile_parses_nvl_entry_affixes_as_strings():
+	var data = _parse("""@dialogue_profile compact entry_prefix="・" entry_separator=""
+@dialogue_profile spaced entry_separator=" "
+@dialogue_profile lines entry_prefix="" entry_separator="\\n"
+@chapter test
+@scene start
+@nvl profile=compact
+「compact」
+@nvl profile=spaced
+「spaced」
+@nvl profile=lines
+「lines」""")
+	assert_eq(data.diagnostics, [])
+
+	var compact_profile: Dictionary = data.scenes[0].commands[0].params["presentation_profile"]
+	assert_eq(compact_profile.get("entry_prefix"), "・")
+	assert_true(compact_profile.has("entry_separator"),
+		"an explicitly empty separator must remain distinguishable from an omitted property")
+	assert_eq(compact_profile.get("entry_separator"), "")
+
+	var spaced_profile: Dictionary = data.scenes[0].commands[1].params["presentation_profile"]
+	assert_false(spaced_profile.has("entry_prefix"),
+		"entry prefix and separator are independent profile properties")
+	assert_eq(spaced_profile.get("entry_separator"), " ")
+
+	var lines_profile: Dictionary = data.scenes[0].commands[2].params["presentation_profile"]
+	assert_true(lines_profile.has("entry_prefix"))
+	assert_eq(lines_profile.get("entry_prefix"), "")
+	assert_eq(lines_profile.get("entry_separator"), "\n")
+
+
+func test_dialogue_profile_rejects_invalid_nvl_entry_escape_with_source_line():
+	var data = _parse("""@dialogue_profile broken entry_prefix="\\q"
+@chapter test
+@scene start
+@nvl profile=broken
+「line」""")
+	assert_eq(data.diagnostics.size(), 1)
+	assert_eq(data.diagnostics[0]["line"], 1)
+	assert_string_contains(str(data.diagnostics[0]["message"]).to_lower(), "escape")
+	var profile: Dictionary = data.scenes[0].commands[0].params["presentation_profile"]
+	assert_false(profile.has("entry_prefix"),
+		"an invalid string must not be compiled into presentation data")
+
+
+func test_dialogue_profile_rejects_unterminated_nvl_entry_string_with_source_line():
+	var data = _parse("""@dialogue_profile broken entry_separator="unterminated
+@chapter test
+@scene start
+@nvl profile=broken
+「line」""")
+	assert_eq(data.diagnostics.size(), 1)
+	assert_eq(data.diagnostics[0]["line"], 1)
+	assert_string_contains(str(data.diagnostics[0]["message"]).to_lower(), "unterminated")
+	var profile: Dictionary = data.scenes[0].commands[0].params["presentation_profile"]
+	assert_false(profile.has("entry_separator"),
+		"an unterminated string must not be compiled into presentation data")
+
+
+func test_dialogue_profile_rejects_bbcode_in_nvl_entry_format():
+	var data = _parse("""@dialogue_profile broken entry_prefix="[b]・[/b]"
+@chapter test
+@scene start
+@nvl profile=broken
+「line」""")
+	assert_eq(data.diagnostics.size(), 1)
+	assert_eq(data.diagnostics[0]["line"], 1)
+	assert_string_contains(str(data.diagnostics[0]["message"]), "BBCode")
+	var profile: Dictionary = data.scenes[0].commands[0].params["presentation_profile"]
+	assert_false(profile.has("entry_prefix"),
+		"markup would make raw typewriter offsets diverge from visible characters")
+
+
 func test_bg_full_params():
 	var data = _parse("""@scene start
 @bg bg_school fade 0.8""")
@@ -438,6 +511,69 @@ func test_combine_rejects_dialogue_mode_switch_without_mutating_mode():
 	var following_command: CommandData = data.scenes[0].commands[1]
 	assert_eq(following_command.get_string("mode"), "adv")
 	assert_false(following_command.has_param("presentation_profile_name"))
+
+
+func test_nvl_block_metadata_is_stable_within_each_nvl_block():
+	var data = _parse("""@chapter test
+@scene start
+@nvl
+「first」
+「second」
+@nvl
+「third」
+@nvl off
+@nvl
+@combine
+「fourth-a」
+「fourth-b」
+@end
+「fifth」""")
+	assert_eq(data.diagnostics, [])
+	var commands: Array = data.scenes[0].commands
+	assert_eq(commands.size(), 5)
+	var first_block_id: int = commands[0].get_int("nvl_block_id", -1)
+	var second_block_id: int = commands[3].get_int("nvl_block_id", -1)
+	assert_gt(first_block_id, 0)
+	assert_eq(commands[1].get_int("nvl_block_id", -1), first_block_id,
+		"consecutive NVL entries remain in the same accumulation block")
+	assert_eq(commands[2].get_int("nvl_block_id", -1), first_block_id,
+		"repeating @nvl without leaving keeps the active block id")
+	assert_ne(second_block_id, first_block_id,
+		"off -> on creates a new accumulation block")
+	assert_eq(commands[3].params.get("segments", []).size(), 2)
+	assert_eq(commands[4].get_int("nvl_block_id", -1), second_block_id,
+		"a combined entry and following dialogue share the new block id")
+
+
+func test_nvl_block_metadata_survives_conditional_branches_and_continuation():
+	var data = _parse("""@chapter test
+@scene start
+@nvl
+「old block」
+@nvl off
+@nvl
+@if branch
+「then entry」
+@else
+「else entry」
+@end
+「continuation entry」""")
+	assert_eq(data.diagnostics, [])
+	var block_ids: Dictionary = {}
+	for scene in data.scenes:
+		for command in scene.commands:
+			if command.type == "dialogue":
+				block_ids[command.get_string("text")] = command.get_int(
+					"nvl_block_id", -1)
+
+	assert_eq(block_ids.size(), 4)
+	var new_block_id: int = block_ids["then entry"]
+	assert_gt(new_block_id, 0)
+	assert_ne(block_ids["old block"], new_block_id)
+	assert_eq(block_ids["else entry"], new_block_id,
+		"either runtime branch must retain the same NVL reset boundary")
+	assert_eq(block_ids["continuation entry"], new_block_id,
+		"an empty runtime branch may fall through to the continuation")
 
 
 # ─── @chapter directive (issue #97) ───

@@ -5,6 +5,7 @@
 @dialogue_profile novel fit_content=false scroll_active=true scroll_following=true autowrap_mode=word_smart clip_contents=true
 @dialogue_profile novel background_visible=true background_modulate=#ffffff00
 @dialogue_profile novel show=quick_menu hide=adv_chrome
+@dialogue_profile novel entry_prefix="・" entry_separator=""
 
 @chapter dialogue_presentation "Dialogue Presentation Profile"
 @scene start

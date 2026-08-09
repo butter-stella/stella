@@ -19,6 +19,11 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 	var current_declarative_presentation: bool = false
 	var adv_dialogue_profile_name: String = ""
 	var adv_dialogue_profile: Dictionary = {}
+	# Each source-level entry into NVL gets a stable block id. Every dialogue in
+	# that block carries the id so runtime control flow may choose any @if branch
+	# without losing the boundary that resets the presenter's accumulated page.
+	var current_nvl_block_id: int = -1
+	var next_nvl_block_id: int = 0
 
 	# @chapter state (issue #97). Tracks the most-recently-declared chapter so
 	# subsequent @scene declarations can be assigned to it. null until the
@@ -146,6 +151,7 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 							current_dialogue_profile_name,
 							current_dialogue_profile,
 							current_declarative_presentation,
+							current_nvl_block_id,
 						)
 						combine_segments = []
 						combine_character = ""
@@ -177,6 +183,7 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 							"DslParser: @%s is not allowed inside @combine block (line %d)"
 							% [cmd_name, token.line], token.line)
 					else:
+						var previous_mode := current_mode
 						var selection := DialogueProfileParser.parse_mode_directive(
 							token.raw_text, cmd_name, dialogue_profiles, token.line)
 						data.diagnostics.append_array(selection["diagnostics"])
@@ -205,6 +212,12 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 							current_dialogue_profile_name = selection["profile_name"]
 							current_dialogue_profile = selection["profile"]
 							current_declarative_presentation = not current_dialogue_profile_name.is_empty()
+						if current_mode == "nvl":
+							if previous_mode != "nvl":
+								next_nvl_block_id += 1
+								current_nvl_block_id = next_nvl_block_id
+						else:
+							current_nvl_block_id = -1
 				elif cmd_name == "dialogue_profile":
 					# Compile-time declaration; already collected in a pre-pass so
 					# profiles may be referenced before their declaration.
@@ -246,6 +259,7 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 					current_dialogue_profile_name,
 					current_dialogue_profile,
 					current_declarative_presentation,
+					current_nvl_block_id if not in_combine else -1,
 				)
 				if cmd and current_scene:
 					if in_combine:
@@ -276,6 +290,7 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 					current_dialogue_profile_name,
 					current_dialogue_profile,
 					current_declarative_presentation,
+					current_nvl_block_id if not in_combine else -1,
 				)
 				if cmd and current_scene:
 					if in_combine:
@@ -759,6 +774,7 @@ static func _parse_dialogue(
 	profile_name: String = "",
 	profile: Dictionary = {},
 	declarative_presentation: bool = false,
+	nvl_block_id: int = -1,
 ) -> CommandData:
 	var raw = token.raw_text
 	var bracket_start = raw.find("\u300c")  # 「
@@ -785,7 +801,7 @@ static func _parse_dialogue(
 		"mode": mode,
 	}
 	_attach_dialogue_profile(
-		params, profile_name, profile, declarative_presentation)
+		params, profile_name, profile, declarative_presentation, nvl_block_id)
 	return _make_cmd("dialogue", params)
 
 
@@ -795,6 +811,7 @@ static func _parse_narration(
 	profile_name: String = "",
 	profile: Dictionary = {},
 	declarative_presentation: bool = false,
+	nvl_block_id: int = -1,
 ) -> CommandData:
 	var raw = token.raw_text
 	var bracket_start = raw.find("\u300c")
@@ -812,7 +829,7 @@ static func _parse_narration(
 		"mode": mode,
 	}
 	_attach_dialogue_profile(
-		params, profile_name, profile, declarative_presentation)
+		params, profile_name, profile, declarative_presentation, nvl_block_id)
 	return _make_cmd("dialogue", params)
 
 
@@ -948,6 +965,7 @@ static func _build_combine_command(
 	profile_name: String = "",
 	profile: Dictionary = {},
 	declarative_presentation: bool = false,
+	nvl_block_id: int = -1,
 ) -> CommandData:
 	if segments.size() == 0:
 		return null
@@ -965,7 +983,7 @@ static func _build_combine_command(
 		"segments": segments.duplicate(true),
 	}
 	_attach_dialogue_profile(
-		params, profile_name, profile, declarative_presentation)
+		params, profile_name, profile, declarative_presentation, nvl_block_id)
 	return _make_cmd("dialogue", params)
 
 
@@ -974,7 +992,10 @@ static func _attach_dialogue_profile(
 	profile_name: String,
 	profile: Dictionary,
 	declarative_presentation: bool,
+	nvl_block_id: int = -1,
 ) -> void:
+	if nvl_block_id >= 0:
+		params["nvl_block_id"] = nvl_block_id
 	if declarative_presentation:
 		params["declarative_presentation"] = true
 	if profile_name.is_empty():

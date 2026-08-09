@@ -58,7 +58,11 @@ func test_dialogue_handler_defaults():
 	var handler = DialogueHandler.new()
 	var received: Array = []
 	_bus.show_dialogue.connect(func(_c, segs, m):
-		received.append({"mode": m, "voice": segs[0]["voice"]})
+		received.append({
+			"mode": m,
+			"voice": segs[0]["voice"],
+			"nvl_block_key": _bus.current_dialogue_nvl_block_key(),
+		})
 	)
 
 	var cmd = _build_cmd("dialogue", {"text": "Narration"})
@@ -67,6 +71,7 @@ func test_dialogue_handler_defaults():
 
 	assert_eq(received[0]["mode"], "adv")
 	assert_eq(received[0]["voice"], "")
+	assert_eq(received[0]["nvl_block_key"], "")
 
 
 func test_dialogue_handler_passes_segments_through():
@@ -99,17 +104,19 @@ func test_dialogue_handler_scopes_compiled_presentation_without_changing_signal_
 	var handler = DialogueHandler.new()
 	var received: Array = []
 	_bus.show_dialogue.connect(func(_c, _segments, mode):
-		received.append({
-			"mode": mode,
-			"profile": _bus.current_dialogue_presentation_profile(),
-			"declarative": _bus.current_dialogue_uses_declarative_presentation(),
-		})
+			received.append({
+				"mode": mode,
+				"profile": _bus.current_dialogue_presentation_profile(),
+				"declarative": _bus.current_dialogue_uses_declarative_presentation(),
+				"nvl_block_key": _bus.current_dialogue_nvl_block_key(),
+			})
 	)
 	var cmd = _build_cmd("dialogue", {
 		"text": "Configured",
 		"mode": "nvl",
 		"declarative_presentation": true,
 		"presentation_profile": {"line_spacing": 8},
+		"nvl_block_id": 7,
 	})
 
 	_bus.advance_requested.emit.call_deferred()
@@ -119,8 +126,12 @@ func test_dialogue_handler_scopes_compiled_presentation_without_changing_signal_
 	assert_eq(received[0]["mode"], "nvl")
 	assert_eq(received[0]["profile"], {"line_spacing": 8})
 	assert_true(received[0]["declarative"])
+	var expected_block_key := "%d:7" % _context.scenario_data.get_instance_id()
+	assert_eq(received[0]["nvl_block_key"], expected_block_key)
 	assert_eq(_bus.current_dialogue_presentation_profile(), {},
 		"profile metadata must not leak past synchronous signal dispatch")
+	assert_eq(_bus.current_dialogue_nvl_block_key(), "",
+		"NVL block metadata must not leak past synchronous signal dispatch")
 
 
 # --- BgHandler ---

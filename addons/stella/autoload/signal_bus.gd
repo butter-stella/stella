@@ -13,7 +13,8 @@ signal hide_dialogue()
 signal advance_requested()
 
 # Stack-scoped metadata keeps the legacy three-argument signal compatible
-# while DialogueHandler can synchronously attach an STLA presentation profile.
+# while DialogueHandler synchronously attaches an STLA presentation profile
+# and the current compiled NVL block boundary.
 # DialoguePresenter copies the current value before its first await.
 var _dialogue_presentation_stack: Array[Dictionary] = []
 
@@ -24,10 +25,12 @@ func emit_show_dialogue(
 	mode: String,
 	presentation_profile: Dictionary = {},
 	declarative_presentation: bool = false,
+	nvl_block_key: String = "",
 ) -> void:
 	_dialogue_presentation_stack.append({
 		"profile": presentation_profile.duplicate(true),
 		"declarative": declarative_presentation,
+		"nvl_block_key": nvl_block_key,
 	})
 	show_dialogue.emit(character, segments, mode)
 	_dialogue_presentation_stack.pop_back()
@@ -43,6 +46,12 @@ func current_dialogue_uses_declarative_presentation() -> bool:
 	if _dialogue_presentation_stack.is_empty():
 		return false
 	return _dialogue_presentation_stack[-1]["declarative"]
+
+
+func current_dialogue_nvl_block_key() -> String:
+	if _dialogue_presentation_stack.is_empty():
+		return ""
+	return _dialogue_presentation_stack[-1]["nvl_block_key"]
 
 # Character
 signal char_show(character: String, expression: String, position: String)
