@@ -4,6 +4,7 @@
 ##   @dialogue_profile novel panel_anchors=0,0,1,1
 ##   @dialogue_profile novel text_anchors=0.15,0.1,0.85,0.7
 ##   @dialogue_profile novel show=quick_menu hide=adv_chrome
+##   @dialogue_profile novel entry_prefix="・" entry_separator=""
 class_name DialogueProfileParser
 extends RefCounted
 
@@ -22,6 +23,7 @@ const BOOL_KEYS := [
 	"clip_contents",
 	"background_visible",
 ]
+const STRING_KEYS := ["entry_prefix", "entry_separator"]
 const HORIZONTAL_ALIGNMENTS := {
 	"left": HORIZONTAL_ALIGNMENT_LEFT,
 	"center": HORIZONTAL_ALIGNMENT_CENTER,
@@ -164,8 +166,14 @@ static func _parse_declaration(
 				% [assignment, token.line], token.line)
 			continue
 		var key := assignment.substr(0, equals).strip_edges()
-		var raw_value := _unquote(assignment.substr(equals + 1).strip_edges())
-		var parsed := _parse_property(key, raw_value, token.line, diagnostics, profile)
+		var assignment_value := assignment.substr(equals + 1).strip_edges()
+		var parsed: Dictionary
+		if key in STRING_KEYS:
+			parsed = _parse_string_property(
+				key, assignment_value, token.line, diagnostics)
+		else:
+			parsed = _parse_property(
+				key, _unquote(assignment_value), token.line, diagnostics, profile)
 		if parsed["valid"] and parsed.get("store", true):
 			profile[key] = parsed["value"]
 	profiles[profile_name] = profile
@@ -278,6 +286,68 @@ static func _parse_enum(
 			"DslParser: dialogue profile %s has unsupported value '%s' (line %d)"
 			% [key, raw_value, line], line)
 	return _valid(values[raw_value])
+
+
+static func _parse_string_property(
+	key: String,
+	raw_value: String,
+	line: int,
+	diagnostics: Array,
+) -> Dictionary:
+	var closing_quote := ""
+	if raw_value.begins_with("\""):
+		closing_quote = "\""
+	elif raw_value.begins_with("'"):
+		closing_quote = "'"
+	elif raw_value.begins_with("“"):
+		closing_quote = "”"
+	else:
+		return _invalid(diagnostics,
+			"DslParser: dialogue profile %s must be a quoted string (line %d)"
+			% [key, line], line)
+
+	var decoded := ""
+	var escaped := false
+	for index in range(1, raw_value.length()):
+		var character := raw_value.substr(index, 1)
+		if escaped:
+			match character:
+				"\\":
+					decoded += "\\"
+				"\"":
+					decoded += "\""
+				"'":
+					decoded += "'"
+				"n":
+					decoded += "\n"
+				"r":
+					decoded += "\r"
+				"t":
+					decoded += "\t"
+				_:
+					return _invalid(diagnostics,
+						"DslParser: dialogue profile %s has invalid escape sequence '\\%s' (line %d)"
+						% [key, character, line], line)
+			escaped = false
+			continue
+		if character == "\\":
+			escaped = true
+			continue
+		if character == closing_quote:
+			if index != raw_value.length() - 1:
+				return _invalid(diagnostics,
+					"DslParser: dialogue profile %s must contain exactly one quoted string (line %d)"
+					% [key, line], line)
+			if decoded.contains("[") or decoded.contains("]"):
+				return _invalid(diagnostics,
+					"DslParser: dialogue profile %s is plain text and cannot contain BBCode brackets (line %d)"
+					% [key, line], line)
+			return _valid(decoded)
+		decoded += character
+
+	return _invalid(diagnostics,
+		"DslParser: dialogue profile %s has an unterminated quoted string (line %d)"
+		% [key, line], line)
 
 
 static func _valid(value: Variant) -> Dictionary:

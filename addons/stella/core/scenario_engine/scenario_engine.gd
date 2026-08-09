@@ -56,6 +56,10 @@ func run() -> void:
 		# Get current command
 		var cmd = ctx.current_command()
 		if cmd == null:
+			var exhausted_scene := ctx.current_scene()
+			if exhausted_scene != null:
+				ctx.apply_dialogue_mode_events(
+					exhausted_scene.dialogue_mode_events_on_exit)
 			# Current scene exhausted, try next scene
 			if not _advance_to_next_scene():
 				ctx.is_finished = true
@@ -63,12 +67,15 @@ func run() -> void:
 			continue
 
 		# Dispatch to handler
+		ctx.apply_dialogue_mode_events(cmd.dialogue_mode_events_before)
 		var handler = registry.get_handler(cmd.type) if registry else null
 		if handler:
 			await handler.execute(cmd, ctx)
 			# After await: abort if context was replaced (load/restart)
 			if ctx != context:
 				return
+		ctx.apply_dialogue_mode_events(cmd.dialogue_mode_events_after)
+		if handler:
 			command_executed.emit(cmd)
 
 		# If the handler set a jump, don't advance — let the loop handle it

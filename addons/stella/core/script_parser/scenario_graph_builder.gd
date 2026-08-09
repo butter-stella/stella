@@ -221,7 +221,7 @@ static func _chapter_id_of(scene_id: String, data: ScenarioData) -> String:
 ##
 ## Note: scene ids beginning with `__if_` or `__elif_` are reserved by the
 ## parser for synthetic scenes (DslParser._close_if_block /
-## _close_elif_into_parent). Author scenes with those prefixes would be
+## _compile_condition_node). Author scenes with those prefixes would be
 ## silently skipped here — DslParser does not currently validate against
 ## reserved prefixes; that would be a future PR-A hardening.
 static func _next_scene_in_declaration_order(scene: SceneData, data: ScenarioData) -> String:

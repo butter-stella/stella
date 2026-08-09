@@ -98,6 +98,7 @@ sakura「那个人就是..{wait:500}{speed:0.3}你吗？」
 @dialogue_profile novel horizontal_alignment=left vertical_alignment=top line_spacing=8
 @dialogue_profile novel background_visible=true background_modulate=#ffffff00
 @dialogue_profile novel show=quick_menu hide=adv_chrome
+@dialogue_profile novel entry_prefix="・" entry_separator=""
 
 // ADV 也可以选择命名 Profile；未写 @adv 时使用场景原始 ADV。
 @dialogue_profile message panel_anchors=0,0.72,1,1
@@ -118,6 +119,8 @@ sakura「那个人就是..{wait:500}{speed:0.3}你吗？」
 
 `@adv` / `@nvl` / `@overlay` 作为模式开关，之后的所有对话都使用该模式，直到 `off` 或切换。不需要每句都写 `mode`。不带 `profile` 的旧 `@nvl` / `@overlay` 保持旧版默认表现；`profile=<name>` 从当前 STLA 文件的 `@dialogue_profile` 声明中选择一套表现。Profile 是编译期数据，可以写在引用之后，但建议统一放在文件顶部。若先用 `@adv profile=message` 配置 ADV，`@nvl off` / `@overlay off` 会恢复 `message`；否则恢复场景编排的 ADV 基线。
 
+模式开关按实际运行路径生效：经过 `@nvl off` 或切到其他模式后，再通过顺序执行、`@jump`、`@call` 或条件分支进入 `@nvl`，都会开始新的 NVL 页面；没有离开 NVL 时重复写 `@nvl` 则继续当前页面。条件分支若改变模式，应在各分支汇合前选择相同模式，或在汇合后显式重新选择，避免后续对话的编译期 Profile 含义不明确。
+
 同一个 Profile 可以拆成多行声明，后写属性覆盖同名旧属性。每个属性都独立生效；未写的属性保留场景编排值，不会因为只修改行距而顺带重置对齐、区域或滚动策略：
 
 | 属性 | 值 | 作用 |
@@ -136,10 +139,16 @@ sakura「那个人就是..{wait:500}{speed:0.3}你吗？」
 | `background_visible` | `true/false` | 对话背景是否可见 |
 | `background_modulate` | `#RRGGBBAA` | 对话背景颜色；alpha `00` 为透明 |
 | `show` / `hide` | 逗号分隔的分组名 | 显示或隐藏附属 UI 分组 |
+| `entry_prefix` | 引号纯文本字符串 | 每条 NVL 记录的前缀；默认 `""` |
+| `entry_separator` | 引号纯文本字符串 | 相邻 NVL 记录之间的分隔符；默认 `"\n"` |
+
+`entry_prefix` 和 `entry_separator` 只影响 NVL 的屏幕累积文本。每条记录按“前缀 → 角色名（若有）→ 正文”的顺序显示，分隔符只插入相邻记录之间；例如 `entry_prefix="・" entry_separator=""` 会把两句旁白显示为 `・第一句。・第二句。`。显式的空字符串表示不插入内容，与省略属性时采用兼容默认值不同。`@combine` 块在 NVL 中仍是一条记录，因此只添加一次前缀，Backlog 中保存的也仍是原始对话文本，不会混入屏幕排版用的前缀或分隔符。
+
+这两个属性支持带引号的纯文本字符串及常用转义：`\\`、`\"`、`\n`、`\r`、`\t`。例如 `entry_separator="\n\n"` 会在记录间留出一个空行。这里不支持 BBCode 标签，方括号会产生解析诊断；样式仍应通过 Profile 的文字属性或场景 theme 配置。未配置时继续使用旧版 NVL 行为：前缀为空、记录之间换行。
 
 内置场景已提供 `quick_menu` 分组，并将默认文字布局根作为可定位区域，所以常见 NVL/overlay 版式只需要写 STLA。只有项目新增了特殊 frame、logo 或其他自定义 UI 时，才需要在 Godot 场景里给这些节点分组，例如 `adv_chrome`。
 
-无效数字、越界/倒置 anchors、负 margin、非法枚举、未知属性或不存在的 Profile 都会生成包含 STLA 行号的解析诊断。编译后的每条对话命令都持有已解析 Profile 的独立副本，因此存档、回滚和跳转不依赖隐藏的全局样式状态；`off` 会恢复进入声明式模式前的 ADV 场景基线。
+无效数字、越界/倒置 anchors、负 margin、非法枚举、未知属性、不完整的引号字符串、非法字符串转义、entry format 中的 BBCode 方括号或不存在的 Profile 都会生成包含 STLA 行号的解析诊断。编译后的每条对话命令都持有已解析 Profile 的独立副本，因此存档、回滚和跳转不依赖隐藏的全局样式状态；`off` 会恢复进入声明式模式前的 ADV 场景基线。
 
 ### 3.4 背景
 
@@ -328,6 +337,7 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
   @jump normal_ending
 @else
   @jump bad_ending
+@end
 
 // 条件段落（控制一段内容是否显示）
 @if has_key
@@ -336,6 +346,8 @@ CG 是统一的插画展示系统，通过 `mode` 区分不同展示方式：
   sakura「没有钥匙的话...怎么办呢。」
 @end
 ```
+
+条件块可以嵌套；内层 `@end` 会回到当前外层分支继续执行，外层各分支最后再汇合到同一个 continuation。每个 `@if`（包括带 `@elif` / `@else` 的条件链）都必须用自己的 `@end` 闭合。
 
 ### 3.12 流程控制
 
@@ -392,6 +404,7 @@ sakura「我数学肯定完蛋了。」 #voice:sakura_019
 - 块内只允许 `@expr` 和 dialogue 行（角色名必须一致，或全为旁白）
 - 其它指令（`@bg`、`@anim` 等）不允许出现在块内
 - 跟随当前 NVL / overlay 模式及其命名 Profile
+- 在 NVL 中整个块算一条记录，`entry_prefix` 只添加一次
 
 ### 3.15 等待
 

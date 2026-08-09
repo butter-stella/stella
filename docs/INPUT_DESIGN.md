@@ -21,7 +21,7 @@ _input:
   4. 否则 → advance_requested（推进剧本）
 
 _unhandled_input:
-  键盘（空格/回车/Ctrl）→ 不受 mouse_filter 影响，正常处理
+  键盘（空格/回车/Ctrl）→ UI 隐藏时先恢复并消费按键，否则正常处理
 ```
 
 ### 为什么 `gui_get_hovered_control()` 有效
@@ -48,7 +48,7 @@ _unhandled_input:
 普通 Node，挂在 game 场景中。
 
 - `_input`：处理所有鼠标事件（左键推进/完成打字、右键隐藏 UI）
-- `_unhandled_input`：处理键盘事件（空格/回车推进、Ctrl 快进）
+- `_unhandled_input`：处理键盘事件（隐藏时先恢复 UI；否则空格/回车推进、Ctrl 快进）
 - 通过 `%DialoguePanel` 访问 DialoguePresenter 的状态
 
 ### DialoguePresenter (`presentation/dialogue/dialogue_presenter.gd`)
