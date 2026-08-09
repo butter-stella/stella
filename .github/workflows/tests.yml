@@ -79,9 +79,12 @@ jobs:
         run: godot --headless --import 2>&1
         timeout-minutes: 2
 
+      - name: Verify Lavapipe ICD
+        run: test -f /usr/share/vulkan/icd.d/lvp_icd.json
+
       - name: Run stage pixel tests with Mesa Lavapipe
         env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
         run: >-
           xvfb-run -a godot --path . --rendering-method mobile
           -s addons/gut/gut_cmdln.gd -gconfig=
