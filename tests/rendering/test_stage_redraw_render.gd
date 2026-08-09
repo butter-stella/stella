@@ -7,6 +7,7 @@ const BLUR_ORDER_PATH := "res://tests/fixtures/stage/redraw_blur_order.png"
 const BLUR_EDGE_PATH := "res://tests/fixtures/stage/redraw_blur_edge.png"
 const PIXEL_TOLERANCE := 2.5 / 255.0
 const BYTE_EXACT_TOLERANCE := 0.25 / 255.0
+const HALF_BYTE_TOLERANCE := 0.51 / 255.0
 
 
 func before_all() -> void:
@@ -20,6 +21,13 @@ func before_all() -> void:
 		rendering_method in ["gl_compatibility", "mobile", "forward_plus"],
 		"render regressions require a supported Godot rendering method",
 	)
+	var expected_method := OS.get_environment("STELLA_EXPECT_RENDERING_METHOD")
+	if not expected_method.is_empty():
+		assert_eq(
+			rendering_method,
+			expected_method,
+			"CI must not silently fall back to a different renderer",
+		)
 	if rendering_method == "gl_compatibility":
 		assert_true(
 			RenderingServer.get_current_rendering_driver_name().begins_with("opengl3"),
@@ -228,11 +236,12 @@ func test_scaled_blur_expands_past_the_global_source_bounds() -> void:
 	], true)
 	var image := await _render(harness.viewport)
 	# Local x=-2 maps to global x=6 and receives the +radius tap (weight 0.3).
+	# The final UNORM byte may round to 76 or 77 across rendering drivers.
 	_assert_pixel(
 		image,
 		Vector2i(6, 13),
-		Color8(77, 77, 77, 77),
-		BYTE_EXACT_TOLERANCE,
+		Color(0.3, 0.3, 0.3, 0.3),
+		HALF_BYTE_TOLERANCE,
 	)
 
 
