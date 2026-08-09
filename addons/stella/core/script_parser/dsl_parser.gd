@@ -3,6 +3,7 @@
 class_name DslParser extends RefCounted
 
 const INTERNAL_DIALOGUE_MODE_EVENT := "__dialogue_mode_event"
+const INTERNAL_IF_NODE := "__if_node"
 
 
 static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioData:
@@ -121,16 +122,20 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				if cmd_name == "choice":
 					choice_cmd = _parse_choice_command(token)
 				elif cmd_name == "if":
-					if_stack.append(_create_if_context(token, current_scene, data))
+					var nested_if := _create_if_context(token, current_scene, data)
+					if if_stack.size() > 0:
+						_append_if_node(if_stack[-1], nested_if)
+					if_stack.append(nested_if)
 				elif cmd_name == "elif":
 					if if_stack.size() > 0:
-						# Close current if block's else into a new elif chain
+						# An elif is represented as the sole nested condition on the
+						# previous condition's false branch. The complete tree is
+						# compiled only when the chain's root @if closes.
 						var elif_expr = token.raw_text.substr(6).strip_edges()
 						var ctx = if_stack[-1]
-						# Switch to else branch and create a nested if inside it
 						ctx["branch"] = "else"
-						# Create a new if context that will live inside the else branch
-						var nested = {
+						var nested_elif = {
+							"node_kind": INTERNAL_IF_NODE,
 							"expr": elif_expr,
 							"scene_id": ctx["scene_id"],
 							"line": token.line,
@@ -139,9 +144,9 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 							"branch": "then",
 							"parent_scene": ctx["parent_scene"],
 							"is_elif": true,
-							"parent_if": ctx,
 						}
-						if_stack.append(nested)
+						ctx["else_commands"].append(nested_elif)
+						if_stack.append(nested_elif)
 				elif cmd_name == "else":
 					if if_stack.size() > 0:
 						if_stack[-1]["branch"] = "else"
@@ -169,15 +174,15 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 						if current_scene:
 							_add_command(parallel_cmd, current_scene, if_stack)
 					elif if_stack.size() > 0:
-						# Close elif chain: pop all elif blocks, then the original if
+						# One @end closes a complete @if/@elif chain. A nested root
+						# remains as an AST node in its parent's active branch; only a
+						# top-level root is compiled into synthetic CFG scenes here.
 						while if_stack.size() > 0 and if_stack[-1].get("is_elif", false):
-							var elif_ctx = if_stack.pop_back()
-							var parent_ctx = elif_ctx.get("parent_if")
-							# Build the elif as a nested condition inside parent's else
-							_close_elif_into_parent(elif_ctx, parent_ctx, data)
-						# Now close the original @if block
+							if_stack.pop_back()
 						if if_stack.size() > 0:
-							current_scene = _close_if_block(if_stack.pop_back(), data)
+							var closed_if = if_stack.pop_back()
+							if if_stack.is_empty():
+								current_scene = _close_if_block(closed_if, data)
 					# else: @end at scene level, ignore
 				elif cmd_name in ["adv", "nvl", "overlay"]:
 					if in_combine:
@@ -401,6 +406,8 @@ static func _extract_mode_only_branch_events(commands: Array) -> Array[String]:
 	if commands.is_empty():
 		return events
 	for command_value in commands:
+		if not (command_value is CommandData):
+			return []
 		var command: CommandData = command_value
 		if command.type != INTERNAL_DIALOGUE_MODE_EVENT:
 			return []
@@ -909,6 +916,7 @@ static func _parse_monologue(token: DslToken) -> CommandData:
 static func _create_if_context(token: DslToken, current_scene: SceneData, _data: ScenarioData) -> Dictionary:
 	var expr = token.raw_text.substr(4).strip_edges()  # Remove "@if "
 	return {
+		"node_kind": INTERNAL_IF_NODE,
 		"expr": expr,
 		"scene_id": current_scene.id if current_scene else "unknown",
 		"line": token.line,
@@ -919,101 +927,111 @@ static func _create_if_context(token: DslToken, current_scene: SceneData, _data:
 	}
 
 
-static func _close_elif_into_parent(elif_ctx: Dictionary, parent_ctx: Dictionary, data: ScenarioData) -> void:
-	var base_id = "__elif_%s_%d" % [elif_ctx["scene_id"], elif_ctx["line"]]
-	# The parent if's continuation scene ID (created later by _close_if_block)
-	var parent_cont_id = "__if_%s_%d_cont" % [parent_ctx["scene_id"], parent_ctx["line"]]
-	# Synthetic scenes inherit chapter_id from the enclosing scene's chapter
-	# (issue #97) — otherwise PR-B's flowchart graph builder sees them as
-	# orphans and they pollute "scene before any @chapter" detection.
-	var inherit_chapter_id := ""
-	var parent_scene = parent_ctx.get("parent_scene")
-	if parent_scene != null:
-		inherit_chapter_id = parent_scene.chapter_id
+static func _close_if_block(ctx: Dictionary, data: ScenarioData) -> SceneData:
+	var parent_scene: SceneData = ctx["parent_scene"]
+	var base_id := _if_node_base_id(ctx)
+	# Synthetic scenes inherit chapter_id from the enclosing scene's chapter so
+	# the flow graph treats them as part of the authored chapter.
+	var inherit_chapter_id := parent_scene.chapter_id if parent_scene else ""
+	var cont_scene := _make_synthetic_scene(base_id + "_cont", inherit_chapter_id)
+	_compile_condition_node(ctx, parent_scene, cont_scene.id, data, inherit_chapter_id)
+	# The root continuation is physically last. Every earlier synthetic branch
+	# either ends in a jump or a condition, so ScenarioEngine can never reach a
+	# sibling branch through sequential scene fallthrough.
+	data.scenes.append(cont_scene)
+	return cont_scene
+
+
+static func _append_if_node(parent_ctx: Dictionary, child_ctx: Dictionary) -> void:
+	if parent_ctx["branch"] == "then":
+		parent_ctx["then_commands"].append(child_ctx)
+	else:
+		parent_ctx["else_commands"].append(child_ctx)
+
+
+static func _is_if_node(value) -> bool:
+	return value is Dictionary and value.get("node_kind", "") == INTERNAL_IF_NODE
+
+
+static func _if_node_base_id(ctx: Dictionary) -> String:
+	var prefix := "__elif" if ctx.get("is_elif", false) else "__if"
+	return "%s_%s_%d" % [prefix, ctx["scene_id"], ctx["line"]]
+
+
+static func _make_synthetic_scene(scene_id: String, chapter_id: String) -> SceneData:
+	var scene := SceneData.new()
+	scene.id = scene_id
+	scene.chapter_id = chapter_id
+	return scene
+
+
+## Compile one condition node in continuation-passing style. All branch tails
+## jump to continuation_id. An @elif child is compiled directly in its parent's
+## false-entry scene and receives the same continuation, so every branch in the
+## chain joins the root @if continuation rather than deriving a target from the
+## immediately preceding @elif.
+static func _compile_condition_node(
+	ctx: Dictionary,
+	parent_scene: SceneData,
+	continuation_id: String,
+	data: ScenarioData,
+	chapter_id: String,
+) -> void:
+	var base_id := _if_node_base_id(ctx)
 	var false_branch_mode_events := _extract_mode_only_branch_events(
-		elif_ctx["else_commands"])
+		ctx["else_commands"])
 
-	var then_scene = SceneData.new()
-	then_scene.id = base_id + "_then"
-	then_scene.chapter_id = inherit_chapter_id
-	for cmd in elif_ctx["then_commands"]:
-		then_scene.commands.append(cmd)
-	# Jump to parent's continuation after elif branch executes
-	then_scene.commands.append(_make_cmd("jump", {"target": parent_cont_id}))
+	var then_scene := _make_synthetic_scene(base_id + "_then", chapter_id)
 	data.scenes.append(then_scene)
+	_compile_condition_sequence(
+		ctx["then_commands"], then_scene, continuation_id, data, chapter_id)
 
-	var else_target = parent_cont_id
-	if elif_ctx["else_commands"].size() > 0:
-		var else_scene = SceneData.new()
-		else_scene.id = base_id + "_else"
-		else_scene.chapter_id = inherit_chapter_id
-		for cmd in elif_ctx["else_commands"]:
-			else_scene.commands.append(cmd)
-		else_scene.commands.append(_make_cmd("jump", {"target": parent_cont_id}))
+	var else_target := continuation_id
+	if not ctx["else_commands"].is_empty():
+		var else_scene := _make_synthetic_scene(base_id + "_else", chapter_id)
 		data.scenes.append(else_scene)
 		else_target = else_scene.id
+		if ctx["else_commands"].size() == 1 \
+			and _is_if_node(ctx["else_commands"][0]) \
+			and ctx["else_commands"][0].get("is_elif", false):
+			_compile_condition_node(
+				ctx["else_commands"][0], else_scene, continuation_id, data, chapter_id)
+		else:
+			_compile_condition_sequence(
+				ctx["else_commands"], else_scene, continuation_id, data, chapter_id)
 
-	var condition_cmd = _make_cmd("condition", {
-		"if": elif_ctx["expr"],
+	var condition_cmd := _make_cmd("condition", {
+		"if": ctx["expr"],
 		"then_jump": then_scene.id,
 		"else_jump": else_target,
 	})
 	condition_cmd.dialogue_mode_events_on_false_branch.append_array(
 		false_branch_mode_events)
-	parent_ctx["else_commands"].append(condition_cmd)
-
-
-static func _close_if_block(ctx: Dictionary, data: ScenarioData) -> SceneData:
-	var parent_scene: SceneData = ctx["parent_scene"]
-	var base_id = "__if_%s_%d" % [ctx["scene_id"], ctx["line"]]
-	# Synthetic scenes inherit chapter_id from the enclosing scene's chapter
-	# (issue #97) — see _close_elif_into_parent for rationale.
-	var inherit_chapter_id := parent_scene.chapter_id if parent_scene else ""
-	var false_branch_mode_events := _extract_mode_only_branch_events(
-		ctx["else_commands"])
-
-	# Create synthetic scenes
-	var then_scene = SceneData.new()
-	then_scene.id = base_id + "_then"
-	then_scene.chapter_id = inherit_chapter_id
-	for cmd in ctx["then_commands"]:
-		then_scene.commands.append(cmd)
-
-	var cont_scene = SceneData.new()
-	cont_scene.id = base_id + "_cont"
-	cont_scene.chapter_id = inherit_chapter_id
-
-	# Add jump to continuation at end of then branch
-	var then_jump = _make_cmd("jump", {"target": cont_scene.id})
-	then_scene.commands.append(then_jump)
-
-	data.scenes.append(then_scene)
-
-	var else_jump_target = cont_scene.id
-	if ctx["else_commands"].size() > 0:
-		var else_scene = SceneData.new()
-		else_scene.id = base_id + "_else"
-		else_scene.chapter_id = inherit_chapter_id
-		for cmd in ctx["else_commands"]:
-			else_scene.commands.append(cmd)
-		var else_jump = _make_cmd("jump", {"target": cont_scene.id})
-		else_scene.commands.append(else_jump)
-		data.scenes.append(else_scene)
-		else_jump_target = else_scene.id
-
-	# Add condition command to parent scene
-	var condition_cmd = _make_cmd("condition", {
-		"if": ctx["expr"],
-		"then_jump": then_scene.id,
-		"else_jump": else_jump_target,
-	})
-	condition_cmd.dialogue_mode_events_on_false_branch.append_array(
-		false_branch_mode_events)
 	parent_scene.commands.append(condition_cmd)
 
-	# Continuation scene becomes the new current scene
-	data.scenes.append(cont_scene)
-	return cont_scene
+
+## Compile a linear branch sequence. A nested @if splits the current scene and
+## resumes the remaining commands in that nested block's continuation. The
+## final tail always jumps explicitly to the caller-provided continuation.
+static func _compile_condition_sequence(
+	commands: Array,
+	entry_scene: SceneData,
+	continuation_id: String,
+	data: ScenarioData,
+	chapter_id: String,
+) -> void:
+	var current_scene := entry_scene
+	for item in commands:
+		if _is_if_node(item):
+			var nested_cont := _make_synthetic_scene(
+				_if_node_base_id(item) + "_cont", chapter_id)
+			_compile_condition_node(
+				item, current_scene, nested_cont.id, data, chapter_id)
+			data.scenes.append(nested_cont)
+			current_scene = nested_cont
+		else:
+			current_scene.commands.append(item)
+	current_scene.commands.append(_make_cmd("jump", {"target": continuation_id}))
 
 
 # --- Helpers ---

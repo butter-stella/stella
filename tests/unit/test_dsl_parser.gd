@@ -298,6 +298,102 @@ sakura「继续...」""")
 	assert_true(found_condition)
 
 
+func test_nested_if_condition_is_owned_by_the_outer_then_cfg():
+	var data := _parse("""@chapter test
+@scene start
+@if outer
+「outer before」
+@if inner
+「inner then」
+@else
+「inner else」
+@end
+「outer after」
+@else
+「outer else」
+@end
+「done」""")
+	assert_eq(data.diagnostics, [])
+
+	var start := data.get_scene("start")
+	assert_not_null(start)
+	if start == null:
+		return
+	assert_eq(start.commands.size(), 1,
+		"the author scene must enter the outer condition before any nested condition")
+	assert_eq(start.commands[0].type, "condition")
+	assert_eq(start.commands[0].get_string("if"), "outer")
+
+	var inner_condition_scene: SceneData = null
+	for scene in data.scenes:
+		for command in scene.commands:
+			if command.type == "condition" and command.get_string("if") == "inner":
+				inner_condition_scene = scene
+	assert_not_null(inner_condition_scene)
+	if inner_condition_scene != null:
+		assert_ne(inner_condition_scene.id, "start")
+		assert_true(inner_condition_scene.id.begins_with("__if_start_3_then"),
+			"the inner condition must only be reachable from the outer true branch")
+
+	var root_cont_id := "__if_start_3_cont"
+	assert_eq(data.scenes[-1].id, root_cont_id,
+		"the root continuation must be physically last in its compiled CFG")
+	for scene_index in range(1, data.scenes.size() - 1):
+		var synthetic_scene: SceneData = data.scenes[scene_index]
+		assert_true(synthetic_scene.id.begins_with("__"))
+		assert_false(synthetic_scene.commands.is_empty(),
+			"non-final synthetic scene %s needs an explicit transfer" % synthetic_scene.id)
+		if synthetic_scene.commands.is_empty():
+			continue
+		var terminal: CommandData = synthetic_scene.commands[-1]
+		assert_true(terminal.type in ["condition", "jump"],
+			"synthetic scene %s must not fall through to a sibling branch"
+			% synthetic_scene.id)
+		if terminal.type == "jump":
+			assert_not_null(data.get_scene(terminal.get_string("target")),
+				"synthetic jump target must exist")
+		else:
+			assert_not_null(data.get_scene(terminal.get_string("then_jump")),
+				"synthetic true target must exist")
+			assert_not_null(data.get_scene(terminal.get_string("else_jump")),
+				"synthetic false target must exist")
+
+
+func test_multi_elif_branches_join_the_root_if_continuation():
+	var data := _parse("""@chapter test
+@scene start
+@if route == 1
+「one」
+@elif route == 2
+「two」
+@elif route == 3
+「three」
+@else
+「four」
+@end
+「done」""")
+	assert_eq(data.diagnostics, [])
+	var root_cont_id := "__if_start_3_cont"
+	assert_not_null(data.get_scene(root_cont_id))
+
+	var branch_texts := ["one", "two", "three", "four"]
+	for branch_text in branch_texts:
+		var branch_scene: SceneData = null
+		for scene in data.scenes:
+			for command in scene.commands:
+				if command.type == "dialogue" \
+					and command.get_string("text") == branch_text:
+					branch_scene = scene
+		assert_not_null(branch_scene, "missing branch scene for %s" % branch_text)
+		if branch_scene == null:
+			continue
+		var terminal: CommandData = branch_scene.commands[-1]
+		assert_eq(terminal.type, "jump",
+			"branch %s must not fall through into another synthetic branch" % branch_text)
+		assert_eq(terminal.get_string("target"), root_cont_id,
+			"every elif-chain branch must join the root if continuation")
+
+
 func test_end_command():
 	var data = _parse("""@scene start
 @end""")

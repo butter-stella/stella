@@ -209,6 +209,26 @@ func test_repeated_nvl_directive_without_off_keeps_the_runtime_page() -> void:
 	await _advance_runtime_to_finish("repeated-@nvl fixture")
 
 
+func test_nested_true_true_path_restarts_page_and_continuation_accumulates() -> void:
+	await _assert_nested_runtime_path(
+		"nested_true_true_entry", "TT branch", true)
+
+
+func test_nested_true_false_path_keeps_the_outer_page() -> void:
+	await _assert_nested_runtime_path(
+		"nested_true_false_entry", "TF branch", false)
+
+
+func test_nested_condition_inside_else_true_path_restarts_page() -> void:
+	await _assert_nested_runtime_path(
+		"nested_false_true_entry", "FT branch", true)
+
+
+func test_nested_condition_inside_else_false_path_keeps_the_outer_page() -> void:
+	await _assert_nested_runtime_path(
+		"nested_false_false_entry", "FF branch", false)
+
+
 func test_no_profile_preserves_the_original_legacy_mode_layouts() -> void:
 	_presenter = FIXTURE.instantiate()
 	add_child_autoqfree(_presenter)
@@ -899,6 +919,50 @@ func _wait_for_runtime_nvl(event_count: int, expected_text: String) -> bool:
 	assert_true(reached,
 		"runtime NVL event %d displays '%s'" % [event_count, expected_text])
 	return reached
+
+
+func _assert_nested_runtime_path(
+	entry_scene_id: String,
+	branch_text: String,
+	restarts_page: bool,
+) -> void:
+	await _start_runtime_fixture_at(entry_scene_id)
+	if not await _wait_for_runtime_nvl(1, "・Nested seed"):
+		return
+	var context_id := _engine.context.get_instance_id()
+	var first_page_key := "%d:1" % context_id
+	assert_eq(_runtime_nvl_page_keys[0], first_page_key)
+
+	SignalBus.advance_requested.emit()
+	var branch_visible_text := (
+		"・%s" % branch_text
+		if restarts_page
+		else "・Nested seed・%s" % branch_text
+	)
+	if not await _wait_for_runtime_nvl(2, branch_visible_text):
+		return
+	var expected_epoch := 2 if restarts_page else 1
+	var branch_page_key := "%d:%d" % [context_id, expected_epoch]
+	assert_eq(_runtime_nvl_page_keys[1], branch_page_key,
+		"only the selected nested branch may change the runtime page")
+	if restarts_page:
+		assert_ne(branch_page_key, first_page_key,
+			"the selected off -> NVL branch must activate a fresh page")
+	else:
+		assert_eq(branch_page_key, first_page_key,
+			"an unselected reset branch must not change the active page")
+	assert_eq(_presenter._active_nvl_page_key, branch_page_key)
+	assert_eq(_engine.context.nvl_page_epoch, expected_epoch)
+
+	SignalBus.advance_requested.emit()
+	var continuation_text := branch_visible_text + "・Nested continuation"
+	if not await _wait_for_runtime_nvl(3, continuation_text):
+		return
+	assert_eq(_runtime_nvl_page_keys[2], branch_page_key,
+		"the join continuation must inherit the selected nested branch page")
+	assert_eq(_presenter._active_nvl_page_key, branch_page_key)
+
+	await _advance_runtime_to_finish("%s nested fixture" % entry_scene_id)
 
 
 func _advance_runtime_to_finish(fixture_name: String) -> void:

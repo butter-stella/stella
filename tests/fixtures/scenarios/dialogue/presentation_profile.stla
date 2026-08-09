@@ -75,4 +75,48 @@
 @nvl off
 @jump runtime_fixture_done
 
+@scene nested_true_true_entry
+@set outer_flag = true
+@set inner_flag = true
+@jump nested_conditional_page
+
+@scene nested_true_false_entry
+@set outer_flag = true
+@set inner_flag = false
+@jump nested_conditional_page
+
+@scene nested_false_true_entry
+@set outer_flag = false
+@set inner_flag = true
+@jump nested_conditional_page
+
+@scene nested_false_false_entry
+@set outer_flag = false
+@set inner_flag = false
+@jump nested_conditional_page
+
+@scene nested_conditional_page
+@nvl profile=novel
+「Nested seed」
+@if outer_flag
+@if inner_flag
+@nvl off
+@nvl profile=novel
+「TT branch」
+@else
+「TF branch」
+@end
+@else
+@if inner_flag
+@nvl off
+@nvl profile=novel
+「FT branch」
+@else
+「FF branch」
+@end
+@end
+「Nested continuation」
+@nvl off
+@jump runtime_fixture_done
+
 @scene runtime_fixture_done
