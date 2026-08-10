@@ -1,9 +1,8 @@
 shader_type canvas_item;
-render_mode unshaded;
+render_mode unshaded, blend_premul_alpha;
 
-// Pointwise redraw for a CanvasGroup. Spatial blur passes are rendered through
-// ordered SubViewports by StagePresenter, because a screen-read CanvasGroup
-// cannot feed its result back into a second effect deterministically.
+// Applies the pointwise suffix after the final box pass to a premultiplied
+// ViewportTexture. Keeping this on the display sprite avoids an extra target.
 const int MAX_EFFECTS = 16;
 const int EFFECT_COLOR_OVERLAY = 1;
 const int EFFECT_BRIGHTNESS_CONTRAST = 2;
@@ -12,15 +11,14 @@ const int EFFECT_TINT = 4;
 const int EFFECT_CLIP = 5;
 const int BLEND_SOFT_LIGHT = 1;
 
-uniform sampler2D screen_texture : hint_screen_texture, repeat_disable, filter_nearest;
+uniform vec2 render_size = vec2(1.0);
+uniform vec2 render_origin = vec2(0.0);
 uniform int effect_count = 0;
 uniform vec4 effect_parameters[MAX_EFFECTS];
 uniform vec4 effect_colors[MAX_EFFECTS];
 uniform sampler2D clip_texture : hint_default_transparent, repeat_disable, filter_linear;
 uniform bool clip_available = false;
 uniform vec4 clip_rect = vec4(0.0, 0.0, 1.0, 1.0);
-
-varying vec2 layer_local_position;
 
 int to_byte(float value) {
 	return int(floor(clamp(value, 0.0, 1.0) * 255.0 + 0.5));
@@ -143,16 +141,19 @@ vec4 apply_effects(vec4 color, vec2 local_position) {
 	return color;
 }
 
-void vertex() {
-	layer_local_position = VERTEX;
-}
-
 void fragment() {
-	vec4 color = textureLod(screen_texture, SCREEN_UV, 0.0);
-	if (color.a > 0.0001) {
-		color.rgb /= color.a;
+	vec4 premultiplied = texture(TEXTURE, UV);
+	if (effect_count == 0) {
+		COLOR = premultiplied;
 	} else {
-		color.rgb = vec3(0.0);
+		vec4 straight = premultiplied;
+		if (straight.a > 0.0001) {
+			straight.rgb /= straight.a;
+		} else {
+			straight.rgb = vec3(0.0);
+		}
+		vec2 local_position = render_origin + UV * render_size;
+		straight = apply_effects(straight, local_position);
+		COLOR = vec4(straight.rgb * straight.a, straight.a);
 	}
-	COLOR *= apply_effects(color, layer_local_position);
 }

@@ -37,6 +37,10 @@ func test_stage_operations_are_tracked_and_json_roundtrip_exactly() -> void:
 					"blend": "soft_light",
 				},
 				{"type": "brightness_contrast", "brightness": 17, "contrast": -24},
+				{"type": "blur", "radius": [1, 1]},
+				{"type": "blur", "radius": [2, 0]},
+				{"type": "blur", "radius": [0, 3]},
+				{"type": "blur", "radius": [4, 2]},
 				{
 					"type": "clip",
 					"asset": "stage:synthetic_alpha_mask",
@@ -67,6 +71,10 @@ func test_stage_operations_are_tracked_and_json_roundtrip_exactly() -> void:
 			"blend": "soft_light",
 		},
 		{"type": "brightness_contrast", "brightness": 17, "contrast": -24},
+		{"type": "blur", "radius": [1, 1]},
+		{"type": "blur", "radius": [2, 0]},
+		{"type": "blur", "radius": [0, 3]},
+		{"type": "blur", "radius": [4, 2]},
 		{
 			"type": "clip",
 			"asset": "stage:synthetic_alpha_mask",

@@ -10,6 +10,17 @@ signal layer_transition_finished(layer_id: String)
 const REDRAW_SHADER_PATH := (
 	"res://addons/stella/presentation/stage/shaders/stage_redraw.gdshader"
 )
+const REDRAW_BOX_HORIZONTAL_SHADER_PATH := (
+	"res://addons/stella/presentation/stage/shaders/"
+	+ "stage_redraw_box_horizontal.gdshader"
+)
+const REDRAW_BOX_VERTICAL_SHADER_PATH := (
+	"res://addons/stella/presentation/stage/shaders/"
+	+ "stage_redraw_box_vertical.gdshader"
+)
+const REDRAW_TEXTURE_SHADER_PATH := (
+	"res://addons/stella/presentation/stage/shaders/stage_redraw_texture.gdshader"
+)
 const TEXTURE_EXTENSIONS := [".png", ".jpg", ".jpeg", ".webp", ".svg", ".tres", ".res"]
 const DEFAULT_VIEWPORT_SIZE := Vector2(1920.0, 1080.0)
 const REDRAW_EFFECT_TYPE_CODES := {
@@ -24,6 +35,14 @@ const COLOR_OVERLAY_BLEND_CODES := {
 	"normal": 0.0,
 	"soft_light": 1.0,
 }
+const MAX_REDRAW_TARGET_AXIS := 8192
+const FALLBACK_REDRAW_TARGET_AXIS := 4096
+const MAX_REDRAW_TARGET_BYTES := 256 * 1024 * 1024
+const MAX_REDRAW_STATIC_SAMPLE_FETCHES := 256 * 1024 * 1024
+const MAX_REDRAW_CONTINUOUS_SAMPLE_FETCHES := 64 * 1024 * 1024
+const REDRAW_SOURCE_BYTES_PER_PIXEL := 4
+const REDRAW_BLUR_PASS_BYTES_MOBILE := 12
+const REDRAW_BLUR_PASS_BYTES_COMPATIBILITY := 20
 
 static var _next_transition_token: int = 1
 
@@ -34,6 +53,9 @@ var _layer_transition_tokens: Dictionary = {}
 var _layer_generations: Dictionary = {}
 var _next_node_index: int = 0
 var _redraw_shader: Shader
+var _redraw_box_horizontal_shader: Shader
+var _redraw_box_vertical_shader: Shader
+var _redraw_texture_shader: Shader
 var _completion_batch_depth: int = 0
 var _queued_transition_completions: Array = []
 var _flushing_transition_completions: bool = false
@@ -42,6 +64,13 @@ var _active_stage_operation_request_id: int = 0
 
 func _ready() -> void:
 	_redraw_shader = load(REDRAW_SHADER_PATH) as Shader
+	_redraw_box_horizontal_shader = load(
+		REDRAW_BOX_HORIZONTAL_SHADER_PATH
+	) as Shader
+	_redraw_box_vertical_shader = load(
+		REDRAW_BOX_VERTICAL_SHADER_PATH
+	) as Shader
+	_redraw_texture_shader = load(REDRAW_TEXTURE_SHADER_PATH) as Shader
 	SignalBus.stage_operations_requested.connect(_on_stage_operations_requested)
 	SignalBus.stage_visuals_reset_requested.connect(
 		_on_stage_visuals_reset_requested
@@ -308,7 +337,7 @@ func _apply_layer(
 
 	if not animate:
 		_apply_channels_cut(record, new_state)
-		_apply_redraw(record, new_state)
+		_apply_redraw(record, new_state, true, false, target_visible)
 		_apply_transform_cut(record, new_state)
 		root.visible = target_visible
 		composite.self_modulate.a = target_opacity
@@ -324,8 +353,14 @@ func _apply_layer(
 	_layer_tweens[layer_id] = tween
 
 	var crossfade_textures := transition == "fade" and target_visible and was_visible
-	_apply_channels_animated(record, new_state, tween, crossfade_textures, duration)
-	_apply_redraw(record, new_state)
+	var source_changes := _apply_channels_animated(
+		record,
+		new_state,
+		tween,
+		crossfade_textures,
+		duration,
+	)
+	_apply_redraw(record, new_state, true, source_changes)
 	_tween_transform(
 		record,
 		new_state,
@@ -376,6 +411,16 @@ func _apply_layer(
 		_clear_layer_transition_token(layer_id, token)
 		_cleanup_outgoing(record)
 		_apply_channels_cut(record, new_state)
+		if target_visible:
+			# The live blur target covered both transition endpoints (and an outgoing
+			# crossfade sprite). Reproject once at the canonical endpoint so an
+			# UPDATE_ALWAYS pipeline does not retain that allocation forever.
+			_apply_redraw(record, new_state, true)
+		else:
+			# Hidden layers retain canonical state and resident resources, but no
+			# derived render targets until they are shown again.
+			_clear_redraw_pipeline(record)
+			record["redraw_pipeline_dynamic"] = false
 		_apply_transform_cut(record, new_state)
 		composite.self_modulate.a = target_opacity
 		root.visible = target_visible
@@ -519,6 +564,13 @@ func _ensure_layer(layer_id: String) -> Dictionary:
 		"redraw_material": redraw_material,
 		"redraw_mask_asset": "",
 		"redraw_mask_texture": null,
+		"redraw_pipeline_root": null,
+		"redraw_pipeline_output": null,
+		"redraw_pipeline_passes": [],
+		"redraw_pipeline_signature": [],
+		"redraw_render_bounds": Rect2(),
+		"redraw_pipeline_dynamic": false,
+		"redraw_dynamic_size_signature": [],
 	}
 	_layers[layer_id] = record
 	_layer_generations[layer_id] = 0
@@ -539,6 +591,10 @@ func _begin_layer_change(layer_id: String) -> int:
 		_cleanup_outgoing(record)
 		for sprite in (record["sprites"] as Dictionary).values():
 			(sprite as Sprite2D).modulate.a = 1.0
+		_set_redraw_pipeline_update_mode(
+			record,
+			bool(record.get("redraw_pipeline_dynamic", false)),
+		)
 	return generation
 
 
@@ -611,7 +667,8 @@ func _apply_channels_animated(
 	tween: Tween,
 	crossfade: bool,
 	duration: float,
-) -> void:
+) -> bool:
+	var source_changes := false
 	for channel in ["asset", "body", "face"]:
 		var changed := _set_channel_texture(
 			record,
@@ -623,11 +680,18 @@ func _apply_channels_animated(
 		)
 		var sprite := (record["sprites"] as Dictionary)[channel] as Sprite2D
 		var target := _channel_layout(sprite, channel, state)
-		tween.tween_property(sprite, "position", target["position"], duration)
-		tween.tween_property(sprite, "scale", target["scale"], duration)
+		if not sprite.position.is_equal_approx(target["position"]):
+			tween.tween_property(sprite, "position", target["position"], duration)
+			source_changes = true
+		if not sprite.scale.is_equal_approx(target["scale"]):
+			tween.tween_property(sprite, "scale", target["scale"], duration)
+			source_changes = true
 		sprite.centered = target["centered"]
 		if crossfade and changed and sprite.texture != null:
 			tween.tween_property(sprite, "modulate:a", 1.0, duration)
+		if crossfade and changed:
+			source_changes = true
+	return source_changes
 
 
 func _set_channel_texture(
@@ -810,18 +874,26 @@ func _apply_redraw(
 	record: Dictionary,
 	state: Dictionary,
 	force_layout: bool = false,
+	continuous: bool = false,
+	build_pipeline: bool = true,
 ) -> void:
 	var redraw_value = state.get("redraw", [])
 	var redraw: Array = redraw_value if redraw_value is Array else []
 	var previous_redraw = record.get("redraw", [])
 	if previous_redraw is Array and previous_redraw == redraw:
 		if force_layout:
-			_set_redraw_parameters(record, redraw, state)
+			_set_redraw_parameters(
+				record,
+				redraw,
+				state,
+				continuous,
+				build_pipeline,
+			)
 		else:
 			_update_redraw_margin(record, redraw, state)
 		return
 
-	_set_redraw_parameters(record, redraw, state)
+	_set_redraw_parameters(record, redraw, state, continuous, build_pipeline)
 	record["redraw"] = redraw.duplicate(true)
 
 
@@ -829,17 +901,197 @@ func _set_redraw_parameters(
 	record: Dictionary,
 	redraw: Array,
 	state: Dictionary,
+	continuous: bool = false,
+	build_pipeline: bool = true,
 ) -> void:
 	var composite := record["composite"] as CanvasGroup
 	var material := record["redraw_material"] as ShaderMaterial
-	if material.shader == null:
-		material.shader = _redraw_shader
+	# A previous oversized projection may have failed closed. Every new valid
+	# projection explicitly restores the composite.
+	composite.visible = true
 	composite.use_mipmaps = false
-	var parameters := PackedVector4Array()
-	var colors := PackedVector4Array()
-	var blur_effect_index := -1
-	var blur_radius := Vector2.ZERO
-	var clip_effect: Dictionary = {}
+	var split := _split_redraw(redraw)
+	var blur_passes: Array = split["blur_passes"]
+	var suffix_effects: Array = split["suffix_effects"]
+	var clip_effect := _find_clip_effect(redraw)
+	var clip_texture: Texture2D = null
+	var clip_rect := Rect2(Vector2.ZERO, Vector2.ONE)
+	if not clip_effect.is_empty():
+		var clip_asset := String(clip_effect.get("asset", ""))
+		clip_texture = _redraw_texture(record, clip_asset)
+		clip_rect = _clip_rect(clip_texture, clip_effect)
+	else:
+		record["redraw_mask_asset"] = ""
+		record["redraw_mask_texture"] = null
+	record["redraw_dynamic_size_signature"] = (
+		_redraw_dynamic_size_signature(record, clip_texture)
+	)
+
+	if blur_passes.is_empty():
+		record["redraw_pipeline_dynamic"] = false
+		_clear_redraw_pipeline(record)
+		material.shader = _redraw_shader
+		_configure_pointwise_material(
+			material,
+			suffix_effects,
+			clip_texture,
+			clip_rect,
+		)
+		composite.material = material if not suffix_effects.is_empty() else null
+	elif not build_pipeline:
+		# Hidden canonical states retain their reusable resources and pointwise
+		# configuration without ever allocating derived render targets. A later
+		# show re-evaluates bounds and safety limits before building the pipeline.
+		record["redraw_pipeline_dynamic"] = false
+		_clear_redraw_pipeline(record)
+		material.shader = _redraw_texture_shader
+		_configure_pointwise_material(
+			material,
+			suffix_effects,
+			clip_texture,
+			clip_rect,
+		)
+		composite.material = null
+	else:
+		var pipeline_dynamic := _redraw_uses_dynamic_textures(
+			record,
+			blur_passes,
+			clip_texture,
+		)
+		var updates_continuously := continuous or pipeline_dynamic
+		record["redraw_pipeline_dynamic"] = pipeline_dynamic
+		var bounds := _redraw_render_bounds(record, state, blur_passes)
+		var allocation_error := _redraw_pipeline_allocation_error(
+			bounds,
+			blur_passes,
+			updates_continuously,
+		)
+		if not allocation_error.is_empty():
+			_clear_redraw_pipeline(record)
+			record["redraw_pipeline_dynamic"] = false
+			composite.material = null
+			composite.visible = false
+			var layer_id := String(
+				(record["root"] as Node).get_meta("stage_layer_id", "")
+			)
+			push_error(
+				"StagePresenter: redraw pipeline for layer '%s': %s"
+				% [layer_id, allocation_error]
+			)
+			_update_redraw_margin(record, redraw, state)
+			return
+		_ensure_redraw_pipeline(record, blur_passes, bounds)
+		_configure_redraw_pipeline(
+			record,
+			blur_passes,
+			suffix_effects,
+			clip_texture,
+			clip_rect,
+			bounds,
+		)
+		composite.material = null
+		_set_redraw_pipeline_update_mode(
+			record,
+			updates_continuously,
+		)
+	_update_redraw_margin(record, redraw, state)
+
+
+func _redraw_pipeline_allocation_error(
+	bounds: Rect2,
+	blur_passes: Array,
+	continuous: bool,
+) -> String:
+	var pass_count := blur_passes.size()
+	if pass_count > StageLayerState.MAX_BLUR_PASSES:
+		return (
+			"redraw pipeline has %d blur passes; maximum is %d"
+			% [pass_count, StageLayerState.MAX_BLUR_PASSES]
+		)
+	if (
+		not bounds.position.is_finite()
+		or not bounds.size.is_finite()
+		or bounds.size.x <= 0.0
+		or bounds.size.y <= 0.0
+	):
+		return "redraw target bounds must be finite with positive size"
+	var width := int(bounds.size.x)
+	var height := int(bounds.size.y)
+	var axis_limit := _redraw_target_axis_limit()
+	if width > axis_limit or height > axis_limit:
+		return (
+			"redraw target %dx%d exceeds the %d-pixel axis limit"
+			% [width, height, axis_limit]
+		)
+	var pixel_count := width * height
+	var bytes_per_pixel := (
+		REDRAW_SOURCE_BYTES_PER_PIXEL
+		+ _redraw_blur_pass_bytes_per_pixel() * pass_count
+	)
+	var estimated_bytes := pixel_count * bytes_per_pixel
+	if estimated_bytes > MAX_REDRAW_TARGET_BYTES:
+		return (
+			"redraw target %dx%d with %d blur passes requires an estimated "
+			+ "%d bytes; per-layer limit is %d bytes"
+		) % [
+			width,
+			height,
+			pass_count,
+			estimated_bytes,
+			MAX_REDRAW_TARGET_BYTES,
+		]
+	var samples_per_pixel := 0
+	for pass_value in blur_passes:
+		var radius := ((pass_value as Dictionary)["radius"] as Vector2).abs()
+		samples_per_pixel += (
+			int(radius.x) * 2 + 1
+			+ int(radius.y) * 2 + 1
+		)
+	var sample_fetches := pixel_count * samples_per_pixel
+	var sample_limit := (
+		MAX_REDRAW_CONTINUOUS_SAMPLE_FETCHES
+		if continuous
+		else MAX_REDRAW_STATIC_SAMPLE_FETCHES
+	)
+	if sample_fetches > sample_limit:
+		return (
+			"redraw workload requires %d texture fetches per update; %s limit is %d"
+			% [
+				sample_fetches,
+				"continuous" if continuous else "static",
+				sample_limit,
+			]
+		)
+	return ""
+
+
+func _redraw_blur_pass_bytes_per_pixel() -> int:
+	if RenderingServer.get_current_rendering_method() in ["mobile", "forward_plus"]:
+		# These renderers store the encoded horizontal sums in RGBA16F (8
+		# bytes), followed by the authored RGBA8 boundary (4 bytes).
+		return REDRAW_BLUR_PASS_BYTES_MOBILE
+	# Compatibility stores the HDR target as RGBA32F on supported Godot
+	# versions. Unknown methods use the same conservative estimate.
+	return REDRAW_BLUR_PASS_BYTES_COMPATIBILITY
+
+
+func _redraw_target_axis_limit() -> int:
+	var rendering_device := RenderingServer.get_rendering_device()
+	if rendering_device == null:
+		# Compatibility does not expose a RenderingDevice. Its cross-platform
+		# minimum is the safer ceiling when the driver limit cannot be queried.
+		return mini(MAX_REDRAW_TARGET_AXIS, FALLBACK_REDRAW_TARGET_AXIS)
+	return mini(
+		MAX_REDRAW_TARGET_AXIS,
+		int(rendering_device.limit_get(
+			RenderingDevice.LIMIT_MAX_TEXTURE_SIZE_2D
+		)),
+	)
+
+
+func _split_redraw(redraw: Array) -> Dictionary:
+	var blur_passes: Array = []
+	var pending_effects: Array = []
 	for effect_value in redraw:
 		if not effect_value is Dictionary:
 			push_warning("StagePresenter: redraw effect is not a Dictionary")
@@ -847,9 +1099,54 @@ func _set_redraw_parameters(
 		var effect: Dictionary = effect_value
 		var effect_type := String(effect.get("type", ""))
 		if not REDRAW_EFFECT_TYPE_CODES.has(effect_type):
-			push_warning(
-				"StagePresenter: unknown redraw effect '%s'" % effect_type
-			)
+			push_warning("StagePresenter: unknown redraw effect '%s'" % effect_type)
+			continue
+		if effect_type == "blur":
+			var radius := _array_to_vector2(
+				effect.get("radius", [0.0, 0.0])
+			).abs()
+			# A zero-area rectangular blur is an authored no-op. Keep the surrounding
+			# pointwise operations in one ordered segment so this marker cannot
+			# introduce an extra render-target quantization boundary.
+			if radius == Vector2.ZERO:
+				continue
+			blur_passes.append({
+				"effects": pending_effects,
+				"radius": radius,
+			})
+			pending_effects = []
+		else:
+			pending_effects.append(effect)
+	return {
+		"blur_passes": blur_passes,
+		"suffix_effects": pending_effects,
+	}
+
+
+func _find_clip_effect(redraw: Array) -> Dictionary:
+	for effect_value in redraw:
+		if (
+			effect_value is Dictionary
+			and String((effect_value as Dictionary).get("type", "")) == "clip"
+		):
+			return effect_value
+	return {}
+
+
+func _configure_pointwise_material(
+	material: ShaderMaterial,
+	effects: Array,
+	clip_texture: Texture2D,
+	clip_rect: Rect2,
+) -> void:
+	var parameters := PackedVector4Array()
+	var colors := PackedVector4Array()
+	for effect_value in effects:
+		if not effect_value is Dictionary:
+			continue
+		var effect: Dictionary = effect_value
+		var effect_type := String(effect.get("type", ""))
+		if effect_type == "blur" or not REDRAW_EFFECT_TYPE_CODES.has(effect_type):
 			continue
 		var color := Color.WHITE
 		var parameter := Vector4(
@@ -872,13 +1169,6 @@ func _set_redraw_parameters(
 				parameter.y = float(effect.get("amount", 0.0))
 			"tint":
 				color = _to_color(effect.get("color", "#ffffffff"))
-			"clip":
-				clip_effect = effect
-			"blur":
-				blur_effect_index = parameters.size()
-				blur_radius = _array_to_vector2(
-					effect.get("radius", [0.0, 0.0])
-				).abs()
 		parameters.append(parameter)
 		colors.append(Vector4(color.r, color.g, color.b, color.a))
 
@@ -886,22 +1176,9 @@ func _set_redraw_parameters(
 	while parameters.size() < 16:
 		parameters.append(Vector4.ZERO)
 		colors.append(Vector4.ONE)
-
-	var clip_texture: Texture2D = null
-	var clip_rect := Rect2(Vector2.ZERO, Vector2.ONE)
-	if not clip_effect.is_empty():
-		var clip_asset := String(clip_effect.get("asset", ""))
-		clip_texture = _redraw_texture(record, clip_asset)
-		clip_rect = _clip_rect(clip_texture, clip_effect)
-	else:
-		record["redraw_mask_asset"] = ""
-		record["redraw_mask_texture"] = null
-
 	material.set_shader_parameter("effect_count", effect_count)
 	material.set_shader_parameter("effect_parameters", parameters)
 	material.set_shader_parameter("effect_colors", colors)
-	material.set_shader_parameter("blur_effect_index", blur_effect_index)
-	material.set_shader_parameter("blur_radius", blur_radius)
 	material.set_shader_parameter("clip_texture", clip_texture)
 	material.set_shader_parameter("clip_available", clip_texture != null)
 	material.set_shader_parameter(
@@ -913,106 +1190,411 @@ func _set_redraw_parameters(
 			clip_rect.size.y,
 		),
 	)
-	_update_redraw_margin(record, redraw, state)
-	composite.material = material if effect_count > 0 else null
+
+
+func _redraw_render_bounds(
+	record: Dictionary,
+	state: Dictionary,
+	blur_passes: Array,
+) -> Rect2:
+	var bounds := Rect2()
+	var has_bounds := false
+	var sprites := record["sprites"] as Dictionary
+	for channel in ["asset", "body", "face"]:
+		var sprite := sprites[channel] as Sprite2D
+		if sprite.texture == null:
+			continue
+		var current_rect := _sprite_render_rect(
+			sprite,
+			sprite.position,
+			sprite.scale,
+			sprite.centered,
+		)
+		bounds = current_rect if not has_bounds else bounds.merge(current_rect)
+		has_bounds = true
+		var target_layout := _channel_layout(sprite, channel, state)
+		var target_rect := _sprite_render_rect(
+			sprite,
+			target_layout["position"],
+			target_layout["scale"],
+			bool(target_layout["centered"]),
+		)
+		bounds = bounds.merge(target_rect)
+	for outgoing_value in record.get("outgoing", []):
+		if not is_instance_valid(outgoing_value):
+			continue
+		var outgoing := outgoing_value as Sprite2D
+		if outgoing.texture == null:
+			continue
+		var outgoing_rect := _sprite_render_rect(
+			outgoing,
+			outgoing.position,
+			outgoing.scale,
+			outgoing.centered,
+		)
+		bounds = outgoing_rect if not has_bounds else bounds.merge(outgoing_rect)
+		has_bounds = true
+	if not has_bounds:
+		bounds = Rect2(Vector2.ZERO, Vector2.ONE)
+
+	var cumulative_radius := Vector2.ZERO
+	for pass_value in blur_passes:
+		var pass_data: Dictionary = pass_value
+		cumulative_radius += (pass_data["radius"] as Vector2).abs()
+	# Keep authored pixels away from the render-target boundary even for a
+	# zero-radius pass. Besides retaining one transparent texel around the final
+	# support, this makes nearest sampling deterministic for one-pixel-wide or
+	# one-pixel-high sources on every supported renderer.
+	var guard := Vector2.ONE
+	var start := (bounds.position - cumulative_radius - guard).floor()
+	var finish := (bounds.end + cumulative_radius + guard).ceil()
+	return Rect2(start, (finish - start).max(Vector2.ONE))
+
+
+func _sprite_render_rect(
+	sprite: Sprite2D,
+	position: Vector2,
+	scale: Vector2,
+	centered: bool,
+) -> Rect2:
+	var texture_size := sprite.texture.get_size()
+	var local_start := sprite.offset
+	if centered:
+		local_start -= texture_size * 0.5
+	var local_end := local_start + texture_size
+	var first := position + local_start * scale
+	var second := position + local_end * scale
+	var rect_start := Vector2(
+		minf(first.x, second.x),
+		minf(first.y, second.y),
+	)
+	var rect_end := Vector2(
+		maxf(first.x, second.x),
+		maxf(first.y, second.y),
+	)
+	return Rect2(rect_start, rect_end - rect_start)
+
+
+func _ensure_redraw_pipeline(
+	record: Dictionary,
+	blur_passes: Array,
+	bounds: Rect2,
+) -> void:
+	var signature: Array = [bounds.position, bounds.size, blur_passes.size()]
+	var pipeline_root = record.get("redraw_pipeline_root")
+	var output = record.get("redraw_pipeline_output")
+	var pass_records = record.get("redraw_pipeline_passes", [])
+	if (
+		record.get("redraw_pipeline_signature", []) == signature
+		and is_instance_valid(pipeline_root)
+		and is_instance_valid(output)
+		and pass_records is Array
+		and pass_records.size() == blur_passes.size()
+	):
+		return
+
+	_clear_redraw_pipeline(record)
+	var composite := record["composite"] as CanvasGroup
+	var source := record["source"] as Node2D
+	var render_size := Vector2i(
+		maxi(1, int(bounds.size.x)),
+		maxi(1, int(bounds.size.y)),
+	)
+	var source_viewport := _new_redraw_viewport(render_size, false)
+	source_viewport.name = "RedrawSource"
+	var owner_viewport := get_viewport()
+	if owner_viewport != null:
+		source_viewport.canvas_item_default_texture_filter = (
+			owner_viewport.canvas_item_default_texture_filter
+		)
+	source.position = -bounds.position
+	var source_parent := source.get_parent()
+	if source_parent:
+		source_parent.remove_child(source)
+	source_viewport.add_child(source)
+	var previous_viewport := source_viewport
+	var new_pass_records: Array = []
+
+	for index in range(blur_passes.size()):
+		var horizontal_viewport := _new_redraw_viewport(render_size, true)
+		horizontal_viewport.name = "RedrawBox%dFirst" % index
+		var horizontal_material := ShaderMaterial.new()
+		horizontal_material.shader = _redraw_box_horizontal_shader
+		var horizontal_rect := _new_redraw_pass_rect(
+			render_size,
+			horizontal_material,
+		)
+		horizontal_viewport.add_child(horizontal_rect)
+		horizontal_viewport.add_child(previous_viewport)
+
+		var vertical_viewport := _new_redraw_viewport(render_size, false)
+		vertical_viewport.name = "RedrawBox%dSecond" % index
+		var vertical_material := ShaderMaterial.new()
+		vertical_material.shader = _redraw_box_vertical_shader
+		var vertical_rect := _new_redraw_pass_rect(
+			render_size,
+			vertical_material,
+		)
+		vertical_viewport.add_child(vertical_rect)
+		vertical_viewport.add_child(horizontal_viewport)
+		new_pass_records.append({
+			"input_viewport": previous_viewport,
+			"horizontal_viewport": horizontal_viewport,
+			"horizontal_material": horizontal_material,
+			"vertical_viewport": vertical_viewport,
+			"vertical_material": vertical_material,
+		})
+		previous_viewport = vertical_viewport
+
+	composite.add_child(previous_viewport)
+	var output_sprite := Sprite2D.new()
+	output_sprite.name = "RedrawOutput"
+	output_sprite.centered = false
+	output_sprite.position = bounds.position
+	output_sprite.texture = previous_viewport.get_texture()
+	composite.add_child(output_sprite)
+	record["redraw_pipeline_root"] = previous_viewport
+	record["redraw_pipeline_output"] = output_sprite
+	record["redraw_pipeline_passes"] = new_pass_records
+	record["redraw_pipeline_signature"] = signature
+	record["redraw_render_bounds"] = bounds
+
+
+func _new_redraw_viewport(size: Vector2i, hdr: bool) -> SubViewport:
+	var viewport := SubViewport.new()
+	viewport.size = size
+	viewport.transparent_bg = true
+	viewport.disable_3d = true
+	viewport.use_hdr_2d = hdr
+	viewport.canvas_item_default_texture_filter = (
+		Viewport.DEFAULT_CANVAS_ITEM_TEXTURE_FILTER_NEAREST
+	)
+	viewport.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
+	# The complete dependency chain is activated only after every material has
+	# its input texture and parameters. Static projections render once; animated
+	# source content opts into continuous updates for the tween lifetime.
+	viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	return viewport
+
+
+func _new_redraw_pass_rect(
+	size: Vector2i,
+	material: ShaderMaterial,
+) -> ColorRect:
+	var rect := ColorRect.new()
+	rect.name = "Pass"
+	rect.color = Color.WHITE
+	rect.position = Vector2.ZERO
+	rect.size = Vector2(size)
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	rect.material = material
+	return rect
+
+
+func _configure_redraw_pipeline(
+	record: Dictionary,
+	blur_passes: Array,
+	suffix_effects: Array,
+	clip_texture: Texture2D,
+	clip_rect: Rect2,
+	bounds: Rect2,
+) -> void:
+	var render_size := bounds.size
+	var pass_records := record["redraw_pipeline_passes"] as Array
+	for index in range(blur_passes.size()):
+		var pass_data: Dictionary = blur_passes[index]
+		var pass_record: Dictionary = pass_records[index]
+		var radius := (pass_data["radius"] as Vector2).abs()
+		var horizontal_material := (
+			pass_record["horizontal_material"] as ShaderMaterial
+		)
+		_configure_pointwise_material(
+			horizontal_material,
+			pass_data["effects"],
+			clip_texture,
+			clip_rect,
+		)
+		horizontal_material.set_shader_parameter(
+			"input_texture",
+			(pass_record["input_viewport"] as SubViewport).get_texture(),
+		)
+		horizontal_material.set_shader_parameter("render_size", render_size)
+		horizontal_material.set_shader_parameter("render_origin", bounds.position)
+		horizontal_material.set_shader_parameter("blur_axis", Vector2.RIGHT)
+		horizontal_material.set_shader_parameter("blur_radius", int(radius.x))
+
+		var vertical_material := pass_record["vertical_material"] as ShaderMaterial
+		vertical_material.set_shader_parameter(
+			"input_texture",
+			(pass_record["horizontal_viewport"] as SubViewport).get_texture(),
+		)
+		vertical_material.set_shader_parameter("render_size", render_size)
+		vertical_material.set_shader_parameter("blur_axis", Vector2.DOWN)
+		vertical_material.set_shader_parameter("blur_radius", int(radius.y))
+		vertical_material.set_shader_parameter(
+			"first_axis_sample_count",
+			int(radius.x) * 2 + 1,
+		)
+
+	var material := record["redraw_material"] as ShaderMaterial
+	material.shader = _redraw_texture_shader
+	_configure_pointwise_material(
+		material,
+		suffix_effects,
+		clip_texture,
+		clip_rect,
+	)
+	var pipeline_root := record["redraw_pipeline_root"] as SubViewport
+	material.set_shader_parameter("render_size", render_size)
+	material.set_shader_parameter("render_origin", bounds.position)
+	var output := record["redraw_pipeline_output"] as Sprite2D
+	output.position = bounds.position
+	output.texture = pipeline_root.get_texture()
+	output.material = material
+
+
+func _set_redraw_pipeline_update_mode(
+	record: Dictionary,
+	continuous: bool,
+) -> void:
+	var mode := (
+		SubViewport.UPDATE_ALWAYS
+		if continuous
+		else SubViewport.UPDATE_ONCE
+	)
+	var configured := {}
+	for pass_value in record.get("redraw_pipeline_passes", []):
+		var pass_record: Dictionary = pass_value
+		for key in ["input_viewport", "horizontal_viewport", "vertical_viewport"]:
+			var viewport := pass_record.get(key) as SubViewport
+			if not is_instance_valid(viewport):
+				continue
+			var instance_id := viewport.get_instance_id()
+			if configured.has(instance_id):
+				continue
+			configured[instance_id] = true
+			viewport.render_target_update_mode = mode
+
+
+func _redraw_uses_dynamic_textures(
+	record: Dictionary,
+	blur_passes: Array,
+	clip_texture: Texture2D = null,
+) -> bool:
+	for sprite_value in (record.get("sprites", {}) as Dictionary).values():
+		if _is_dynamic_redraw_texture((sprite_value as Sprite2D).texture):
+			return true
+	for outgoing_value in record.get("outgoing", []):
+		if (
+			is_instance_valid(outgoing_value)
+			and _is_dynamic_redraw_texture((outgoing_value as Sprite2D).texture)
+		):
+			return true
+
+	# A clip in the suffix is sampled by RedrawOutput in the owner's viewport,
+	# so it remains live without rerendering the blur chain. Only a clip consumed
+	# before an authored blur makes the offscreen pipeline itself dynamic.
+	var dynamic_clip := (
+		clip_texture
+		if clip_texture != null
+		else record.get("redraw_mask_texture") as Texture2D
+	)
+	if not _is_dynamic_redraw_texture(dynamic_clip):
+		return false
+	for pass_value in blur_passes:
+		for effect_value in (pass_value as Dictionary).get("effects", []):
+			if (
+				effect_value is Dictionary
+				and String((effect_value as Dictionary).get("type", "")) == "clip"
+			):
+				return true
+	return false
+
+
+func _is_dynamic_redraw_texture(texture: Texture2D) -> bool:
+	if texture is AnimatedTexture or texture is ViewportTexture:
+		return true
+	if texture is AtlasTexture:
+		return _is_dynamic_redraw_texture((texture as AtlasTexture).atlas)
+	return false
+
+
+func _redraw_dynamic_size_signature(
+	record: Dictionary,
+	clip_texture: Texture2D = null,
+) -> Array:
+	var signature: Array = []
+	var sprites := record.get("sprites", {}) as Dictionary
+	for channel in ["asset", "body", "face"]:
+		var texture := (sprites[channel] as Sprite2D).texture
+		if not _is_dynamic_redraw_texture(texture):
+			continue
+		signature.append([
+			channel,
+			texture.get_instance_id(),
+			texture.get_size(),
+		])
+	for outgoing_value in record.get("outgoing", []):
+		if not is_instance_valid(outgoing_value):
+			continue
+		var outgoing_texture := (outgoing_value as Sprite2D).texture
+		if not _is_dynamic_redraw_texture(outgoing_texture):
+			continue
+		signature.append([
+			"outgoing",
+			outgoing_texture.get_instance_id(),
+			outgoing_texture.get_size(),
+		])
+	var mask := (
+		clip_texture
+		if clip_texture != null
+		else record.get("redraw_mask_texture") as Texture2D
+	)
+	if _is_dynamic_redraw_texture(mask):
+		signature.append(["clip", mask.get_instance_id(), mask.get_size()])
+	return signature
+
+
+func _clear_redraw_pipeline(record: Dictionary) -> void:
+	var composite := record["composite"] as CanvasGroup
+	var source := record["source"] as Node2D
+	if source.get_parent() != composite:
+		var source_parent := source.get_parent()
+		if source_parent:
+			source_parent.remove_child(source)
+		composite.add_child(source)
+	source.position = Vector2.ZERO
+
+	var output = record.get("redraw_pipeline_output")
+	if is_instance_valid(output):
+		var output_parent := (output as Node).get_parent()
+		if output_parent:
+			output_parent.remove_child(output)
+		(output as Node).queue_free()
+	var pipeline_root = record.get("redraw_pipeline_root")
+	if is_instance_valid(pipeline_root):
+		var pipeline_parent := (pipeline_root as Node).get_parent()
+		if pipeline_parent:
+			pipeline_parent.remove_child(pipeline_root)
+		(pipeline_root as Node).queue_free()
+	record["redraw_pipeline_root"] = null
+	record["redraw_pipeline_output"] = null
+	record["redraw_pipeline_passes"] = []
+	record["redraw_pipeline_signature"] = []
+	record["redraw_render_bounds"] = Rect2()
 
 
 func _update_redraw_margin(
 	record: Dictionary,
-	redraw: Array,
-	state: Dictionary,
+	_redraw: Array,
+	_state: Dictionary,
 ) -> void:
 	var composite := record["composite"] as CanvasGroup
-	var blur_radius := Vector2.ZERO
-	var has_blur := false
-	for effect_value in redraw:
-		if not effect_value is Dictionary:
-			continue
-		var effect: Dictionary = effect_value
-		if String(effect.get("type", "")) != "blur":
-			continue
-		blur_radius = _array_to_vector2(
-			effect.get("radius", [0.0, 0.0])
-		).abs()
-		has_blur = true
-		break
-	if not has_blur:
-		composite.fit_margin = 1.0
-		composite.clear_margin = 1.0
-		return
-
-	var root := record["root"] as Node2D
-	var parent_transform := root.get_canvas_transform()
-	var root_parent := root.get_parent()
-	if root_parent is CanvasItem:
-		parent_transform = (
-			root_parent as CanvasItem
-		).get_global_transform_with_canvas()
-	var current_transform := composite.get_global_transform_with_canvas()
-	var target_transform := parent_transform * _target_redraw_basis(state)
-	var current_extent := _transformed_blur_extent(
-		current_transform,
-		blur_radius,
-	)
-	var target_extent := _transformed_blur_extent(
-		target_transform,
-		blur_radius,
-	)
-
-	# Scale and rotation tween independently. Bound every intermediate rotation
-	# by the transformed half-diagonal instead of assuming the endpoint bases
-	# are the widest orientation.
-	var current_scale := root.scale.abs()
-	var target_scale := _state_scale(state).abs()
-	var widest_scale := Vector2(
-		maxf(current_scale.x, target_scale.x),
-		maxf(current_scale.y, target_scale.y),
-	)
-	var parent_row_norm := maxf(
-		absf(parent_transform.x.x) + absf(parent_transform.y.x),
-		absf(parent_transform.x.y) + absf(parent_transform.y.y),
-	)
-	var transition_extent := parent_row_norm * Vector2(
-		widest_scale.x * blur_radius.x,
-		widest_scale.y * blur_radius.y,
-	).length()
-	var margin := maxf(
-		maxf(current_extent, target_extent),
-		transition_extent,
-	) + 2.0
-	composite.fit_margin = margin
-	composite.clear_margin = margin
-
-
-func _target_redraw_basis(state: Dictionary) -> Transform2D:
-	var angle := deg_to_rad(float(state.get("rotation", 0.0)))
-	var scale := _state_scale(state)
-	var root_basis := Transform2D(
-		Vector2(cos(angle) * scale.x, sin(angle) * scale.x),
-		Vector2(-sin(angle) * scale.y, cos(angle) * scale.y),
-		Vector2.ZERO,
-	)
-	var flip := Vector2(
-		-1.0 if bool(state.get("flip_x", false)) else 1.0,
-		-1.0 if bool(state.get("flip_y", false)) else 1.0,
-	)
-	return root_basis * Transform2D(
-		Vector2(flip.x, 0.0),
-		Vector2(0.0, flip.y),
-		Vector2.ZERO,
-	)
-
-
-func _transformed_blur_extent(
-	transform: Transform2D,
-	radius: Vector2,
-) -> float:
-	var x_offset := transform.x * radius.x
-	var y_offset := transform.y * radius.y
-	return maxf(
-		absf(x_offset.x) + absf(y_offset.x),
-		absf(x_offset.y) + absf(y_offset.y),
-	)
+	# Blur support is already accumulated into the offscreen texture bounds.
+	# Root scale/rotation then transforms that real geometry, so no screen-space
+	# CanvasGroup estimate or transition envelope is needed.
+	composite.fit_margin = 1.0
+	composite.clear_margin = 1.0
 
 
 func _redraw_texture(record: Dictionary, asset_id: String) -> Texture2D:
@@ -1144,6 +1726,65 @@ func _to_color(value: Variant) -> Color:
 	return Color.WHITE
 
 
+func _process(_delta: float) -> void:
+	var changed_layers: Array[String] = []
+	for raw_layer_id in _layers:
+		var layer_id := String(raw_layer_id)
+		var record: Dictionary = _layers[layer_id]
+		var signature := _redraw_dynamic_size_signature(record)
+		if signature == record.get("redraw_dynamic_size_signature", []):
+			continue
+		record["redraw_dynamic_size_signature"] = signature
+		changed_layers.append(layer_id)
+	if changed_layers.is_empty():
+		return
+
+	_begin_completion_batch()
+	for layer_id in changed_layers:
+		_reproject_dynamic_texture_size(layer_id)
+	_end_completion_batch()
+
+
+func _reproject_dynamic_texture_size(layer_id: String) -> void:
+	if not _layers.has(layer_id):
+		return
+	var had_active_transition := _layer_tweens.has(layer_id)
+	var generation := int(_layer_generations.get(layer_id, 0))
+	if had_active_transition or not _states.has(layer_id):
+		generation = _begin_layer_change(layer_id)
+
+	# A pending remove has no canonical projection to resize. Finish it exactly
+	# like a viewport-resize boundary, invalidating the old tween token first.
+	if not _states.has(layer_id):
+		_free_layer(layer_id)
+		if had_active_transition:
+			_emit_or_queue_transition_finished(layer_id, generation, false)
+		return
+
+	var record: Dictionary = _layers[layer_id]
+	var state: Dictionary = _states[layer_id]
+	if had_active_transition:
+		# Tween tracks captured geometry for the previous texture dimensions.
+		# Snap to canonical state so a stale track cannot overwrite the rebuild.
+		_apply_channels_cut(record, state)
+		_apply_transform_cut(record, state)
+	else:
+		for channel in ["asset", "body", "face"]:
+			_apply_channel_layout(record, channel, state)
+
+	var visible := bool(state.get("visible", true))
+	_apply_redraw(record, state, true, false, visible)
+	(record["root"] as Node2D).visible = visible
+	(record["composite"] as CanvasGroup).self_modulate.a = clampf(
+		float(state.get("opacity", 1.0)), 0.0, 1.0
+	)
+	record["redraw_dynamic_size_signature"] = (
+		_redraw_dynamic_size_signature(record)
+	)
+	if had_active_transition:
+		_emit_or_queue_transition_finished(layer_id, generation, true)
+
+
 func _viewport_size() -> Vector2:
 	var size := get_viewport().get_visible_rect().size
 	return DEFAULT_VIEWPORT_SIZE if size == Vector2.ZERO else size
@@ -1177,7 +1818,8 @@ func _on_viewport_size_changed() -> void:
 			_apply_transform_cut(record, state)
 		else:
 			_apply_channel_layout(record, "asset", state)
-		_apply_redraw(record, state, true)
+		var visible := bool(state.get("visible", true))
+		_apply_redraw(record, state, true, false, visible)
 		(record["root"] as Node2D).visible = bool(state.get("visible", true))
 		(record["composite"] as CanvasGroup).self_modulate.a = clampf(
 			float(state.get("opacity", 1.0)), 0.0, 1.0
@@ -1198,7 +1840,8 @@ func _on_engine_abort_requested() -> void:
 		var record: Dictionary = _layers[id]
 		var state: Dictionary = _states[id]
 		_apply_channels_cut(record, state)
-		_apply_redraw(record, state)
+		var visible := bool(state.get("visible", true))
+		_apply_redraw(record, state, true, false, visible)
 		_apply_transform_cut(record, state)
 		(record["root"] as Node2D).visible = bool(state.get("visible", true))
 		(record["composite"] as CanvasGroup).self_modulate.a = clampf(

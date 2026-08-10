@@ -156,7 +156,11 @@ func test_named_layer_mounts_under_shake_root_and_projects_state() -> void:
 	assert_eq(composite.position, Vector2(8.0, -9.0))
 	assert_eq(composite.scale, Vector2(-1.0, 1.0))
 	assert_almost_eq(composite.self_modulate.a, 0.45, 0.001)
-	assert_not_null(composite.material as ShaderMaterial)
+	assert_null(composite.material)
+	var record: Dictionary = _presenter._layers[layer_id]
+	var output := record["redraw_pipeline_output"] as Sprite2D
+	assert_not_null(output)
+	assert_same(output.material, record["redraw_material"])
 	assert_eq(_sprite(layer, "asset").position, Vector2(1.0, 2.0))
 	assert_eq(_sprite(layer, "body").position, Vector2(3.0, 4.0))
 	assert_eq(_sprite(layer, "face").position, Vector2(5.0, 6.0))
@@ -234,6 +238,7 @@ func test_face_only_update_reuses_redraw_material_and_mask_texture() -> void:
 				"blend": "soft_light",
 			},
 			{"type": "brightness_contrast", "brightness": 17, "contrast": -24},
+			{"type": "blur", "radius": [1, 1]},
 			{
 				"type": "clip",
 				"asset": mask_path,
@@ -250,6 +255,15 @@ func test_face_only_update_reuses_redraw_material_and_mask_texture() -> void:
 	var record: Dictionary = _presenter._layers["hero"]
 	var material := record["redraw_material"] as ShaderMaterial
 	var mask_texture := record["redraw_mask_texture"] as Texture2D
+	var pipeline_root := record["redraw_pipeline_root"] as SubViewport
+	var pipeline_output := record["redraw_pipeline_output"] as Sprite2D
+	var pipeline_passes := record["redraw_pipeline_passes"] as Array
+	var horizontal_material := (
+		(pipeline_passes[0] as Dictionary)["horizontal_material"] as ShaderMaterial
+	)
+	var vertical_material := (
+		(pipeline_passes[0] as Dictionary)["vertical_material"] as ShaderMaterial
+	)
 	assert_not_null(mask_texture)
 	assert_same(
 		material.get_shader_parameter("clip_texture"),
@@ -267,38 +281,99 @@ func test_face_only_update_reuses_redraw_material_and_mask_texture() -> void:
 	var updated_record: Dictionary = _presenter._layers["hero"]
 	assert_same(updated_record["redraw_material"], material)
 	assert_same(updated_record["redraw_mask_texture"], mask_texture)
+	assert_same(updated_record["redraw_pipeline_root"], pipeline_root)
+	assert_same(updated_record["redraw_pipeline_output"], pipeline_output)
+	var updated_passes := updated_record["redraw_pipeline_passes"] as Array
+	assert_same(
+		(updated_passes[0] as Dictionary)["horizontal_material"],
+		horizontal_material,
+	)
+	assert_same(
+		(updated_passes[0] as Dictionary)["vertical_material"],
+		vertical_material,
+	)
 	assert_same(
 		material.get_shader_parameter("clip_texture"),
 		mask_texture,
 	)
 
 
-func test_blur_keeps_its_authored_index_in_one_stable_material() -> void:
+func test_repeated_blurs_build_an_ordered_stable_viewport_pipeline() -> void:
 	_emit_operations([_operation("show", "blurred", {
 		"asset": "stage:bg_cafe",
 		"redraw": [
 			{"type": "grayscale", "amount": 1.0},
 			{"type": "blur", "radius": [2, 3]},
 			{"type": "tint", "color": "#ffffffff"},
+			{"type": "blur", "radius": [1, 0]},
+			{"type": "brightness_contrast", "brightness": 2, "contrast": -3},
 		],
 	})])
 	var record: Dictionary = _presenter._layers["blurred"]
 	var layer := _presenter.get_layer_node("blurred")
 	var composite := layer.get_node("Composite") as CanvasGroup
-	var source := layer.get_node("Composite/Source") as Node2D
+	var source := layer.find_child("Source", true, false) as Node2D
 	var material := record["redraw_material"] as ShaderMaterial
-	var parameters := material.get_shader_parameter(
+	var output := record["redraw_pipeline_output"] as Sprite2D
+	var pipeline_root := record["redraw_pipeline_root"] as SubViewport
+	var passes := record["redraw_pipeline_passes"] as Array
+	assert_null(composite.material)
+	assert_same(output.material, material)
+	assert_same(output.get_parent(), composite)
+	assert_same(pipeline_root.get_parent(), composite)
+	assert_eq(passes.size(), 2)
+
+	var first_pass := passes[0] as Dictionary
+	var second_pass := passes[1] as Dictionary
+	var source_viewport := first_pass["input_viewport"] as SubViewport
+	assert_eq(String(source_viewport.name), "RedrawSource")
+	assert_same(source.get_parent(), source_viewport)
+	assert_same(
+		source_viewport.get_parent(),
+		first_pass["horizontal_viewport"],
+	)
+	assert_same(
+		(first_pass["horizontal_viewport"] as SubViewport).get_parent(),
+		first_pass["vertical_viewport"],
+	)
+	assert_same(
+		(first_pass["vertical_viewport"] as SubViewport).get_parent(),
+		second_pass["horizontal_viewport"],
+	)
+	assert_same(
+		(second_pass["horizontal_viewport"] as SubViewport).get_parent(),
+		second_pass["vertical_viewport"],
+	)
+	assert_same(second_pass["vertical_viewport"], pipeline_root)
+
+	var first_horizontal := first_pass["horizontal_material"] as ShaderMaterial
+	var first_parameters := first_horizontal.get_shader_parameter(
 		"effect_parameters"
 	) as PackedVector4Array
-	assert_same(composite.material, material)
-	assert_same(source.get_parent(), composite)
-	assert_eq(material.get_shader_parameter("effect_count"), 3)
-	assert_eq(material.get_shader_parameter("blur_effect_index"), 1)
-	assert_eq(material.get_shader_parameter("blur_radius"), Vector2(2.0, 3.0))
-	assert_eq([parameters[0].x, parameters[1].x, parameters[2].x], [3.0, 6.0, 4.0])
+	assert_eq(first_horizontal.get_shader_parameter("effect_count"), 1)
+	assert_eq(first_parameters[0].x, 3.0)
+	assert_eq(first_horizontal.get_shader_parameter("blur_radius"), 2)
+	assert_eq(
+		(first_pass["vertical_material"] as ShaderMaterial).get_shader_parameter(
+			"blur_radius"
+		),
+		3,
+	)
+	var second_horizontal := second_pass["horizontal_material"] as ShaderMaterial
+	var second_parameters := second_horizontal.get_shader_parameter(
+		"effect_parameters"
+	) as PackedVector4Array
+	assert_eq(second_horizontal.get_shader_parameter("effect_count"), 1)
+	assert_eq(second_parameters[0].x, 4.0)
+	assert_eq(second_horizontal.get_shader_parameter("blur_radius"), 1)
+	assert_eq(material.get_shader_parameter("effect_count"), 1)
+	var suffix_parameters := material.get_shader_parameter(
+		"effect_parameters"
+	) as PackedVector4Array
+	assert_eq(suffix_parameters[0].x, 2.0)
 
 
-func test_transform_only_update_recomputes_global_blur_margin() -> void:
+func test_transform_only_update_reuses_local_blur_pipeline() -> void:
 	var redraw := [{"type": "blur", "radius": [2, 0]}]
 	_emit_operations([_operation("show", "scaled_blur", {
 		"asset": "stage:bg_cafe",
@@ -308,13 +383,35 @@ func test_transform_only_update_recomputes_global_blur_margin() -> void:
 	var composite := layer.get_node("Composite") as CanvasGroup
 	var record: Dictionary = _presenter._layers["scaled_blur"]
 	var material := record["redraw_material"] as ShaderMaterial
-	assert_almost_eq(composite.fit_margin, 4.0, 0.001)
+	var pipeline_root := record["redraw_pipeline_root"] as SubViewport
+	var pipeline_output := record["redraw_pipeline_output"] as Sprite2D
+	var render_bounds := record["redraw_render_bounds"] as Rect2
+	var passes := record["redraw_pipeline_passes"] as Array
+	var horizontal_material := (
+		(passes[0] as Dictionary)["horizontal_material"] as ShaderMaterial
+	)
+	var vertical_material := (
+		(passes[0] as Dictionary)["vertical_material"] as ShaderMaterial
+	)
+	assert_almost_eq(composite.fit_margin, 1.0, 0.001)
 
 	_emit_operations([_operation("update", "scaled_blur", {
 		"scale": [3.0, 3.0],
 	})])
 	assert_same(record["redraw_material"], material)
-	assert_almost_eq(composite.fit_margin, 8.0, 0.001)
+	assert_same(record["redraw_pipeline_root"], pipeline_root)
+	assert_same(record["redraw_pipeline_output"], pipeline_output)
+	assert_eq(record["redraw_render_bounds"], render_bounds)
+	var updated_passes := record["redraw_pipeline_passes"] as Array
+	assert_same(
+		(updated_passes[0] as Dictionary)["horizontal_material"],
+		horizontal_material,
+	)
+	assert_same(
+		(updated_passes[0] as Dictionary)["vertical_material"],
+		vertical_material,
+	)
+	assert_almost_eq(composite.fit_margin, 1.0, 0.001)
 
 
 func test_viewport_resize_finishes_stale_tweens_and_reprojects_fit_and_clip() -> void:
@@ -443,16 +540,45 @@ func test_missing_clip_texture_configures_a_fail_closed_pass() -> void:
 
 func test_hide_retains_layer_while_remove_and_clear_release_it() -> void:
 	_emit_operations([
-		_operation("show", "hero", {"asset": "stage:bg_cafe"}),
+		_operation("show", "hero", {
+			"asset": "res://tests/fixtures/stage/redraw_source.png",
+			"redraw": [{"type": "blur", "radius": [1, 1]}],
+		}),
 		_operation("show", "event", {"asset": "stage:bg_outside"}),
 	])
 	var hero := _presenter.get_layer_node("hero")
 	var hero_texture := _sprite(hero, "asset").texture
+	var record: Dictionary = _presenter._layers["hero"]
+	assert_not_null(record["redraw_pipeline_root"])
 
 	_emit_operations([_operation("hide", "hero")])
 	assert_same(_presenter.get_layer_node("hero"), hero)
 	assert_same(_sprite(hero, "asset").texture, hero_texture)
 	assert_false(hero.visible)
+	assert_null(record["redraw_pipeline_root"], "hidden layers release derived targets")
+	var hidden_redraw := [
+		{"type": "grayscale", "amount": 0.5},
+		{"type": "blur", "radius": [2, 1]},
+	]
+	_emit_operations([_operation("update", "hero", {"redraw": hidden_redraw})])
+	assert_null(
+		record["redraw_pipeline_root"],
+		"a hidden-to-hidden update must not allocate derived targets",
+	)
+	assert_eq(record["redraw"], hidden_redraw)
+
+	_emit_operations([_operation("show", "hero")])
+	assert_same(_presenter.get_layer_node("hero"), hero)
+	assert_same(_sprite(hero, "asset").texture, hero_texture)
+	assert_not_null(record["redraw_pipeline_root"])
+	assert_eq((record["redraw_pipeline_passes"] as Array).size(), 1)
+	_emit_operations([_operation("hide", "hero", {}, "fade", 1.0)], false)
+	assert_not_null(record["redraw_pipeline_root"], "animated hide renders until completion")
+	var hide_tween: Tween = _presenter._layer_tweens["hero"]
+	hide_tween.custom_step(2.0)
+	assert_false(hero.visible)
+	assert_null(record["redraw_pipeline_root"])
+	assert_same(_sprite(hero, "asset").texture, hero_texture)
 
 	_emit_operations([_operation("remove", "hero")])
 	assert_null(_presenter.get_layer_node("hero"))
@@ -583,6 +709,85 @@ func test_fade_crossfades_textures_and_hides_by_opacity() -> void:
 	assert_eq(source.get_child_count(), 3)
 	assert_almost_eq(asset_sprite.modulate.a, 1.0, 0.001)
 	assert_true(asset_sprite.texture.resource_path.ends_with("bg_hallway.png"))
+
+
+func test_blurred_crossfade_shrinks_render_target_and_stops_continuous_updates() -> void:
+	var redraw := [{"type": "blur", "radius": [1, 1]}]
+	_emit_operations([_operation("show", "hero", {
+		"asset": "res://tests/fixtures/stage/redraw_source.png",
+		"redraw": redraw,
+	})])
+	var record: Dictionary = _presenter._layers["hero"]
+	var source := record["source"] as Node2D
+	var pipeline_root := record["redraw_pipeline_root"] as SubViewport
+	var initial_bounds := record["redraw_render_bounds"] as Rect2
+
+	_emit_operations([_operation("update", "hero", {
+		"asset": "res://tests/fixtures/stage/redraw_mask.png",
+	}, "fade", 0.08)], false)
+	var transition_bounds := record["redraw_render_bounds"] as Rect2
+	assert_same(record["redraw_pipeline_root"], pipeline_root)
+	assert_true(transition_bounds.size.x >= initial_bounds.size.x)
+	assert_eq(pipeline_root.render_target_update_mode, SubViewport.UPDATE_ALWAYS)
+	assert_eq(source.get_child_count(), 4, "crossfade source includes one outgoing sprite")
+
+	var tween: Tween = _presenter._layer_tweens["hero"]
+	tween.custom_step(1.0)
+	var final_bounds := record["redraw_render_bounds"] as Rect2
+	assert_true(final_bounds.size.x < transition_bounds.size.x)
+	assert_eq(source.get_child_count(), 3)
+	assert_true(_sprite(_presenter.get_layer_node("hero"), "asset") \
+		.texture.resource_path.ends_with("redraw_mask.png"))
+	assert_eq(
+		(record["redraw_pipeline_root"] as SubViewport).render_target_update_mode,
+		SubViewport.UPDATE_ONCE,
+	)
+
+
+func test_oversized_blur_target_fails_closed_and_valid_update_recovers() -> void:
+	var fixture := "res://tests/fixtures/stage/redraw_source.png"
+	_presenter._on_stage_operations_requested([_operation("show", "hero", {
+		"asset": fixture,
+		"body": fixture,
+		"body_offset": [9000.0, 0.0],
+		"redraw": [{"type": "blur", "radius": [1, 1]}],
+	})], true)
+	assert_push_error("redraw target")
+	var layer := _presenter.get_layer_node("hero")
+	var composite := layer.get_node("Composite") as CanvasGroup
+	var record: Dictionary = _presenter._layers["hero"]
+	assert_false(composite.visible)
+	assert_null(record["redraw_pipeline_root"])
+
+	_presenter._on_stage_operations_requested([_operation("update", "hero", {
+		"body_offset": [4.0, 0.0],
+	})], true)
+	assert_true(composite.visible)
+	assert_not_null(record["redraw_pipeline_root"])
+	assert_true((record["redraw_render_bounds"] as Rect2).size.x < 100.0)
+
+
+func test_blurred_transform_tween_does_not_continuously_redraw_static_source() -> void:
+	_emit_operations([_operation("show", "hero", {
+		"asset": "res://tests/fixtures/stage/redraw_source.png",
+		"redraw": [{"type": "blur", "radius": [2, 2]}],
+	})])
+	var record: Dictionary = _presenter._layers["hero"]
+	_emit_operations([_operation("update", "hero", {
+		"position": [400.0, 240.0],
+		"rotation": 25.0,
+	}, "move", 1.0)], false)
+	assert_true(_presenter._layer_tweens.has("hero"))
+	assert_eq(
+		(record["redraw_pipeline_root"] as SubViewport).render_target_update_mode,
+		SubViewport.UPDATE_ONCE,
+	)
+	_emit_operations([_operation("hide", "hero", {}, "fade", 1.0)], false)
+	assert_true(_presenter._layer_tweens.has("hero"))
+	assert_eq(
+		(record["redraw_pipeline_root"] as SubViewport).render_target_update_mode,
+		SubViewport.UPDATE_ONCE,
+	)
 
 
 func test_force_cut_batch_projects_only_the_final_state_once() -> void:
@@ -921,3 +1126,151 @@ func test_presentation_state_json_roundtrip_rebuilds_complete_stage() -> void:
 	assert_true(_sprite(hero, "body").texture.resource_path.ends_with("bg_cafe.png"))
 	assert_true(_sprite(hero, "face").texture.resource_path.ends_with("bg_hallway.png"))
 	state.disconnect_signals()
+
+
+func test_blur_workload_limits_distinguish_static_and_continuous_updates() -> void:
+	var radius_32: Array = (
+		_presenter._split_redraw([
+			{"type": "blur", "radius": [32, 32]},
+		])["blur_passes"] as Array
+	)
+	var static_error: String = _presenter._redraw_pipeline_allocation_error(
+		Rect2(Vector2.ZERO, Vector2(2048.0, 1024.0)),
+		radius_32,
+		false,
+	)
+	assert_string_contains(static_error, "static limit")
+
+	var radius_16: Array = (
+		_presenter._split_redraw([
+			{"type": "blur", "radius": [16, 16]},
+		])["blur_passes"] as Array
+	)
+	var continuous_bounds := Rect2(Vector2.ZERO, Vector2(1024.0, 1024.0))
+	assert_eq(
+		_presenter._redraw_pipeline_allocation_error(
+			continuous_bounds,
+			radius_16,
+			false,
+		),
+		"",
+		"the same projection remains valid as a one-shot update",
+	)
+	var continuous_error: String = _presenter._redraw_pipeline_allocation_error(
+		continuous_bounds,
+		radius_16,
+		true,
+	)
+	assert_string_contains(continuous_error, "continuous limit")
+
+
+func test_blur_pipeline_inherits_source_and_output_texture_filtering() -> void:
+	_emit_operations([_operation("show", "filtered", {
+		"asset": "res://tests/fixtures/stage/redraw_source.png",
+		"redraw": [{"type": "blur", "radius": [1, 1]}],
+	})])
+	var record: Dictionary = _presenter._layers["filtered"]
+	var first_pass := (record["redraw_pipeline_passes"] as Array)[0] as Dictionary
+	var source_viewport := first_pass["input_viewport"] as SubViewport
+	var output := record["redraw_pipeline_output"] as Sprite2D
+	assert_eq(
+		source_viewport.canvas_item_default_texture_filter,
+		_presenter.get_viewport().canvas_item_default_texture_filter,
+		"authored source scaling must inherit the scene texture filter",
+	)
+	assert_ne(
+		output.texture_filter,
+		CanvasItem.TEXTURE_FILTER_NEAREST,
+		"the final stage transform must not force nearest-neighbor sampling",
+	)
+
+
+func test_dynamic_texture_resize_rebuilds_bounds_and_hide_releases_targets() -> void:
+	_emit_operations([_operation("show", "dynamic", {
+		"asset": "res://tests/fixtures/stage/redraw_source.png",
+		"redraw": [{"type": "blur", "radius": [1, 1]}],
+	})])
+	var layer := _presenter.get_layer_node("dynamic")
+	var record: Dictionary = _presenter._layers["dynamic"]
+	var state: Dictionary = _presenter._states["dynamic"]
+	var asset_sprite := _sprite(layer, "asset")
+	var dynamic_viewport := SubViewport.new()
+	dynamic_viewport.size = Vector2i(8, 8)
+	dynamic_viewport.transparent_bg = true
+	dynamic_viewport.disable_3d = true
+	dynamic_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	add_child_autoqfree(dynamic_viewport)
+	var dynamic_texture := dynamic_viewport.get_texture()
+	asset_sprite.texture = dynamic_texture
+	_presenter._apply_redraw(record, state, true)
+	var initial_pipeline := record["redraw_pipeline_root"] as SubViewport
+	var initial_bounds := record["redraw_render_bounds"] as Rect2
+	assert_eq(initial_pipeline.render_target_update_mode, SubViewport.UPDATE_ALWAYS)
+
+	dynamic_viewport.size = Vector2i(24, 8)
+	_presenter._process(0.0)
+	var resized_pipeline := record["redraw_pipeline_root"] as SubViewport
+	var resized_bounds := record["redraw_render_bounds"] as Rect2
+	assert_gt(resized_bounds.size.x, initial_bounds.size.x)
+	assert_ne(resized_pipeline, initial_pipeline)
+	assert_same(asset_sprite.texture, dynamic_texture)
+	assert_eq(resized_pipeline.render_target_update_mode, SubViewport.UPDATE_ALWAYS)
+
+	_emit_operations([_operation("hide", "dynamic", {}, "fade", 1.0)], false)
+	assert_true(_presenter._layer_tweens.has("dynamic"))
+	assert_eq(
+		(record["redraw_pipeline_root"] as SubViewport).render_target_update_mode,
+		SubViewport.UPDATE_ALWAYS,
+		"a dynamic source must keep updating while its hide tween remains visible",
+	)
+	var hide_tween: Tween = _presenter._layer_tweens["dynamic"]
+	hide_tween.custom_step(2.0)
+	assert_false(layer.visible)
+	assert_null(record["redraw_pipeline_root"])
+	assert_same(asset_sprite.texture, dynamic_texture)
+
+	_emit_operations([_operation("show", "dynamic")])
+	assert_true(layer.visible)
+	assert_not_null(record["redraw_pipeline_root"])
+	assert_same(asset_sprite.texture, dynamic_texture)
+
+
+func test_dynamic_clip_resize_recomputes_native_clip_rect() -> void:
+	var mask_path := "res://tests/fixtures/stage/redraw_mask.png"
+	_emit_operations([_operation("show", "dynamic_mask", {
+		"asset": "res://tests/fixtures/stage/redraw_source.png",
+		"redraw": [
+			{
+				"type": "clip",
+				"asset": mask_path,
+				"offset": [2.0, 3.0],
+				"fit": "native",
+			},
+			{"type": "blur", "radius": [1, 1]},
+		],
+	})])
+	var record: Dictionary = _presenter._layers["dynamic_mask"]
+	var state: Dictionary = _presenter._states["dynamic_mask"]
+	var dynamic_viewport := SubViewport.new()
+	dynamic_viewport.size = Vector2i(8, 6)
+	dynamic_viewport.transparent_bg = true
+	dynamic_viewport.disable_3d = true
+	dynamic_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	add_child_autoqfree(dynamic_viewport)
+	var dynamic_mask := dynamic_viewport.get_texture()
+	record["redraw_mask_texture"] = dynamic_mask
+	_presenter._apply_redraw(record, state, true)
+	var first_pass := (record["redraw_pipeline_passes"] as Array)[0] as Dictionary
+	var material := first_pass["horizontal_material"] as ShaderMaterial
+	var initial_rect := material.get_shader_parameter("clip_rect") as Vector4
+	assert_eq(initial_rect, Vector4(2.0, 3.0, 8.0, 6.0))
+
+	dynamic_viewport.size = Vector2i(20, 12)
+	_presenter._process(0.0)
+	var resized_rect := material.get_shader_parameter("clip_rect") as Vector4
+	assert_eq(resized_rect, Vector4(2.0, 3.0, 20.0, 12.0))
+	assert_same(record["redraw_mask_texture"], dynamic_mask)
+	assert_eq(
+		(record["redraw_pipeline_root"] as SubViewport).render_target_update_mode,
+		SubViewport.UPDATE_ALWAYS,
+	)

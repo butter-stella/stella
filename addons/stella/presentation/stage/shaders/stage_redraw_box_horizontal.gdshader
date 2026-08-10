@@ -1,10 +1,12 @@
 shader_type canvas_item;
-render_mode unshaded;
+render_mode unshaded, blend_disabled;
 
-// Pointwise redraw for a CanvasGroup. Spatial blur passes are rendered through
-// ordered SubViewports by StagePresenter, because a screen-read CanvasGroup
-// cannot feed its result back into a second effect deterministically.
+// First half of an authored rectangular box average. Pointwise effects before
+// this blur are evaluated for every input sample. Each channel's integer byte
+// sum is stored losslessly as a finite half-float bit pattern in an HDR target;
+// the vertical half decodes it and quantizes only at the authored pass boundary.
 const int MAX_EFFECTS = 16;
+const int MAX_RADIUS = 32;
 const int EFFECT_COLOR_OVERLAY = 1;
 const int EFFECT_BRIGHTNESS_CONTRAST = 2;
 const int EFFECT_GRAYSCALE = 3;
@@ -12,15 +14,17 @@ const int EFFECT_TINT = 4;
 const int EFFECT_CLIP = 5;
 const int BLEND_SOFT_LIGHT = 1;
 
-uniform sampler2D screen_texture : hint_screen_texture, repeat_disable, filter_nearest;
+uniform sampler2D input_texture : repeat_disable, filter_nearest;
+uniform vec2 render_size = vec2(1.0);
+uniform vec2 render_origin = vec2(0.0);
+uniform vec2 blur_axis = vec2(1.0, 0.0);
+uniform int blur_radius = 0;
 uniform int effect_count = 0;
 uniform vec4 effect_parameters[MAX_EFFECTS];
 uniform vec4 effect_colors[MAX_EFFECTS];
 uniform sampler2D clip_texture : hint_default_transparent, repeat_disable, filter_linear;
 uniform bool clip_available = false;
 uniform vec4 clip_rect = vec4(0.0, 0.0, 1.0, 1.0);
-
-varying vec2 layer_local_position;
 
 int to_byte(float value) {
 	return int(floor(clamp(value, 0.0, 1.0) * 255.0 + 0.5));
@@ -30,8 +34,21 @@ ivec3 to_bytes(vec3 value) {
 	return ivec3(to_byte(value.r), to_byte(value.g), to_byte(value.b));
 }
 
+ivec4 to_bytes(vec4 value) {
+	return ivec4(
+		to_byte(value.r),
+		to_byte(value.g),
+		to_byte(value.b),
+		to_byte(value.a)
+	);
+}
+
 vec3 from_bytes(ivec3 value) {
 	return vec3(value) / 255.0;
+}
+
+vec4 from_bytes(ivec4 value) {
+	return vec4(value) / 255.0;
 }
 
 int alpha_blend_256(int destination, int blended, int alpha) {
@@ -143,16 +160,41 @@ vec4 apply_effects(vec4 color, vec2 local_position) {
 	return color;
 }
 
-void vertex() {
-	layer_local_position = VERTEX;
+uvec4 sample_premultiplied_bytes(vec2 uv, vec2 local_position) {
+	vec4 premultiplied = textureLod(input_texture, uv, 0.0);
+	if (effect_count == 0) {
+		return uvec4(to_bytes(premultiplied));
+	}
+	vec4 straight = premultiplied;
+	if (straight.a > 0.0001) {
+		straight.rgb /= straight.a;
+	} else {
+		straight.rgb = vec3(0.0);
+	}
+	straight = apply_effects(straight, local_position);
+	return uvec4(to_bytes(vec4(straight.rgb * straight.a, straight.a)));
+}
+
+float encode_sum(uint value) {
+	// radius <= 32 means value <= 65 * 255 = 16575. Adding 0x0400
+	// maps every possible integer to a distinct finite positive binary16 bit
+	// pattern (0x0400..0x44bf), so an RGBA16F viewport round-trips it exactly.
+	return unpackHalf2x16(value + 1024u).x;
 }
 
 void fragment() {
-	vec4 color = textureLod(screen_texture, SCREEN_UV, 0.0);
-	if (color.a > 0.0001) {
-		color.rgb /= color.a;
-	} else {
-		color.rgb = vec3(0.0);
+	int radius = clamp(blur_radius, 0, MAX_RADIUS);
+	uvec4 sum = uvec4(0u);
+	for (int offset = -radius; offset <= radius; offset++) {
+		vec2 pixel_offset = blur_axis * float(offset);
+		vec2 sample_uv = UV + pixel_offset / render_size;
+		vec2 local_position = render_origin + UV * render_size + pixel_offset;
+		sum += sample_premultiplied_bytes(sample_uv, local_position);
 	}
-	COLOR *= apply_effects(color, layer_local_position);
+	COLOR = vec4(
+		encode_sum(sum.r),
+		encode_sum(sum.g),
+		encode_sum(sum.b),
+		encode_sum(sum.a)
+	);
 }

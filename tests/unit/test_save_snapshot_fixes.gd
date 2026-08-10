@@ -110,7 +110,15 @@ func test_presentation_state_snapshot_roundtrip():
 	SignalBus.emit_stage_operations([{
 		"action": "show",
 		"id": "alice",
-		"properties": {"asset": "character:alice/happy"},
+		"properties": {
+			"asset": "character:alice/happy",
+			"redraw": [
+				{"type": "blur", "radius": [1, 1]},
+				{"type": "blur", "radius": [2, 0]},
+				{"type": "blur", "radius": [0, 3]},
+				{"type": "blur", "radius": [4, 2]},
+			],
+		},
 	}], true)
 	SignalBus.bgm_play.emit("theme.ogg", 1.0)
 
@@ -122,6 +130,12 @@ func test_presentation_state_snapshot_roundtrip():
 	assert_eq(ps2.current_bgm, "theme.ogg")
 	assert_true(ps2.stage_layers.has("alice"))
 	assert_eq(ps2.stage_layers["alice"]["asset"], "character:alice/happy")
+	assert_eq(ps2.stage_layers["alice"]["redraw"], [
+		{"type": "blur", "radius": [1, 1]},
+		{"type": "blur", "radius": [2, 0]},
+		{"type": "blur", "radius": [0, 3]},
+		{"type": "blur", "radius": [4, 2]},
+	])
 
 
 func test_presentation_state_restore_emits_signals():

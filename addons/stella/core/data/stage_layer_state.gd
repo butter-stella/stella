@@ -10,6 +10,7 @@ const MIN_Z_INDEX := -4096
 const MAX_Z_INDEX := 4096
 const MAX_REDRAW_EFFECTS := 16
 const MAX_BLUR_RADIUS := 32
+const MAX_BLUR_PASSES := 4
 const VALID_ACTIONS := ["show", "update", "hide", "remove", "clear"]
 const VALID_TRANSITIONS := [
 	"cut", "none", "fade", "move",
@@ -474,7 +475,8 @@ static func _validate_redraw_effects(
 			report_warnings,
 		)
 		return false
-	var singleton_counts := {"blur": 0, "clip": 0}
+	var clip_count := 0
+	var blur_count := 0
 	for index in range(effects.size()):
 		var raw_effect = effects[index]
 		if not raw_effect is Dictionary:
@@ -491,11 +493,19 @@ static func _validate_redraw_effects(
 				report_warnings,
 			)
 			return false
-		if singleton_counts.has(effect_type):
-			singleton_counts[effect_type] += 1
-			if int(singleton_counts[effect_type]) > 1:
+		if effect_type == "clip":
+			clip_count += 1
+			if clip_count > 1:
 				_warn(
-					"redraw accepts at most one %s effect" % effect_type,
+					"redraw accepts at most one clip effect",
+					report_warnings,
+				)
+				return false
+		elif effect_type == "blur":
+			blur_count += 1
+			if blur_count > MAX_BLUR_PASSES:
+				_warn(
+					"redraw accepts at most %d blur effects" % MAX_BLUR_PASSES,
 					report_warnings,
 				)
 				return false

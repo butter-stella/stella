@@ -85,7 +85,7 @@ func test_stage_rejects_invalid_typed_values_and_transition():
 func test_stage_redraw_pipeline_is_ordered_typed_and_canonical():
 	var data := _parse("""@chapter test
 @scene start
-@stage hero show redraw=color_overlay(#112233) redraw=clip(stage:synthetic_mask,-4.5,8) redraw=color_overlay(#44556680,soft_light) redraw=brightness_contrast(37,-12) redraw=grayscale(0.25) redraw=tint(#AABBCC) redraw=blur(2,3)
+@stage hero show redraw=color_overlay(#112233) redraw=clip(stage:synthetic_mask,-4.5,8) redraw=color_overlay(#44556680,soft_light) redraw=brightness_contrast(37,-12) redraw=grayscale(0.25) redraw=tint(#AABBCC) redraw=blur(2,3) redraw=blur(4,1)
 @stage overlay show redraw=clip(background:synthetic_mask,0,0,cover)
 @stage hero update redraw=clear""")
 	assert_true(data.diagnostics.is_empty(), str(data.diagnostics))
@@ -108,6 +108,7 @@ func test_stage_redraw_pipeline_is_ordered_typed_and_canonical():
 		{"type": "grayscale", "amount": 0.25},
 		{"type": "tint", "color": "#aabbccff"},
 		{"type": "blur", "radius": [2, 3]},
+		{"type": "blur", "radius": [4, 1]},
 	])
 	assert_eq(
 		data.scenes[0].commands[1].params["properties"]["redraw"],
@@ -124,22 +125,19 @@ func test_stage_redraw_pipeline_is_ordered_typed_and_canonical():
 	)
 
 
-func test_stage_rejects_duplicate_blur_and_clip_effects():
-	for redraw_tokens in [
-		"redraw=blur(1,1) redraw=blur(2,2)",
-		(
-			"redraw=clip(stage:synthetic_mask_a,0,0) "
-			+ "redraw=clip(stage:synthetic_mask_b,0,0)"
-		),
-	]:
-		var duplicate_data := _parse("""@chapter test
+func test_stage_rejects_duplicate_clip_effects():
+	var redraw_tokens := (
+		"redraw=clip(stage:synthetic_mask_a,0,0) "
+		+ "redraw=clip(stage:synthetic_mask_b,0,0)"
+	)
+	var duplicate_data := _parse("""@chapter test
 @scene start
 @stage hero show %s""" % redraw_tokens)
-		assert_true(duplicate_data.scenes[0].commands.is_empty(), redraw_tokens)
-		assert_true(
-			_has_diagnostic(duplicate_data, "error", "at most one"),
-			redraw_tokens,
-		)
+	assert_true(duplicate_data.scenes[0].commands.is_empty(), redraw_tokens)
+	assert_true(
+		_has_diagnostic(duplicate_data, "error", "at most one clip"),
+		redraw_tokens,
+	)
 
 
 func test_stage_rejects_invalid_redraw_effects_and_clear_mixing():
@@ -180,13 +178,44 @@ func test_stage_rejects_invalid_redraw_effects_and_clear_mixing():
 
 func test_stage_rejects_more_than_maximum_redraw_effects():
 	var effects := ""
-	for _index in range(StageLayerState.MAX_REDRAW_EFFECTS + 1):
+	for _index in range(StageLayerState.MAX_REDRAW_EFFECTS):
 		effects += " redraw=grayscale(0.5)"
+	var maximum_data := _parse("""@chapter test
+@scene start
+@stage hero show%s""" % effects)
+	assert_eq(maximum_data.scenes[0].commands.size(), 1)
+	assert_eq(
+		maximum_data.scenes[0].commands[0].params["properties"]["redraw"].size(),
+		StageLayerState.MAX_REDRAW_EFFECTS,
+	)
+
+	effects += " redraw=grayscale(0.5)"
 	var data := _parse("""@chapter test
 @scene start
 @stage hero show%s""" % effects)
 	assert_true(data.scenes[0].commands.is_empty())
 	assert_true(_has_diagnostic(data, "error", "at most %d redraw effects" % StageLayerState.MAX_REDRAW_EFFECTS))
+
+
+func test_stage_rejects_more_than_maximum_blur_passes():
+	var effects := ""
+	for _index in range(StageLayerState.MAX_BLUR_PASSES):
+		effects += " redraw=blur(1,1)"
+	var maximum_data := _parse("""@chapter test
+@scene start
+@stage hero show%s""" % effects)
+	assert_eq(maximum_data.scenes[0].commands.size(), 1)
+
+	effects += " redraw=blur(1,1)"
+	var data := _parse("""@chapter test
+@scene start
+@stage hero show%s""" % effects)
+	assert_true(data.scenes[0].commands.is_empty())
+	assert_true(_has_diagnostic(
+		data,
+		"error",
+		"at most %d blur effects" % StageLayerState.MAX_BLUR_PASSES,
+	))
 
 
 func test_unknown_directive_reports_an_error_without_a_runtime_command():

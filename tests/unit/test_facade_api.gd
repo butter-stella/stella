@@ -118,21 +118,28 @@ func test_apply_stage_operations_deep_copies_caller_batch():
 		"id": "event",
 		"properties": {
 			"asset": "stage:flash",
-			"redraw": [{
-				"type": "brightness_contrast",
-				"brightness": -17,
-				"contrast": 23,
-			}],
+			"redraw": [
+				{
+					"type": "brightness_contrast",
+					"brightness": -17,
+					"contrast": 23,
+				},
+				{"type": "blur", "radius": [1, 1]},
+				{"type": "blur", "radius": [2, 0]},
+			],
 		},
 	}]
 	runtime.apply_stage_operations(operations, true)
 	operations[0]["properties"]["asset"] = "changed-after-emit"
 	operations[0]["properties"]["redraw"][0]["brightness"] = 255
+	operations[0]["properties"]["redraw"][2]["radius"][0] = 32
 	assert_eq(received[0][0]["properties"]["asset"], "stage:flash")
 	assert_eq(
 		received[0][0]["properties"]["redraw"][0]["brightness"],
 		-17,
 	)
+	assert_eq(received[0][0]["properties"]["redraw"][1]["radius"], [1, 1])
+	assert_eq(received[0][0]["properties"]["redraw"][2]["radius"], [2, 0])
 	SignalBus.stage_operations_requested.disconnect(callback)
 	runtime.clear_stage_layers()
 

@@ -865,7 +865,8 @@ static func _parse_stage_command(
 	var redraw_effects: Array = []
 	var redraw_seen := false
 	var redraw_cleared := false
-	var redraw_singletons_seen: Dictionary = {}
+	var redraw_clip_seen := false
+	var redraw_blur_count := 0
 	var transition := "cut"
 	var duration := 0.0
 	var invalid_operation := false
@@ -969,18 +970,30 @@ static func _parse_stage_command(
 				invalid_operation = true
 				continue
 			var redraw_effect_type := String(redraw_effect.get("type", ""))
-			if redraw_effect_type in ["blur", "clip"]:
-				if redraw_singletons_seen.has(redraw_effect_type):
+			if redraw_effect_type == "clip":
+				if redraw_clip_seen:
 					_record_diagnostic(
 						data,
 						"error",
-						"DslParser: @stage redraw accepts at most one %s effect (line %d)"
-						% [redraw_effect_type, line],
+						"DslParser: @stage redraw accepts at most one clip effect (line %d)"
+						% line,
 						line,
 					)
 					invalid_operation = true
 					continue
-				redraw_singletons_seen[redraw_effect_type] = true
+				redraw_clip_seen = true
+			elif redraw_effect_type == "blur":
+				redraw_blur_count += 1
+				if redraw_blur_count > StageLayerState.MAX_BLUR_PASSES:
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @stage redraw accepts at most %d blur effects (line %d)"
+						% [StageLayerState.MAX_BLUR_PASSES, line],
+						line,
+					)
+					invalid_operation = true
+					continue
 			redraw_effects.append(redraw_effect)
 			if redraw_effects.size() > StageLayerState.MAX_REDRAW_EFFECTS:
 				_record_diagnostic(

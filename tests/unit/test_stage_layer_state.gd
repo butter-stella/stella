@@ -26,6 +26,7 @@ func _redraw_pipeline() -> Array:
 		{"type": "grayscale", "amount": 0.25},
 		{"type": "tint", "color": "#80ff40"},
 		{"type": "blur", "radius": [2, 3]},
+		{"type": "blur", "radius": [4, 1]},
 		{
 			"type": "clip",
 			"asset": "stage:synthetic_alpha_mask",
@@ -65,7 +66,7 @@ func test_show_normalizes_complete_json_safe_state():
 	assert_almost_eq(state["opacity"], 0.6, 0.001)
 	assert_true(state["flip_x"])
 	assert_false(state["flip_y"])
-	assert_eq(state["redraw"].size(), 6)
+	assert_eq(state["redraw"].size(), 7)
 	assert_eq(state["redraw"][0], {
 		"type": "color_overlay",
 		"color": "#2a5c8e40",
@@ -78,8 +79,15 @@ func test_show_normalizes_complete_json_safe_state():
 	})
 	assert_eq(state["redraw"][3]["color"], "#80ff40ff")
 	assert_eq(state["redraw"][4]["radius"], [2, 3])
-	assert_eq(state["redraw"][5]["offset"], [12.0, 34.0])
-	assert_ne(JSON.stringify(layers), "", "stage snapshots must serialize as JSON")
+	assert_eq(state["redraw"][5]["radius"], [4, 1])
+	assert_eq(state["redraw"][6]["offset"], [12.0, 34.0])
+	var encoded := JSON.stringify(layers)
+	assert_ne(encoded, "", "stage snapshots must serialize as JSON")
+	var roundtrip_state := StageLayerState.normalize_full(
+		JSON.parse_string(encoded)["hero/main"],
+		false,
+	)
+	assert_eq(roundtrip_state["redraw"], state["redraw"])
 
 
 func test_metadata_is_recursively_normalized_for_json_snapshots():
@@ -138,8 +146,8 @@ func test_face_patch_preserves_body_and_unmentioned_transform():
 
 func test_redraw_patch_replaces_ordered_pipeline_while_omission_preserves_it():
 	var original_redraw := [
-		{"type": "brightness_contrast", "brightness": -17, "contrast": 23},
-		{"type": "brightness_contrast", "brightness": 5, "contrast": 10},
+		{"type": "blur", "radius": [1, 1]},
+		{"type": "blur", "radius": [2, 2]},
 	]
 	var layers := StageLayerState.reduce({}, [
 		_op("show", "hero", {"asset": "stage:hero", "redraw": original_redraw}),
@@ -190,10 +198,6 @@ func test_redraw_schema_is_closed_and_rejects_the_whole_operation():
 		[{"type": "tint", "color": "red"}],
 		[{"type": "blur", "radius": [1.5, 2]}],
 		[
-			{"type": "blur", "radius": [1, 1]},
-			{"type": "blur", "radius": [2, 2]},
-		],
-		[
 			{
 				"type": "clip",
 				"asset": "stage:synthetic_alpha_mask_a",
@@ -242,11 +246,30 @@ func test_redraw_schema_is_closed_and_rejects_the_whole_operation():
 		_op("update", "hero", {"redraw": too_many}),
 		false,
 	))
-	too_many.append({"type": "grayscale", "amount": 0.5})
+	too_many.append({"type": "blur", "radius": [1, 1]})
 	assert_false(StageLayerState.validate_operation(
 		_op("update", "hero", {"redraw": too_many}),
 		false,
 	))
+
+	var too_many_blurs: Array = []
+	for _index in range(StageLayerState.MAX_BLUR_PASSES):
+		too_many_blurs.append({"type": "blur", "radius": [1, 1]})
+	assert_true(StageLayerState.validate_operation(
+		_op("update", "hero", {"redraw": too_many_blurs}),
+		false,
+	))
+	too_many_blurs.append({"type": "blur", "radius": [1, 1]})
+	var invalid_blur_update := _op("update", "hero", {
+		"opacity": 0.25,
+		"redraw": too_many_blurs,
+	})
+	assert_false(StageLayerState.validate_operation(
+		invalid_blur_update,
+		false,
+	))
+	layers = StageLayerState.reduce(layers, [invalid_blur_update], false)
+	assert_eq(layers, original, "the fifth blur rejects the whole update")
 
 
 func test_redraw_boundary_values_and_soft_light_are_valid():
@@ -262,6 +285,10 @@ func test_redraw_boundary_values_and_soft_light_are_valid():
 			"radius": [0, StageLayerState.MAX_BLUR_RADIUS],
 		},
 		{
+			"type": "blur",
+			"radius": [StageLayerState.MAX_BLUR_RADIUS, 0],
+		},
+		{
 			"type": "clip",
 			"asset": "background:synthetic_alpha_mask",
 			"offset": [-100.5, 200.25],
@@ -270,8 +297,8 @@ func test_redraw_boundary_values_and_soft_light_are_valid():
 	]})
 	assert_true(StageLayerState.validate_operation(operation, false))
 	var layers := StageLayerState.reduce({}, [operation], false)
-	assert_eq(layers["hero"]["redraw"].size(), 8)
-	assert_eq(layers["hero"]["redraw"][7]["offset"], [-100.5, 200.25])
+	assert_eq(layers["hero"]["redraw"].size(), 9)
+	assert_eq(layers["hero"]["redraw"][8]["offset"], [-100.5, 200.25])
 
 
 func test_hide_retains_resources_while_remove_and_clear_release_state():

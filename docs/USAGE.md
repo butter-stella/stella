@@ -200,6 +200,8 @@ StellaRuntime.update_stage_layer("hero", {
 		},
 		{"type": "brightness_contrast", "brightness": 12, "contrast": -20},
 		{"type": "grayscale", "amount": 0.4},
+		{"type": "blur", "radius": [1, 1]},
+		{"type": "blur", "radius": [2, 0]},
 		{
 			"type": "clip",
 			"asset": "stage:hero/mask",
@@ -216,7 +218,9 @@ StellaRuntime.clear_stage_layers()                    # 删除全部命名舞台
 
 多个操作可通过 `apply_stage_operations(operations, force_cut)` 同批提交。`force_cut=true` 会先归约整批操作，再同步投影最终状态，适合快进、点击补全和读档。所有人物与其他舞台图片都同步进入同一份 `PresentationState.stage_layers`；`hide` 的层仍在快照中，`remove` / `clear` 则会移除状态。
 
-`redraw` 是有序的完整操作数组，而不是按类型合并的字典；更新它会原子替换整条管线，传 `[]` 会清空。支持 `color_overlay`、`brightness_contrast`、`grayscale`、`tint`、`blur` 和 `clip`，其中每条管线最多一个 `blur` 和一个 `clip`。`clip.asset` 继续使用 `background:` / `character:` / `stage:` / `res://` 或裸 stage 路径，并与普通纹理共享 `ResourceLoader` 缓存；快照只保存逻辑资源 ID，不保存 `Texture2D`。
+`redraw` 是有序的完整操作数组，而不是按类型合并的字典；更新它会原子替换整条管线，传 `[]` 会清空。支持 `color_overlay`、`brightness_contrast`、`grayscale`、`tint`、`blur` 和 `clip`；每条管线最多 16 个操作，其中最多 4 个 `blur`、1 个 `clip`。每个非零 `blur([x,y])` 都是独立 pass，对前一操作输出的 `[-x,+x] × [-y,+y]` 矩形窗口作完整等权 RGBA 平均；连续 blur 不会合并，`blur([0,0])` 则是保留在状态中的真正 no-op。`grayscale` 的 8-bit 目标灰度严格为 `(54 * R + 183 * G + 19 * B) >> 8`，再按 `amount` 与原色混合。`clip.asset` 继续使用 `background:` / `character:` / `stage:` / `res://` 或裸 stage 路径，并与普通纹理共享 `ResourceLoader` 缓存；快照只保存逻辑资源 ID，不保存 `Texture2D`。
+
+含 blur 的层会使用离屏纹理。可查询渲染设备时，单轴尺寸上限取设备 2D 纹理上限与 8192 的较小值；无法查询时使用保守的 4096 上限。单层估算的离屏纹理总量上限为 256 MiB；静态投影每次最多 268,435,456 次纹理采样，连续投影每帧最多 67,108,864 次。超限时该层 fail-closed 为透明并报告错误，后续合法更新可恢复显示。只有动画纹理、源通道布局动画或交叉淡入确实逐帧改变离屏内容时才保持连续更新；隐藏层仍保留规范状态和已加载的源纹理，但会释放全部派生离屏目标，重新显示时按最新纹理尺寸重建。动态源纹理或 clip 遮罩变尺寸时，Presenter 会重新计算 bounds、fit 与 clip 矩形。
 
 Godot 4.6 的 redraw 像素管线使用 Forward+ 或 Mobile renderer。macOS 上如需使用 Compatibility renderer，请升级到 Godot 4.7 或更新版本，以避开 4.6 的 CanvasGroup screen-backbuffer 缺陷。
 
