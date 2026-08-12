@@ -21,7 +21,7 @@ const _SHAKE_STEP := 0.05
 @export_group("Shake")
 @export var shake_target_paths: Array[NodePath] = [
 	NodePath("../BackgroundLayer/ShakeRoot"),
-	NodePath("../CharacterLayer/ShakeRoot"),
+	NodePath("../StageLayer/ShakeRoot"),
 ]
 @export var shake_coverage_target_paths: Array[NodePath] = []
 @export var max_shake_intensity := DEFAULT_MAX_SHAKE_INTENSITY

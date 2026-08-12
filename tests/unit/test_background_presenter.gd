@@ -133,3 +133,25 @@ func test_fade_transition_still_works():
 	assert_eq(_bg_front().texture.resource_path.get_file(), "bg_cafe.png")
 	assert_eq(_bg_front().modulate.a, 1.0)
 	assert_eq(_bg_back().modulate.a, 0.0)
+
+
+func test_empty_background_projection_clears_both_buffers_and_active_tween():
+	_seed_bg("bg_school_gate")
+	SignalBus.bg_changed.emit("bg_cafe", "fade", 1.0)
+	var presenter = _game_scene.get_node("BackgroundLayer")
+	assert_not_null(presenter._active_tween)
+
+	SignalBus.bg_changed.emit("", "none", 0.0)
+
+	assert_null(_bg_front().texture)
+	assert_null(_bg_back().texture)
+	assert_null(presenter._active_tween)
+	assert_false(presenter._has_active_transition)
+
+
+func test_cut_cancels_in_flight_transition_without_stale_overwrite():
+	_seed_bg("bg_school_gate")
+	SignalBus.bg_changed.emit("bg_cafe", "fade", 0.1)
+	SignalBus.bg_changed.emit("bg_outside", "cut", 0.0)
+	await get_tree().create_timer(0.2).timeout
+	assert_eq(_bg_front().texture.resource_path.get_file(), "bg_outside.png")

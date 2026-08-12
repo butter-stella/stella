@@ -72,10 +72,9 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 	_runtime.choice_history_manager.record(8, func() -> Dictionary: return {"dirty": true})
 	_runtime.flowchart_state.enter_chapter("dirty_chapter", {"dirty": true})
 	_runtime.presentation_state.current_bg = "dirty_bg"
-	_runtime.presentation_state.visible_characters["dirty"] = {
-		"expression": "angry",
-		"position": "center",
-	}
+	_runtime.presentation_state.stage_layers["dirty"] = (
+		StageLayerState.normalize_full({"asset": "stage:dirty"})
+	)
 	_runtime.presentation_state.current_bgm = "dirty_bgm"
 	_runtime.game_state.current_state = GameStateMachine.State.BACKLOG
 	_runtime.game_state.previous_state = GameStateMachine.State.PLAYING
@@ -116,7 +115,7 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 		"preserve the presentation state's SignalBus connections")
 	assert_eq(_runtime.presentation_state.capture_snapshot(), {
 		"bg": "",
-		"characters": {},
+		"stage_layers": {},
 		"bgm": "",
 	})
 
@@ -250,7 +249,6 @@ func test_reset_for_test_invalidates_a_real_dialogue_typewriter() -> void:
 	SignalBus.show_dialogue.emit("n", [{
 		"text": "x",
 		"voice": "",
-		"expression": "",
 	}], "adv")
 	var active_generation: int = dialogue._dialogue_gen
 	assert_eq(dialogue._current_scenario_id, "runtime_reset_test")
@@ -284,7 +282,6 @@ func test_reset_for_test_cancels_a_delayed_skip_advance() -> void:
 	SignalBus.show_dialogue.emit("n", [{
 		"text": "skip then reset",
 		"voice": "",
-		"expression": "",
 	}], "adv")
 	await get_tree().process_frame
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())

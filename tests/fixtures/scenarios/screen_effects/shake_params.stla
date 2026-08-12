@@ -9,4 +9,3 @@
 
 // Checkpoint 2: all affected layers must be restored.
 @wait click
-@end

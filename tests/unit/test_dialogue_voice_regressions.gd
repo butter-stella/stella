@@ -1,7 +1,5 @@
 extends GutTest
-## Tests that CharacterPresenter updates the stage sprite texture
-## when char_expression_changed is emitted (inline [expr] markers
-## or @expr command).
+## Dialogue voice, replay, reset, and presentation-isolation regressions.
 
 var _game_scene: Node
 
@@ -12,166 +10,16 @@ func before_each():
 	await get_tree().process_frame
 
 
-func _get_char_layer() -> CanvasLayer:
-	return _game_scene.get_node("CharacterLayer")
-
-
-func _get_slot_left() -> Control:
-	return _game_scene.get_node("CharacterLayer/ShakeRoot/SlotLeft")
-
-
-func test_builtin_shake_root_preserves_character_anchor_layout() -> void:
-	var shake_root: Control = _game_scene.get_node("CharacterLayer/ShakeRoot")
-	var viewport_size := _game_scene.get_viewport().get_visible_rect().size
-	assert_eq(shake_root.size, viewport_size, "ShakeRoot must supply the viewport anchor rect")
-	assert_eq(shake_root.mouse_filter, Control.MOUSE_FILTER_IGNORE)
-	for slot_name in ["SlotLeft", "SlotCenter", "SlotRight"]:
-		var slot: Control = shake_root.get_node(slot_name)
-		var expected_size := Vector2(
-			(slot.anchor_right - slot.anchor_left) * viewport_size.x
-				+ slot.offset_right - slot.offset_left,
-			(slot.anchor_bottom - slot.anchor_top) * viewport_size.y
-				+ slot.offset_bottom - slot.offset_top,
-		)
-		assert_eq(slot.size, expected_size, "%s anchors must resolve against the viewport" % slot_name)
-		assert_true(slot.size.x > 0.0 and slot.size.y > 0.0)
-
-
-func test_legacy_direct_child_scene_still_resolves_character_slots() -> void:
-	var layer := CanvasLayer.new()
-	layer.set_script(load("res://addons/stella/presentation/character/character_presenter.gd"))
-	var slots: Array[Control] = []
-	for node_name in ["SlotLeft", "SlotCenter", "SlotRight"]:
-		var slot := Control.new()
-		slot.name = node_name
-		layer.add_child(slot)
-		slots.append(slot)
-	add_child_autoqfree(layer)
-	await get_tree().process_frame
-	assert_same(layer.slot_left, slots[0])
-	assert_same(layer.slot_center, slots[1])
-	assert_same(layer.slot_right, slots[2])
-
-
-func test_char_show_creates_sprite_node_with_texture():
-	SignalBus.char_show.emit("sakura", "smile", "left")
-	await get_tree().process_frame
-	var slot = _get_slot_left()
-	var sprite = slot.get_node_or_null("Sprite")
-	assert_not_null(sprite, "Sprite node should be created on char_show")
-	assert_not_null(sprite.texture, "Sprite should have a texture loaded")
-
-
-func test_char_expression_changed_updates_stage_sprite_texture():
-	# Show sakura in "smile" on the left
-	SignalBus.char_show.emit("sakura", "smile", "left")
-	await get_tree().process_frame
-	var slot = _get_slot_left()
-	var sprite = slot.get_node_or_null("Sprite")
-	assert_not_null(sprite, "Sprite node should exist after char_show")
-	var smile_texture = sprite.texture
-	assert_not_null(smile_texture, "smile texture should be loaded")
-
-	# Change expression (simulating inline [surprised] marker or @expr)
-	SignalBus.char_expression_changed.emit("sakura", "surprised")
-	await get_tree().process_frame
-
-	# The sprite node's texture should now be different (surprised.png)
-	var surprised_texture = sprite.texture
-	assert_not_null(surprised_texture, "surprised texture should be loaded")
-	assert_ne(
-		surprised_texture.resource_path,
-		smile_texture.resource_path,
-		"Stage sprite texture should change from smile to surprised"
-	)
-
-
-func test_inline_expression_during_typewriter_updates_stage_sprite():
-	# Mimic the exact scenario from demo.stla:97
-	# @show sakura smile left
-	# @expr sakura sad
-	# sakura「...[surprised]...[sad]...」
-	SignalBus.char_show.emit("sakura", "smile", "left")
-	await get_tree().process_frame
-	SignalBus.char_expression_changed.emit("sakura", "sad")
-	await get_tree().process_frame
-
-	var slot = _get_slot_left()
-	var sprite = slot.get_node_or_null("Sprite")
-	assert_not_null(sprite)
-	var sad_path = sprite.texture.resource_path
-	assert_true(sad_path.ends_with("sad.png"),
-		"After @expr sakura sad, sprite should be sad.png, got: %s" % sad_path)
-
-	# Now trigger dialogue which should fire inline markers during typewriter
-	SignalBus.show_dialogue.emit("sakura", [{
-		"text": "我本来很开心的...[surprised]但是听说下周要期中考...[sad]我数学肯定完蛋了。",
-		"voice": "",
-		"expression": "",
-	}], "adv")
-
-	# Wait for typewriter to process inline markers
-	# The dialogue has ~30 chars total, 0.03s per char = ~0.9s, plus {wait} etc
-	await get_tree().create_timer(1.5).timeout
-
-	# After typewriter finishes, the final expression should be "sad"
-	# (from the second inline marker [sad])
-	sprite = slot.get_node_or_null("Sprite")
-	assert_not_null(sprite, "sprite should still exist after dialogue")
-	var final_path = sprite.texture.resource_path
-	assert_true(final_path.ends_with("sad.png"),
-		"Final stage sprite should be sad.png after inline markers, got: %s" % final_path)
-
-
-func test_char_expression_changed_tracks_position_correctly():
-	# Show on left, not center — default slot should NOT be center
-	SignalBus.char_show.emit("sakura", "smile", "left")
-	await get_tree().process_frame
-
-	var presenter = _get_char_layer()
-	assert_eq(presenter._character_positions.get("sakura"), "left",
-		"position should be tracked as 'left'")
-
-	SignalBus.char_expression_changed.emit("sakura", "surprised")
-	await get_tree().process_frame
-
-	# The left slot should have the updated texture, not center
-	var left_sprite = _get_slot_left().get_node_or_null("Sprite")
-	assert_not_null(left_sprite, "left slot sprite should still exist")
-	assert_true(left_sprite.texture.resource_path.ends_with("surprised.png"),
-		"left slot should show surprised texture, got: %s" % left_sprite.texture.resource_path)
-
-
-func test_combined_dialogue_plays_segments_sequentially():
-	# Simulate a @combine block with 3 segments
-	SignalBus.char_show.emit("sakura", "smile", "left")
-	await get_tree().process_frame
-
-	var segments = [
-		{"text": "我本来很开心的...", "voice": "sakura_013", "expression": "sad"},
-		{"text": "但是听说下周要期中考...", "voice": "sakura_018", "expression": "surprised"},
-		{"text": "我数学肯定完蛋了。", "voice": "sakura_019", "expression": "sad"},
-	]
-	SignalBus.show_dialogue.emit("sakura", segments, "adv")
-	await get_tree().process_frame
-
-	# Initial segment's expression should be applied
-	var slot = _get_slot_left()
-	var sprite = slot.get_node_or_null("Sprite")
-	assert_not_null(sprite)
-	assert_true(sprite.texture.resource_path.ends_with("sad.png"),
-		"initial expression from segment[0] should be applied")
+func _get_stage_presenter() -> StagePresenter:
+	return _game_scene.get_node("StageLayer") as StagePresenter
 
 
 func test_combine_voice_replay_restarts_from_first_segment():
 	# Setup: play a combined dialogue, let the queue run, then click replay
-	SignalBus.char_show.emit("sakura", "smile", "left")
-	await get_tree().process_frame
-
 	var segments = [
-		{"text": "一", "voice": "sakura_013", "expression": "sad"},
-		{"text": "二", "voice": "sakura_018", "expression": "surprised"},
-		{"text": "三", "voice": "sakura_019", "expression": "sad"},
+		{"text": "一", "voice": "sakura_013"},
+		{"text": "二", "voice": "sakura_018"},
+		{"text": "三", "voice": "sakura_019"},
 	]
 
 	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
@@ -196,7 +44,7 @@ func test_single_segment_dialogue_stores_one_segment():
 	# (size 1) so the unified replay path works.
 	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
 	SignalBus.show_dialogue.emit("sakura",
-		[{"text": "hello", "voice": "v1", "expression": ""}], "adv")
+		[{"text": "hello", "voice": "v1"}], "adv")
 	await get_tree().process_frame
 	assert_eq(dialogue._dialogue_segments.size(), 1,
 		"single-segment dialogue should snapshot a 1-element segments array")
@@ -205,8 +53,8 @@ func test_single_segment_dialogue_stores_one_segment():
 func test_combine_with_empty_voices_does_not_hang():
 	# All segments have empty voice — queue should drain synchronously without hanging
 	var segments = [
-		{"text": "一", "voice": "", "expression": ""},
-		{"text": "二", "voice": "", "expression": ""},
+		{"text": "一", "voice": ""},
+		{"text": "二", "voice": ""},
 	]
 	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
 	SignalBus.show_dialogue.emit("sakura", segments, "adv")
@@ -223,9 +71,9 @@ func test_dialogue_voice_progress_emits_with_total_duration():
 	SignalBus.dialogue_voice_started.connect(func(d): started_payloads.append(d))
 
 	var segments = [
-		{"text": "一", "voice": "sakura_013", "expression": ""},
-		{"text": "二", "voice": "sakura_018", "expression": ""},
-		{"text": "三", "voice": "sakura_019", "expression": ""},
+		{"text": "一", "voice": "sakura_013"},
+		{"text": "二", "voice": "sakura_018"},
+		{"text": "三", "voice": "sakura_019"},
 	]
 	SignalBus.show_dialogue.emit("sakura", segments, "adv")
 	await get_tree().process_frame
@@ -263,37 +111,13 @@ func test_dialogue_voice_progress_relays_cumulative_position():
 		"total duration should be the precomputed combined total")
 
 
-func test_char_show_then_expression_change_uses_new_sprite():
-	# Regression: _clear_slot used queue_free, leaving the old "Sprite" node in
-	# the tree. add_child("Sprite") would auto-rename due to name collision,
-	# and get_node_or_null("Sprite") would return the old (about-to-be-freed)
-	# node, silently dropping the texture update. This is the same root cause
-	# as the load-from-combine bug where stage立绘 wouldn't update.
-	SignalBus.char_show.emit("sakura", "happy", "left")
-	await get_tree().process_frame
-	# Now show the same character again at a different expression — simulates
-	# what presentation_state.apply_to_presenters() does on a load.
-	SignalBus.char_show.emit("sakura", "happy", "left")
-	# Immediately fire char_expression_changed (no frame elapsed yet, so any
-	# queue_freed-but-still-in-tree node is the actual hazard)
-	SignalBus.char_expression_changed.emit("sakura", "sad")
-	await get_tree().process_frame
-
-	var slot = _get_slot_left()
-	var sprite = slot.get_node_or_null("Sprite")
-	assert_not_null(sprite, "the live Sprite node must be findable by name")
-	assert_true(sprite.texture.resource_path.ends_with("sad.png"),
-		"texture should reflect the post-show expression change, got: %s"
-			% sprite.texture.resource_path)
-
-
 func test_voice_replay_re_emits_dialogue_voice_started():
 	# Bug: replay button restarted the voice queue but never re-fired
 	# dialogue_voice_started, so the demo progress bar stayed hidden.
 	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
 	var segments = [
-		{"text": "一", "voice": "sakura_013", "expression": ""},
-		{"text": "二", "voice": "sakura_018", "expression": ""},
+		{"text": "一", "voice": "sakura_013"},
+		{"text": "二", "voice": "sakura_018"},
 	]
 	SignalBus.show_dialogue.emit("sakura", segments, "adv")
 	await get_tree().process_frame
@@ -311,9 +135,9 @@ func test_dialogue_voice_finished_waits_for_last_segment():
 	# playing (loop exited after kicking it off). The progress bar would
 	# disappear at the start of the final segment instead of at its end.
 	var segments = [
-		{"text": "一", "voice": "v1", "expression": ""},
-		{"text": "二", "voice": "v2", "expression": ""},
-		{"text": "三", "voice": "v3", "expression": ""},
+		{"text": "一", "voice": "v1"},
+		{"text": "二", "voice": "v2"},
+		{"text": "三", "voice": "v3"},
 	]
 
 	var finished_count := [0]
@@ -359,7 +183,7 @@ func test_reset_presentation_clears_backlog():
 	# so the previous run's entries leaked into the loaded game.
 	StellaRuntime.backlog_manager.clear()
 	StellaRuntime.backlog_manager.add_entry(
-		"sakura", [{"text": "old run", "voice": "", "expression": ""}]
+		"sakura", [{"text": "old run", "voice": ""}]
 	)
 	assert_eq(StellaRuntime.backlog_manager.get_entries().size(), 1,
 		"sanity: entry was added")
@@ -390,8 +214,8 @@ func test_replay_button_visible_when_only_later_segment_has_voice():
 		add_child_autoqfree(dialogue._voice_replay_btn)
 
 	var segments = [
-		{"text": "一", "voice": "", "expression": ""},
-		{"text": "二", "voice": "sakura_018", "expression": ""},
+		{"text": "一", "voice": ""},
+		{"text": "二", "voice": "sakura_018"},
 	]
 	SignalBus.show_dialogue.emit("sakura", segments, "adv")
 	await get_tree().process_frame
@@ -426,8 +250,8 @@ func test_backlog_replay_does_not_corrupt_dialogue_state():
 
 	# Set up a "current dialogue" with two segments (the toolbar replay target)
 	var dialogue_segments = [
-		{"text": "current一", "voice": "sakura_011", "expression": ""},
-		{"text": "current二", "voice": "sakura_012", "expression": ""},
+		{"text": "current一", "voice": "sakura_011"},
+		{"text": "current二", "voice": "sakura_012"},
 	]
 	SignalBus.show_dialogue.emit("sakura", dialogue_segments, "adv")
 	await get_tree().process_frame
@@ -461,25 +285,26 @@ func test_backlog_replay_does_not_corrupt_dialogue_state():
 		"toolbar replay must play the current dialogue's first voice, not the backlog's")
 
 
-func test_backlog_replay_does_not_change_stage_expression():
-	# Replay from backlog should NOT mutate the stage character立绘 (segments
-	# from old entries would carry stale expressions). _on_dialogue_voice_replay_requested
-	# builds synthetic segments with empty expression so char_expression_changed
-	# is never fired by the queue.
-	SignalBus.char_show.emit("sakura", "happy", "left")
+func test_backlog_replay_does_not_change_named_stage_layers():
+	SignalBus.emit_stage_operations([{
+		"action": "show",
+		"id": "sakura",
+		"properties": {"asset": "character:sakura/happy"},
+		"transition": "cut",
+		"duration": 0.0,
+	}], true)
 	await get_tree().process_frame
-	var slot = _get_slot_left()
-	var sprite = slot.get_node_or_null("Sprite")
+	var layer := _get_stage_presenter().get_layer_node("sakura")
+	var sprite := layer.find_child("AssetSprite", true, false) as Sprite2D
 	assert_not_null(sprite)
-	var initial_path = sprite.texture.resource_path
+	var initial_texture := sprite.texture
 
 	# Fire a replay request — voices only, no expression metadata
 	SignalBus.dialogue_voice_replay_requested.emit(["sakura_013"], "sakura")
 	await get_tree().process_frame
 
-	# Stage texture must be unchanged
-	assert_eq(sprite.texture.resource_path, initial_path,
-		"backlog replay must not touch stage立绘")
+	assert_same(sprite.texture, initial_texture,
+		"dialogue replay must not mutate independent stage state")
 
 
 func test_backlog_replay_does_not_emit_dialogue_voice_signals():
@@ -536,7 +361,7 @@ func test_single_segment_dialogue_emits_voice_play_exactly_once():
 	SignalBus.voice_play.connect(conn)
 
 	SignalBus.show_dialogue.emit("sakura",
-		[{"text": "hi", "voice": "sakura_011", "expression": ""}], "adv")
+		[{"text": "hi", "voice": "sakura_011"}], "adv")
 	await get_tree().process_frame
 
 	SignalBus.voice_play.disconnect(conn)

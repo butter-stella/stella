@@ -16,7 +16,6 @@
 @nvl off
 「Back in ADV」
 @jump runtime_fixture_done
-@end
 
 // Runtime page-boundary fixtures. Each entry scene jumps to a shared terminal
 // scene so tests can start it directly without falling through into the next

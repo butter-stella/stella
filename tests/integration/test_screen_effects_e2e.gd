@@ -12,10 +12,10 @@ const COVERAGE_EPSILON := 0.01
 
 var _game: Node2D
 var _background_layer: CanvasLayer
-var _character_layer: CanvasLayer
+var _stage_layer: CanvasLayer
 var _ui_layer: CanvasLayer
 var _background_shake_root: Control
-var _character_shake_root: Control
+var _stage_shake_root: Control
 var _effects: Node
 var _engine: ScenarioEngine
 var _effect_events: Array[Dictionary] = []
@@ -29,10 +29,10 @@ func before_each() -> void:
 	await get_tree().process_frame
 
 	_background_layer = _game.get_node("BackgroundLayer")
-	_character_layer = _game.get_node("CharacterLayer")
+	_stage_layer = _game.get_node("StageLayer")
 	_ui_layer = _game.get_node("UILayer")
 	_background_shake_root = _game.get_node("BackgroundLayer/ShakeRoot")
-	_character_shake_root = _game.get_node("CharacterLayer/ShakeRoot")
+	_stage_shake_root = _game.get_node("StageLayer/ShakeRoot")
 	_effects = _game.get_node("ScreenEffects")
 
 	_effect_events.clear()
@@ -72,7 +72,7 @@ func test_builtin_shake_coverage_handles_absolute_maximum_at_all_corners() -> vo
 	var root_scale := _background_shake_root.scale
 	var root_pivot := _background_shake_root.pivot_offset
 	var root_size := _background_shake_root.size
-	var character_scale := _character_shake_root.scale
+	var stage_scale := _stage_shake_root.scale
 	assert_eq(
 		_effects.shake_coverage_target_paths,
 		[NodePath("../BackgroundLayer/ShakeRoot")],
@@ -88,7 +88,7 @@ func test_builtin_shake_coverage_handles_absolute_maximum_at_all_corners() -> vo
 	assert_gt(_background_shake_root.scale.x, 1.0)
 	assert_eq(_background_shake_root.scale.x, _background_shake_root.scale.y)
 	assert_eq(_background_shake_root.size, root_size)
-	assert_eq(_character_shake_root.scale, character_scale)
+	assert_eq(_stage_shake_root.scale, stage_scale)
 	_assert_four_corner_coverage(background, tween, intensity, viewport_size)
 
 	SignalBus.effect_requested.emit("off", {})
@@ -96,7 +96,7 @@ func test_builtin_shake_coverage_handles_absolute_maximum_at_all_corners() -> vo
 	assert_eq(_background_shake_root.scale, root_scale)
 	assert_eq(_background_shake_root.pivot_offset, root_pivot)
 	assert_eq(_background_shake_root.size, root_size)
-	assert_eq(_character_shake_root.scale, character_scale)
+	assert_eq(_stage_shake_root.scale, stage_scale)
 
 
 func test_active_shake_recomputes_coverage_after_viewport_resize() -> void:
@@ -116,7 +116,7 @@ func test_active_shake_recomputes_coverage_after_viewport_resize() -> void:
 	var root_position := _background_shake_root.position
 	var root_scale := _background_shake_root.scale
 	var root_pivot := _background_shake_root.pivot_offset
-	var character_scale := _character_shake_root.scale
+	var stage_scale := _stage_shake_root.scale
 	var intensity := 100.0
 	SignalBus.effect_requested.emit("shake", {"intensity": intensity, "duration": 5.0})
 	var tween: Tween = _effects._shake_tween
@@ -146,8 +146,8 @@ func test_active_shake_recomputes_coverage_after_viewport_resize() -> void:
 	assert_true(
 		_background_shake_root.pivot_offset.is_equal_approx(Vector2(resized_size) * 0.5)
 	)
-	assert_true(_character_shake_root.size.is_equal_approx(Vector2(resized_size)))
-	assert_eq(_character_shake_root.scale, character_scale)
+	assert_true(_stage_shake_root.size.is_equal_approx(Vector2(resized_size)))
+	assert_eq(_stage_shake_root.scale, stage_scale)
 	_assert_four_corner_coverage(background, tween, intensity, Vector2(resized_size))
 
 	SignalBus.effect_requested.emit("off", {})
@@ -155,7 +155,7 @@ func test_active_shake_recomputes_coverage_after_viewport_resize() -> void:
 	assert_eq(_background_shake_root.scale, root_scale)
 	assert_eq(_background_shake_root.pivot_offset, root_pivot)
 	assert_true(_background_shake_root.size.is_equal_approx(Vector2(resized_size)))
-	assert_eq(_character_shake_root.scale, character_scale)
+	assert_eq(_stage_shake_root.scale, stage_scale)
 
 
 func test_shake_coverage_composes_with_slide_left_transition() -> void:
@@ -228,16 +228,44 @@ func test_builtin_and_demo_scenes_configure_background_coverage_only() -> void:
 	demo_game.free()
 
 
+func test_dynamic_stage_layer_moves_with_the_stage_shake_root() -> void:
+	var stage := _stage_layer as StagePresenter
+	stage._on_stage_operations_requested([{
+		"action": "show",
+		"id": "shake_probe",
+		"properties": {"position": [320.0, 240.0]},
+		"transition": "cut",
+		"duration": 0.0,
+	}], true)
+	var layer := stage.get_layer_node("shake_probe")
+	assert_same(layer.get_parent(), _stage_shake_root)
+	var root_baseline := _stage_shake_root.position
+	var layer_global_baseline := layer.global_position
+
+	SignalBus.effect_requested.emit("shake", {"intensity": 32.0, "duration": 5.0})
+	var tween: Tween = _effects._shake_tween
+	assert_not_null(tween)
+	if tween == null:
+		return
+	var delta := Vector2(17.0, -11.0)
+	_effects._apply_shake_offset(tween, delta)
+	assert_eq(_stage_shake_root.position, root_baseline + delta)
+	assert_eq(layer.global_position, layer_global_baseline + delta)
+	SignalBus.effect_requested.emit("off", {})
+	assert_eq(_stage_shake_root.position, root_baseline)
+	assert_eq(layer.global_position, layer_global_baseline)
+
+
 func test_shake_fixture_reaches_the_real_game_presenter() -> void:
 	var background_root_baseline := Vector2(11.0, -7.0)
-	var character_root_baseline := Vector2(-5.0, 9.0)
+	var stage_root_baseline := Vector2(-5.0, 9.0)
 	var background_layer_baseline := Vector2(40.0, -12.0)
-	var character_layer_baseline := Vector2(-18.0, 30.0)
+	var stage_layer_baseline := Vector2(-18.0, 30.0)
 	var ui_baseline := Vector2(2.0, -3.0)
 	_background_shake_root.position = background_root_baseline
-	_character_shake_root.position = character_root_baseline
+	_stage_shake_root.position = stage_root_baseline
 	_background_layer.offset = background_layer_baseline
-	_character_layer.offset = character_layer_baseline
+	_stage_layer.offset = stage_layer_baseline
 	_ui_layer.offset = ui_baseline
 
 	_start_fixture("shake_params.stla")
@@ -251,10 +279,10 @@ func test_shake_fixture_reaches_the_real_game_presenter() -> void:
 	assert_almost_eq(_effect_events[0]["params"].get("duration", 0.0), 5.0, 0.001)
 	assert_not_null(_effects._shake_tween, "the production presenter must start a shake tween")
 	assert_true(_effects._shake_targets.has(_background_shake_root))
-	assert_true(_effects._shake_targets.has(_character_shake_root))
+	assert_true(_effects._shake_targets.has(_stage_shake_root))
 	assert_eq(_effects._shake_targets.size(), 2, "UI must not be a shake target")
 	assert_eq(_effects._shake_baselines.get(_background_shake_root), background_root_baseline)
-	assert_eq(_effects._shake_baselines.get(_character_shake_root), character_root_baseline)
+	assert_eq(_effects._shake_baselines.get(_stage_shake_root), stage_root_baseline)
 
 	# Sample several random deltas. Their exact values are deliberately not
 	# asserted; only actual movement and the rigid-stage invariant are relevant.
@@ -262,23 +290,23 @@ func test_shake_fixture_reaches_the_real_game_presenter() -> void:
 	for _frame in range(4):
 		await get_tree().process_frame
 		var background_delta := _background_shake_root.position - background_root_baseline
-		var character_delta := _character_shake_root.position - character_root_baseline
+		var stage_delta := _stage_shake_root.position - stage_root_baseline
 		observed_movement = observed_movement or background_delta.length() > 0.001
-		assert_lt(background_delta.distance_to(character_delta), 0.001)
+		assert_lt(background_delta.distance_to(stage_delta), 0.001)
 	assert_true(observed_movement, "shake must move the configured stage layers")
 	assert_eq(_background_layer.offset, background_layer_baseline)
-	assert_eq(_character_layer.offset, character_layer_baseline)
+	assert_eq(_stage_layer.offset, stage_layer_baseline)
 	assert_eq(_ui_layer.offset, ui_baseline)
 
 	# Exercise real composition: camera/pan state can change after shake starts.
 	var updated_background_offset := Vector2(77.0, -25.0)
-	var updated_character_offset := Vector2(-33.0, 61.0)
+	var updated_stage_offset := Vector2(-33.0, 61.0)
 	_background_layer.offset = updated_background_offset
-	_character_layer.offset = updated_character_offset
+	_stage_layer.offset = updated_stage_offset
 	await get_tree().process_frame
 	await get_tree().process_frame
 	assert_eq(_background_layer.offset, updated_background_offset)
-	assert_eq(_character_layer.offset, updated_character_offset)
+	assert_eq(_stage_layer.offset, updated_stage_offset)
 
 	SignalBus.advance_requested.emit()
 	if not await _wait_for_command(3, "shake fixture reaches its cleared checkpoint"):
@@ -286,9 +314,9 @@ func test_shake_fixture_reaches_the_real_game_presenter() -> void:
 	assert_eq(_event_types(), ["shake", "off"])
 	assert_null(_effects._shake_tween)
 	assert_eq(_background_shake_root.position, background_root_baseline)
-	assert_eq(_character_shake_root.position, character_root_baseline)
+	assert_eq(_stage_shake_root.position, stage_root_baseline)
 	assert_eq(_background_layer.offset, updated_background_offset)
-	assert_eq(_character_layer.offset, updated_character_offset)
+	assert_eq(_stage_layer.offset, updated_stage_offset)
 	assert_eq(_ui_layer.offset, ui_baseline)
 	await _finish_fixture()
 
@@ -342,9 +370,9 @@ func test_flash_fixture_reaches_the_real_game_presenter() -> void:
 
 func test_off_fixture_clears_shake_and_flash_together() -> void:
 	var background_baseline := Vector2(7.0, 4.0)
-	var character_baseline := Vector2(-8.0, 3.0)
+	var stage_baseline := Vector2(-8.0, 3.0)
 	_background_shake_root.position = background_baseline
-	_character_shake_root.position = character_baseline
+	_stage_shake_root.position = stage_baseline
 
 	_start_fixture("effect_off.stla")
 	if not await _wait_for_command(2, "off fixture reaches its active checkpoint"):
@@ -366,7 +394,7 @@ func test_off_fixture_clears_shake_and_flash_together() -> void:
 	assert_null(_effects._flash_tween)
 	assert_null(_effects._flash_overlay)
 	assert_eq(_background_shake_root.position, background_baseline)
-	assert_eq(_character_shake_root.position, character_baseline)
+	assert_eq(_stage_shake_root.position, stage_baseline)
 	await _finish_fixture()
 
 

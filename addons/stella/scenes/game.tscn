@@ -1,7 +1,7 @@
 [gd_scene format=3 uid="uid://dhvclqgbx6gpb"]
 
 [ext_resource type="Script" uid="uid://r85pc74kv7i3" path="res://addons/stella/presentation/background/background_presenter.gd" id="1"]
-[ext_resource type="Script" uid="uid://boya1orvodq01" path="res://addons/stella/presentation/character/character_presenter.gd" id="2"]
+[ext_resource type="Script" uid="uid://dydprw1q8vq5g" path="res://addons/stella/presentation/stage/stage_presenter.gd" id="2"]
 [ext_resource type="Script" uid="uid://dn3xiyn8tgmvf" path="res://addons/stella/presentation/dialogue/dialogue_presenter.gd" id="3"]
 [ext_resource type="Script" uid="uid://blb0ko5o6p7ex" path="res://addons/stella/presentation/choice/text_choice_presenter.gd" id="4"]
 [ext_resource type="Script" uid="uid://dsbqcj0usnsh2" path="res://addons/stella/presentation/input/input_handler.gd" id="5"]
@@ -39,10 +39,11 @@ grow_horizontal = 2
 grow_vertical = 2
 stretch_mode = 6
 
-[node name="CharacterLayer" type="CanvasLayer" parent="." unique_id=1295087027]
+[node name="StageLayer" type="CanvasLayer" parent="." unique_id=1295087027]
+layer = 1
 script = ExtResource("2")
 
-[node name="ShakeRoot" type="Control" parent="CharacterLayer"]
+[node name="ShakeRoot" type="Control" parent="StageLayer"]
 layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
@@ -50,39 +51,6 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 mouse_filter = 2
-
-[node name="SlotLeft" type="Control" parent="CharacterLayer/ShakeRoot" unique_id=1373131325]
-layout_mode = 3
-anchor_left = -0.2
-anchor_top = 0.2
-anchor_right = 0.4
-anchor_bottom = 2.2
-offset_left = 287.0
-offset_top = -133.0
-offset_right = 287.0
-offset_bottom = -133.0
-
-[node name="SlotCenter" type="Control" parent="CharacterLayer/ShakeRoot" unique_id=683235921]
-layout_mode = 3
-anchor_left = 0.1
-anchor_top = 0.2
-anchor_right = 0.9
-anchor_bottom = 2.2
-offset_left = 2.0
-offset_top = -136.0
-offset_right = 2.0
-offset_bottom = -136.0
-
-[node name="SlotRight" type="Control" parent="CharacterLayer/ShakeRoot" unique_id=407592576]
-layout_mode = 3
-anchor_left = 0.6
-anchor_top = 0.2
-anchor_right = 1.2
-anchor_bottom = 2.2
-offset_left = -293.0
-offset_top = -138.0
-offset_right = -293.0
-offset_bottom = -138.0
 
 [node name="UILayer" type="CanvasLayer" parent="." unique_id=25130991]
 layer = 3
@@ -164,7 +132,6 @@ unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 120)
 layout_mode = 2
 theme_override_font_sizes/normal_font_size = 22
-bbcode_enabled = true
 fit_content = true
 visible_characters = 0
 
@@ -235,7 +202,7 @@ script = ExtResource("5")
 
 [node name="ScreenEffects" type="Node" parent="." unique_id=191658614]
 script = ExtResource("8")
-shake_target_paths = Array[NodePath]([NodePath("../BackgroundLayer/ShakeRoot"), NodePath("../CharacterLayer/ShakeRoot")])
+shake_target_paths = Array[NodePath]([NodePath("../BackgroundLayer/ShakeRoot"), NodePath("../StageLayer/ShakeRoot")])
 shake_coverage_target_paths = Array[NodePath]([NodePath("../BackgroundLayer/ShakeRoot")])
 flash_canvas_path = NodePath("FlashCanvas")
 

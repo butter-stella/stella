@@ -6,10 +6,10 @@ const SCREEN_EFFECTS_SCRIPT = preload("res://addons/stella/presentation/effects/
 
 var _parent: Node2D
 var _bg_layer: CanvasLayer
-var _char_layer: CanvasLayer
+var _stage_layer: CanvasLayer
 var _ui_layer: CanvasLayer
 var _bg_shake_root: Node2D
-var _char_shake_root: Node2D
+var _stage_shake_root: Node2D
 var _effects: Node
 
 
@@ -28,13 +28,13 @@ func before_each() -> void:
 	_bg_shake_root.name = "ShakeRoot"
 	_bg_layer.add_child(_bg_shake_root)
 
-	_char_layer = CanvasLayer.new()
-	_char_layer.name = "CharacterLayer"
-	_char_layer.layer = 1
-	_parent.add_child(_char_layer)
-	_char_shake_root = Node2D.new()
-	_char_shake_root.name = "ShakeRoot"
-	_char_layer.add_child(_char_shake_root)
+	_stage_layer = CanvasLayer.new()
+	_stage_layer.name = "StageLayer"
+	_stage_layer.layer = 1
+	_parent.add_child(_stage_layer)
+	_stage_shake_root = Node2D.new()
+	_stage_shake_root.name = "ShakeRoot"
+	_stage_layer.add_child(_stage_shake_root)
 
 	_ui_layer = CanvasLayer.new()
 	_ui_layer.name = "UILayer"
@@ -46,7 +46,7 @@ func before_each() -> void:
 	_effects.set_script(SCREEN_EFFECTS_SCRIPT)
 	var target_paths: Array[NodePath] = [
 		NodePath("../BackgroundLayer/ShakeRoot"),
-		NodePath("../CharacterLayer/ShakeRoot"),
+		NodePath("../StageLayer/ShakeRoot"),
 	]
 	_effects.shake_target_paths = target_paths
 	_parent.add_child(_effects)
@@ -65,42 +65,42 @@ func after_each() -> void:
 
 # --- Shake: dedicated roots move together; surrounding layer offsets compose ---
 
-func test_shake_moves_background_and_character_roots() -> void:
+func test_shake_moves_background_and_stage_roots() -> void:
 	SignalBus.effect_requested.emit("shake", {"intensity": 50.0, "duration": 0.3})
 
 	var max_bg := 0.0
-	var max_char := 0.0
+	var max_stage := 0.0
 	for _sample in range(6):
 		await get_tree().create_timer(0.04).timeout
 		max_bg = maxf(max_bg, _bg_shake_root.position.length())
-		max_char = maxf(max_char, _char_shake_root.position.length())
+		max_stage = maxf(max_stage, _stage_shake_root.position.length())
 
 	assert_gt(max_bg, 5.0, "background ShakeRoot should move measurably")
-	assert_gt(max_char, 5.0, "character ShakeRoot should move measurably")
+	assert_gt(max_stage, 5.0, "stage ShakeRoot should move measurably")
 	await get_tree().create_timer(0.2).timeout
 	assert_eq(_bg_shake_root.position, Vector2.ZERO, "background root must reset")
-	assert_eq(_char_shake_root.position, Vector2.ZERO, "character root must reset")
+	assert_eq(_stage_shake_root.position, Vector2.ZERO, "stage root must reset")
 
 
 func test_shake_uses_shared_delta_and_restores_each_root_baseline() -> void:
 	var bg_baseline := Vector2(12.0, -4.0)
-	var char_baseline := Vector2(-6.0, 8.0)
+	var stage_baseline := Vector2(-6.0, 8.0)
 	_bg_shake_root.position = bg_baseline
-	_char_shake_root.position = char_baseline
+	_stage_shake_root.position = stage_baseline
 
 	SignalBus.effect_requested.emit("shake", {"intensity": 40.0, "duration": 0.22})
 	var saw_motion := false
 	for _sample in range(3):
 		await get_tree().create_timer(0.055).timeout
 		var bg_delta := _bg_shake_root.position - bg_baseline
-		var char_delta := _char_shake_root.position - char_baseline
-		assert_lt(bg_delta.distance_to(char_delta), 0.001, "stage roots need one shared delta")
+		var stage_delta := _stage_shake_root.position - stage_baseline
+		assert_lt(bg_delta.distance_to(stage_delta), 0.001, "stage roots need one shared delta")
 		saw_motion = saw_motion or bg_delta.length() > 0.001
 	assert_true(saw_motion, "shake should move the configured roots")
 
 	await get_tree().create_timer(0.12).timeout
 	assert_eq(_bg_shake_root.position, bg_baseline)
-	assert_eq(_char_shake_root.position, char_baseline)
+	assert_eq(_stage_shake_root.position, stage_baseline)
 
 
 func test_canvas_layer_offsets_can_change_while_shake_is_active() -> void:
@@ -110,48 +110,48 @@ func test_canvas_layer_offsets_can_change_while_shake_is_active() -> void:
 
 	# Simulate a camera/pan presenter changing its transform during the effect.
 	var new_bg_offset := Vector2(120.0, -35.0)
-	var new_char_offset := Vector2(-20.0, 48.0)
+	var new_stage_offset := Vector2(-20.0, 48.0)
 	_bg_layer.offset = new_bg_offset
-	_char_layer.offset = new_char_offset
+	_stage_layer.offset = new_stage_offset
 	await get_tree().create_timer(0.12).timeout
 	assert_eq(_bg_layer.offset, new_bg_offset, "shake must not overwrite camera offset")
-	assert_eq(_char_layer.offset, new_char_offset, "shake must not overwrite camera offset")
+	assert_eq(_stage_layer.offset, new_stage_offset, "shake must not overwrite camera offset")
 
 	SignalBus.effect_requested.emit("off", {})
 	assert_eq(_bg_layer.offset, new_bg_offset, "off must preserve external background offset")
-	assert_eq(_char_layer.offset, new_char_offset, "off must preserve external character offset")
+	assert_eq(_stage_layer.offset, new_stage_offset, "off must preserve external stage offset")
 	assert_eq(_bg_shake_root.position, Vector2.ZERO)
-	assert_eq(_char_shake_root.position, Vector2.ZERO)
+	assert_eq(_stage_shake_root.position, Vector2.ZERO)
 
 
 func test_effect_off_cancels_shake_and_prevents_old_callbacks() -> void:
 	var bg_baseline := Vector2(5.0, -3.0)
-	var char_baseline := Vector2(-2.0, 7.0)
+	var stage_baseline := Vector2(-2.0, 7.0)
 	_bg_shake_root.position = bg_baseline
-	_char_shake_root.position = char_baseline
+	_stage_shake_root.position = stage_baseline
 	SignalBus.effect_requested.emit("shake", {"intensity": 50.0, "duration": 0.5})
 	await get_tree().create_timer(0.06).timeout
 	assert_ne(_bg_shake_root.position, bg_baseline, "sanity: shake is active")
 
 	SignalBus.effect_requested.emit("off", {})
 	assert_eq(_bg_shake_root.position, bg_baseline)
-	assert_eq(_char_shake_root.position, char_baseline)
+	assert_eq(_stage_shake_root.position, stage_baseline)
 	await get_tree().create_timer(0.16).timeout
 	assert_eq(_bg_shake_root.position, bg_baseline, "cancelled shake must not resume")
-	assert_eq(_char_shake_root.position, char_baseline, "cancelled shake must not resume")
+	assert_eq(_stage_shake_root.position, stage_baseline, "cancelled shake must not resume")
 
 
 func test_replacing_shake_preserves_original_root_baselines() -> void:
 	var bg_baseline := Vector2(11.0, 3.0)
-	var char_baseline := Vector2(-9.0, -2.0)
+	var stage_baseline := Vector2(-9.0, -2.0)
 	_bg_shake_root.position = bg_baseline
-	_char_shake_root.position = char_baseline
+	_stage_shake_root.position = stage_baseline
 	SignalBus.effect_requested.emit("shake", {"intensity": 45.0, "duration": 0.5})
 	await get_tree().create_timer(0.06).timeout
 	SignalBus.effect_requested.emit("shake", {"intensity": 20.0, "duration": 0.1})
 	await get_tree().create_timer(0.16).timeout
 	assert_eq(_bg_shake_root.position, bg_baseline)
-	assert_eq(_char_shake_root.position, char_baseline)
+	assert_eq(_stage_shake_root.position, stage_baseline)
 
 
 func test_reentrant_shake_request_waits_until_every_old_target_is_restored() -> void:
@@ -164,10 +164,10 @@ func test_reentrant_shake_request_waits_until_every_old_target_is_restored() -> 
 	second.name = "SecondControlTarget"
 	second.position = Vector2(-5.0, 11.0)
 	second.size = Vector2(100.0, 100.0)
-	_char_layer.add_child(second)
+	_stage_layer.add_child(second)
 	var target_paths: Array[NodePath] = [
 		NodePath("../BackgroundLayer/FirstControlTarget"),
-		NodePath("../CharacterLayer/SecondControlTarget"),
+		NodePath("../StageLayer/SecondControlTarget"),
 	]
 	_effects.shake_target_paths = target_paths
 
@@ -221,22 +221,22 @@ func test_custom_named_nested_node2d_target_can_be_configured() -> void:
 	await get_tree().create_timer(0.06).timeout
 	assert_ne(custom_root.position, baseline, "configured nested Node2D should shake")
 	assert_eq(_bg_shake_root.position, Vector2.ZERO, "unconfigured root must stay still")
-	assert_eq(_char_shake_root.position, Vector2.ZERO, "unconfigured root must stay still")
+	assert_eq(_stage_shake_root.position, Vector2.ZERO, "unconfigured root must stay still")
 	SignalBus.effect_requested.emit("off", {})
 	assert_eq(custom_root.position, baseline)
 
 
 func test_leaving_tree_restores_active_shake_roots() -> void:
 	var bg_baseline := Vector2(3.0, 6.0)
-	var char_baseline := Vector2(-4.0, 2.0)
+	var stage_baseline := Vector2(-4.0, 2.0)
 	_bg_shake_root.position = bg_baseline
-	_char_shake_root.position = char_baseline
+	_stage_shake_root.position = stage_baseline
 	SignalBus.effect_requested.emit("shake", {"intensity": 40.0, "duration": 0.5})
 	await get_tree().create_timer(0.06).timeout
 	_effects.queue_free()
 	await get_tree().process_frame
 	assert_eq(_bg_shake_root.position, bg_baseline)
-	assert_eq(_char_shake_root.position, char_baseline)
+	assert_eq(_stage_shake_root.position, stage_baseline)
 
 
 func test_reentering_tree_reuses_canvas_and_reconnects_signals() -> void:
@@ -382,13 +382,13 @@ func test_huge_finite_shake_limit_cannot_produce_infinite_positions() -> void:
 		0.001,
 	)
 	assert_true(_bg_shake_root.position.is_finite())
-	assert_true(_char_shake_root.position.is_finite())
+	assert_true(_stage_shake_root.position.is_finite())
 	assert_true(absf(_bg_shake_root.position.x) <= _effects.ABSOLUTE_MAX_SHAKE_INTENSITY)
 	assert_true(absf(_bg_shake_root.position.y) <= _effects.ABSOLUTE_MAX_SHAKE_INTENSITY)
 	for _sample in range(20):
 		_effects._apply_shake_delta(_effects._shake_tween)
 		assert_true(_bg_shake_root.position.is_finite())
-		assert_true(_char_shake_root.position.is_finite())
+		assert_true(_stage_shake_root.position.is_finite())
 	assert_push_warning("exceeds the absolute safe maximum")
 	assert_push_warning("exceeds the configured maximum")
 
@@ -788,9 +788,9 @@ func test_flash_overlay_is_freed_after_completion() -> void:
 
 func test_engine_abort_clears_shake_and_flash_without_touching_layer_offsets() -> void:
 	var bg_offset := Vector2(8.0, -5.0)
-	var char_offset := Vector2(-3.0, 4.0)
+	var stage_offset := Vector2(-3.0, 4.0)
 	_bg_layer.offset = bg_offset
-	_char_layer.offset = char_offset
+	_stage_layer.offset = stage_offset
 	SignalBus.effect_requested.emit("shake", {"intensity": 40.0, "duration": 0.5})
 	SignalBus.effect_requested.emit("flash", {"duration": 0.5})
 	await get_tree().create_timer(0.06).timeout
@@ -798,9 +798,9 @@ func test_engine_abort_clears_shake_and_flash_without_touching_layer_offsets() -
 
 	SignalBus.engine_abort_requested.emit()
 	assert_eq(_bg_shake_root.position, Vector2.ZERO)
-	assert_eq(_char_shake_root.position, Vector2.ZERO)
+	assert_eq(_stage_shake_root.position, Vector2.ZERO)
 	assert_eq(_bg_layer.offset, bg_offset)
-	assert_eq(_char_layer.offset, char_offset)
+	assert_eq(_stage_layer.offset, stage_offset)
 	await get_tree().process_frame
 	assert_null(_find_flash_overlay())
 

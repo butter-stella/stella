@@ -48,21 +48,23 @@ sakura「你好。」 #voice:sakura_001""")
 
 func test_narration():
 	var data = _parse("""@scene start
-「窗外下起了雨。」""")
+「窗外下起了雨。」 #voice:narration_001""")
 	var cmd = data.scenes[0].commands[0]
 	assert_eq(cmd.type, "dialogue")
 	assert_eq(cmd.get_string("character"), "")
 	assert_eq(cmd.get_string("text"), "窗外下起了雨。")
+	assert_eq(cmd.get_string("voice"), "narration_001")
 
 
 func test_monologue():
 	var data = _parse("""@scene start
-sakura（这个人...好奇怪。）""")
+sakura（这个人...好奇怪。） #voice:sakura_thought_001""")
 	var cmd = data.scenes[0].commands[0]
 	assert_eq(cmd.type, "dialogue")
 	assert_eq(cmd.get_string("character"), "sakura")
 	assert_eq(cmd.get_string("text"), "这个人...好奇怪。")
 	assert_eq(cmd.get_string("mode"), "monologue")
+	assert_eq(cmd.get_string("voice"), "sakura_thought_001")
 
 
 func test_dialogue_profile_parses_nvl_entry_affixes_as_strings():
@@ -163,48 +165,6 @@ func test_bg_slide_transitions_preserved():
 		assert_eq(cmd.type, "bg")
 		assert_eq(cmd.get_string("transition"), dir, "transition %s should pass through" % dir)
 		assert_almost_eq(cmd.get_float("duration"), 0.6, 0.001)
-
-
-func test_show_full_params():
-	var data = _parse("""@scene start
-@show sakura smile left""")
-	var cmd = data.scenes[0].commands[0]
-	assert_eq(cmd.type, "char_show")
-	assert_eq(cmd.get_string("character"), "sakura")
-	assert_eq(cmd.get_string("expression"), "smile")
-	assert_eq(cmd.get_string("position"), "left")
-
-
-func test_show_defaults():
-	var data = _parse("""@scene start
-@show sakura""")
-	var cmd = data.scenes[0].commands[0]
-	assert_eq(cmd.get_string("expression"), "default")
-	assert_eq(cmd.get_string("position"), "center")
-
-
-func test_hide():
-	var data = _parse("""@scene start
-@hide sakura""")
-	var cmd = data.scenes[0].commands[0]
-	assert_eq(cmd.type, "char_hide")
-	assert_eq(cmd.get_string("character"), "sakura")
-
-
-func test_hide_all():
-	var data = _parse("""@scene start
-@hide all""")
-	var cmd = data.scenes[0].commands[0]
-	assert_eq(cmd.get_string("character"), "all")
-
-
-func test_expr():
-	var data = _parse("""@scene start
-@expr sakura sad""")
-	var cmd = data.scenes[0].commands[0]
-	assert_eq(cmd.type, "char_expr")
-	assert_eq(cmd.get_string("character"), "sakura")
-	assert_eq(cmd.get_string("expression"), "sad")
 
 
 func test_jump():
@@ -397,42 +357,62 @@ func test_multi_elif_branches_join_the_root_if_continuation():
 func test_end_command():
 	var data = _parse("""@scene start
 @end""")
-	# @end at scene level is just a marker, no command generated
 	assert_eq(data.scenes[0].commands.size(), 0)
+	assert_true(_has_diagnostic(data, "error", "unmatched @end"))
+
+
+func test_unmatched_and_misordered_condition_branches_are_diagnostics():
+	var unmatched = _parse("""@scene start
+@elif score > 1
+@else""")
+	assert_true(_has_diagnostic(unmatched, "error", "unmatched @elif"))
+	assert_true(_has_diagnostic(unmatched, "error", "unmatched @else"))
+
+	var misordered = _parse("""@scene start
+@if score > 1
+「then」
+@else
+「else」
+@elif score > 2
+@else
+@end""")
+	assert_true(_has_diagnostic(misordered, "error", "@elif cannot appear after @else"))
+	assert_true(_has_diagnostic(misordered, "error", "duplicate @else"))
 
 
 func test_full_poc_scenario():
-	var source = """@scene start "初次相遇"
+	var source = """@chapter prologue
+@scene start "初次相遇"
 @bg bg_school_gate fade 0.8
-@show sakura smile center
+@stage sakura show kind=character asset=character:sakura/smile position=960,80
 sakura「你好，初次见面！」
 @choice "你该怎么回应？"
   - "你好！" -> friendly {affection += 5}
   - "……嗯。" -> cold
 
 @scene friendly
-@expr sakura happy
+@stage sakura update asset=character:sakura/happy
 sakura「太好了！」
 @jump ending
 
 @scene cold
-@expr sakura sad
+@stage sakura update asset=character:sakura/sad
 sakura「这样啊...」
 @jump ending
 
 @scene ending
 「（第一天就这样结束了。）」
-@hide sakura
-@bg bg_black fade 1.0
-@end"""
+@stage sakura remove
+@bg bg_black fade 1.0"""
 	var data = _parse(source, "poc_demo")
+	assert_true(data.diagnostics.is_empty())
 	assert_eq(data.id, "poc_demo")
 	assert_eq(data.scenes.size(), 4)
 	assert_eq(data.scenes[0].id, "start")
 	assert_eq(data.scenes[1].id, "friendly")
 	assert_eq(data.scenes[2].id, "cold")
 	assert_eq(data.scenes[3].id, "ending")
-	# Start scene should have: bg, char_show, dialogue, choice
+	# Start scene should have: bg, stage layer, dialogue, choice
 	assert_true(data.scenes[0].commands.size() >= 4)
 
 
@@ -449,7 +429,7 @@ func test_voice_command():
 func test_combine_basic_single_segment():
 	var data = _parse("""@scene start
 @combine
-@expr sakura sad
+@stage sakura update asset=character:sakura/sad
 sakura「第一句。」 #voice:v1
 @end""")
 	var cmd = data.scenes[0].commands[0]
@@ -459,17 +439,18 @@ sakura「第一句。」 #voice:v1
 	assert_eq(segments.size(), 1)
 	assert_eq(segments[0]["text"], "第一句。")
 	assert_eq(segments[0]["voice"], "v1")
-	assert_eq(segments[0]["expression"], "sad")
+	assert_eq(segments[0]["stage_ops"].size(), 1)
+	assert_eq(segments[0]["stage_ops"][0]["id"], "sakura")
 
 
 func test_combine_multiple_segments():
 	var data = _parse("""@scene start
 @combine
-@expr sakura sad
+@stage sakura update asset=character:sakura/sad
 sakura「第一句。」 #voice:v1
-@expr sakura surprised
+@stage sakura update asset=character:sakura/surprised
 sakura「第二句。」 #voice:v2
-@expr sakura happy
+@stage sakura update asset=character:sakura/happy
 sakura「第三句。」 #voice:v3
 @end""")
 	var cmd = data.scenes[0].commands[0]
@@ -479,22 +460,20 @@ sakura「第三句。」 #voice:v3
 	assert_eq(segments.size(), 3)
 	assert_eq(segments[0]["text"], "第一句。")
 	assert_eq(segments[0]["voice"], "v1")
-	assert_eq(segments[0]["expression"], "sad")
+	assert_eq(segments[0]["stage_ops"][0]["properties"]["asset"], "character:sakura/sad")
 	assert_eq(segments[1]["text"], "第二句。")
 	assert_eq(segments[1]["voice"], "v2")
-	assert_eq(segments[1]["expression"], "surprised")
+	assert_eq(segments[1]["stage_ops"][0]["properties"]["asset"], "character:sakura/surprised")
 	assert_eq(segments[2]["text"], "第三句。")
 	assert_eq(segments[2]["voice"], "v3")
-	assert_eq(segments[2]["expression"], "happy")
+	assert_eq(segments[2]["stage_ops"][0]["properties"]["asset"], "character:sakura/happy")
 
 
 func test_combine_concatenated_text_for_backlog():
 	# Parser should also expose concatenated text for backlog/typewriter
 	var data = _parse("""@scene start
 @combine
-@expr sakura sad
 sakura「我本来很开心的...」 #voice:v1
-@expr sakura surprised
 sakura「但是听说下周要期中考...」 #voice:v2
 @end""")
 	var cmd = data.scenes[0].commands[0]
@@ -503,8 +482,7 @@ sakura「但是听说下周要期中考...」 #voice:v2
 		"combined text should be concatenation of all segments")
 
 
-func test_combine_segment_without_expr_has_empty_expression():
-	# If no @expr precedes a segment, expression field should be empty (means "keep current")
+func test_combine_segment_without_stage_cue_has_empty_stage_ops():
 	var data = _parse("""@scene start
 @combine
 sakura「第一句。」 #voice:v1
@@ -513,16 +491,16 @@ sakura「第二句。」 #voice:v2
 	var cmd = data.scenes[0].commands[0]
 	var segments = cmd.params.get("segments", [])
 	assert_eq(segments.size(), 2)
-	assert_eq(segments[0]["expression"], "")
-	assert_eq(segments[1]["expression"], "")
+	assert_true(segments[0]["stage_ops"].is_empty())
+	assert_true(segments[1]["stage_ops"].is_empty())
 
 
 func test_combine_only_produces_one_command():
 	var data = _parse("""@scene start
 @combine
-@expr sakura sad
+@stage sakura update asset=character:sakura/sad
 sakura「一。」 #voice:v1
-@expr sakura happy
+@stage sakura update asset=character:sakura/happy
 sakura「二。」 #voice:v2
 @end
 sakura「之后的话。」 #voice:v3""")
@@ -554,18 +532,18 @@ func test_combine_inside_existing_scenario():
 	# Should work alongside other commands
 	var data = _parse("""@scene start
 @bg bg_school
-@show sakura smile
+@stage sakura show kind=character asset=character:sakura/smile
 sakura「开始。」 #voice:v0
 @combine
-@expr sakura sad
+@stage sakura update asset=character:sakura/sad
 sakura「一。」 #voice:v1
-@expr sakura happy
+@stage sakura update asset=character:sakura/happy
 sakura「二。」 #voice:v2
 @end
 sakura「结束。」 #voice:v3""")
 	assert_eq(data.scenes[0].commands.size(), 5)
 	assert_eq(data.scenes[0].commands[0].type, "bg")
-	assert_eq(data.scenes[0].commands[1].type, "char_show")
+	assert_eq(data.scenes[0].commands[1].type, "stage_layer")
 	assert_eq(data.scenes[0].commands[2].type, "dialogue")
 	assert_eq(data.scenes[0].commands[3].type, "dialogue")
 	assert_eq(data.scenes[0].commands[3].params.get("segments", []).size(), 2)
@@ -579,7 +557,7 @@ func test_combine_rejects_effect_with_structured_warning():
 sakura「第一句。」 #voice:v1
 @end""")
 	assert_true(
-		_has_diagnostic(data, "warning", "@effect is not allowed inside @combine"),
+		_has_diagnostic(data, "warning", "only @stage is allowed inside @combine block; @effect was ignored"),
 		"unsupported combine commands must be surfaced through parser diagnostics",
 	)
 	assert_eq(data.scenes[0].commands.size(), 1)
@@ -596,7 +574,7 @@ func test_combine_rejects_dialogue_mode_switch_without_mutating_mode():
 @end
 「之后。」""")
 	assert_true(
-		_has_diagnostic(data, "warning", "@nvl is not allowed inside @combine"),
+		_has_diagnostic(data, "warning", "only @stage is allowed inside @combine block; @nvl was ignored"),
 		"dialogue mode switches inside combine must be rejected",
 	)
 	assert_eq(data.scenes[0].commands.size(), 2)

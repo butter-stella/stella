@@ -10,4 +10,3 @@
 
 // Checkpoint 2: both effects must be cleared together.
 @wait click
-@end

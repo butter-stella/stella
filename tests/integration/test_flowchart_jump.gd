@@ -249,11 +249,21 @@ func test_prepare_scenario_clears_flowchart_state():
 	var f = FileAccess.open(path, FileAccess.WRITE)
 	f.store_string("@chapter ch\n@scene start\nnarrator「hi」\n")
 	f.close()
+	_runtime.presentation_state.current_bg = "stale_title"
+	_runtime.presentation_state.current_bgm = "stale_bgm"
+	_runtime.presentation_state.stage_layers = {
+		"stale": StageLayerState.default_state(),
+	}
 
 	_runtime._prepare_scenario(path)
 	assert_eq(_runtime.flowchart_state.current_path.size(), 0,
 		"_prepare_scenario must clear flowchart state")
 	assert_true(_runtime.flowchart_state.initial_snapshot.size() > 0,
 		"_prepare_scenario must capture INITIAL_SNAPSHOT")
+	assert_eq(
+		_runtime.flowchart_state.initial_snapshot["presentation_state"],
+		{"bg": "", "stage_layers": {}, "bgm": ""},
+		"initial rollback state must not inherit title or previous-run visuals",
+	)
 
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
