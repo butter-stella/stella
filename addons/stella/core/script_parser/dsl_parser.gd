@@ -4,6 +4,23 @@ class_name DslParser extends RefCounted
 
 const INTERNAL_DIALOGUE_MODE_EVENT := "__dialogue_mode_event"
 const INTERNAL_IF_NODE := "__if_node"
+const _STAGE_TRANSITIONS := [
+	"cut", "none", "fade", "move",
+	"slide_left", "slide_right", "slide_up", "slide_down",
+]
+const _STAGE_FIT_MODES := ["native", "contain", "cover", "stretch"]
+const _STAGE_PAIR_KEYS := [
+	"position", "origin", "scale", "zoom",
+	"asset_offset", "body_offset", "face_offset",
+]
+const _STAGE_NUMBER_KEYS := [
+	"x", "y", "origin_x", "origin_y", "scale_x", "scale_y",
+	"zoom_x", "zoom_y", "asset_x", "asset_y", "body_x", "body_y",
+	"face_x", "face_y", "depth_scale", "rotation", "z", "z_index",
+	"opacity",
+]
+const _STAGE_BOOL_KEYS := ["visible", "flip_x", "flip_y"]
+const _STAGE_STRING_KEYS := ["kind", "asset", "body", "face"]
 
 
 static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioData:
@@ -37,14 +54,16 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 	# @parallel state
 	var in_parallel: bool = false
 	var parallel_commands: Array = []
+	var parallel_start_line: int = 0
 
-	# @combine state — groups multiple dialogue lines with per-segment voice/expression
-	# into a single dialogue command with a `segments` array.
+	# @combine state — groups multiple dialogue lines with per-segment named-stage
+	# cues into a single dialogue command with a `segments` array.
 	var in_combine: bool = false
 	var combine_segments: Array = []
 	var combine_character: String = ""
 	var combine_character_set: bool = false
-	var combine_pending_expr: String = ""
+	var combine_pending_stage_ops: Array = []
+	var combine_start_line: int = 0
 
 	var i = 0
 	while i < tokens.size():
@@ -52,6 +71,44 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 
 		match token.type:
 			DslToken.Type.SCENE_DIRECTIVE:
+				# Authoring blocks never cross scene boundaries. Report and discard an
+				# unterminated block here so a later scene's @end cannot accidentally
+				# close and compile commands from the previous scene.
+				if in_combine:
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @combine block opened on line %d is missing @end before the next @scene"
+						% combine_start_line,
+						combine_start_line,
+					)
+					in_combine = false
+					combine_segments.clear()
+					combine_pending_stage_ops.clear()
+					combine_character = ""
+					combine_character_set = false
+					combine_start_line = 0
+				if in_parallel:
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @parallel block opened on line %d is missing @end before the next @scene"
+						% parallel_start_line,
+						parallel_start_line,
+					)
+					in_parallel = false
+					parallel_commands.clear()
+					parallel_start_line = 0
+				if not if_stack.is_empty():
+					var unclosed_if_line := int(if_stack[0].get("line", 0))
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @if block opened on line %d is missing @end before the next @scene"
+						% unclosed_if_line,
+						unclosed_if_line,
+					)
+					if_stack.clear()
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 				choice_cmd = null
 				pending_options = []
@@ -119,7 +176,15 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 
 				var cmd_name = _get_at_command_name(token.raw_text)
 
-				if cmd_name == "choice":
+				if in_combine and cmd_name not in ["stage", "end"]:
+					_record_diagnostic(
+						data,
+						"warning",
+						"DslParser: only @stage is allowed inside @combine block; @%s was ignored (line %d)"
+						% [cmd_name, token.line],
+						token.line,
+					)
+				elif cmd_name == "choice":
 					choice_cmd = _parse_choice_command(token)
 				elif cmd_name == "if":
 					var nested_if := _create_if_context(token, current_scene, data)
@@ -127,7 +192,22 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 						_append_if_node(if_stack[-1], nested_if)
 					if_stack.append(nested_if)
 				elif cmd_name == "elif":
-					if if_stack.size() > 0:
+					if if_stack.is_empty():
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: unmatched @elif (line %d)" % token.line,
+							token.line,
+						)
+					elif bool(if_stack[-1].get("has_else", false)):
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @elif cannot appear after @else (line %d)"
+							% token.line,
+							token.line,
+						)
+					else:
 						# An elif is represented as the sole nested condition on the
 						# previous condition's false branch. The complete tree is
 						# compiled only when the chain's root @if closes.
@@ -144,14 +224,38 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 							"branch": "then",
 							"parent_scene": ctx["parent_scene"],
 							"is_elif": true,
+							"has_else": false,
 						}
 						ctx["else_commands"].append(nested_elif)
 						if_stack.append(nested_elif)
 				elif cmd_name == "else":
-					if if_stack.size() > 0:
+					if if_stack.is_empty():
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: unmatched @else (line %d)" % token.line,
+							token.line,
+						)
+					elif bool(if_stack[-1].get("has_else", false)):
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: duplicate @else (line %d)" % token.line,
+							token.line,
+						)
+					else:
 						if_stack[-1]["branch"] = "else"
+						if_stack[-1]["has_else"] = true
 				elif cmd_name == "end":
 					if in_combine:
+						if not combine_pending_stage_ops.is_empty():
+							_record_diagnostic(
+								data,
+								"warning",
+								"DslParser: @combine ends with presentation cues that are not bound to a dialogue segment (line %d)"
+								% token.line,
+								token.line,
+							)
 						var combine_cmd = _build_combine_command(
 							combine_character,
 							combine_segments,
@@ -163,13 +267,17 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 						combine_segments = []
 						combine_character = ""
 						combine_character_set = false
-						combine_pending_expr = ""
+						combine_pending_stage_ops = []
+						combine_start_line = 0
 						in_combine = false
 						if combine_cmd and current_scene:
 							_add_command(combine_cmd, current_scene, if_stack)
 					elif in_parallel:
-						var parallel_cmd = _make_cmd("parallel", {"commands": parallel_commands.duplicate()})
+						var parallel_cmd = _make_cmd(
+							"parallel", {"commands": parallel_commands.duplicate()}
+						)
 						parallel_commands.clear()
+						parallel_start_line = 0
 						in_parallel = false
 						if current_scene:
 							_add_command(parallel_cmd, current_scene, if_stack)
@@ -183,50 +291,55 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 							var closed_if = if_stack.pop_back()
 							if if_stack.is_empty():
 								current_scene = _close_if_block(closed_if, data)
-					# else: @end at scene level, ignore
-				elif cmd_name in ["adv", "nvl", "overlay"]:
-					if in_combine:
-						_record_diagnostic(data, "warning",
-							"DslParser: @%s is not allowed inside @combine block (line %d)"
-							% [cmd_name, token.line], token.line)
 					else:
-						var selection := DialogueProfileParser.parse_mode_directive(
-							token.raw_text, cmd_name, dialogue_profiles, token.line)
-						data.diagnostics.append_array(selection["diagnostics"])
-						if cmd_name == "adv":
-							current_mode = "adv"
-							adv_dialogue_profile_name = selection["profile_name"]
-							adv_dialogue_profile = selection["profile"]
-							current_dialogue_profile_name = adv_dialogue_profile_name
-							current_dialogue_profile = adv_dialogue_profile
-							# Explicit @adv opts into authored-baseline restoration even
-							# without a named profile.
-							current_declarative_presentation = true
-						elif selection["mode"] == "adv":
-							# @nvl off / @overlay off returns to the configured ADV
-							# profile, or to the exact authored baseline after a named
-							# non-ADV profile was active.
-							current_mode = "adv"
-							current_dialogue_profile_name = adv_dialogue_profile_name
-							current_dialogue_profile = adv_dialogue_profile
-							current_declarative_presentation = (
-								current_declarative_presentation
-								or not adv_dialogue_profile_name.is_empty()
-							)
-						else:
-							current_mode = selection["mode"]
-							current_dialogue_profile_name = selection["profile_name"]
-							current_dialogue_profile = selection["profile"]
-							current_declarative_presentation = not current_dialogue_profile_name.is_empty()
-						var mode_event := _make_cmd(
-							INTERNAL_DIALOGUE_MODE_EVENT, {"mode": current_mode})
-						mode_event.declared_line = token.line
-						if current_scene == null:
-							pending_root_mode_events.append(mode_event)
-						elif in_parallel:
-							parallel_commands.append(mode_event)
-						else:
-							_add_command(mode_event, current_scene, if_stack)
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: unmatched @end (line %d)" % token.line,
+							token.line,
+						)
+				elif cmd_name in ["adv", "nvl", "overlay"]:
+					var selection := DialogueProfileParser.parse_mode_directive(
+						token.raw_text, cmd_name, dialogue_profiles, token.line
+					)
+					data.diagnostics.append_array(selection["diagnostics"])
+					if cmd_name == "adv":
+						current_mode = "adv"
+						adv_dialogue_profile_name = selection["profile_name"]
+						adv_dialogue_profile = selection["profile"]
+						current_dialogue_profile_name = adv_dialogue_profile_name
+						current_dialogue_profile = adv_dialogue_profile
+						# Explicit @adv opts into authored-baseline restoration even
+						# without a named profile.
+						current_declarative_presentation = true
+					elif selection["mode"] == "adv":
+						# @nvl off / @overlay off returns to the configured ADV
+						# profile, or to the exact authored baseline after a named
+						# non-ADV profile was active.
+						current_mode = "adv"
+						current_dialogue_profile_name = adv_dialogue_profile_name
+						current_dialogue_profile = adv_dialogue_profile
+						current_declarative_presentation = (
+							current_declarative_presentation
+							or not adv_dialogue_profile_name.is_empty()
+						)
+					else:
+						current_mode = selection["mode"]
+						current_dialogue_profile_name = selection["profile_name"]
+						current_dialogue_profile = selection["profile"]
+						current_declarative_presentation = (
+							not current_dialogue_profile_name.is_empty()
+						)
+					var mode_event := _make_cmd(
+						INTERNAL_DIALOGUE_MODE_EVENT, {"mode": current_mode}
+					)
+					mode_event.declared_line = token.line
+					if current_scene == null:
+						pending_root_mode_events.append(mode_event)
+					elif in_parallel:
+						parallel_commands.append(mode_event)
+					else:
+						_add_command(mode_event, current_scene, if_stack)
 				elif cmd_name == "dialogue_profile":
 					# Compile-time declaration; already collected in a pre-pass so
 					# profiles may be referenced before their declaration.
@@ -234,25 +347,25 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				elif cmd_name == "parallel":
 					in_parallel = true
 					parallel_commands.clear()
+					parallel_start_line = token.line
 				elif cmd_name == "combine":
 					in_combine = true
 					combine_segments = []
 					combine_character = ""
 					combine_character_set = false
-					combine_pending_expr = ""
+					combine_pending_stage_ops = []
+					combine_start_line = token.line
 				else:
 					var cmd = _parse_at_command(token, data)
 					if cmd:
 						cmd.declared_line = token.line
 					if cmd and current_scene:
 						if in_combine:
-							# Inside @combine, only @expr is allowed and it binds to the next segment.
-							if cmd.type == "char_expr":
-								combine_pending_expr = cmd.get_string("expression", "")
-							else:
-								_record_diagnostic(data, "warning",
-									"DslParser: @%s is not allowed inside @combine block (line %d)"
-									% [cmd_name, token.line], token.line)
+							# Only named-stage operations reach this branch while a
+							# combine block is active; bind them to the next segment.
+							combine_pending_stage_ops.append(
+								cmd.params.duplicate(true)
+							)
 						elif in_parallel:
 							parallel_commands.append(cmd)
 						else:
@@ -282,9 +395,9 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 						combine_segments.append({
 							"text": cmd.get_string("text", ""),
 							"voice": cmd.get_string("voice", ""),
-							"expression": combine_pending_expr,
+							"stage_ops": combine_pending_stage_ops.duplicate(true),
 						})
-						combine_pending_expr = ""
+						combine_pending_stage_ops = []
 					else:
 						_add_command(cmd, current_scene, if_stack)
 
@@ -311,9 +424,9 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 						combine_segments.append({
 							"text": cmd.get_string("text", ""),
 							"voice": cmd.get_string("voice", ""),
-							"expression": combine_pending_expr,
+							"stage_ops": combine_pending_stage_ops.duplicate(true),
 						})
-						combine_pending_expr = ""
+						combine_pending_stage_ops = []
 					else:
 						_add_command(cmd, current_scene, if_stack)
 
@@ -321,16 +434,60 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 				choice_cmd = null
 				pending_options = []
-				var cmd = _parse_monologue(token)
-				if cmd and current_scene:
-					_add_command(cmd, current_scene, if_stack)
+				if in_combine:
+					_record_diagnostic(
+						data,
+						"warning",
+						"DslParser: monologue is not allowed inside @combine; it and any pending @stage cues were ignored (line %d)"
+						% token.line,
+						token.line,
+					)
+					combine_pending_stage_ops.clear()
+				else:
+					var cmd = _parse_monologue(token)
+					if cmd and current_scene:
+						_add_command(cmd, current_scene, if_stack)
 
 			DslToken.Type.CHOICE_OPTION:
-				pending_options.append(_parse_choice_option(token))
+				if in_combine:
+					_record_diagnostic(
+						data,
+						"warning",
+						"DslParser: choice option is not allowed inside @combine and was ignored (line %d)"
+						% token.line,
+						token.line,
+					)
+				else:
+					pending_options.append(_parse_choice_option(token))
 
 		i += 1
 
 	_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
+	if in_combine:
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @combine block opened on line %d is missing @end"
+			% combine_start_line,
+			combine_start_line,
+		)
+	if in_parallel:
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @parallel block opened on line %d is missing @end"
+			% parallel_start_line,
+			parallel_start_line,
+		)
+	if not if_stack.is_empty():
+		var unclosed_if_line := int(if_stack[0].get("line", 0))
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @if block opened on line %d is missing @end"
+			% unclosed_if_line,
+			unclosed_if_line,
+		)
 	_lower_dialogue_mode_events(data)
 
 	# Issue #97: post-parse validation — every chapter must own at least one
@@ -494,42 +651,17 @@ static func _parse_at_command(token: DslToken, data: ScenarioData) -> CommandDat
 	var parts = _split_args(args)
 
 	match name:
+		"stage":
+			return _parse_stage_command(parts, token.line, data)
 		"bg":
 			return _make_cmd("bg", {
 				"asset": parts[0] if parts.size() > 0 else "",
 				"transition": parts[1] if parts.size() > 1 else "fade",
 				"duration": float(parts[2]) if parts.size() > 2 else 0.5,
 			})
-		"show":
-			return _make_cmd("char_show", {
-				"character": parts[0] if parts.size() > 0 else "",
-				"expression": parts[1] if parts.size() > 1 else "default",
-				"position": parts[2] if parts.size() > 2 else "center",
-			})
-		"hide":
-			return _make_cmd("char_hide", {
-				"character": parts[0] if parts.size() > 0 else "",
-			})
-		"expr":
-			return _make_cmd("char_expr", {
-				"character": parts[0] if parts.size() > 0 else "",
-				"expression": parts[1] if parts.size() > 1 else "default",
-			})
 		"jump":
 			return _make_cmd("jump", {
 				"target": parts[0] if parts.size() > 0 else "",
-			})
-		"anim":
-			return _make_cmd("char_anim", {
-				"character": parts[0] if parts.size() > 0 else "",
-				"anim": parts[1] if parts.size() > 1 else "",
-				"intensity": parts[2] if parts.size() > 2 else "normal",
-			})
-		"move":
-			return _make_cmd("char_move", {
-				"character": parts[0] if parts.size() > 0 else "",
-				"position": parts[1] if parts.size() > 1 else "center",
-				"duration": float(parts[2]) if parts.size() > 2 else 0.5,
 			})
 		"call":
 			return _make_cmd("call", {
@@ -568,22 +700,6 @@ static func _parse_at_command(token: DslToken, data: ScenarioData) -> CommandDat
 				return _make_cmd("wait", {"mode": "click"})
 			return _make_cmd("wait", {
 				"duration": float(parts[0]) if parts.size() > 0 else 1.0,
-			})
-		"cg":
-			if parts.size() > 0 and parts[0] == "off":
-				return _make_cmd("cg", {
-					"off": true,
-					"transition": parts[1] if parts.size() > 1 else "fade",
-					"duration": float(parts[2]) if parts.size() > 2 else 0.5,
-				})
-			var cg_mode = "fullscreen"
-			if parts.size() > 1 and parts[1] in ["sd", "animated"]:
-				cg_mode = parts[1]
-			return _make_cmd("cg", {
-				"asset": parts[0] if parts.size() > 0 else "",
-				"mode": cg_mode,
-				"transition": "fade",
-				"duration": 0.5,
 			})
 		"effect":
 			if parts.is_empty():
@@ -702,7 +818,578 @@ static func _parse_at_command(token: DslToken, data: ScenarioData) -> CommandDat
 		"end":
 			return null  # Handled by if_stack or ignored
 		_:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: unknown command '@%s' (line %d)" % [name, token.line],
+				token.line,
+			)
 			return null
+
+
+static func _parse_stage_command(
+	parts: Array,
+	line: int,
+	data: ScenarioData,
+) -> CommandData:
+	if parts.is_empty():
+		_record_diagnostic(
+			data,
+			"warning",
+			"DslParser: @stage requires a layer id or 'clear' (line %d)" % line,
+			line,
+		)
+		return null
+
+	var layer_id := str(parts[0]).strip_edges()
+	var action := "show"
+	var property_start := 1
+	if layer_id == "clear":
+		action = "clear"
+		layer_id = ""
+	elif parts.size() > 1:
+		var action_candidate := str(parts[1]).to_lower()
+		if action_candidate in ["show", "update", "hide", "remove"]:
+			action = action_candidate
+			property_start = 2
+		elif not action_candidate.contains("="):
+			_record_diagnostic(
+				data,
+				"warning",
+				"DslParser: unknown @stage action '%s' (line %d)"
+				% [action_candidate, line],
+				line,
+			)
+			return null
+	var properties: Dictionary = {}
+	var redraw_effects: Array = []
+	var redraw_seen := false
+	var redraw_cleared := false
+	var redraw_clip_seen := false
+	var redraw_blur_count := 0
+	var transition := "cut"
+	var duration := 0.0
+	var invalid_operation := false
+	for index in range(property_start, parts.size()):
+		var encoded := str(parts[index])
+		var equals_at := encoded.find("=")
+		if equals_at == -1:
+			_record_diagnostic(
+				data,
+				"warning",
+				"DslParser: invalid @stage argument '%s' (line %d); use key=value"
+				% [encoded, line],
+				line,
+			)
+			invalid_operation = true
+			continue
+		var key := encoded.substr(0, equals_at).strip_edges().to_lower()
+		var raw_value := encoded.substr(equals_at + 1).strip_edges()
+		if key == "":
+			_record_diagnostic(
+				data,
+				"warning",
+				"DslParser: @stage property name cannot be empty (line %d)" % line,
+				line,
+			)
+			invalid_operation = true
+			continue
+		if key == "transition":
+			var parsed_transition := raw_value.to_lower()
+			if parsed_transition not in _STAGE_TRANSITIONS:
+				_record_diagnostic(
+					data,
+					"warning",
+					"DslParser: invalid @stage transition '%s' (line %d)"
+					% [raw_value, line],
+					line,
+				)
+				invalid_operation = true
+				continue
+			transition = parsed_transition
+		elif key == "duration":
+			if (
+				not _is_finite_stage_number(raw_value)
+				or float(raw_value) < 0.0
+			):
+				_record_diagnostic(
+					data,
+					"warning",
+					"DslParser: @stage duration must be a finite non-negative number, got '%s' (line %d)"
+					% [raw_value, line],
+					line,
+				)
+				invalid_operation = true
+				continue
+			duration = float(raw_value)
+		elif key == "redraw":
+			if action in ["hide", "remove", "clear"]:
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: @stage %s does not accept layer property 'redraw' (line %d)"
+					% [action, line],
+					line,
+				)
+				invalid_operation = true
+				continue
+			if raw_value.to_lower() == "clear":
+				if redraw_seen:
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @stage redraw=clear cannot be mixed with other redraw values (line %d)"
+						% line,
+						line,
+					)
+					invalid_operation = true
+				redraw_seen = true
+				redraw_cleared = true
+				continue
+			if redraw_cleared:
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: @stage redraw=clear cannot be mixed with other redraw values (line %d)"
+					% line,
+					line,
+				)
+				invalid_operation = true
+				continue
+			redraw_seen = true
+			var redraw_effect = _parse_stage_redraw_effect(
+				raw_value,
+				line,
+				data,
+			)
+			if redraw_effect == null:
+				invalid_operation = true
+				continue
+			var redraw_effect_type := String(redraw_effect.get("type", ""))
+			if redraw_effect_type == "clip":
+				if redraw_clip_seen:
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @stage redraw accepts at most one clip effect (line %d)"
+						% line,
+						line,
+					)
+					invalid_operation = true
+					continue
+				redraw_clip_seen = true
+			elif redraw_effect_type == "blur":
+				redraw_blur_count += 1
+				if redraw_blur_count > StageLayerState.MAX_BLUR_PASSES:
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @stage redraw accepts at most %d blur effects (line %d)"
+						% [StageLayerState.MAX_BLUR_PASSES, line],
+						line,
+					)
+					invalid_operation = true
+					continue
+			redraw_effects.append(redraw_effect)
+			if redraw_effects.size() > StageLayerState.MAX_REDRAW_EFFECTS:
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: @stage accepts at most %d redraw effects (line %d)"
+					% [StageLayerState.MAX_REDRAW_EFFECTS, line],
+					line,
+				)
+				invalid_operation = true
+		else:
+			if not _is_known_stage_property(key):
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: unknown @stage property '%s' (line %d)"
+					% [key, line],
+					line,
+				)
+				invalid_operation = true
+				continue
+			if action in ["hide", "remove", "clear"]:
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: @stage %s does not accept layer property '%s' (line %d)"
+					% [action, key, line],
+					line,
+				)
+				invalid_operation = true
+				continue
+			var parsed_value = _parse_stage_property_value(
+				key, raw_value, line, data
+			)
+			if parsed_value == null:
+				invalid_operation = true
+				continue
+			if not _is_stage_property_in_range(key, parsed_value, line, data):
+				invalid_operation = true
+				continue
+			properties[key] = parsed_value
+
+	if invalid_operation:
+		return null
+	if redraw_seen:
+		properties["redraw"] = redraw_effects
+
+	var operation := {
+		"action": action,
+		"id": layer_id,
+		"properties": properties,
+		"transition": transition,
+		"duration": duration,
+	}
+	if not StageLayerState.validate_operation(operation, false):
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: invalid @stage operation (line %d)" % line,
+			line,
+		)
+		return null
+	return _make_cmd("stage_layer", operation)
+
+
+static func _parse_stage_redraw_effect(
+	encoded: String,
+	line: int,
+	data: ScenarioData,
+) -> Variant:
+	var open_paren := encoded.find("(")
+	if open_paren <= 0 or not encoded.ends_with(")"):
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: invalid @stage redraw effect '%s' (line %d)"
+			% [encoded, line],
+			line,
+		)
+		return null
+	var effect_type := encoded.substr(0, open_paren).strip_edges().to_lower()
+	var arguments_text := encoded.substr(
+		open_paren + 1,
+		encoded.length() - open_paren - 2,
+	)
+	var arguments: Array = []
+	if not arguments_text.is_empty():
+		for argument in arguments_text.split(",", true):
+			arguments.append(String(argument).strip_edges())
+
+	match effect_type:
+		"color_overlay":
+			if arguments.size() not in [1, 2]:
+				return _invalid_stage_redraw_arguments(effect_type, line, data)
+			var color := _canonical_stage_redraw_color(String(arguments[0]))
+			if color == "":
+				return _invalid_stage_redraw_value(
+					effect_type, "color", String(arguments[0]), line, data
+				)
+			var blend := (
+				String(arguments[1]).to_lower()
+				if arguments.size() == 2
+				else "normal"
+			)
+			if blend not in StageLayerState.VALID_COLOR_OVERLAY_BLEND_MODES:
+				return _invalid_stage_redraw_value(
+					effect_type, "blend", blend, line, data
+				)
+			return {"type": effect_type, "color": color, "blend": blend}
+		"tint":
+			if arguments.size() != 1:
+				return _invalid_stage_redraw_arguments(effect_type, line, data)
+			var color := _canonical_stage_redraw_color(String(arguments[0]))
+			if color == "":
+				return _invalid_stage_redraw_value(
+					effect_type, "color", String(arguments[0]), line, data
+				)
+			return {"type": effect_type, "color": color}
+		"brightness_contrast":
+			if arguments.size() != 2:
+				return _invalid_stage_redraw_arguments(effect_type, line, data)
+			if (
+				not String(arguments[0]).is_valid_int()
+				or int(arguments[0]) < -255
+				or int(arguments[0]) > 255
+			):
+				return _invalid_stage_redraw_value(
+					effect_type, "brightness", String(arguments[0]), line, data
+				)
+			if (
+				not String(arguments[1]).is_valid_int()
+				or int(arguments[1]) < -100
+				or int(arguments[1]) > 100
+			):
+				return _invalid_stage_redraw_value(
+					effect_type, "contrast", String(arguments[1]), line, data
+				)
+			return {
+				"type": effect_type,
+				"brightness": int(arguments[0]),
+				"contrast": int(arguments[1]),
+			}
+		"grayscale":
+			if arguments.size() != 1:
+				return _invalid_stage_redraw_arguments(effect_type, line, data)
+			if (
+				not _is_finite_stage_number(String(arguments[0]))
+				or float(arguments[0]) < 0.0
+				or float(arguments[0]) > 1.0
+			):
+				return _invalid_stage_redraw_value(
+					effect_type, "amount", String(arguments[0]), line, data
+				)
+			return {"type": effect_type, "amount": float(arguments[0])}
+		"blur":
+			if arguments.size() != 2:
+				return _invalid_stage_redraw_arguments(effect_type, line, data)
+			for argument in arguments:
+				if (
+					not String(argument).is_valid_int()
+					or int(argument) < 0
+					or int(argument) > StageLayerState.MAX_BLUR_RADIUS
+				):
+					return _invalid_stage_redraw_value(
+						effect_type, "radius", String(argument), line, data
+					)
+			return {
+				"type": effect_type,
+				"radius": [int(arguments[0]), int(arguments[1])],
+			}
+		"clip":
+			if arguments.size() not in [3, 4]:
+				return _invalid_stage_redraw_arguments(effect_type, line, data)
+			var asset := String(arguments[0]).strip_edges()
+			if asset == "":
+				return _invalid_stage_redraw_value(
+					effect_type, "asset", asset, line, data
+				)
+			for argument_index in [1, 2]:
+				if not _is_finite_stage_number(String(arguments[argument_index])):
+					return _invalid_stage_redraw_value(
+						effect_type,
+						"offset",
+						String(arguments[argument_index]),
+						line,
+						data,
+					)
+			var clip_fit := (
+				String(arguments[3]).to_lower()
+				if arguments.size() == 4
+				else "native"
+			)
+			if clip_fit not in _STAGE_FIT_MODES:
+				return _invalid_stage_redraw_value(
+					effect_type, "fit", clip_fit, line, data
+				)
+			return {
+				"type": effect_type,
+				"asset": asset,
+				"offset": [float(arguments[1]), float(arguments[2])],
+				"fit": clip_fit,
+			}
+		_:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: unknown @stage redraw effect '%s' (line %d)"
+				% [effect_type, line],
+				line,
+			)
+			return null
+
+
+static func _invalid_stage_redraw_arguments(
+	effect_type: String,
+	line: int,
+	data: ScenarioData,
+) -> Variant:
+	_record_diagnostic(
+		data,
+		"error",
+		"DslParser: invalid arguments for @stage redraw %s (line %d)"
+		% [effect_type, line],
+		line,
+	)
+	return null
+
+
+static func _invalid_stage_redraw_value(
+	effect_type: String,
+	field: String,
+	value: String,
+	line: int,
+	data: ScenarioData,
+) -> Variant:
+	_record_diagnostic(
+		data,
+		"error",
+		"DslParser: invalid @stage redraw %s %s '%s' (line %d)"
+		% [effect_type, field, value, line],
+		line,
+	)
+	return null
+
+
+static func _canonical_stage_redraw_color(encoded: String) -> String:
+	var color := encoded.strip_edges().to_lower()
+	if not color.begins_with("#") or color.length() not in [7, 9]:
+		return ""
+	for index in range(1, color.length()):
+		if color.substr(index, 1) not in "0123456789abcdef":
+			return ""
+	if color.length() == 7:
+		color += "ff"
+	return color
+
+
+static func _parse_stage_property_value(
+	key: String,
+	encoded: String,
+	line: int,
+	data: ScenarioData,
+) -> Variant:
+	var lower := encoded.to_lower()
+	if key in ["asset", "body", "face"]:
+		if encoded == "":
+			_record_diagnostic(
+				data,
+				"warning",
+				"DslParser: @stage %s cannot be empty; use 'none' to clear it (line %d)"
+				% [key, line],
+				line,
+			)
+			return null
+		if lower == "none":
+			return ""
+		if lower in ["null", "off"]:
+			_record_diagnostic(
+				data,
+				"warning",
+				"DslParser: invalid @stage %s clear value '%s'; use 'none' (line %d)"
+				% [key, encoded, line],
+				line,
+			)
+			return null
+		return encoded
+	if key == "kind":
+		if encoded == "":
+			_record_diagnostic(
+				data,
+				"warning",
+				"DslParser: @stage kind cannot be empty (line %d)" % line,
+				line,
+			)
+			return null
+		return encoded
+	if key == "fit":
+		if lower in _STAGE_FIT_MODES:
+			return lower
+		_record_diagnostic(
+			data,
+			"warning",
+			"DslParser: invalid @stage fit '%s' (line %d)"
+			% [encoded, line],
+			line,
+		)
+		return null
+	if key in _STAGE_BOOL_KEYS:
+		if lower == "true":
+			return true
+		if lower == "false":
+			return false
+		_record_diagnostic(
+			data,
+			"warning",
+			"DslParser: invalid boolean for @stage %s='%s' (line %d)"
+			% [key, encoded, line],
+			line,
+		)
+		return null
+	if key in _STAGE_PAIR_KEYS:
+		if "," in encoded:
+			var pair = encoded.split(",", false)
+			if (
+				pair.size() == 2
+				and _is_finite_stage_number(str(pair[0]))
+				and _is_finite_stage_number(str(pair[1]))
+			):
+				return [float(pair[0]), float(pair[1])]
+		elif _is_finite_stage_number(encoded):
+			return float(encoded)
+		_record_diagnostic(
+			data,
+			"warning",
+			"DslParser: invalid numeric pair for @stage %s='%s' (line %d)"
+			% [key, encoded, line],
+			line,
+		)
+		return null
+	if key in _STAGE_NUMBER_KEYS:
+		if not _is_finite_stage_number(encoded):
+			_record_diagnostic(
+				data,
+				"warning",
+				"DslParser: invalid number for @stage %s='%s' (line %d)"
+				% [key, encoded, line],
+				line,
+			)
+			return null
+		return int(encoded) if encoded.is_valid_int() else float(encoded)
+	if encoded.is_valid_int():
+		return int(encoded)
+	if _is_finite_stage_number(encoded):
+		return float(encoded)
+	return encoded
+
+
+static func _is_known_stage_property(key: String) -> bool:
+	return (
+		key in _STAGE_STRING_KEYS
+		or key in _STAGE_BOOL_KEYS
+		or key in _STAGE_PAIR_KEYS
+		or key in _STAGE_NUMBER_KEYS
+		or key == "fit"
+	)
+
+
+static func _is_stage_property_in_range(
+	key: String,
+	value: Variant,
+	line: int,
+	data: ScenarioData,
+) -> bool:
+	var valid := true
+	if key in ["scale", "zoom"]:
+		var pair: Array = value if value is Array else [value, value]
+		valid = float(pair[0]) > 0.0 and float(pair[1]) > 0.0
+	elif key in ["scale_x", "scale_y", "zoom_x", "zoom_y", "depth_scale"]:
+		valid = float(value) > 0.0
+	elif key == "opacity":
+		valid = float(value) >= 0.0 and float(value) <= 1.0
+	elif key in ["z", "z_index"]:
+		valid = (
+			float(value) == floorf(float(value))
+			and int(value) >= StageLayerState.MIN_Z_INDEX
+			and int(value) <= StageLayerState.MAX_Z_INDEX
+		)
+	if not valid:
+		_record_diagnostic(
+			data,
+			"warning",
+			"DslParser: @stage %s value '%s' is outside its supported range (line %d)"
+			% [key, str(value), line],
+			line,
+		)
+	return valid
+
+
+static func _is_finite_stage_number(encoded: String) -> bool:
+	return encoded.is_valid_float() and is_finite(float(encoded))
 
 
 static func _parse_effect_number(
@@ -848,13 +1535,7 @@ static func _parse_dialogue(
 	var character = raw.substr(0, bracket_start).strip_edges()
 	var text = raw.substr(bracket_start + 1, bracket_end - bracket_start - 1)
 
-	# Extract voice tag
-	var voice = ""
-	var after_bracket = raw.substr(bracket_end + 1).strip_edges()
-	var voice_match = "#voice:"
-	var voice_pos = after_bracket.find(voice_match)
-	if voice_pos != -1:
-		voice = after_bracket.substr(voice_pos + voice_match.length()).strip_edges()
+	var voice := _extract_voice_tag(raw, bracket_end)
 
 	var params := {
 		"character": character,
@@ -881,11 +1562,12 @@ static func _parse_narration(
 		return null
 
 	var text = raw.substr(bracket_start + 1, bracket_end - bracket_start - 1)
+	var voice := _extract_voice_tag(raw, bracket_end)
 
 	var params := {
 		"character": "",
 		"text": text,
-		"voice": "",
+		"voice": voice,
 		"mode": mode,
 	}
 	_attach_dialogue_profile(params, profile_name, profile, declarative_presentation)
@@ -902,13 +1584,23 @@ static func _parse_monologue(token: DslToken) -> CommandData:
 
 	var character = raw.substr(0, paren_start).strip_edges()
 	var text = raw.substr(paren_start + 1, paren_end - paren_start - 1)
+	var voice := _extract_voice_tag(raw, paren_end)
 
 	return _make_cmd("dialogue", {
 		"character": character,
 		"text": text,
-		"voice": "",
+		"voice": voice,
 		"mode": "monologue",
 	})
+
+
+static func _extract_voice_tag(raw: String, closing_index: int) -> String:
+	var trailing := raw.substr(closing_index + 1).strip_edges()
+	var voice_prefix := "#voice:"
+	var voice_index := trailing.find(voice_prefix)
+	if voice_index == -1:
+		return ""
+	return trailing.substr(voice_index + voice_prefix.length()).strip_edges()
 
 
 # --- @if/@else/@end ---
@@ -924,6 +1616,7 @@ static func _create_if_context(token: DslToken, current_scene: SceneData, _data:
 		"else_commands": [],
 		"branch": "then",
 		"parent_scene": current_scene,
+		"has_else": false,
 	}
 
 

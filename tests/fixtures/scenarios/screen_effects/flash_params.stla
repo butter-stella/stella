@@ -9,4 +9,3 @@
 
 // Checkpoint 2: the overlay must be removed.
 @wait click
-@end

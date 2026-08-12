@@ -59,15 +59,11 @@ func _build_ui() -> void:
 	# Tags
 	_highlighter.add_color_region("#", " ", Color(0.7, 0.5, 0.9), true)
 	# @ commands
-	_highlighter.add_keyword_color("@show", Color(0.4, 0.7, 1.0))
-	_highlighter.add_keyword_color("@hide", Color(0.4, 0.7, 1.0))
-	_highlighter.add_keyword_color("@expr", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@stage", Color(0.4, 0.7, 1.0))
 	_highlighter.add_keyword_color("@bg", Color(0.4, 0.7, 1.0))
 	_highlighter.add_keyword_color("@bgm", Color(0.4, 0.7, 1.0))
 	_highlighter.add_keyword_color("@se", Color(0.4, 0.7, 1.0))
 	_highlighter.add_keyword_color("@voice", Color(0.4, 0.7, 1.0))
-	_highlighter.add_keyword_color("@anim", Color(0.4, 0.7, 1.0))
-	_highlighter.add_keyword_color("@move", Color(0.4, 0.7, 1.0))
 	_highlighter.add_keyword_color("@fade", Color(0.4, 0.7, 1.0))
 	_highlighter.add_keyword_color("@scene", Color(0.9, 0.4, 0.4))
 	_highlighter.add_keyword_color("@nvl", Color(0.4, 0.7, 1.0))
@@ -75,7 +71,6 @@ func _build_ui() -> void:
 	_highlighter.add_keyword_color("@choice", Color(0.4, 0.7, 1.0))
 	_highlighter.add_keyword_color("@wait", Color(0.4, 0.7, 1.0))
 	_highlighter.add_keyword_color("@end", Color(0.4, 0.7, 1.0))
-	_highlighter.add_keyword_color("@cg", Color(0.4, 0.7, 1.0))
 	_highlighter.add_keyword_color("@effect", Color(0.4, 0.7, 1.0))
 	_code_edit.syntax_highlighter = _highlighter
 

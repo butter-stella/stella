@@ -65,15 +65,13 @@ func test_config_avatar_rect_partial_dict_uses_defaults():
 	assert_eq(config.avatar_rect, Rect2(100, 0, 0, 150))
 
 
-func test_config_avatar_rect_coexists_with_layered():
+func test_config_avatar_rect_coexists_with_avatar_asset_mapping():
 	var config = CharacterConfig.new()
 	config.load_from_dict({
-		"render_mode": "layered",
-		"default_body": "body_school",
-		"expressions": {"default": "face_default"},
+		"avatar_assets": {"default": "portrait_default"},
 		"avatar_rect": {"x": 0, "y": 0, "w": 200, "h": 200}
 	})
-	assert_true(config.is_layered())
+	assert_eq(config.resolve_avatar_asset("unknown"), "portrait_default")
 	assert_true(config.has_avatar_rect())
 
 
@@ -85,21 +83,21 @@ func test_avatar_hidden_initially():
 
 
 func test_avatar_hidden_in_nvl_mode():
-	SignalBus.show_dialogue.emit("sakura", [{"text": "Hello", "voice": "", "expression": ""}], "nvl")
+	SignalBus.show_dialogue.emit("sakura", [{"text": "Hello", "voice": ""}], "nvl")
 	await get_tree().process_frame
 	var container = _get_avatar_container()
 	assert_false(container.visible, "avatar should be hidden in NVL mode")
 
 
 func test_avatar_hidden_in_overlay_mode():
-	SignalBus.show_dialogue.emit("sakura", [{"text": "Hello", "voice": "", "expression": ""}], "overlay")
+	SignalBus.show_dialogue.emit("sakura", [{"text": "Hello", "voice": ""}], "overlay")
 	await get_tree().process_frame
 	var container = _get_avatar_container()
 	assert_false(container.visible, "avatar should be hidden in overlay mode")
 
 
 func test_avatar_hidden_for_narrator():
-	SignalBus.show_dialogue.emit("", [{"text": "Narration text", "voice": "", "expression": ""}], "adv")
+	SignalBus.show_dialogue.emit("", [{"text": "Narration text", "voice": ""}], "adv")
 	await get_tree().process_frame
 	var container = _get_avatar_container()
 	assert_false(container.visible, "avatar should be hidden for narrator (empty character)")
@@ -107,7 +105,7 @@ func test_avatar_hidden_for_narrator():
 
 func test_avatar_hidden_when_no_avatar_rect():
 	# Character without avatar_rect config — avatar should stay hidden
-	SignalBus.show_dialogue.emit("nonexistent_char", [{"text": "Hello", "voice": "", "expression": ""}], "adv")
+	SignalBus.show_dialogue.emit("nonexistent_char", [{"text": "Hello", "voice": ""}], "adv")
 	await get_tree().process_frame
 	var container = _get_avatar_container()
 	var avatar = _get_avatar()
@@ -115,32 +113,181 @@ func test_avatar_hidden_when_no_avatar_rect():
 	assert_null(avatar.texture)
 
 
-func test_expression_tracking_via_char_show():
+func test_inline_expression_updates_only_dialogue_avatar_state():
 	var presenter = _get_presenter()
-	SignalBus.char_show.emit("sakura", "smile", "center")
-	assert_eq(presenter._known_expressions.get("sakura"), "smile")
+	var stage_batches: Array = []
+	var callback := func(operations: Array, _force_cut: bool) -> void:
+		stage_batches.append(operations)
+	SignalBus.stage_operations_requested.connect(callback)
+
+	SignalBus.show_dialogue.emit("sakura", [{
+		"text": "[expr:angry]Hello",
+		"voice": "",
+		"stage_ops": [],
+	}], "adv")
+	SignalBus.stage_operations_requested.disconnect(callback)
+
+	assert_eq(presenter._avatar_expressions.get("sakura"), "angry")
+	assert_true(stage_batches.is_empty(),
+		"inline avatar markers must not mutate named stage layers")
 
 
-func test_expression_tracking_via_char_expression_changed():
+func test_trailing_inline_expression_applies_after_natural_typewriter() -> void:
 	var presenter = _get_presenter()
-	SignalBus.char_show.emit("sakura", "default", "center")
-	SignalBus.char_expression_changed.emit("sakura", "angry")
-	assert_eq(presenter._known_expressions.get("sakura"), "angry")
+	presenter._char_interval = 0.001
+	SignalBus.show_dialogue.emit(
+		"sakura",
+		[{"text": "Hello[expr:sad]", "voice": ""}],
+		"adv",
+	)
+	await get_tree().process_frame
+	assert_true(await wait_until(
+		func(): return not presenter._is_typing,
+		0.5,
+		"natural typewriter completion",
+	))
+	assert_eq(presenter._avatar_expressions.get("sakura"), "sad")
 
 
-func test_expression_tracking_cleared_on_char_hide():
+func test_inline_effects_and_avatar_markers_share_visible_text_positions() -> void:
 	var presenter = _get_presenter()
-	SignalBus.char_show.emit("sakura", "smile", "center")
-	SignalBus.char_hide.emit("sakura")
-	assert_false(presenter._known_expressions.has("sakura"))
+	var parsed: Dictionary = ExpressionTimeline.parse_inline_annotations(
+		"a{wait:500}[expr:sad]b[expr:surprised]{speed:30}c"
+	)
+	assert_eq(parsed["clean_text"], "abc")
+	assert_eq(parsed["effects"], [
+		{"type": "wait", "value": 500.0, "pos": 1},
+		{"type": "speed", "value": 30.0, "pos": 2},
+	])
+	assert_eq(parsed["markers"], [
+		{"expression": "sad", "at_char": 1},
+		{"expression": "surprised", "at_char": 2},
+	])
 
 
-func test_expression_tracking_cleared_on_hide_all():
+func test_wait_effect_pauses_before_the_following_character() -> void:
 	var presenter = _get_presenter()
-	presenter._known_expressions["sakura"] = "smile"
-	presenter._known_expressions["kaito"] = "default"
-	SignalBus.char_hide.emit("all")
-	assert_eq(presenter._known_expressions.size(), 0)
+	presenter._char_interval = 0.001
+	SignalBus.show_dialogue.emit(
+		"sakura",
+		[{"text": "a{wait:80}b", "voice": ""}],
+		"adv",
+	)
+	assert_true(await wait_until(
+		func(): return presenter.text_label.visible_characters >= 1,
+		0.5,
+		"first visible character",
+	))
+	await get_tree().create_timer(0.02).timeout
+	assert_eq(presenter.text_label.visible_characters, 1)
+	presenter.complete_current_dialogue()
+
+
+func test_speed_effect_persists_until_another_speed_effect() -> void:
+	var presenter = _get_presenter()
+	presenter._char_interval = 0.001
+	SignalBus.show_dialogue.emit(
+		"sakura",
+		[{"text": "a{speed:80}bcd", "voice": ""}],
+		"adv",
+	)
+	assert_true(await wait_until(
+		func(): return presenter.text_label.visible_characters >= 3,
+		0.5,
+		"third visible character",
+	))
+	await get_tree().create_timer(0.02).timeout
+	assert_eq(presenter.text_label.visible_characters, 3)
+	presenter.complete_current_dialogue()
+
+
+func test_nvl_accumulation_counts_literal_bracket_text_exactly() -> void:
+	var presenter = _get_presenter()
+	presenter._char_interval = 0.001
+	SignalBus.show_dialogue.emit(
+		"",
+		[{"text": "[b]A[/b]", "voice": ""}],
+		"nvl",
+	)
+	await get_tree().process_frame
+	assert_true(await wait_until(
+		func(): return not presenter._is_typing,
+		0.5,
+		"first NVL entry completion",
+	))
+	SignalBus.show_dialogue.emit(
+		"",
+		[{"text": "B", "voice": ""}],
+		"nvl",
+	)
+	# Stella dialogue text is plain RichTextLabel content; only [expr:name] is
+	# removed. Eight literal characters plus the default newline are visible.
+	assert_eq(presenter.text_label.visible_characters, 9)
+	presenter.complete_current_dialogue()
+
+
+func test_repeated_characters_do_not_recreate_unchanged_avatar_texture() -> void:
+	var presenter = _get_presenter()
+	presenter._char_interval = 0.001
+	SignalBus.show_dialogue.emit(
+		"sakura",
+		[{"text": "[expr:sad]unchanged avatar", "voice": ""}],
+		"adv",
+	)
+	var initial_texture: Texture2D = presenter._avatar_texture.texture
+	assert_not_null(initial_texture)
+	assert_true(await wait_until(
+		func(): return not presenter._is_typing,
+		0.5,
+		"avatar line completion",
+	))
+	assert_same(presenter._avatar_texture.texture, initial_texture)
+
+
+func test_skip_projects_new_speaker_avatar_without_inline_marker() -> void:
+	var presenter = _get_presenter()
+	SignalBus.show_dialogue.emit(
+		"senpai",
+		[{"text": "old", "voice": ""}],
+		"adv",
+	)
+	assert_eq(presenter._current_character, "senpai")
+
+	presenter._ctrl_held = true
+	SignalBus.show_dialogue.emit(
+		"sakura",
+		[{"text": "new", "voice": ""}],
+		"adv",
+	)
+	await get_tree().process_frame
+	assert_true(await wait_until(
+		func(): return not presenter._is_typing,
+		0.5,
+		"skipped avatar projection",
+	))
+	presenter._ctrl_held = false
+	assert_eq(presenter._current_character, "sakura")
+	assert_eq(presenter._current_avatar_expression, "default")
+	var avatar := presenter._avatar_texture.texture as AtlasTexture
+	assert_not_null(avatar)
+	assert_true(avatar.atlas.resource_path.ends_with("sakura/default.png"))
+
+
+func test_each_dialogue_avatar_starts_from_default_without_hidden_history() -> void:
+	var presenter = _get_presenter()
+	SignalBus.show_dialogue.emit(
+		"sakura",
+		[{"text": "[expr:sad]first", "voice": ""}],
+		"adv",
+	)
+	assert_eq(presenter._current_avatar_expression, "sad")
+	SignalBus.show_dialogue.emit(
+		"sakura",
+		[{"text": "second", "voice": ""}],
+		"adv",
+	)
+	assert_eq(presenter._avatar_expressions.get("sakura"), "default")
+	assert_eq(presenter._current_avatar_expression, "default")
 
 
 func test_avatar_cleared_on_hide_dialogue():
@@ -148,7 +295,9 @@ func test_avatar_cleared_on_hide_dialogue():
 	var container = _get_avatar_container()
 	var avatar = _get_avatar()
 	presenter._current_character = "sakura"
+	presenter._avatar_expressions["sakura"] = "smile"
 	SignalBus.hide_dialogue.emit()
 	assert_eq(presenter._current_character, "")
+	assert_true(presenter._avatar_expressions.is_empty())
 	assert_false(container.visible)
 	assert_null(avatar.texture)

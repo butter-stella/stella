@@ -52,7 +52,7 @@ func test_read_flag_restore_merges_cross_playthrough_progress():
 # --- BacklogManager ---
 
 func _seg(text: String, voice: String = "") -> Dictionary:
-	return {"text": text, "voice": voice, "expression": ""}
+	return {"text": text, "voice": voice}
 
 
 func test_backlog_add_entry():

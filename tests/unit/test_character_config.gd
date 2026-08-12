@@ -1,83 +1,41 @@
 extends GutTest
-## Tests for CharacterConfig — character rendering configuration.
+## Tests for CharacterConfig — dialogue-avatar asset configuration.
 
 
-func test_load_from_dict_layered():
-	var config = CharacterConfig.new()
+func test_avatar_asset_mapping_resolves_expression_names():
+	var config := CharacterConfig.new()
 	config.load_from_dict({
-		"render_mode": "layered",
-		"default_body": "body_school",
-		"expressions": {
-			"default": "face_default",
-			"smile": "face_smile",
-			"sad": "face_sad",
-		}
-	})
-	assert_eq(config.render_mode, "layered")
-	assert_eq(config.default_body, "body_school")
-	assert_eq(config.get_face("smile"), "face_smile")
-	assert_eq(config.get_face("default"), "face_default")
-
-
-func test_load_from_dict_sprite():
-	var config = CharacterConfig.new()
-	config.load_from_dict({
-		"render_mode": "sprite",
-	})
-	assert_eq(config.render_mode, "sprite")
-
-
-func test_default_render_mode_is_sprite():
-	var config = CharacterConfig.new()
-	assert_eq(config.render_mode, "sprite")
-
-
-func test_is_layered():
-	var config = CharacterConfig.new()
-	assert_false(config.is_layered())
-	config.render_mode = "layered"
-	assert_true(config.is_layered())
-
-
-func test_get_face_fallback_to_default():
-	var config = CharacterConfig.new()
-	config.load_from_dict({
-		"render_mode": "layered",
-		"default_body": "body_school",
-		"expressions": {
-			"default": "face_default",
-			"smile": "face_smile",
-		}
-	})
-	# Unknown expression falls back to "default"
-	assert_eq(config.get_face("nonexistent"), "face_default")
-
-
-func test_get_face_empty_when_no_expressions():
-	var config = CharacterConfig.new()
-	assert_eq(config.get_face("smile"), "")
-
-
-func test_get_body_with_override():
-	var config = CharacterConfig.new()
-	config.load_from_dict({
-		"render_mode": "layered",
-		"default_body": "body_school",
-		"bodies": {
-			"school": "body_school",
-			"casual": "body_casual",
+		"avatar_assets": {
+			"default": "portrait_neutral",
+			"smile": "portrait_smile",
 		},
-		"expressions": {"default": "face_default"}
 	})
-	assert_eq(config.get_body(""), "body_school")
-	assert_eq(config.get_body("casual"), "body_casual")
-	assert_eq(config.get_body("school"), "body_school")
-	# Unknown body falls back to default
-	assert_eq(config.get_body("nonexistent"), "body_school")
+	assert_eq(config.resolve_avatar_asset("smile"), "portrait_smile")
+	assert_eq(config.resolve_avatar_asset("default"), "portrait_neutral")
 
 
-func test_character_config_loader_returns_sprite_for_missing():
-	var loader = CharacterConfigLoader.new()
-	var config = loader.get_config("nonexistent_character")
-	assert_eq(config.render_mode, "sprite")
-	assert_false(config.is_layered())
+func test_avatar_asset_mapping_falls_back_to_mapped_default():
+	var config := CharacterConfig.new()
+	config.load_from_dict({
+		"avatar_assets": {"default": "portrait_neutral"},
+	})
+	assert_eq(config.resolve_avatar_asset("unknown"), "portrait_neutral")
+
+
+func test_avatar_asset_defaults_to_expression_name_without_mapping():
+	var config := CharacterConfig.new()
+	assert_eq(config.resolve_avatar_asset("smile"), "smile")
+
+
+func test_invalid_avatar_asset_mapping_is_ignored():
+	var config := CharacterConfig.new()
+	config.load_from_dict({"avatar_assets": "not-a-dictionary"})
+	assert_push_warning("CharacterConfig: avatar_assets must be a Dictionary")
+	assert_true(config.avatar_assets.is_empty())
+	assert_eq(config.resolve_avatar_asset("smile"), "smile")
+
+
+func test_character_config_loader_returns_direct_mapping_for_missing():
+	var loader := CharacterConfigLoader.new()
+	var config := loader.get_config("nonexistent_character")
+	assert_eq(config.resolve_avatar_asset("smile"), "smile")

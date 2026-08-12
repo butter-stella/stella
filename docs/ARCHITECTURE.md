@@ -11,7 +11,7 @@ Stella 是基于 Godot 4 的视觉小说 / Galgame 框架。设计目标：
 - **架构清晰**：Core / Presentation 两层分离，Core 层与 Godot API 解耦，可独立单测
 - **DSL 驱动**：自定义 `.stla` 脚本格式，引擎直接解析为内部数据结构
 - **API 优先**：游戏项目自带 UI 场景，框架以 API + 信号的方式提供能力，不强加 UI
-- **可扩展**：命令处理器、转场效果、立绘渲染方式均通过基类/注册表插拔扩展
+- **可扩展**：命令处理器、转场效果、舞台图片渲染方式均通过基类/注册表插拔扩展
 
 ---
 
@@ -21,7 +21,7 @@ Stella 采用分层架构，由下至上：
 
 - **Autoload 层**：`StellaRuntime`（启动入口）+ `SignalBus`（全局信号总线）
 - **Core 层**：脚本解析、剧情引擎、命令处理、变量、存档、设置、播放控制、已读、Backlog、收藏、鉴赏。引擎无关，可独立单测
-- **Presentation 层**：对话、立绘、背景、音频、选择、特效、UI。基于 Godot 节点，订阅 SignalBus 渲染
+- **Presentation 层**：对话、动态舞台、背景、音频、选择、特效、UI。基于 Godot 节点，订阅 SignalBus 渲染
 
 Core 与 Presentation 通过 Godot 信号（Signal）解耦，所有跨层通信经由 `SignalBus` 单例。
 
@@ -50,7 +50,7 @@ flowchart TB
 
     subgraph Presentation["Presentation 层（Godot 节点）"]
         DLG[dialogue_presenter]
-        CHR[character_presenter]
+        STAGE[stage_presenter<br/>动态命名层]
         BG[background]
         AUD[audio]
         FX[effects]
@@ -68,7 +68,7 @@ flowchart TB
     REG -- emit --> BUS
     PLAY -- emit --> BUS
     BUS --> DLG
-    BUS --> CHR
+    BUS --> STAGE
     BUS --> BG
     BUS --> AUD
     BUS --> FX
@@ -111,7 +111,7 @@ func get_handler(command_type: String) -> CommandHandler:
     return _handlers.get(command_type)
 ```
 
-新增指令只需继承 `CommandHandler`，注册到 `CommandRegistry`，符合开闭原则。当前框架内置的 handler 见 `addons/stella/core/commands/`，覆盖对话、立绘、背景、音频、选择、跳转、条件、变量赋值、CG、特效、动画、移动、并行、调用等指令。
+新增指令只需继承 `CommandHandler`，注册到 `CommandRegistry`，符合开闭原则。当前框架内置的 handler 见 `addons/stella/core/commands/`，覆盖对话、命名舞台层、背景、音频、选择、跳转、条件、变量赋值、特效、并行和调用等指令。
 
 ### 2.2 剧情引擎
 
@@ -122,7 +122,7 @@ core/scenario_engine/
 ├── scenario_engine.gd       -- 主引擎
 ├── scenario_context.gd      -- 运行时上下文（场景、指令指针、调用栈、变量存储）
 ├── wait_controller.gd       -- 等待控制（点击/动画/选择）
-└── expression_timeline.gd   -- 语音驱动表情时间线
+└── expression_timeline.gd   -- 对话头像标记与打字机内联效果时间线
 ```
 
 ```gdscript
@@ -170,16 +170,16 @@ func run() -> void:
 extends Node
 
 # 对话
-signal show_dialogue(character: String, text: String, voice: String, mode: String)
+signal show_dialogue(character: String, segments: Array, mode: String)
 signal hide_dialogue()
 signal advance_requested()
 
-# 立绘
-signal char_show(character: String, expression: String, position: String)
-signal char_hide(character: String)
-signal char_expression_changed(character: String, expression: String)
-signal char_anim_requested(character: String, anim: String, intensity: String)
-signal char_move_requested(character: String, position: String, duration: float)
+# 动态命名舞台层
+signal stage_operations_requested(operations: Array, force_cut: bool)
+signal stage_visuals_reset_requested()
+signal stage_state_apply_requested(layers: Dictionary)
+signal stage_transition_started(presenter_instance_id: int, layer_id: String, token: int, operation_request_id: int)
+signal stage_transitions_finish_requested(transitions: Array)
 
 # 背景
 signal bg_changed(asset: String, transition: String, duration: float)
@@ -189,18 +189,16 @@ signal bgm_play(asset: String, fade_duration: float)
 signal bgm_stop(fade_duration: float)
 signal se_play(asset: String, loop: bool)
 signal se_stop(asset: String)
-signal voice_play(asset: String)
+signal voice_play(asset: String, character: String)
 signal voice_started(character: String, asset: String)
-signal voice_progress(progress: float, current_time: float)
+signal voice_progress(position: float, duration: float)
 signal voice_finished()
 
 # 选择
 signal choice_show(prompt: String, options: Array)
 signal choice_selected(option_id: String)
 
-# CG / 特效
-signal cg_show(asset: String, mode: String, transition: String, duration: float)
-signal cg_hide(transition: String, duration: float)
+# 特效
 signal effect_requested(effect_type: String, params: Dictionary)
 signal fade_requested(direction: String, duration: float)
 
@@ -211,6 +209,8 @@ signal scene_changed_event(scene_id: String)
 signal variable_changed(var_name: String, value: Variant)
 signal settings_changed(key: String, value: Variant)
 ```
+
+舞台写操作统一通过 `SignalBus.emit_stage_operations()` 提交；该入口会深拷贝并串行派发同步重入的批次。每批有唯一 request ID，转场开始回执携带同一 ID，因此对话补全只会终止自己发出的 Tween。`stage_operations_requested` 是内部投递信号，状态跟踪器和 Presenter 因而始终按相同顺序观察操作，不会因监听器连接顺序产生存档与画面分叉。完整恢复会提升舞台 epoch、取消队列并使正在投递的旧批次对后续消费者失效。
 
 ### 2.4 变量系统
 
@@ -245,7 +245,9 @@ func capture_snapshot() -> Dictionary: ...
 func restore_snapshot(snapshot: Dictionary) -> void: ...
 ```
 
-`SaveManager` 维护 provider 列表，存档时遍历调用 `capture_snapshot()` 聚合为 JSON 写入 `user://saves/save_<slot>.json`，读档时反向恢复。除了变量系统，`PresentationState` 也作为 provider 捕获背景/立绘/CG/BGM 等表现层状态，实现真正的"所见即所存"。
+`SaveManager` 维护 provider 列表，存档时遍历调用 `capture_snapshot()` 聚合为 JSON 写入 `user://saves/save_<slot>.json`，读档时反向恢复。除了变量系统，`PresentationState` 也作为 provider 捕获基础背景、动态舞台层和 BGM 等表现层状态，实现真正的“所见即所存”。
+
+动态舞台层以 `stage_layers: Dictionary` 保存：键是稳定业务 ID，值是经过 `StageLayerState` 归一化的完整 JSON-safe 状态。人物、事件图和其他舞台图片都使用这一份状态，不存在第二套人物快照。`PresentationState` 与 `StagePresenter` 使用同一 reducer，所以 patch 语义不会漂移。完整恢复先使旧舞台操作失效并清空当前投影，再用 `stage_state_apply_requested` 同步 cut 精确重建全部舞台层；投影信号不回写逻辑状态。
 
 ### 2.6 选择系统
 
@@ -278,8 +280,8 @@ func show_and_wait(data: ChoiceData) -> String:
 ```
 @parallel
   @bg bg_sunset dissolve 1.0
-  @show sakura smile center
-  @anim kaito shake
+  @stage sakura update position=960,80 transition=move duration=0.5
+  @stage kaito update opacity=0.5 transition=fade duration=0.5
 @end
 ```
 
@@ -292,8 +294,8 @@ func show_and_wait(data: ChoiceData) -> String:
 ### 3.1 对话系统
 
 - 打字机效果：`RichTextLabel` + `visible_characters` 逐字递增
-- 内联标签：`{wait:0.5}` 暂停、`{speed:30}` 变速
-- 句内表情切换：`[expr:surprised]` 在打字到达该位置时触发表情变更
+- 内联标签：`{wait:500}` 暂停 500ms、`{speed:30}` 将每字间隔设为 30ms
+- 句内头像提示：`[expr:surprised]` 在打字到达该位置时更新对话框头像，不修改舞台层
 - Backlog 数据由 Core 层 `BacklogManager` 管理，UI 层订阅显示
 
 **对话框模式**：
@@ -306,42 +308,43 @@ Stella 的常规创作边界是：`.stla` 是唯一编程界面。布局和演�
 | `nvl` | 全屏文本，文字逐行累积，适合独白、旁白、信件 |
 | `overlay` | 无对话框，文字直接叠在画面上（内心独白、回忆闪回） |
 
-布局策略首先由 STLA 的 `@dialogue_profile` 声明，并通过 `@adv profile=name` / `@nvl profile=name` / `@overlay profile=name` 选择。编译器把已验证、已解析的 Profile 副本写入每条 `CommandData`，DialogueHandler 在保持原有三参数 `show_dialogue` 信号兼容的同时，把同步的表现元数据交给 Presenter。因此回滚、跳转和存档恢复不依赖一个隐藏的全局 Profile 注册表。
+布局策略首先由 STLA 的 `@dialogue_profile` 声明，并通过 `@adv profile=name` / `@nvl profile=name` / `@overlay profile=name` 选择。编译器把已验证、已解析的 Profile 副本写入每条 `CommandData`，DialogueHandler 在同步分发表现元数据时把它交给 Presenter。因此回滚、跳转和存档恢复不依赖一个隐藏的全局 Profile 注册表。
 
 模式指令还必须保留运行时控制流语义。Parser 先把嵌套 `@if` / `@elif` / `@else` 构造成仅在编译期存在的条件 AST，再以共享 continuation 递归生成显式 CFG；每条分支尾都通过 condition 或 jump 转移，避免依赖 synthetic scene 的物理顺序。每个 `@adv` / `@nvl` / `@overlay` 同时记录为内部事件，在 CFG 展开后再降级到下一个真实 `CommandData` 的 sidecar；仅含模式事件的空分支挂在 condition edge，场景末尾事件则由 `SceneData` 单独保存。它们不占用 `scene.commands` 的索引、不分配 UID。ScenarioContext 按实际执行路径维护当前模式和 NVL page epoch；DialogueHandler 将 context 实例与 epoch 组成同步 page key 交给 Presenter。因此同一源码块经 `@jump` 循环或 `@call` 重入仍会得到新页面；当条件分支按 DSL 约束在汇合前显式收敛到同一模式/Profile 时，continuation 会沿用实际执行分支激活的页面，而非源码中最后解析分支的静态 block id。
 
-Profile 可声明 panel anchors/offsets、文字矩形与 margin、对齐/行距/溢出、背景可见性/颜色、场景内命名分组的显示策略，以及仅用于 NVL 累积显示的 entry prefix/separator。Presenter 就绪时捕获场景编排基线，并在每次声明式模式切换前恢复，再叠加当前模式的 opt-in 覆盖；`off` 因而能精确恢复 ADV。未声明 Profile 的旧 `@nvl` / `@overlay` 仍走原有硬编码布局，NVL 条目继续使用空前缀和换行分隔。
+Profile 可声明 panel anchors/offsets、文字矩形与 margin、对齐/行距/溢出、背景可见性/颜色、场景内命名分组的显示策略，以及仅用于 NVL 累积显示的 entry prefix/separator。Presenter 就绪时捕获场景编排基线，并在每次声明式模式切换前恢复，再叠加当前模式的 opt-in 覆盖；`off` 因而能精确恢复 ADV。未声明 Profile 时使用内置模式布局，NVL 条目使用空前缀和换行分隔。
 
 NVL 的前缀和分隔符属于表现元数据：Presenter 按“记录间分隔符 → 当前记录前缀 → 可选角色名 → 正文”拼装屏幕累积文本，并把新增装饰字符纳入打字机可见字符偏移。它不会把这些装饰写回 Core 的 segment、CommandData 正文或 Backlog 记录，`@combine` 也只构成一条 NVL 记录。离开 NVL 或运行时发出 `hide_dialogue` 的硬隐藏会清空 Presenter 的累积状态，避免下一次进入复用旧页面；右键临时隐藏 UI 不会清页。`DialoguePresentationProfile` Resource 和 `set_presentation_profile()` 只保留为高级程序化兜底，不是普通项目的必需入口。完整语法见 [DSL.md](DSL.md#33-对话框模式切换)。
 
 **对话框头像同步**：
-- 有立绘时：自动同步当前立绘表情
-- CG/无立绘场景：通过 `#face:happy` 参数独立指定
+- `[expr:surprised]` 等句内标记随打字进度更新头像
+- 头像状态与舞台层相互独立；舞台人物差分必须通过 `@stage` 更新
 
-**SD 插画**用于对话中插入 Q 版角色小图、表情包：
+`@combine` 的每个 segment 还可携带 `stage_ops`。DialoguePresenter 在对应 voice 开始前原子派发该批舞台操作；点击补全或快进会按顺序归约全句已声明的操作，再以单次 force-cut 投影最终画面。隐藏/读档会递增 dialogue generation，使已取消的 typewriter、voice 或 skip await 不能在新上下文中继续推进。
+
+**SD / 插画**与人物、事件图使用同一套命名层 API：
 
 ```
-@cg sakura_chibi_angry sd
-@cg sakura_chibi_laugh sd 1.5s    // 自动消失
+@stage chibi show kind=sd asset=stage:sakura_chibi_angry position=1450,700 z=30
+@stage chibi update asset=stage:sakura_chibi_laugh transition=fade duration=0.2
+@stage chibi remove transition=fade duration=0.2
 ```
 
-### 3.2 立绘系统
+### 3.2 动态舞台系统
 
-- 渲染：当前为 sprite 模式（整张图替换 + 表情差分切换）
-- 位置预设（left/center/right + 自定义坐标）
-- 入场/退场动画（fade、slide）
-- 通过 Godot `Tween` 实现所有动画效果
+`StagePresenter` 是背景碎片、人物、事件图、SD 和特效图片共用的单一动态渲染器。它按稳定 ID 创建任意数量的层，不预设位置或容量。每层包含稳定的 `Asset`、`Body`、`Face` Sprite；face-only patch 不会重建或重新加载未变化的 body/背景资源。
 
-**立绘动画预设**：
+- 规范状态：素材引用、offset、position/origin、scale/zoom/depth_scale、rotation、z_index、visible、opacity、fit、有序 redraw 操作列表与 metadata
+- 生命周期：`show` / `update` / `hide` / `remove` / `clear`
+- 动画：每层独立 generation 与 Tween，支持 cut、fade/crossfade、move 和 slide；批量 cut 先归约最终状态再投影
+- redraw：按作者顺序复合 color_overlay（normal/soft-light）、brightness_contrast、byte-exact grayscale、tint、可重复的矩形 box-average blur 与 alpha-mask clip；每个 blur 都读取上一操作的输出，整列替换和 JSON 快照完整保留独立 pass 的顺序；单层上限为 16 个操作、4 个 blur 和 1 个 clip
+- 渲染：只有逐像素操作时，稳定 `Composite` CanvasGroup/ShaderMaterial 直接处理 `Source`；存在 blur 时，`Source` 进入按依赖反向嵌套的 SubViewport 链，每个 authored blur 都由 HDR 横向整数和与 RGBA8 纵向量化两个独立 pass 完成，最后由稳定的 output/material 显示；该结构不依赖多个 screen-read CanvasGroup 的非确定 backbuffer 顺序
+- 坐标：`flip_x` / `flip_y` 是围绕 authored origin 的几何变换；clip 在层合成空间中按遮罩 alpha 相乘，遮罩矩形外始终透明
+- 资源：素材与 clip 遮罩都用逻辑 ID 和 `ResourceLoader.CACHE_MODE_REUSE`；只改 face 或数值操作不重载未变的 body/背景/遮罩；blur 离屏目标受设备纹理轴上限、8192 轴上限、每层 256 MiB 估算预算，以及静态每次 268,435,456 / 连续每帧 67,108,864 次纹理采样预算共同约束，超限 fail-closed；隐藏层保留规范状态与源纹理但释放派生目标，动态源或遮罩尺寸变化时重新投影 bounds/fit/clip
 
-| 预设 | 效果 | 典型用途 |
-|------|------|---------|
-| `jump` | 上下弹跳 | 惊讶、开心 |
-| `shake` | 左右震动 | 受惊、愤怒 |
-| `nod` | 小幅下移回弹 | 点头 |
-| `bounce` | 缩放弹跳 | 兴奋 |
-| `fade_in` / `fade_out` | 透明度渐变 | 入场/退场 |
-| `slide_in` / `slide_out` | 从屏幕外滑入/滑出 | 入场/退场 |
+人物层与其他命名层使用完全相同的生命周期和状态；`kind=character` 只是用途标记，不会启用另一套 presenter、位置槽或存档结构。句内方括号表情只属于对话框头像，舞台上的 `Asset` / `Body` / `Face` 必须通过 `@stage` 更新。
+
+默认场景 CanvasLayer 顺序为 Background=0、Stage=1、Fade=2、UI=3；Stage 初始为空。`@bg` 与 `BackgroundPresenter` 保持独立，负责单一基础背景；StageLayer 承载人物、前景和可独立变换的场景图片。BackgroundLayer 与 StageLayer 都在全屏 `ShakeRoot` 下承载可见内容，`ScreenEffects` 因而能让二者同步震动而不移动 UI。
 
 ### 3.3 背景系统
 
@@ -358,18 +361,7 @@ NVL 的前缀和分隔符属于表现元数据：Presenter 按“记录间分隔
 - **Voice**：对话同步，角色独立音量控制；语音未播完可阻止自动推进
 - 提供 `voice_progress` 信号供 UI 实现进度条
 
-### 3.5 CG 系统
-
-通过 `@cg` 指令统一管理：
-
-| 模式 | 关键字 | 行为 |
-|------|--------|------|
-| 全屏 | （默认） | 替换背景层，自动隐藏立绘，点击推进后恢复 |
-| SD | `sd` | 小图弹出在对话框旁，不影响背景和立绘 |
-| 动态 | `animated` | 全屏 CG + 附加动画效果 |
-| 差分 | `asset:variant` | 切换同一张 CG 的不同状态 |
-
-### 3.6 游戏设置
+### 3.5 游戏设置
 
 框架提供设置数据模型 `GameSettings`、持久化 `SettingsManager`、信号通知。UI 由游戏项目自行实现（或使用 `addons/stella/scenes/settings.tscn` 默认场景）。
 
@@ -417,14 +409,14 @@ class_name GameSettings extends Resource
 
 持久化使用 `user://settings.json`，各子系统订阅 `SignalBus.settings_changed` 动态响应。信号的 `value` 始终是触发通知时该设置的完整当前值；字典设置发送独立的完整快照，而不是单角色 patch。监听器可以在同步回调中再次修改设置，后续通知也会重新读取当前值，不会发送已过期的缓存值。
 
-### 3.7 播放控制
+### 3.6 播放控制
 
 - **AutoPlayController**：文本显示完后按设定延迟自动推进，语音播放中暂缓
 - **SkipController**：快进模式，可配置仅跳已读
 - **ReadFlagManager**：记录已读对话（基于 `scenario_id + scene_id + command_index`），持久化到 global 变量
 - **BacklogManager**：记录对话历史，支持语音重播
 
-### 3.8 游戏状态机
+### 3.7 游戏状态机
 
 `core/state/game_state_machine.gd` 管理宏观流程：
 
@@ -445,7 +437,7 @@ stateDiagram-v2
 
 状态机在 Core 层维护，便于单测；状态切换通过信号通知 UI 层切换场景。
 
-### 3.9 输入抽象
+### 3.8 输入抽象
 
 通过 `StellaAction` 枚举将物理输入映射为语义动作：
 
@@ -470,22 +462,15 @@ enum {
 
 ## 四、扩展功能
 
-### 4.1 语音驱动差分切换
+### 4.1 对话头像内联表情切换
 
-一句对话中，角色表情随语音/文字进度自动切换。编剧在文本中用 `[expr:xxx]` 内联标记切换点：
+一句对话中，头像可以随文字进度切换。编剧直接在文本中用 `[expr:expression]` 标记切换点：
 
 ```
-sakura「我本来很开心的...[surprised]但是听到这个消息之后...[cry]呜呜...」 #voice:sakura_042
+sakura「我本来很开心的...[expr:surprised]但是听到这个消息之后...[expr:cry]呜呜...」 #voice:sakura_042
 ```
 
-**双定位模式**：
-
-| 字段 | 来源 | 用途 |
-|------|------|------|
-| `at_char` | DSL 解析自动生成 | 无语音时：打字机到达该字符位置触发切换 |
-| `at` | 手动标注 | 有语音时：精确秒数，优先级高于 `at_char` |
-
-`ExpressionTimeline`（`core/scenario_engine/`）负责解析和调度时间轴。
+`ExpressionTimeline`（`core/scenario_engine/`）把标记解析为字符位置；打字机到达对应位置时更新对话头像。它不发出舞台操作，也不改变任何 Stage layer。
 
 ### 4.2 语音收藏 / 鉴赏
 
@@ -527,9 +512,6 @@ stella/
 │       │   │   ├── command_registry.gd
 │       │   │   ├── dialogue_handler.gd
 │       │   │   ├── bg_handler.gd
-│       │   │   ├── char_show_handler.gd
-│       │   │   ├── char_hide_handler.gd
-│       │   │   ├── char_expr_handler.gd
 │       │   │   ├── choice_handler.gd
 │       │   │   ├── jump_handler.gd
 │       │   │   ├── condition_handler.gd
@@ -539,10 +521,8 @@ stella/
 │       │   │   ├── voice_handler.gd
 │       │   │   ├── fade_handler.gd
 │       │   │   ├── wait_handler.gd
-│       │   │   ├── cg_handler.gd
 │       │   │   ├── effect_handler.gd
-│       │   │   ├── anim_handler.gd
-│       │   │   ├── move_handler.gd
+│       │   │   ├── stage_layer_handler.gd
 │       │   │   ├── parallel_handler.gd
 │       │   │   └── call_handler.gd
 │       │   ├── data/
@@ -551,6 +531,7 @@ stella/
 │       │   │   ├── command_data.gd
 │       │   │   ├── choice_data.gd
 │       │   │   ├── character_config.gd
+│       │   │   ├── stage_layer_state.gd
 │       │   │   └── character_config_loader.gd
 │       │   ├── variable_system/
 │       │   │   ├── variable_store.gd
@@ -578,8 +559,9 @@ stella/
 │       ├── presentation/                  -- 表现层
 │       │   ├── dialogue/
 │       │   │   └── dialogue_presenter.gd
-│       │   ├── character/
-│       │   │   └── character_presenter.gd
+│       │   ├── stage/
+│       │   │   ├── stage_presenter.gd
+│       │   │   └── shaders/stage_redraw.gdshader
 │       │   ├── background/
 │       │   │   ├── background_presenter.gd
 │       │   │   └── shaders/
@@ -621,7 +603,7 @@ stella/
 |------|------|------|
 | 引擎 | Godot 4 | 开源、2D/UI 强、GDScript 一等公民 |
 | 语言 | GDScript | 融入生态，文档丰富，社区活跃 |
-| 文本渲染 | RichTextLabel + BBCode | 内置富文本，支持自定义效果 |
+| 文本渲染 | RichTextLabel（纯文本） | 排版由 Dialogue Profile 与 Theme 控制；句内只保留显式 Stella 标签 |
 | 缓动动画 | Tween | Godot 内置，API 简洁 |
 | 资源管理 | Godot Resource 系统 | 内置延迟加载、引用计数 |
 | 音频 | AudioStreamPlayer | 内置，支持多通道 |
@@ -667,7 +649,7 @@ godot -s addons/gut/gut_cmdln.gd --headless 2>&1
 | **命令模式** | 剧本指令抽象与执行（`CommandHandler` + `CommandRegistry`） |
 | **信号/观察者** | Core ↔ Presentation 层间通信（Godot Signal + `SignalBus`） |
 | **状态机** | 游戏宏观流程（`GameStateMachine`） |
-| **策略模式** | 转场效果、立绘动画、选择风格可插拔 |
+| **策略模式** | 转场效果、舞台层动画、选择风格可插拔 |
 | **快照/备忘录** | 存档系统状态捕获与恢复（`SaveManager` + provider duck typing） |
 | **Autoload 单例** | 全局服务注册与访问（`SignalBus` / `StellaRuntime`） |
 
@@ -678,6 +660,6 @@ godot -s addons/gut/gut_cmdln.gd --headless 2>&1
 | 方向 | 当前状态 | 备注 |
 |------|---------|------|
 | **节点式剧情编辑器** | 未实现 | 当前仅有 `.stla` 文件级编辑器（`addons/stella/editor/stla_editor.gd`）。完整的 GraphEdit 节点编辑器作为后续可选项 |
-| **Live2D 立绘** | 未实现 | 当前 `CharacterPresenter` 只支持 sprite 模式。后续可通过引入渲染基类 + GDCubism 插件扩展 |
+| **Live2D 人物** | 未实现 | 当前动态舞台层使用 Sprite2D 通道。后续可通过自定义 Stage presenter/资源类型接入 GDCubism |
 | **Rust 性能扩展** | 未实现 | DSL 解析器接口已稳定，后续如需可用 gdext 重写性能热点 |
 | **CI 自动化** | 未实现 | 后续可加 GitHub Actions + GUT 自动测试 |

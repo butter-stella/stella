@@ -11,7 +11,7 @@ func before_each():
 
 
 func _segs(text: String, voice: String = "") -> Array:
-	return [{"text": text, "voice": voice, "expression": ""}]
+	return [{"text": text, "voice": voice}]
 
 
 # A test snapshot factory: returns a unique dict each call so we can verify
@@ -36,30 +36,28 @@ func test_add_entry_stores_basic_fields():
 func test_add_entry_strips_inline_effect_markers():
 	# {wait:N} / {speed:fast} are typewriter directives — they should NOT
 	# leak into the backlog history text.
-	var segs = [{"text": "你好{wait:500}世界{speed:fast}！", "voice": "", "expression": ""}]
+	var segs = [{"text": "你好{wait:500}世界{speed:30}！", "voice": ""}]
 	_mgr.add_entry("a", segs, 0, func(): return {})
 	assert_eq(_mgr.get_entries()[0]["text"], "你好世界！")
 
 
 func test_add_entry_strips_expression_markers():
-	# [expression] single-word brackets should be stripped too.
-	var segs = [{"text": "嗨[smile]，最近好吗？[sad]", "voice": "", "expression": ""}]
+	# [expr:expression] single-word brackets should be stripped too.
+	var segs = [{"text": "嗨[expr:smile]，最近好吗？[expr:sad]", "voice": ""}]
 	_mgr.add_entry("a", segs, 0, func(): return {})
 	assert_eq(_mgr.get_entries()[0]["text"], "嗨，最近好吗？")
 
 
-func test_add_entry_preserves_brackets_with_spaces_or_colons():
-	# Brackets that aren't expression markers (have a colon or space)
-	# should be left alone — they're literal text.
-	var segs = [{"text": "[备注: 这是文本]", "voice": "", "expression": ""}]
+func test_add_entry_preserves_non_expression_brackets_as_literal_text():
+	var segs = [{"text": "[b]重要[/b]文本", "voice": ""}]
 	_mgr.add_entry("a", segs, 0, func(): return {})
-	assert_eq(_mgr.get_entries()[0]["text"], "[备注: 这是文本]")
+	assert_eq(_mgr.get_entries()[0]["text"], "[b]重要[/b]文本")
 
 
 func test_add_entry_concatenates_combine_segments():
 	var segs = [
-		{"text": "foo", "voice": "v1", "expression": ""},
-		{"text": "bar", "voice": "v2", "expression": ""},
+		{"text": "foo", "voice": "v1"},
+		{"text": "bar", "voice": "v2"},
 	]
 	_mgr.add_entry("a", segs, 0, func(): return {})
 	var e = _mgr.get_entries()[0]

@@ -17,7 +17,7 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 		segments = [{
 			"text": data.get_string("text", ""),
 			"voice": data.get_string("voice", ""),
-			"expression": "",
+			"stage_ops": data.params.get("stage_ops", []).duplicate(true),
 		}]
 
 	var presentation_profile: Dictionary = data.params.get("presentation_profile", {})
