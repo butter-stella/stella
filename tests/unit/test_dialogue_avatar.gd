@@ -156,12 +156,12 @@ func test_inline_effects_and_avatar_markers_share_visible_text_positions() -> vo
 	)
 	assert_eq(parsed["clean_text"], "abc")
 	assert_eq(parsed["effects"], [
-		{"type": "wait", "value": 500.0, "pos": 1},
-		{"type": "speed", "value": 30.0, "pos": 2},
+		{"type": "wait", "value": 500.0, "pos": 1, "source_offset": 1},
+		{"type": "speed", "value": 30.0, "pos": 2, "source_offset": 2},
 	])
 	assert_eq(parsed["markers"], [
-		{"expression": "sad", "at_char": 1},
-		{"expression": "surprised", "at_char": 2},
+		{"expression": "sad", "at_char": 1, "source_offset": 1},
+		{"expression": "surprised", "at_char": 2, "source_offset": 2},
 	])
 
 
@@ -220,9 +220,9 @@ func test_nvl_accumulation_counts_literal_bracket_text_exactly() -> void:
 		[{"text": "B", "voice": ""}],
 		"nvl",
 	)
-	# Stella dialogue text is plain RichTextLabel content; only [expr:name] is
-	# removed. Eight literal characters plus the default newline are visible.
-	assert_eq(presenter.text_label.visible_characters, 9)
+	# The default label enables BBCode, so only A plus the NVL newline are part
+	# of the accumulated parsed-character history when the second entry starts.
+	assert_eq(presenter.text_label.visible_characters, 2)
 	presenter.complete_current_dialogue()
 
 

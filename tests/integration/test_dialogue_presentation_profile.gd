@@ -422,12 +422,14 @@ func test_combine_is_decorated_once_as_one_nvl_entry() -> void:
 	add_child_autoqfree(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 1.0
+	var context := ScenarioContext.new(scenario)
+	context.apply_dialogue_mode_events(command.dialogue_mode_events_before)
 	SignalBus.emit_show_dialogue(
 		command.get_string("character"),
 		segments,
-		command.get_string("mode"),
-		command.params["presentation_profile"],
-		true,
+		context.current_dialogue_mode,
+		context.resolve_current_dialogue_profile(),
+		context.current_dialogue_uses_declarative_presentation,
 	)
 	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "・FirstSecond")
 	SignalBus.hide_dialogue.emit()
@@ -533,7 +535,7 @@ func test_stla_profile_validation_reports_source_lines_and_unknown_references() 
 	)
 
 
-func test_profile_selection_is_compiled_into_commands_and_off_keeps_restore_contract() -> void:
+func test_profile_selection_is_compiled_into_runtime_sidecars_and_off_restores_adv() -> void:
 	var source := """@chapter test "Test"
 @scene start
 @overlay profile=centered
@@ -545,12 +547,28 @@ func test_profile_selection_is_compiled_into_commands_and_off_keeps_restore_cont
 	assert_eq(scenario.diagnostics, [])
 	var overlay_command: CommandData = scenario.scenes[0].commands[0]
 	var adv_command: CommandData = scenario.scenes[0].commands[1]
-	assert_eq(overlay_command.get_string("mode"), "overlay")
-	assert_eq(overlay_command.get_string("presentation_profile_name"), "centered")
-	assert_true(overlay_command.get_bool("declarative_presentation"))
-	assert_eq(adv_command.get_string("mode"), "adv")
-	assert_false(adv_command.has_param("presentation_profile_name"))
-	assert_true(adv_command.get_bool("declarative_presentation"),
+	assert_eq(scenario.get_dialogue_profile("centered").get(
+		"horizontal_alignment"), HORIZONTAL_ALIGNMENT_CENTER)
+	assert_true(overlay_command.get_bool("presentation_from_context"))
+	assert_true(adv_command.get_bool("presentation_from_context"))
+	assert_eq(overlay_command.dialogue_mode_events_before, [{
+		"action": "select_mode",
+		"mode": "overlay",
+		"profile_name": "centered",
+	}])
+	assert_eq(adv_command.dialogue_mode_events_before, [{
+		"action": "restore_adv",
+		"mode": "adv",
+	}])
+
+	var context := ScenarioContext.new(scenario)
+	context.apply_dialogue_mode_events(overlay_command.dialogue_mode_events_before)
+	assert_eq(context.current_dialogue_mode, "overlay")
+	assert_eq(context.current_dialogue_profile_name, "centered")
+	context.apply_dialogue_mode_events(adv_command.dialogue_mode_events_before)
+	assert_eq(context.current_dialogue_mode, "adv")
+	assert_eq(context.current_dialogue_profile_name, "")
+	assert_true(context.current_dialogue_uses_declarative_presentation,
 		"@overlay off must restore the authored ADV baseline")
 
 
@@ -563,8 +581,7 @@ func test_profile_declarations_merge_aliases_and_strip_whitespace_comments() -> 
 「line」"""
 	var scenario := DslParser.parse(DslLexer.tokenize(source), "profile_comments")
 	assert_eq(scenario.diagnostics, [])
-	var command: CommandData = scenario.scenes[0].commands[0]
-	var profile: Dictionary = command.params["presentation_profile"]
+	var profile := scenario.get_dialogue_profile("novel")
 	assert_eq(profile["visibility_groups"], {
 		"quick_menu": true,
 		"adv_chrome": false,
@@ -797,11 +814,20 @@ func test_stla_can_configure_adv_and_restore_it_after_nvl() -> void:
 	var scenario := DslParser.parse(DslLexer.tokenize(source), "adv_profile")
 	assert_eq(scenario.diagnostics, [])
 	var commands: Array = scenario.scenes[0].commands
-	assert_eq(commands[0].get_string("presentation_profile_name"), "message")
-	assert_eq(commands[1].get_string("presentation_profile_name"), "novel")
-	assert_eq(commands[2].get_string("presentation_profile_name"), "message")
-	assert_eq(commands[2].get_string("mode"), "adv")
-	assert_true(commands[2].get_bool("declarative_presentation"))
+	var context := ScenarioContext.new(scenario)
+	var states: Array = []
+	for command in commands:
+		context.apply_dialogue_mode_events(command.dialogue_mode_events_before)
+		states.append({
+			"mode": context.current_dialogue_mode,
+			"profile_name": context.current_dialogue_profile_name,
+			"declarative": context.current_dialogue_uses_declarative_presentation,
+		})
+	assert_eq(states, [
+		{"mode": "adv", "profile_name": "message", "declarative": true},
+		{"mode": "nvl", "profile_name": "novel", "declarative": true},
+		{"mode": "adv", "profile_name": "message", "declarative": true},
+	])
 
 
 func _show_dialogue(text: String, mode: String) -> void:
@@ -849,10 +875,14 @@ func _start_scenario_fixture() -> void:
 	var scenario := DslParser.parse(DslLexer.tokenize(source), "dialogue_presentation_profile")
 	assert_eq(scenario.diagnostics, [], "fixture must parse without diagnostics")
 	var first_dialogue: CommandData = scenario.scenes[0].commands[0]
-	assert_eq(first_dialogue.get_string("presentation_profile_name"), "novel")
-	assert_true(first_dialogue.get_bool("declarative_presentation"))
-	assert_false(first_dialogue.params.get("presentation_profile", {}).is_empty(),
-		"the compiled command must own its resolved profile data")
+	assert_true(first_dialogue.get_bool("presentation_from_context"))
+	assert_eq(first_dialogue.dialogue_mode_events_before, [{
+		"action": "select_mode",
+		"mode": "nvl",
+		"profile_name": "novel",
+	}])
+	assert_false(scenario.get_dialogue_profile("novel").is_empty(),
+		"ScenarioData must own the profile selected by runtime sidecars")
 	_engine = ScenarioEngine.new()
 	_engine.registry = StellaRuntime.registry
 	_engine.load_scenario(scenario)

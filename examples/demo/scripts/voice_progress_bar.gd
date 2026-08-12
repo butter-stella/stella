@@ -16,15 +16,23 @@ func _ready():
 	SignalBus.hide_dialogue.connect(func(): visible = false)
 
 
-func _on_dialogue_voice_started(_total_duration: float):
+func _on_dialogue_voice_started(total_duration: float):
+	if not SignalBus.dialogue_voice_started_event_is_current(
+		total_duration, get_instance_id()):
+		return
 	value = 0.0
 	visible = true
 
 
 func _on_dialogue_voice_finished():
+	if not SignalBus.dialogue_voice_finished_event_is_current(get_instance_id()):
+		return
 	visible = false
 
 
 func _on_dialogue_voice_progress(position: float, total_duration: float):
+	if not SignalBus.dialogue_voice_progress_event_is_current(
+		position, total_duration, get_instance_id()):
+		return
 	if total_duration > 0:
 		value = position / total_duration

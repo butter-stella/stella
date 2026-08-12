@@ -169,7 +169,7 @@ func run() -> void:
 # autoload/signal_bus.gd
 extends Node
 
-# 对话
+# 对话；普通单句和 @combine 都使用统一的 segments 数组
 signal show_dialogue(character: String, segments: Array, mode: String)
 signal hide_dialogue()
 signal advance_requested()
@@ -296,7 +296,7 @@ func show_and_wait(data: ChoiceData) -> String:
 - 打字机效果：`RichTextLabel` + `visible_characters` 逐字递增
 - 内联标签：`{wait:500}` 暂停 500ms、`{speed:30}` 将每字间隔设为 30ms
 - 句内头像提示：`[expr:surprised]` 在打字到达该位置时更新对话框头像，不修改舞台层
-- Backlog 数据由 Core 层 `BacklogManager` 管理，UI 层订阅显示
+- Backlog 数据由 Core 层 `BacklogManager` 管理，UI 层订阅显示；Core 在写入时移除 expression/effect marker 与 BBCode 格式标签，并把换行、段落、列表转换成适合普通 Button 的可见纯文本
 
 **对话框模式**：
 
@@ -308,13 +308,17 @@ Stella 的常规创作边界是：`.stla` 是唯一编程界面。布局和演�
 | `nvl` | 全屏文本，文字逐行累积，适合独白、旁白、信件 |
 | `overlay` | 无对话框，文字直接叠在画面上（内心独白、回忆闪回） |
 
-布局策略首先由 STLA 的 `@dialogue_profile` 声明，并通过 `@adv profile=name` / `@nvl profile=name` / `@overlay profile=name` 选择。编译器把已验证、已解析的 Profile 副本写入每条 `CommandData`，DialogueHandler 在同步分发表现元数据时把它交给 Presenter。因此回滚、跳转和存档恢复不依赖一个隐藏的全局 Profile 注册表。
+布局策略首先由 STLA 的 `@dialogue_profile` 声明，并通过 `@adv profile=name` / `@nvl profile=name` / `@overlay profile=name` 选择。编译器把已验证、已解析的 Profile 与诊断 provenance 分别存入当前 `ScenarioData` 的显式 registry；对话命令本身不烘焙解析时的线性 Profile 状态。DialogueHandler 从 `ScenarioContext` 的实际运行路径取得 Profile 名，再从当前 scenario registry 解析表现数据，并在保持原有三参数 `show_dialogue` 信号兼容的同时把同步元数据交给 Presenter。registry 随 scenario 生命周期存在，不是隐藏的全局状态。
 
-模式指令还必须保留运行时控制流语义。Parser 先把嵌套 `@if` / `@elif` / `@else` 构造成仅在编译期存在的条件 AST，再以共享 continuation 递归生成显式 CFG；每条分支尾都通过 condition 或 jump 转移，避免依赖 synthetic scene 的物理顺序。每个 `@adv` / `@nvl` / `@overlay` 同时记录为内部事件，在 CFG 展开后再降级到下一个真实 `CommandData` 的 sidecar；仅含模式事件的空分支挂在 condition edge，场景末尾事件则由 `SceneData` 单独保存。它们不占用 `scene.commands` 的索引、不分配 UID。ScenarioContext 按实际执行路径维护当前模式和 NVL page epoch；DialogueHandler 将 context 实例与 epoch 组成同步 page key 交给 Presenter。因此同一源码块经 `@jump` 循环或 `@call` 重入仍会得到新页面；当条件分支按 DSL 约束在汇合前显式收敛到同一模式/Profile 时，continuation 会沿用实际执行分支激活的页面，而非源码中最后解析分支的静态 block id。
+模式指令还必须保留运行时控制流语义。Parser 先把嵌套 `@if` / `@elif` / `@else` 构造成仅在编译期存在的条件 AST，再以共享 continuation 递归生成显式 CFG；每条分支尾都通过 condition 或 jump 转移，避免依赖 synthetic scene 的物理顺序。每个 `@adv` / `@nvl` / `@overlay` 同时记录为包含 action、mode 与 Profile 名的内部 presentation-selection 事件，在 CFG 展开后再降级到下一个真实 `CommandData` 的 sidecar；仅含事件的空分支挂在 condition edge，场景末尾事件则由 `SceneData` 单独保存。它们不占用 `scene.commands` 的索引、不分配 UID。ScenarioContext 按实际执行路径维护当前模式、当前/ADV Profile 选择与 NVL page epoch；存档只保存可 JSON 序列化的名称与布尔状态，恢复时再从当前 `ScenarioData` 解析 Profile，provenance 不进入存档。DialogueHandler 将 context 实例与 epoch 组成同步 page key 交给 Presenter。因此同一源码块经 `@jump` 循环或 `@call` 重入仍会得到新页面；条件分支可以选择不同 mode/Profile，continuation 会继承真正执行的那条分支，而不会被未执行分支的源码顺序污染。
 
-Profile 可声明 panel anchors/offsets、文字矩形与 margin、对齐/行距/溢出、背景可见性/颜色、场景内命名分组的显示策略，以及仅用于 NVL 累积显示的 entry prefix/separator。Presenter 就绪时捕获场景编排基线，并在每次声明式模式切换前恢复，再叠加当前模式的 opt-in 覆盖；`off` 因而能精确恢复 ADV。未声明 Profile 时使用内置模式布局，NVL 条目使用空前缀和换行分隔。
+Profile 可声明 panel anchors/offsets、文字矩形与 margin、对齐/行距/溢出、背景可见性/颜色、场景内命名分组的显示策略、仅用于 NVL 累积显示的 entry prefix/separator，以及可选的 end-of-text advance indicator。Presenter 就绪时捕获场景编排基线，并在每次声明式模式切换前恢复，再叠加当前模式的 opt-in 覆盖；`off` 因而能精确恢复 ADV。未声明 Profile 时使用内置兼容布局，NVL 条目使用空前缀和换行分隔，也不会创建 indicator 节点。
 
-NVL 的前缀和分隔符属于表现元数据：Presenter 按“记录间分隔符 → 当前记录前缀 → 可选角色名 → 正文”拼装屏幕累积文本，并把新增装饰字符纳入打字机可见字符偏移。它不会把这些装饰写回 Core 的 segment、CommandData 正文或 Backlog 记录，`@combine` 也只构成一条 NVL 记录。离开 NVL 或运行时发出 `hide_dialogue` 的硬隐藏会清空 Presenter 的累积状态，避免下一次进入复用旧页面；右键临时隐藏 UI 不会清页。`DialoguePresentationProfile` Resource 和 `set_presentation_profile()` 只保留为高级程序化兜底，不是普通项目的必需入口。完整语法见 [DSL.md](DSL.md#33-对话框模式切换)。
+NVL 的前缀和分隔符属于表现元数据：Presenter 按“记录间分隔符 → 当前记录前缀 → 可选角色名 → 正文”拼装屏幕累积文本，并把新增装饰字符纳入打字机可见字符偏移。它不会把这些装饰写回 Core 的 segment、CommandData 正文或 Backlog 记录，`@combine` 也只构成一条 NVL 记录。Backlog 保存正文的玩家可见纯文本：BBCode 只贡献可见字符、段落/列表结构，不保存格式标签；expression 与 typewriter effect marker 也不保存。离开 NVL 或运行时发出 `hide_dialogue` 的硬隐藏会清空 Presenter 的累积状态，避免下一次进入复用旧页面；右键临时隐藏 UI 不会清页。`DialoguePresentationProfile` Resource 和 `set_presentation_profile()` 只保留为高级程序化兜底，不是普通项目的必需入口。完整语法见 [DSL.md](DSL.md#33-对话框模式切换)。
+
+Advance indicator 同样只存在于 Presentation 层。Profile sidecar 在 `show_dialogue` 的同步调用栈内解析成 Texture2D 或 PackedScene，公开三参数信号不变。Presenter 在新 dialogue、`advance_requested`、skip 和 scene/scenario 生命周期边界用 generation + 独立 token 使旧的打字、计时与异步定位失效；SignalBus 在构造时给公开 `advance_requested` 安装最先执行的 pre-dispatch hook，所以无论调用便捷方法还是直接 `signal.emit()`，较早连接的剧情 waiter 在同一信号栈内展示下一句后，都不会被场景替换后才连接的新 Presenter 当成旧句清理。文字完成后等待布局边界（threaded label 等到排版完成并跨过一次完整绘制帧），再创建一个透明、非交互且不改动 live label 状态的临时 `RichTextLabel` 镜像；镜像使用相同 BBCode、theme、尺寸与滚动条占宽，并以 no-op `RichTextEffect` 从 Godot 最终 glyph transform 捕获逻辑末端。由此 `[indent]`、列表前缀、段落对齐、BiDi shaping 与内部滚动条占宽都由引擎本身计算，纵向行度量、滚动位置和裁剪可见范围再由 live label 校验。一个懒创建的 holder 在 ADV、NVL 和 overlay 间复用并负责 `none/pulse/bob` 动画，切换 source 时才替换内容，Presenter 退出树时终止 tween；helper 的 mutation revision 保证自定义 `set_advance_ready()` 同步重入时以新 SHOW/HIDE 为准。marker 从不拼入 `RichTextLabel.text`，因此也不会进入 segment、Backlog 或存档；系统 overlay 和右键 soft hide 保留 ready 状态，而对话式 `@overlay off` 由前一行的 advance 同步隐藏。
+
+Parser 同时为 Profile 字段生成仅供诊断使用的 provenance registry：Profile 名、STLA 来源路径及每个字段的声明行。DialogueHandler 按当前运行时 Profile 名解析它，再与 Profile 一起压入 SignalBus 的同步栈；Presenter 在回调首次 `await` 前复制并绑定到 `DialogueModeProfile`。indicator 的运行时警告因此可用 Profile + 字段声明行 + indicator 资源路径作为去重和定位键，并附带修复动作；多个同模式 Profile 不会互相吞掉诊断。Resource fallback 则报告 Presentation/Mode Resource 路径或明确的内存来源。该诊断数据不改变公开三参数 `show_dialogue` 信号，也不进入 segment、Backlog 或存档。
 
 **对话框头像同步**：
 - `[expr:surprised]` 等句内标记随打字进度更新头像
@@ -603,7 +607,7 @@ stella/
 |------|------|------|
 | 引擎 | Godot 4 | 开源、2D/UI 强、GDScript 一等公民 |
 | 语言 | GDScript | 融入生态，文档丰富，社区活跃 |
-| 文本渲染 | RichTextLabel（纯文本） | 排版由 Dialogue Profile 与 Theme 控制；句内只保留显式 Stella 标签 |
+| 文本渲染 | RichTextLabel | 排版由 Dialogue Profile 与 Theme 控制；`[expr:name]` 是 Stella 标签，项目启用 BBCode 时其余内置/已注册效果交给 Godot 渲染 |
 | 缓动动画 | Tween | Godot 内置，API 简洁 |
 | 资源管理 | Godot Resource 系统 | 内置延迟加载、引用计数 |
 | 音频 | AudioStreamPlayer | 内置，支持多通道 |

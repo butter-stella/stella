@@ -13,6 +13,12 @@ var return_stack: Array = []  # Array of {scene_index, command_index} for @call 
 ## nvl_page_epoch increments only when that path enters NVL from another mode.
 var current_dialogue_mode: String = "adv"
 var nvl_page_epoch: int = 0
+## Named presentation selection on the actual runtime path. Profiles themselves
+## live on ScenarioData; snapshots only persist these JSON-safe references.
+var current_dialogue_profile_name: String = ""
+var current_dialogue_uses_declarative_presentation: bool = false
+var adv_dialogue_profile_name: String = ""
+var adv_dialogue_uses_declarative_presentation: bool = false
 
 
 func _init(data: ScenarioData = null):
@@ -46,6 +52,14 @@ func capture_snapshot() -> Dictionary:
 		"return_stack": return_stack.duplicate(true),
 		"dialogue_mode": current_dialogue_mode,
 		"nvl_page_epoch": nvl_page_epoch,
+		"dialogue_profile_name": current_dialogue_profile_name,
+		"dialogue_declarative_presentation": (
+			current_dialogue_uses_declarative_presentation
+		),
+		"adv_dialogue_profile_name": adv_dialogue_profile_name,
+		"adv_dialogue_declarative_presentation": (
+			adv_dialogue_uses_declarative_presentation
+		),
 	}
 
 
@@ -58,9 +72,20 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 	for entry in stack:
 		return_stack.append(entry)
 	current_dialogue_mode = str(snapshot.get("dialogue_mode", "adv"))
-	if current_dialogue_mode not in ["adv", "nvl", "overlay", "monologue"]:
+	# Monologue is a one-command presentation style and is never persistent
+	# ScenarioContext state. Treat hand-authored/legacy snapshots that contain it
+	# like an unknown mode so the next ordinary dialogue cannot inherit it.
+	if current_dialogue_mode not in ["adv", "nvl", "overlay"]:
 		current_dialogue_mode = "adv"
 	nvl_page_epoch = maxi(0, int(snapshot.get("nvl_page_epoch", 0)))
+	current_dialogue_profile_name = _validated_profile_name(
+		str(snapshot.get("dialogue_profile_name", "")), "current")
+	current_dialogue_uses_declarative_presentation = bool(snapshot.get(
+		"dialogue_declarative_presentation", false))
+	adv_dialogue_profile_name = _validated_profile_name(
+		str(snapshot.get("adv_dialogue_profile_name", "")), "ADV")
+	adv_dialogue_uses_declarative_presentation = bool(snapshot.get(
+		"adv_dialogue_declarative_presentation", false))
 
 
 ## Apply a source-authored dialogue mode directive on the current runtime path.
@@ -75,9 +100,86 @@ func apply_dialogue_mode(mode: String) -> void:
 		nvl_page_epoch += 1
 
 
-func apply_dialogue_mode_events(events: Array[String]) -> void:
-	for mode in events:
-		apply_dialogue_mode(mode)
+## A programmatic/legacy command carries its own one-shot profile Dictionary.
+## Its mode remains persistent for compatibility, but it must clear a previous
+## parser-owned named selection so the next runtime-selected command cannot pair
+## the static command's mode with a stale unrelated profile.
+func apply_static_dialogue_presentation(mode: String) -> void:
+	apply_dialogue_mode(mode)
+	current_dialogue_profile_name = ""
+	current_dialogue_uses_declarative_presentation = false
+
+
+func apply_dialogue_mode_events(events: Array) -> void:
+	for event in events:
+		if event is Dictionary:
+			_apply_dialogue_presentation_event(event)
+		else:
+			# Compatibility for programmatically constructed commands and compiled
+			# scenarios predating presentation-selection sidecars. A legacy event has
+			# no Profile reference, so it must not retain an unrelated named selection.
+			apply_static_dialogue_presentation(str(event))
+
+
+func resolve_current_dialogue_profile() -> Dictionary:
+	if scenario_data == null or current_dialogue_profile_name.is_empty():
+		return {}
+	return scenario_data.get_dialogue_profile(current_dialogue_profile_name)
+
+
+func resolve_current_dialogue_profile_provenance() -> Dictionary:
+	if scenario_data == null or current_dialogue_profile_name.is_empty():
+		return {}
+	return scenario_data.get_dialogue_profile_provenance(
+		current_dialogue_profile_name)
+
+
+func _apply_dialogue_presentation_event(event: Dictionary) -> void:
+	var action := str(event.get("action", ""))
+	var mode := str(event.get("mode", "adv"))
+	match action:
+		"select_adv":
+			var profile_name := _validated_profile_name(
+				str(event.get("profile_name", "")), "ADV")
+			adv_dialogue_profile_name = profile_name
+			adv_dialogue_uses_declarative_presentation = true
+			current_dialogue_profile_name = profile_name
+			current_dialogue_uses_declarative_presentation = true
+			apply_dialogue_mode("adv")
+		"select_mode":
+			var profile_name := _validated_profile_name(
+				str(event.get("profile_name", "")), mode)
+			current_dialogue_profile_name = profile_name
+			current_dialogue_uses_declarative_presentation = not profile_name.is_empty()
+			apply_dialogue_mode(mode)
+		"restore_adv":
+			# Leaving a named declarative profile must restore the captured authored
+			# baseline even when that baseline is the unnamed default ADV layout.
+			var restore_authored_baseline := (
+				adv_dialogue_uses_declarative_presentation
+				or current_dialogue_uses_declarative_presentation
+				or not current_dialogue_profile_name.is_empty()
+			)
+			current_dialogue_profile_name = adv_dialogue_profile_name
+			current_dialogue_uses_declarative_presentation = restore_authored_baseline
+			apply_dialogue_mode("adv")
+		_:
+			# A sidecar with no selection action has no Profile reference.
+			apply_static_dialogue_presentation(mode)
+
+
+func _validated_profile_name(profile_name: String, selection: String) -> String:
+	if profile_name.is_empty() or scenario_data == null:
+		return profile_name
+	if scenario_data.dialogue_profiles.has(profile_name):
+		return profile_name
+	push_warning(
+		(
+			"ScenarioContext: %s dialogue profile '%s' is unavailable; using the "
+			+ "unnamed presentation"
+		) % [selection, profile_name]
+	)
+	return ""
 
 
 func advance() -> void:

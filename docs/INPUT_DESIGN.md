@@ -53,7 +53,9 @@ _unhandled_input:
 
 ### DialoguePresenter (`presentation/dialogue/dialogue_presenter.gd`)
 
-纯展示，零输入处理代码。暴露 `_is_typing`、`_ui_hidden`、`_ctrl_held` 状态供 InputHandler 读写。
+纯展示，零输入处理代码。暴露打字、临时隐藏和 Ctrl 快进状态；InputHandler 通过 `complete_typewriter()` 请求同步完成当前句，由 Presenter 统一取消尚未结束的字符/`{wait}` 计时、应用最终表情并进入 ready 状态，避免输入层直接改字段后留下旧协程。
+
+Presenter 同时观察 `AutoPlayController` / `SkipController` 的状态变化，因此内置工具栏、`StellaAction` 与 `StellaRuntime.toggle_auto_play()` / `toggle_skip()` 共享同一条完成路径：ready 状态开启快进会立即推进，开启自动播放会进入配置的 voice-wait 与 delay tail，而不是只改变按钮高亮。
 
 ### Overlay（save_load/backlog/settings）
 
@@ -63,4 +65,4 @@ _unhandled_input:
 
 AVG 标准行为：打字未完成时点击 = 完成打字（不推进），打字完成后点击 = 推进。
 
-实现：`_input` 中打字完成会同步补全当前对话剩余的 `@combine` 舞台操作，并调用 `set_input_as_handled()` 消费事件，阻止后续 GUI 处理和推进。舞台操作按声明顺序归约后以 cut 投影最终状态，因此点击补全不会留下跨到下一句的 Tween。
+实现：`_input` 调用 Presenter 的 `complete_typewriter()`，由 Presenter 同步取消旧的字符/等待协程、应用最终头像状态，并把当前对话剩余的 `@combine` 舞台操作按声明顺序归约后以 cut 投影。成功后输入层再用 `set_input_as_handled()` 消费事件，因此既不会同时推进，也不会留下跨到下一句的 Tween。已完成的对话直接通过 `SignalBus.emit_advance_requested()` 广播原有无参数 `advance_requested` 信号；SignalBus 的 pre-dispatch hook 在同一次原子推进内先收束该行所属的舞台与语音状态，再把信号交给剧情引擎。这个 hook 同样覆盖扩展代码直接调用 `advance_requested.emit()` 的兼容路径，并避免收束回调同步展示的新台词又被输入层随后发出的 `advance_requested` 误清。
