@@ -81,6 +81,29 @@ flowchart TB
 - 反向：用户输入（点击/选择）从 `presentation/input` 经 `SignalBus` 回到 `scenario_engine` 推进剧情
 - `playback` 子模块（auto/skip/backlog/read_flag）状态独立，与 engine 协作并通过 SignalBus 与 UI 联动
 
+### 1.2 启动配置数据流
+
+项目配置必须在任何消费者构造前解析为一个一致的快照。`StellaRuntime._ready()` 的启动顺序是：
+
+```mermaid
+flowchart LR
+    DEFAULTS["StellaConfig 内置默认值"]
+    BASE["stella.cfg<br/>可选基础层"]
+    LOCAL["stella.local.cfg<br/>可选本地层"]
+    APPLY["StellaRuntime._apply_config()"]
+    CORE["构造 Core 子系统"]
+    PRESENTERS["构造全局 / 场景 Presenter"]
+    SCENE["进入或重定向主场景"]
+
+    DEFAULTS --> BASE --> LOCAL --> APPLY --> CORE --> PRESENTERS --> SCENE
+```
+
+每一层都按 key 合并，优先级为 `defaults < base < local`。来源不存在时是无副作用的 no-op；来源存在时，`StellaConfig.load_from_path()` 会先读完整文件并校验所有已知 key 的类型，只有全部成功才提交这一来源及其来源记录。因此损坏的本地层不会留下半套覆盖，基础层仍保持完整；损坏的基础层保持 defaults，报告错误并阻止本地层掩盖共享配置错误。`get_applied_config_sources()` 只返回成功提交的来源，并保持实际应用顺序。
+
+解析不是在旧对象上反复打补丁。`_load_project_config()` 每次都从新的 `StellaConfig` 和内置默认值开始，因此删除或禁用本地文件后重新解析不会残留上一次的值；需要复用配置对象的调用方可用 `StellaConfig.reset()` 恢复默认值，并同时清空 `has_config_file`、来源列表和错误元数据。完成解析后才调用 `_apply_config()`，随后创建子系统、Presenter 并处理场景入口，使启动期间的消费者不会观察到部分应用的配置。
+
+测试隔离属于同一启动边界：当命令行通过 `-s` / `--script` 启动 GUT 的 `addons/gut/gut_cmdln.gd` 时，Runtime 自动跳过隐式的 `res://stella.local.cfg`，但显式传给测试辅助路径的 synthetic 配置仍正常解析。非 GUT 的自动化可设置 `STELLA_DISABLE_LOCAL_CONFIG=1` 获得同样的隔离。
+
 ---
 
 ## 二、核心设计

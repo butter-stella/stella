@@ -3,6 +3,8 @@
 extends Node
 
 const CONFIG_PATH = "res://stella.cfg"
+const LOCAL_CONFIG_PATH = "res://stella.local.cfg"
+const DISABLE_LOCAL_CONFIG_ENV = "STELLA_DISABLE_LOCAL_CONFIG"
 const DEFAULT_TITLE_SCENE = "res://addons/stella/scenes/title.tscn"
 const DEFAULT_GAME_SCENE = "res://addons/stella/scenes/game.tscn"
 const DEFAULT_SETTINGS_SCENE = "res://addons/stella/scenes/settings.tscn"
@@ -53,9 +55,11 @@ func _notification(what: int) -> void:
 
 
 func _ready():
-	# Load project config
-	config = StellaConfig.new()
-	config.load_from_path(CONFIG_PATH)
+	# Resolve project config before any subsystem, presenter, or scene consumes it.
+	var local_config_path := LOCAL_CONFIG_PATH
+	if _should_skip_implicit_local_config(OS.get_cmdline_args()):
+		local_config_path = ""
+	config = _load_project_config(CONFIG_PATH, local_config_path)
 	_apply_config()
 
 	save_manager = SaveManager.new()
@@ -118,6 +122,82 @@ func _ready():
 	# Play title BGM after AudioPresenter is ready
 	if config.title_bgm != "":
 		_play_title_bgm.call_deferred()
+
+
+## Load the shared project config, then atomically apply an optional local
+## override. Each call starts from defaults, so a removed local file cannot
+## leave values behind from a previous resolution.
+func _load_project_config(
+	base_path: String = CONFIG_PATH,
+	local_path: String = LOCAL_CONFIG_PATH,
+) -> StellaConfig:
+	var loaded_config := StellaConfig.new()
+	if _config_source_exists(base_path):
+		var base_error := loaded_config.load_from_path(base_path)
+		if base_error != OK:
+			_report_config_error(loaded_config)
+			return loaded_config
+
+	if _config_source_exists(local_path):
+		var local_error := loaded_config.load_from_path(local_path)
+		if local_error != OK:
+			_report_config_error(loaded_config)
+	return loaded_config
+
+
+## Ordered source paths successfully committed to the startup configuration.
+func get_applied_config_sources() -> PackedStringArray:
+	if config == null:
+		return PackedStringArray()
+	return config.get_applied_sources()
+
+
+## Return whether a source path exists, including a directory at that path.
+## The latter is treated as a present-but-unreadable source and diagnosed.
+func _config_source_exists(path: String) -> bool:
+	if path == "":
+		return false
+	if FileAccess.file_exists(path):
+		return true
+	return DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(path))
+
+
+func _report_config_error(failed_config: StellaConfig) -> void:
+	var message := "StellaRuntime: failed to load config source %s (%s)" % [
+		failed_config.last_error_source,
+		error_string(failed_config.last_error),
+	]
+	if (
+		failed_config.last_error_detail != ""
+		and failed_config.last_error_detail != error_string(failed_config.last_error)
+	):
+		message += ": " + failed_config.last_error_detail
+	push_error(message)
+
+
+## GUT starts through a --script entry point before test setup can run. Skip
+## only the implicit project-local source on that path so the suite never reads
+## a developer's real stella.local.cfg; explicit synthetic paths still load.
+func _should_skip_implicit_local_config(args: PackedStringArray) -> bool:
+	if OS.has_environment(DISABLE_LOCAL_CONFIG_ENV):
+		var raw_value := OS.get_environment(DISABLE_LOCAL_CONFIG_ENV).strip_edges().to_lower()
+		if raw_value not in ["", "0", "false", "no", "off"]:
+			return true
+	return _is_gut_command_line(args)
+
+
+func _is_gut_command_line(args: PackedStringArray) -> bool:
+	for arg: String in args:
+		var normalized_arg := arg.replace("\\", "/")
+		if (
+			normalized_arg in [
+				"addons/gut/gut_cmdln.gd",
+				"res://addons/gut/gut_cmdln.gd",
+			]
+			or normalized_arg.ends_with("/addons/gut/gut_cmdln.gd")
+		):
+			return true
+	return false
 
 
 ## Apply config values to runtime paths.

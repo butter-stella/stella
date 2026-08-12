@@ -98,6 +98,60 @@ save_load_scene = ""
 backlog_scene = ""
 ```
 
+#### 分层配置与本地覆盖
+
+将可公开、可复现的项目配置提交到受版本控制的 `stella.cfg`（tracked），只把当前开发者或当前机器需要的覆盖写入已被 Git 忽略的 `stella.local.cfg`（ignored）。例如，仓库中提交的基础配置可以是：
+
+```ini
+# stella.cfg（提交到仓库）
+[game]
+title = "Starfall"
+scenario = "res://scenarios/main.stla"
+
+[paths]
+voice = "res://audio/voice/"
+
+[overrides]
+game_scene = "res://scenes/game.tscn"
+```
+
+本机覆盖可以使用相同结构；以下 synthetic 路径仅作示例，不对应任何私有内容：
+
+```ini
+# stella.local.cfg（不要提交）
+[game]
+scenario = "res://private_preview/scenarios/preview.stla"
+
+[paths]
+voice = "res://private_preview/audio/voice/"
+
+[overrides]
+game_scene = "res://private_preview/ui/preview_game.tscn"
+```
+
+配置按 key 独立解析，优先级为“内置默认值 < `stella.cfg` < `stella.local.cfg`”。这套规则一致覆盖 `[game]`、`[paths]`、`[features]`、`[system_se]` 和 `[overrides]`；后一个文件只覆盖其中明确写出的 key，例如上面的本地文件不会改变基础配置中的 `game.title`。
+
+两个文件都是可选来源：缺失的文件不会报错，也不会清空较低优先级已经解析出的值。每个存在的来源会先完成读取和已知 key 的类型校验，再一次性提交；某个来源损坏或类型错误时，该来源不会部分生效，也不会出现在已应用来源列表中。基础配置失败时保留默认值并停止继续叠加，本地覆盖失败时则完整保留已经生效的基础配置。启动错误会带来源路径和 schema 上下文，但不会打印配置值。
+
+可用 Facade 查询本次启动实际提交的来源，返回顺序也就是应用顺序：
+
+```gdscript
+var sources: PackedStringArray = StellaRuntime.get_applied_config_sources()
+# 典型结果：["res://stella.cfg", "res://stella.local.cfg"]
+```
+
+GUT 命令行运行器会自动跳过隐式的 `res://stella.local.cfg`，避免本机配置污染测试。其他自动化、CI 或一次性诊断可显式禁用本地层：
+
+```bash
+STELLA_DISABLE_LOCAL_CONFIG=1 godot --headless --path /path/to/project --quit
+```
+
+该环境变量只跳过启动时隐式加载的本地文件；测试代码显式传入的 synthetic 配置路径仍可用于验证分层行为。
+
+发布公共构建时，请在每个 Godot Export Preset 的资源过滤规则中显式包含 `stella.cfg`，并显式排除 `stella.local.cfg` 以及实际存放私有或生成内容的目录（例如上面的 `private_preview/`）。`.gitignore` 只控制 Git 是否跟踪文件，**不会**阻止 Godot 将它打包进导出产物。导出后还应检查资源清单或 PCK，确认这些排除规则确实生效。
+
+`stella.local.cfg` 只是方便开发的覆盖层，不是 secrets vault：它既不加密，也不保证不会被误导出、备份或读取。不要在其中存放 API token、密码或其他凭据；凭据应通过环境变量或专用密钥管理服务提供。
+
 ### Step 4 — 搭建游戏场景
 
 参考 `examples/demo/` 的结构搭建自己的标题场景和游戏场景，然后在 `stella.cfg` 的 `[overrides]` 中指向它们。

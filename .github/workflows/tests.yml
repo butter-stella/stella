@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          clean: true
 
       - name: Setup Godot
         uses: chickensoft-games/setup-godot@v2
@@ -22,7 +24,7 @@ jobs:
           use-dotnet: false
 
       - name: Import project
-        run: godot --headless --import 2>&1 || true
+        run: godot --headless --import 2>&1
         timeout-minutes: 2
 
       - name: Check clean shutdown
@@ -52,6 +54,22 @@ jobs:
           fi
         timeout-minutes: 2
 
+      - name: Create synthetic local override
+        shell: bash
+        run: |
+          if git ls-files --error-unmatch stella.local.cfg >/dev/null 2>&1; then
+            echo "::error::stella.local.cfg must not be tracked"
+            exit 1
+          fi
+          if test -e stella.local.cfg; then
+            echo "::error::stella.local.cfg must not exist before the isolation test"
+            exit 1
+          fi
+          printf '%s\n' \
+            '[game]' \
+            'title = "CI_LOCAL_CONFIG_POISON"' \
+            > stella.local.cfg
+
       - name: Run tests
         run: godot -s addons/gut/gut_cmdln.gd --headless 2>&1
         timeout-minutes: 5
@@ -63,6 +81,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          clean: true
 
       - name: Setup Godot
         uses: chickensoft-games/setup-godot@v2
