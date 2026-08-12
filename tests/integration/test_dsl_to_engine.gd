@@ -137,3 +137,48 @@ func test_named_stage_runs_from_dsl_through_scenario_engine():
 	assert_eq(stage_layers["hero"]["body"], "stage:hero_body")
 	assert_eq(stage_layers["hero"]["face"], "stage:sad")
 	SignalBus.stage_operations_requested.disconnect(callback)
+
+
+func test_invalid_stage_update_cannot_partially_mutate_runtime_state():
+	var source = """@chapter test
+@scene start
+@stage hero show face=stage:original opacity=0.8
+@stage hero update face=stage:must_not_apply opacity=2"""
+	var scenario := DslParser.parse(
+		DslLexer.tokenize(source),
+		"invalid_named_stage_e2e",
+	)
+	assert_eq(
+		scenario.scenes[0].commands.size(),
+		1,
+		"the invalid update must not produce a runtime command",
+	)
+	var has_source_diagnostic := false
+	for diagnostic in scenario.diagnostics:
+		if (
+			int(diagnostic.get("line", -1)) == 4
+			and "opacity" in String(diagnostic.get("message", ""))
+		):
+			has_source_diagnostic = true
+	assert_true(has_source_diagnostic)
+
+	var emitted_batches: Array = []
+	var callback = func(operations, force_cut):
+		emitted_batches.append([operations.duplicate(true), force_cut])
+	SignalBus.stage_operations_requested.connect(callback)
+	var registry := CommandRegistry.new()
+	registry.register(StageLayerHandler.new())
+	var engine := ScenarioEngine.new()
+	engine.registry = registry
+	engine.load_scenario(scenario)
+
+	await engine.run()
+
+	assert_true(engine.context.is_finished)
+	assert_eq(emitted_batches.size(), 1)
+	var stage_layers: Dictionary = (
+		StellaRuntime.presentation_state.capture_snapshot()["stage_layers"]
+	)
+	assert_eq(stage_layers["hero"]["face"], "stage:original")
+	assert_almost_eq(stage_layers["hero"]["opacity"], 0.8, 0.001)
+	SignalBus.stage_operations_requested.disconnect(callback)

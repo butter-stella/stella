@@ -352,6 +352,80 @@ func test_operation_envelope_is_closed_and_rejects_invalid_timing():
 	assert_false(StageLayerState.validate_operation(negative_duration, false))
 
 
+func test_canonical_stage_properties_use_one_spelling_and_typed_booleans():
+	var operation := _op("show", "hero", {
+		"depth_scale": 0.8,
+		"rotation": 15.0,
+		"asset": "none",
+		"body": "none",
+		"face": "none",
+		"visible": true,
+		"flip_x": false,
+		"flip_y": true,
+	})
+	assert_true(StageLayerState.validate_operation(operation, false))
+	var layers := StageLayerState.reduce({}, [operation], false)
+	assert_almost_eq(layers["hero"]["depth_scale"], 0.8, 0.001)
+	assert_almost_eq(layers["hero"]["rotation"], 15.0, 0.001)
+	assert_eq(layers["hero"]["asset"], "")
+	assert_eq(layers["hero"]["body"], "")
+	assert_eq(layers["hero"]["face"], "")
+	assert_true(layers["hero"]["visible"])
+	assert_false(layers["hero"]["flip_x"])
+	assert_true(layers["hero"]["flip_y"])
+
+
+func test_undocumented_aliases_reject_the_whole_state_operation():
+	var layers := StageLayerState.reduce({}, [
+		_op("show", "hero", {
+			"face": "stage:original",
+			"opacity": 0.8,
+		}),
+	], false)
+	var original := layers.duplicate(true)
+	var invalid_properties := [
+		{"depth": 0.8},
+		{"rotation_degrees": 15.0},
+		{"z": 1.5},
+		{"z": 1.5, "z_index": 2},
+		{"z": 99999, "z_index": 2},
+		{"z": 1, "z_index": 2},
+		{"asset": "null"},
+		{"asset": "off"},
+		{"body": "null"},
+		{"body": "off"},
+		{"face": "null"},
+		{"face": "off"},
+		{"visible": "true"},
+		{"visible": "false"},
+		{"visible": "yes"},
+		{"visible": "on"},
+		{"visible": "1"},
+		{"visible": "no"},
+		{"visible": "off"},
+		{"visible": "0"},
+		{"visible": 1},
+		{"visible": 0},
+		{"flip_x": "yes"},
+		{"flip_y": 0},
+	]
+	for invalid_property in invalid_properties:
+		var mixed_patch := {"opacity": 0.25}
+		mixed_patch.merge(invalid_property, true)
+		var operation := _op("update", "hero", mixed_patch)
+		assert_false(
+			StageLayerState.validate_operation(operation, false),
+			str(invalid_property),
+		)
+		layers = StageLayerState.reduce(layers, [operation], false)
+		assert_eq(
+			layers,
+			original,
+			"valid fields must not survive an invalid alias: %s"
+			% [invalid_property],
+		)
+
+
 func test_layer_ids_have_no_hidden_reserved_namespace():
 	var layers := StageLayerState.reduce({}, [
 		_op("show", "actor:sakura", {"asset": "stage:actor"}),

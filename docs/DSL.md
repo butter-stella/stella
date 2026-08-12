@@ -226,7 +226,7 @@ warning，并按普通文本显示。
 | `redraw` | 可重复书写的有序像素操作；见下表 | `[]` |
 | `flip_x` / `flip_y` | 围绕 authored origin 翻转 | `false` |
 
-成对数值写成 `x,y`；`scale=0.75` 这样的标量会同时作用于两轴。`asset=none`、`body=none` 或 `face=none` 会显式清空对应纹理。非法数值、布尔值、枚举或 transition 会生成带 STLA 行号的诊断，不会静默写入快照。
+成对数值写成 `x,y`；`scale=0.75` 这样的标量会同时作用于两轴。布尔值只接受 `true` / `false`；`asset=none`、`body=none` 或 `face=none` 是唯一的显式清空写法。`depth_scale` 与 `rotation` 是各自唯一的属性名，不接受 `depth`、`rotation_degrees` 或其他兼容别名。任一属性、`transition` 或 `duration` 非法时，Parser 会生成带 STLA 行号的诊断并拒绝整条 `@stage`，不会保留同一行中的其他合法字段，也不会把错误值改写成默认值。
 
 `redraw=` 可在同一条命令中重复，执行顺序就是书写顺序，每层最多 16 个操作，其中最多 4 个 `blur`、1 个 `clip`。每次 `blur` 都读取前一操作输出并形成独立 pass。只要给出任意 `redraw=`，该命令就会原子替换该层的完整重绘管线；省略它会保留原管线，`redraw=clear` 则清空。函数参数内不能包含空格。
 
@@ -246,7 +246,7 @@ warning，并按普通文本显示。
 @stage dusk update redraw=clear
 ```
 
-`transition` / `duration` 属于 operation，不进入持久层状态。支持 `cut` / `none`、`fade`、`move` 和 `slide_left/right/up/down`；每层拥有独立 Tween。快进、点击补全和读档会以强制 cut 一次投影最终状态。
+`transition` / `duration` 属于 operation，不进入持久层状态。支持 `cut` / `none`、`fade`、`move` 和 `slide_left/right/up/down`；`duration` 必须是有限的非负秒数。只有省略字段时才使用 `cut` / `0` 默认值，显式空值或非法值不会回退。每层拥有独立 Tween。快进、点击补全和读档会以强制 cut 一次投影最终状态。
 
 资源引用可使用 `background:`、`character:`、`stage:` 或完整 `res://` 前缀。没有前缀的相对路径从 `[paths] stage` / `StellaRuntime.stage_assets_path` 解析；扩展名可省略。层 ID 应是稳定业务名称，而不是资源路径或场景节点路径。
 

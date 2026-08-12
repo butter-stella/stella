@@ -31,8 +31,8 @@ const _PAIR_PROPERTY_KEYS := [
 const _NUMBER_PROPERTY_KEYS := [
 	"x", "y", "origin_x", "origin_y", "scale_x", "scale_y",
 	"zoom_x", "zoom_y", "asset_x", "asset_y", "body_x", "body_y",
-	"face_x", "face_y", "depth", "depth_scale",
-	"rotation", "rotation_degrees", "z", "z_index", "opacity",
+	"face_x", "face_y", "depth_scale", "rotation", "z", "z_index",
+	"opacity",
 ]
 const _BOOL_PROPERTY_KEYS := ["visible", "flip_x", "flip_y"]
 
@@ -62,10 +62,8 @@ const _KNOWN_PROPERTY_KEYS := {
 	"zoom": true,
 	"zoom_x": true,
 	"zoom_y": true,
-	"depth": true,
 	"depth_scale": true,
 	"rotation": true,
-	"rotation_degrees": true,
 	"z": true,
 	"z_index": true,
 	"visible": true,
@@ -294,9 +292,12 @@ static func _apply_patch_to_normalized(
 	if not _validate_property_values(patch, report_warnings):
 		return result
 
-	for key in ["kind", "asset", "body", "face"]:
+	if patch.has("kind"):
+		result["kind"] = str(patch["kind"])
+	for key in ["asset", "body", "face"]:
 		if patch.has(key):
-			result[key] = str(patch[key])
+			var asset_id := str(patch[key])
+			result[key] = "" if asset_id.to_lower() == "none" else asset_id
 
 	result["position"] = _patched_pair(
 		result["position"], patch, "position", "x", "y"
@@ -332,17 +333,19 @@ static func _apply_patch_to_normalized(
 				pair[axis] = 1.0
 		result[vector_key] = pair
 
-	if patch.has("depth_scale") or patch.has("depth"):
-		var raw_depth = patch.get("depth_scale", patch.get("depth", 1.0))
-		var depth_scale := _as_float(raw_depth, result["depth_scale"])
+	if patch.has("depth_scale"):
+		var depth_scale := _as_float(
+			patch["depth_scale"],
+			result["depth_scale"],
+		)
 		if depth_scale <= 0.0:
 			_warn("depth_scale must be positive", report_warnings)
 		else:
 			result["depth_scale"] = depth_scale
 
-	if patch.has("rotation") or patch.has("rotation_degrees"):
+	if patch.has("rotation"):
 		result["rotation"] = _as_float(
-			patch.get("rotation", patch.get("rotation_degrees", 0.0)),
+			patch["rotation"],
 			result["rotation"],
 		)
 
@@ -414,6 +417,16 @@ static func _validate_property_values(
 		if patch.has(key) and not patch[key] is String:
 			_warn("%s must be a String" % key, report_warnings)
 			valid = false
+	for key in ["asset", "body", "face"]:
+		if patch.has(key) and patch[key] is String:
+			var asset_id := String(patch[key]).strip_edges().to_lower()
+			if asset_id in ["null", "off"]:
+				_warn(
+					"%s clear value '%s' is invalid; use 'none'"
+					% [key, String(patch[key])],
+					report_warnings,
+				)
+				valid = false
 	for key in ["scale", "zoom"]:
 		if patch.has(key):
 			var pair := [0.0, 0.0]
@@ -425,7 +438,7 @@ static func _validate_property_values(
 			if float(pair[0]) <= 0.0 or float(pair[1]) <= 0.0:
 				_warn("%s components must be positive" % key, report_warnings)
 				valid = false
-	for key in ["scale_x", "scale_y", "zoom_x", "zoom_y", "depth", "depth_scale"]:
+	for key in ["scale_x", "scale_y", "zoom_x", "zoom_y", "depth_scale"]:
 		if patch.has(key) and (
 			not _is_valid_number(patch[key]) or float(patch[key]) <= 0.0
 		):
@@ -438,14 +451,22 @@ static func _validate_property_values(
 	):
 		_warn("opacity must be between 0 and 1", report_warnings)
 		valid = false
-	if patch.has("z") or patch.has("z_index"):
-		var raw_z = patch.get("z_index", patch.get("z", 0))
+	if patch.has("z") and patch.has("z_index"):
+		_warn("use either z or z_index, not both", report_warnings)
+		valid = false
+	for key in ["z", "z_index"]:
+		if not patch.has(key):
+			continue
+		var raw_z = patch[key]
 		if (
-			not _is_valid_number(raw_z)
+			not _is_integer_number(raw_z)
 			or int(float(raw_z)) < MIN_Z_INDEX
 			or int(float(raw_z)) > MAX_Z_INDEX
 		):
-			_warn("z_index is outside Godot's supported range", report_warnings)
+			_warn(
+				"%s must be an integer in Godot's supported z-index range" % key,
+				report_warnings,
+			)
 			valid = false
 	if patch.has("fit") and str(patch["fit"]).to_lower() not in VALID_FIT_MODES:
 		_warn("unknown fit mode '%s'" % str(patch["fit"]), report_warnings)
@@ -708,13 +729,7 @@ static func _is_valid_number(value: Variant) -> bool:
 
 
 static func _is_valid_bool(value: Variant) -> bool:
-	if value is bool:
-		return true
-	if value is int or value is float:
-		return is_finite(float(value)) and float(value) in [0.0, 1.0]
-	return str(value).to_lower() in [
-		"true", "yes", "on", "1", "false", "no", "off", "0",
-	]
+	return value is bool
 
 
 static func _patched_pair(
@@ -771,9 +786,7 @@ static func _as_float(value, fallback: float) -> float:
 static func _as_bool(value) -> bool:
 	if value is bool:
 		return value
-	if value is int or value is float:
-		return value != 0
-	return str(value).to_lower() in ["true", "yes", "on", "1"]
+	return false
 
 
 static func _json_safe_value(value: Variant, report_warnings: bool) -> Variant:

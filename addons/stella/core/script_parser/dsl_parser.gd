@@ -16,8 +16,8 @@ const _STAGE_PAIR_KEYS := [
 const _STAGE_NUMBER_KEYS := [
 	"x", "y", "origin_x", "origin_y", "scale_x", "scale_y",
 	"zoom_x", "zoom_y", "asset_x", "asset_y", "body_x", "body_y",
-	"face_x", "face_y", "depth", "depth_scale", "rotation",
-	"rotation_degrees", "z", "z_index", "opacity",
+	"face_x", "face_y", "depth_scale", "rotation", "z", "z_index",
+	"opacity",
 ]
 const _STAGE_BOOL_KEYS := ["visible", "flip_x", "flip_y"]
 const _STAGE_STRING_KEYS := ["kind", "asset", "body", "face"]
@@ -892,11 +892,10 @@ static func _parse_stage_command(
 				"DslParser: @stage property name cannot be empty (line %d)" % line,
 				line,
 			)
+			invalid_operation = true
 			continue
 		if key == "transition":
 			var parsed_transition := raw_value.to_lower()
-			if parsed_transition == "":
-				parsed_transition = "cut"
 			if parsed_transition not in _STAGE_TRANSITIONS:
 				_record_diagnostic(
 					data,
@@ -905,27 +904,24 @@ static func _parse_stage_command(
 					% [raw_value, line],
 					line,
 				)
-				parsed_transition = "cut"
+				invalid_operation = true
+				continue
 			transition = parsed_transition
 		elif key == "duration":
-			if _is_finite_stage_number(raw_value):
-				duration = maxf(0.0, float(raw_value))
-				if float(raw_value) < 0.0:
-					_record_diagnostic(
-						data,
-						"warning",
-						"DslParser: negative @stage duration '%s' was clamped to zero (line %d)"
-						% [raw_value, line],
-						line,
-					)
-			else:
+			if (
+				not _is_finite_stage_number(raw_value)
+				or float(raw_value) < 0.0
+			):
 				_record_diagnostic(
 					data,
 					"warning",
-					"DslParser: invalid @stage duration '%s' (line %d)"
+					"DslParser: @stage duration must be a finite non-negative number, got '%s' (line %d)"
 					% [raw_value, line],
 					line,
 				)
+				invalid_operation = true
+				continue
+			duration = float(raw_value)
 		elif key == "redraw":
 			if action in ["hide", "remove", "clear"]:
 				_record_diagnostic(
@@ -1028,24 +1024,35 @@ static func _parse_stage_command(
 			var parsed_value = _parse_stage_property_value(
 				key, raw_value, line, data
 			)
-			if (
-				parsed_value != null
-				and _is_stage_property_in_range(key, parsed_value, line, data)
-			):
-				properties[key] = parsed_value
+			if parsed_value == null:
+				invalid_operation = true
+				continue
+			if not _is_stage_property_in_range(key, parsed_value, line, data):
+				invalid_operation = true
+				continue
+			properties[key] = parsed_value
 
 	if invalid_operation:
 		return null
 	if redraw_seen:
 		properties["redraw"] = redraw_effects
 
-	return _make_cmd("stage_layer", {
+	var operation := {
 		"action": action,
 		"id": layer_id,
 		"properties": properties,
 		"transition": transition,
 		"duration": duration,
-	})
+	}
+	if not StageLayerState.validate_operation(operation, false):
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: invalid @stage operation (line %d)" % line,
+			line,
+		)
+		return null
+	return _make_cmd("stage_layer", operation)
 
 
 static func _parse_stage_redraw_effect(
@@ -1247,8 +1254,38 @@ static func _parse_stage_property_value(
 	data: ScenarioData,
 ) -> Variant:
 	var lower := encoded.to_lower()
-	if key in ["asset", "body", "face"] and lower in ["none", "null", "off"]:
-		return ""
+	if key in ["asset", "body", "face"]:
+		if encoded == "":
+			_record_diagnostic(
+				data,
+				"warning",
+				"DslParser: @stage %s cannot be empty; use 'none' to clear it (line %d)"
+				% [key, line],
+				line,
+			)
+			return null
+		if lower == "none":
+			return ""
+		if lower in ["null", "off"]:
+			_record_diagnostic(
+				data,
+				"warning",
+				"DslParser: invalid @stage %s clear value '%s'; use 'none' (line %d)"
+				% [key, encoded, line],
+				line,
+			)
+			return null
+		return encoded
+	if key == "kind":
+		if encoded == "":
+			_record_diagnostic(
+				data,
+				"warning",
+				"DslParser: @stage kind cannot be empty (line %d)" % line,
+				line,
+			)
+			return null
+		return encoded
 	if key == "fit":
 		if lower in _STAGE_FIT_MODES:
 			return lower
@@ -1261,9 +1298,9 @@ static func _parse_stage_property_value(
 		)
 		return null
 	if key in _STAGE_BOOL_KEYS:
-		if lower in ["true", "yes", "on", "1"]:
+		if lower == "true":
 			return true
-		if lower in ["false", "no", "off", "0"]:
+		if lower == "false":
 			return false
 		_record_diagnostic(
 			data,
@@ -1330,13 +1367,14 @@ static func _is_stage_property_in_range(
 	if key in ["scale", "zoom"]:
 		var pair: Array = value if value is Array else [value, value]
 		valid = float(pair[0]) > 0.0 and float(pair[1]) > 0.0
-	elif key in ["scale_x", "scale_y", "zoom_x", "zoom_y", "depth", "depth_scale"]:
+	elif key in ["scale_x", "scale_y", "zoom_x", "zoom_y", "depth_scale"]:
 		valid = float(value) > 0.0
 	elif key == "opacity":
 		valid = float(value) >= 0.0 and float(value) <= 1.0
 	elif key in ["z", "z_index"]:
 		valid = (
-			int(value) >= StageLayerState.MIN_Z_INDEX
+			float(value) == floorf(float(value))
+			and int(value) >= StageLayerState.MIN_Z_INDEX
 			and int(value) <= StageLayerState.MAX_Z_INDEX
 		)
 	if not valid:

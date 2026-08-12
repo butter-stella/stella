@@ -216,7 +216,7 @@ StellaRuntime.remove_stage_layer("hero")             # 删除单层
 StellaRuntime.clear_stage_layers()                    # 删除全部命名舞台层
 ```
 
-多个操作可通过 `apply_stage_operations(operations, force_cut)` 同批提交。`force_cut=true` 会先归约整批操作，再同步投影最终状态，适合快进、点击补全和读档。所有人物与其他舞台图片都同步进入同一份 `PresentationState.stage_layers`；`hide` 的层仍在快照中，`remove` / `clear` 则会移除状态。
+多个操作可通过 `apply_stage_operations(operations, force_cut)` 同批提交。该 API 使用与存档一致的 closed schema：布尔属性必须是真正的 `bool`，清空 `asset` / `body` / `face` 使用字符串 `"none"`，景深与旋转只使用 `depth_scale` / `rotation`。任何操作含非法字段、值、transition 或 duration 时，整批都会被拒绝，不会部分派发。`force_cut=true` 会先归约整批操作，再同步投影最终状态，适合快进、点击补全和读档。所有人物与其他舞台图片都同步进入同一份 `PresentationState.stage_layers`；`hide` 的层仍在快照中，`remove` / `clear` 则会移除状态。
 
 `redraw` 是有序的完整操作数组，而不是按类型合并的字典；更新它会原子替换整条管线，传 `[]` 会清空。支持 `color_overlay`、`brightness_contrast`、`grayscale`、`tint`、`blur` 和 `clip`；每条管线最多 16 个操作，其中最多 4 个 `blur`、1 个 `clip`。每个非零 `blur([x,y])` 都是独立 pass，对前一操作输出的 `[-x,+x] × [-y,+y]` 矩形窗口作完整等权 RGBA 平均；连续 blur 不会合并，`blur([0,0])` 则是保留在状态中的真正 no-op。`grayscale` 的 8-bit 目标灰度严格为 `(54 * R + 183 * G + 19 * B) >> 8`，再按 `amount` 与原色混合。`clip.asset` 继续使用 `background:` / `character:` / `stage:` / `res://` 或裸 stage 路径，并与普通纹理共享 `ResourceLoader` 缓存；快照只保存逻辑资源 ID，不保存 `Texture2D`。
 

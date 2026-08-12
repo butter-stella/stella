@@ -334,7 +334,7 @@ NVL 的前缀和分隔符属于表现元数据：Presenter 按“记录间分隔
 
 `StagePresenter` 是背景碎片、人物、事件图、SD 和特效图片共用的单一动态渲染器。它按稳定 ID 创建任意数量的层，不预设位置或容量。每层包含稳定的 `Asset`、`Body`、`Face` Sprite；face-only patch 不会重建或重新加载未变化的 body/背景资源。
 
-- 规范状态：素材引用、offset、position/origin、scale/zoom/depth、rotation、z、visibility、opacity、fit、有序 redraw 操作列表与 metadata
+- 规范状态：素材引用、offset、position/origin、scale/zoom/depth_scale、rotation、z_index、visible、opacity、fit、有序 redraw 操作列表与 metadata
 - 生命周期：`show` / `update` / `hide` / `remove` / `clear`
 - 动画：每层独立 generation 与 Tween，支持 cut、fade/crossfade、move 和 slide；批量 cut 先归约最终状态再投影
 - redraw：按作者顺序复合 color_overlay（normal/soft-light）、brightness_contrast、byte-exact grayscale、tint、可重复的矩形 box-average blur 与 alpha-mask clip；每个 blur 都读取上一操作的输出，整列替换和 JSON 快照完整保留独立 pass 的顺序；单层上限为 16 个操作、4 个 blur 和 1 个 clip

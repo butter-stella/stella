@@ -19,6 +19,20 @@ func _has_diagnostic(
 	return false
 
 
+func _has_diagnostic_at_line(
+	data: ScenarioData,
+	message_part: String,
+	line: int,
+) -> bool:
+	for diagnostic in data.diagnostics:
+		if (
+			message_part in String(diagnostic.get("message", ""))
+			and int(diagnostic.get("line", -1)) == line
+		):
+			return true
+	return false
+
+
 func test_stage_show_and_update_parse_typed_properties():
 	var data := _parse("""@chapter test
 @scene start
@@ -58,28 +72,108 @@ func test_stage_clear_is_a_command_without_layer_id():
 	assert_eq(command.get_string("id"), "")
 
 
-func test_stage_rejects_invalid_typed_values_and_transition():
+func test_stage_property_first_form_keeps_the_show_smart_default():
 	var data := _parse("""@chapter test
 @scene start
-@stage hero show x=abc position=1,bad opacity=NaN visible=maybe fit=warp scale=0 depth_scale=-1 z=99999 transition=warp""")
+@stage hero asset=stage:hero position=10,20""")
+	assert_true(data.diagnostics.is_empty(), str(data.diagnostics))
+	assert_eq(data.scenes[0].commands.size(), 1)
 	var command: CommandData = data.scenes[0].commands[0]
-	assert_eq(command.params["properties"], {})
-	assert_eq(command.get_string("transition"), "cut")
-	assert_true(_has_diagnostic(data, "warning", "x='abc'"))
-	assert_true(_has_diagnostic(data, "warning", "position='1,bad'"))
-	assert_true(_has_diagnostic(data, "warning", "opacity='NaN'"))
-	assert_true(_has_diagnostic(data, "warning", "visible='maybe'"))
-	assert_true(_has_diagnostic(data, "warning", "fit 'warp'"))
-	assert_true(_has_diagnostic(data, "warning", "scale value"))
-	assert_true(_has_diagnostic(data, "warning", "depth_scale value"))
-	assert_true(_has_diagnostic(data, "warning", "z value"))
-	assert_true(_has_diagnostic(data, "warning", "transition 'warp'"))
-	var fit_diagnostic: Dictionary = {}
-	for diagnostic in data.diagnostics:
-		if "fit 'warp'" in String(diagnostic.get("message", "")):
-			fit_diagnostic = diagnostic
-			break
-	assert_eq(fit_diagnostic.get("line"), 3)
+	assert_eq(command.get_string("action"), "show")
+	assert_eq(command.get_string("id"), "hero")
+	assert_eq(command.params["properties"]["asset"], "stage:hero")
+	assert_eq(command.params["properties"]["position"], [10.0, 20.0])
+
+
+func test_stage_rejects_invalid_typed_values_and_transition():
+	var invalid_properties := [
+		["x=abc", "x='abc'"],
+		["position=1,bad", "position='1,bad'"],
+		["opacity=NaN", "opacity='NaN'"],
+		["visible=maybe", "visible='maybe'"],
+		["fit=warp", "fit 'warp'"],
+		["scale=0", "scale value"],
+		["depth_scale=-1", "depth_scale value"],
+		["z=99999", "z value"],
+		["z=1.5", "z value"],
+		["asset=", "asset cannot be empty"],
+		["kind=", "kind cannot be empty"],
+	]
+	for invalid_case in invalid_properties:
+		var argument: String = invalid_case[0]
+		var message: String = invalid_case[1]
+		var data := _parse("""@chapter test
+@scene start
+@stage hero show face=stage:must_not_apply %s""" % argument)
+		assert_true(
+			data.scenes[0].commands.is_empty(),
+			"one invalid field must reject the complete operation: %s" % argument,
+		)
+		assert_true(_has_diagnostic_at_line(data, message, 3), argument)
+
+
+func test_stage_rejects_invalid_timing_and_empty_keys_atomically():
+	var invalid_arguments := [
+		["transition=warp", "transition 'warp'"],
+		["transition=", "transition ''"],
+		["duration=-0.1", "finite non-negative"],
+		["duration=bad", "finite non-negative"],
+		["duration=NaN", "finite non-negative"],
+		["duration=INF", "finite non-negative"],
+		["=value", "property name cannot be empty"],
+	]
+	for invalid_case in invalid_arguments:
+		var argument: String = invalid_case[0]
+		var message: String = invalid_case[1]
+		var data := _parse("""@chapter test
+@scene start
+@stage hero update face=stage:must_not_apply %s""" % argument)
+		assert_true(data.scenes[0].commands.is_empty(), argument)
+		assert_true(_has_diagnostic_at_line(data, message, 3), argument)
+
+
+func test_stage_accepts_only_the_documented_canonical_spellings():
+	var data := _parse("""@chapter test
+@scene start
+@stage hero show depth_scale=0.8 rotation=15 asset=none body=none face=none visible=true flip_x=false flip_y=true""")
+	assert_true(data.diagnostics.is_empty(), str(data.diagnostics))
+	assert_eq(data.scenes[0].commands.size(), 1)
+	var properties: Dictionary = data.scenes[0].commands[0].params["properties"]
+	assert_almost_eq(properties["depth_scale"], 0.8, 0.001)
+	assert_eq(properties["rotation"], 15)
+	assert_eq(properties["asset"], "")
+	assert_eq(properties["body"], "")
+	assert_eq(properties["face"], "")
+	assert_true(properties["visible"])
+	assert_false(properties["flip_x"])
+	assert_true(properties["flip_y"])
+
+
+func test_stage_rejects_undocumented_property_and_value_aliases():
+	var aliases := [
+		["depth=0.8", "unknown @stage property 'depth'"],
+		["rotation_degrees=15", "unknown @stage property 'rotation_degrees'"],
+		["asset=null", "use 'none'"],
+		["asset=off", "use 'none'"],
+		["body=null", "use 'none'"],
+		["body=off", "use 'none'"],
+		["face=null", "use 'none'"],
+		["face=off", "use 'none'"],
+		["visible=yes", "invalid boolean"],
+		["visible=on", "invalid boolean"],
+		["visible=1", "invalid boolean"],
+		["visible=no", "invalid boolean"],
+		["visible=off", "invalid boolean"],
+		["visible=0", "invalid boolean"],
+	]
+	for alias_case in aliases:
+		var argument: String = alias_case[0]
+		var message: String = alias_case[1]
+		var data := _parse("""@chapter test
+@scene start
+@stage hero show kind=character %s""" % argument)
+		assert_true(data.scenes[0].commands.is_empty(), argument)
+		assert_true(_has_diagnostic_at_line(data, message, 3), argument)
 
 
 func test_stage_redraw_pipeline_is_ordered_typed_and_canonical():
