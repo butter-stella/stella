@@ -66,6 +66,7 @@ func _write_raw_project_config(path: String, contents: String) -> void:
 	assert_not_null(file)
 	if file != null:
 		file.store_string(contents)
+		file.close()
 
 
 func test_defaults_when_no_file():
@@ -176,16 +177,24 @@ func test_runtime_applies_config_paths():
 	assert_eq(_runtime.voice_path, "res://custom/voice/")
 
 
-func test_runtime_preserves_paths_without_config():
-	# Manually set a custom path (legacy bootstrap pattern)
-	_runtime.backgrounds_path = "res://legacy/bg/"
+func test_runtime_applies_default_snapshot_after_config_sources_are_removed():
+	# Simulate paths left behind by a previous local configuration.
+	_runtime.backgrounds_path = "res://private/backgrounds/"
+	_runtime.characters_path = "res://private/characters/"
+	_runtime.stage_assets_path = "res://private/stage/"
+	_runtime.bgm_path = "res://private/bgm/"
+	_runtime.se_path = "res://private/se/"
+	_runtime.voice_path = "res://private/voice/"
 
-	# Fresh config with no file — should NOT overwrite manual paths
 	_runtime.config = StellaConfig.new()
 	_runtime._apply_config()
 
-	assert_eq(_runtime.backgrounds_path, "res://legacy/bg/",
-		"Without config file, manually set paths should be preserved")
+	assert_eq(_runtime.backgrounds_path, "res://art/backgrounds/")
+	assert_eq(_runtime.characters_path, "res://art/characters/")
+	assert_eq(_runtime.stage_assets_path, "res://art/stage/")
+	assert_eq(_runtime.bgm_path, "res://audio/bgm/")
+	assert_eq(_runtime.se_path, "res://audio/se/")
+	assert_eq(_runtime.voice_path, "res://audio/voice/")
 
 
 func test_runtime_title_scene_defaults_to_builtin():
@@ -378,6 +387,113 @@ func test_invalid_local_value_is_atomic_and_does_not_leak_contents():
 		"Diagnostics must describe the schema error without printing values")
 
 
+func test_unknown_section_rejects_the_whole_source_atomically():
+	_write_raw_project_config(
+		TEST_LOCAL_CONFIG_PATH,
+		"[game]\ntitle = \"Must Not Commit\"\n[private]\nsecret = %s\n" % PRIVATE_SENTINEL,
+	)
+
+	assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), ERR_INVALID_DATA)
+	assert_eq(config.game_title, "Stella")
+	assert_false(config.has_config_file)
+	assert_eq(config.get_applied_sources(), PackedStringArray())
+	assert_eq(config.last_error_line, 3)
+	assert_eq(config.last_error_column, 2)
+	assert_true(config.last_error_detail.contains("unknown section"))
+	assert_false(config.last_error_detail.contains(PRIVATE_SENTINEL))
+
+
+func test_unknown_key_rejects_the_whole_source_atomically():
+	_write_raw_project_config(
+		TEST_LOCAL_CONFIG_PATH,
+		"[game]\ntitle = \"Must Not Commit\"\nprivate_key = %s\n" % PRIVATE_SENTINEL,
+	)
+
+	assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), ERR_INVALID_DATA)
+	assert_eq(config.game_title, "Stella")
+	assert_false(config.has_config_file)
+	assert_eq(config.get_applied_sources(), PackedStringArray())
+	assert_eq(config.last_error_line, 3)
+	assert_eq(config.last_error_column, 1)
+	assert_true(config.last_error_detail.contains("unknown key"))
+	assert_false(config.last_error_detail.contains(PRIVATE_SENTINEL))
+
+
+func test_parser_reports_safe_one_based_line_and_column_for_crlf():
+	_write_raw_project_config(
+		TEST_LOCAL_CONFIG_PATH,
+		"[game]\r\n  title = %s\r\n" % PRIVATE_SENTINEL,
+	)
+
+	assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), ERR_INVALID_DATA)
+	assert_eq(config.last_error_line, 2)
+	assert_eq(config.last_error_column, 11)
+	assert_true(config.last_error_detail.contains("line 2, column 11"))
+	assert_true(config.last_error_detail.contains("[game] title"))
+	assert_false(config.last_error_detail.contains(PRIVATE_SENTINEL))
+
+
+func test_parser_supports_comments_crlf_whitespace_and_quoted_escapes():
+	_write_raw_project_config(
+		TEST_LOCAL_CONFIG_PATH,
+		(
+			"  ; leading comment\r\n"
+			+ "[ game ] ; section comment\r\n"
+			+ " title = \"Line\\nQuote: \\\";\\\" Slash: \\\\ Snowman: \\u2603\" ; value comment\r\n"
+			+ "[features]\r\n"
+			+ "\tbacklog = false\r\n"
+			+ "\tsave_slots = 12 ; final comment"
+		),
+	)
+
+	assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), OK)
+	assert_eq(config.game_title, "Line\nQuote: \";\" Slash: \\ Snowman: ☃")
+	assert_false(config.backlog)
+	assert_eq(config.save_slots, 12)
+	assert_eq(config.last_error_line, 0)
+	assert_eq(config.last_error_column, 0)
+
+
+func test_trailing_content_rejects_the_whole_source():
+	_write_raw_project_config(
+		TEST_LOCAL_CONFIG_PATH,
+		"[game]\ntitle = \"Must Not Commit\" %s\n" % PRIVATE_SENTINEL,
+	)
+
+	assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), ERR_PARSE_ERROR)
+	assert_eq(config.game_title, "Stella")
+	assert_false(config.has_config_file)
+	assert_true(config.last_error_detail.contains("unexpected trailing content"))
+	assert_false(config.last_error_detail.contains(PRIVATE_SENTINEL))
+
+
+func test_out_of_range_int_is_rejected_atomically_without_raw_engine_errors():
+	var unsafe_numbers := [
+		"9223372036854775808",
+		"-9223372036854775809",
+		"99999999999999999999999999999999999999999999999999",
+	]
+	for unsafe_number: String in unsafe_numbers:
+		config.reset()
+		_write_raw_project_config(
+			TEST_LOCAL_CONFIG_PATH,
+			(
+				"[game]\ntitle = \"Must Not Commit\"\n"
+				+ "[features]\nsave_slots = %s\n" % unsafe_number
+			),
+		)
+
+		assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), ERR_INVALID_DATA)
+		assert_eq(config.game_title, "Stella")
+		assert_eq(config.save_slots, 8)
+		assert_false(config.has_config_file)
+		assert_eq(config.last_error_line, 4)
+		assert_true(config.last_error_detail.contains("outside the supported range"))
+		assert_false(config.last_error_detail.contains(unsafe_number))
+	assert_engine_error_count(0,
+		"Range validation must not pass unsafe digits to String.to_int()")
+
+
 func test_malformed_present_local_reports_error_and_preserves_base():
 	_write_project_config(TEST_BASE_CONFIG_PATH, {
 		"game": {
@@ -407,6 +523,32 @@ func test_malformed_present_local_reports_error_and_preserves_base():
 	assert_eq(loaded.get_applied_sources(), PackedStringArray([
 		TEST_BASE_CONFIG_PATH,
 	]))
+
+
+func test_malformed_base_blocks_a_valid_local_source():
+	_write_raw_project_config(
+		TEST_BASE_CONFIG_PATH,
+		"[game]\ntitle = %s\n" % PRIVATE_SENTINEL,
+	)
+	_write_raw_project_config(
+		TEST_LOCAL_CONFIG_PATH,
+		"[game]\ntitle = \"Local Must Not Load\"\n",
+	)
+
+	var loaded: StellaConfig = _runtime._load_project_config(
+		TEST_BASE_CONFIG_PATH,
+		TEST_LOCAL_CONFIG_PATH,
+	)
+	assert_push_error("failed to load config source")
+
+	assert_eq(loaded.game_title, "Stella")
+	assert_false(loaded.has_config_file)
+	assert_eq(loaded.get_applied_sources(), PackedStringArray())
+	assert_eq(loaded.last_error, ERR_INVALID_DATA)
+	assert_eq(loaded.last_error_source, TEST_BASE_CONFIG_PATH)
+	assert_eq(loaded.last_error_line, 2)
+	assert_eq(loaded.last_error_column, 9)
+	assert_false(loaded.last_error_detail.contains(PRIVATE_SENTINEL))
 
 
 func test_unreadable_present_local_reports_error_and_preserves_base():
@@ -480,19 +622,9 @@ func test_reinitialization_and_reset_do_not_retain_removed_local_values():
 	]))
 
 
-func test_gut_command_line_skips_only_implicit_local_config():
-	assert_true(_runtime._is_gut_command_line(PackedStringArray([
-		"-s",
-		"res://addons/gut/gut_cmdln.gd",
-	])))
-	assert_true(_runtime._is_gut_command_line(PackedStringArray([
-		"--script",
-		"C:\\project\\addons\\gut\\gut_cmdln.gd",
-	])))
-	assert_false(_runtime._is_gut_command_line(PackedStringArray([
-		"-s",
-		"res://tools/check_config.gd",
-	])))
+func test_running_suite_does_not_consume_the_ci_poison_local_config():
+	assert_ne(_runtime.config.game_title, "CI_LOCAL_CONFIG_POISON",
+		"The Runtime must not resolve values from CI's root poison local config")
 	assert_false(_runtime.get_applied_config_sources().has(
 		_runtime.LOCAL_CONFIG_PATH,
-	), "The running GUT process must not consume a real or CI-poison local config")
+	), "Hermetic test startup must skip the implicit root local source")

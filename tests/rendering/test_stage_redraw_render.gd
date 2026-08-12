@@ -11,6 +11,17 @@ const BYTE_EXACT_TOLERANCE := 0.25 / 255.0
 
 func before_all() -> void:
 	assert_ne(
+		StellaRuntime.config.game_title,
+		"CI_LOCAL_CONFIG_POISON",
+		"rendering startup must not resolve CI's root poison local config",
+	)
+	assert_false(
+		StellaRuntime.get_applied_config_sources().has(
+			StellaRuntime.LOCAL_CONFIG_PATH,
+		),
+		"rendering startup must skip the implicit root local source",
+	)
+	assert_ne(
 		DisplayServer.get_name(),
 		"headless",
 		"render regressions require a real display server",

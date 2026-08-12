@@ -91,18 +91,18 @@ flowchart LR
     BASE["stella.cfg<br/>可选基础层"]
     LOCAL["stella.local.cfg<br/>可选本地层"]
     APPLY["StellaRuntime._apply_config()"]
-    CORE["构造 Core 子系统"]
-    PRESENTERS["构造全局 / 场景 Presenter"]
-    SCENE["进入或重定向主场景"]
+    CONSUMERS["构造 Core 子系统<br/>与全局 Presenter"]
+    SCENE["无 UI bootstrap<br/>按 title_scene 进入首次场景"]
+    PRESENTERS["构造 / ready 场景内 Presenter"]
 
-    DEFAULTS --> BASE --> LOCAL --> APPLY --> CORE --> PRESENTERS --> SCENE
+    DEFAULTS --> BASE --> LOCAL --> APPLY --> CONSUMERS --> SCENE --> PRESENTERS
 ```
 
-每一层都按 key 合并，优先级为 `defaults < base < local`。来源不存在时是无副作用的 no-op；来源存在时，`StellaConfig.load_from_path()` 会先读完整文件并校验所有已知 key 的类型，只有全部成功才提交这一来源及其来源记录。因此损坏的本地层不会留下半套覆盖，基础层仍保持完整；损坏的基础层保持 defaults，报告错误并阻止本地层掩盖共享配置错误。`get_applied_config_sources()` 只返回成功提交的来源，并保持实际应用顺序。
+每一层都按 key 合并，优先级为 `defaults < base < local`。来源不存在时是无副作用的 no-op；来源存在时，`StellaConfig.load_from_path()` 会先读完整文件并校验文件中声明的 section、key 和值类型，只有全部成功才提交这一来源及其来源记录。未知 section/key、类型错误或语法损坏都会原子拒绝整个来源。因此损坏的本地层不会留下半套覆盖，基础层仍保持完整；损坏的基础层保持 defaults，报告错误并阻止本地层掩盖共享配置错误。语法诊断只保留来源、安全的行列位置和预期修复提示，schema 诊断只保留相关 section/key（类型错误另带预期类型），均不回显配置值。`get_applied_config_sources()` 只返回成功提交的来源，并保持实际应用顺序。
 
-解析不是在旧对象上反复打补丁。`_load_project_config()` 每次都从新的 `StellaConfig` 和内置默认值开始，因此删除或禁用本地文件后重新解析不会残留上一次的值；需要复用配置对象的调用方可用 `StellaConfig.reset()` 恢复默认值，并同时清空 `has_config_file`、来源列表和错误元数据。完成解析后才调用 `_apply_config()`，随后创建子系统、Presenter 并处理场景入口，使启动期间的消费者不会观察到部分应用的配置。
+解析不是在旧对象上反复打补丁。`_load_project_config()` 每次都从新的 `StellaConfig` 和内置默认值开始，`_apply_config()` 则无条件完整复制 resolved snapshot（即使没有来源成功应用），因此删除或禁用配置来源后重新解析不会让 Runtime 镜像残留上一次的路径或其他值；需要复用配置对象的调用方可用 `StellaConfig.reset()` 恢复默认值，并同时清空 `has_config_file`、来源列表和错误元数据。完成解析和应用后才创建 Core 子系统与全局 Presenter；项目默认主场景是无 UI 的 `bootstrap.tscn`，它随后按最终 `title_scene` 进入首次场景，无效路径会诊断并回退内置标题。首次启动和之后返回标题使用同一个 override。已有项目若使用自定义主场景，插件不会覆盖；旧版内置标题主场景会迁移到 bootstrap。场景内 Presenter 在此之后构造或进入 ready，不会观察到部分应用的配置。
 
-测试隔离属于同一启动边界：当命令行通过 `-s` / `--script` 启动 GUT 的 `addons/gut/gut_cmdln.gd` 时，Runtime 自动跳过隐式的 `res://stella.local.cfg`，但显式传给测试辅助路径的 synthetic 配置仍正常解析。非 GUT 的自动化可设置 `STELLA_DISABLE_LOCAL_CONFIG=1` 获得同样的隔离。
+测试隔离属于同一启动边界。CI 和测试 wrapper 必须显式设置 `STELLA_DISABLE_LOCAL_CONFIG=1`；该开关只跳过隐式的 `res://stella.local.cfg`，显式传给测试辅助路径的 synthetic 配置仍正常解析。CI 的 GUT 与 rendering job 都会在项目根创建合法的 poison local 配置并带此变量运行；完整 GUT 还直接断言 Runtime 的 `game_title` 未采用 poison 值，而不是只依赖来源记录。
 
 ---
 
@@ -659,8 +659,8 @@ stella/
 ### 运行测试
 
 ```bash
-godot --headless --import 2>&1 | tail -1
-godot -s addons/gut/gut_cmdln.gd --headless 2>&1
+godot --headless --import
+STELLA_DISABLE_LOCAL_CONFIG=1 godot -s addons/gut/gut_cmdln.gd --headless 2>&1
 ```
 
 ---
@@ -685,4 +685,3 @@ godot -s addons/gut/gut_cmdln.gd --headless 2>&1
 | **节点式剧情编辑器** | 未实现 | 当前仅有 `.stla` 文件级编辑器（`addons/stella/editor/stla_editor.gd`）。完整的 GraphEdit 节点编辑器作为后续可选项 |
 | **Live2D 人物** | 未实现 | 当前动态舞台层使用 Sprite2D 通道。后续可通过自定义 Stage presenter/资源类型接入 GDCubism |
 | **Rust 性能扩展** | 未实现 | DSL 解析器接口已稳定，后续如需可用 gdext 重写性能热点 |
-| **CI 自动化** | 未实现 | 后续可加 GitHub Actions + GUT 自动测试 |

@@ -13,7 +13,7 @@
 1. 将 `addons/stella/` 目录复制到你的项目的 `addons/` 下
 2. 启用插件（同上）
 
-插件激活后会自动注册 `SignalBus` 和 `StellaRuntime` 两个 Autoload，并设置主场景为内置标题画面。
+插件激活后会自动注册 `SignalBus` 和 `StellaRuntime` 两个 Autoload，并将空白项目或旧版内置标题入口迁移到无 UI 的启动场景。启动场景会在分层配置解析完成后进入最终的 `title_scene`；已有项目自己设置的主场景不会被覆盖。
 
 ---
 
@@ -103,7 +103,7 @@ backlog_scene = ""
 将可公开、可复现的项目配置提交到受版本控制的 `stella.cfg`（tracked），只把当前开发者或当前机器需要的覆盖写入已被 Git 忽略的 `stella.local.cfg`（ignored）。例如，仓库中提交的基础配置可以是：
 
 ```ini
-# stella.cfg（提交到仓库）
+; stella.cfg（提交到仓库）
 [game]
 title = "Starfall"
 scenario = "res://scenarios/main.stla"
@@ -118,7 +118,7 @@ game_scene = "res://scenes/game.tscn"
 本机覆盖可以使用相同结构；以下 synthetic 路径仅作示例，不对应任何私有内容：
 
 ```ini
-# stella.local.cfg（不要提交）
+; stella.local.cfg（不要提交）
 [game]
 scenario = "res://private_preview/scenarios/preview.stla"
 
@@ -131,7 +131,11 @@ game_scene = "res://private_preview/ui/preview_game.tscn"
 
 配置按 key 独立解析，优先级为“内置默认值 < `stella.cfg` < `stella.local.cfg`”。这套规则一致覆盖 `[game]`、`[paths]`、`[features]`、`[system_se]` 和 `[overrides]`；后一个文件只覆盖其中明确写出的 key，例如上面的本地文件不会改变基础配置中的 `game.title`。
 
-两个文件都是可选来源：缺失的文件不会报错，也不会清空较低优先级已经解析出的值。每个存在的来源会先完成读取和已知 key 的类型校验，再一次性提交；某个来源损坏或类型错误时，该来源不会部分生效，也不会出现在已应用来源列表中。基础配置失败时保留默认值并停止继续叠加，本地覆盖失败时则完整保留已经生效的基础配置。启动错误会带来源路径和 schema 上下文，但不会打印配置值。
+配置语法使用 Stella schema 所需的常用子集：字符串必须用双引号包围，布尔值写作 `true` / `false`，整数使用十进制，注释以分号 `;` 开头。显式写入空字符串也是一次有效覆盖。
+
+两个文件都是可选来源：缺失的文件不会报错，也不会清空较低优先级已经解析出的值。每个存在的来源会先完成读取和 schema 校验，再一次性提交；类型错误、未知 section/key 或语法损坏都会原子拒绝整个来源，该来源不会部分生效，也不会出现在已应用来源列表中。基础配置失败时保留默认值并停止继续叠加，本地覆盖失败时则完整保留已经生效的基础配置。语法错误诊断会带来源路径、安全的行列位置和预期修复提示；schema 错误会指出相关 section/key，类型错误还会带预期类型，且二者都不会打印配置值。
+
+Runtime 每次解析后都会完整应用 resolved snapshot，包括没有配置文件时的内置默认值。因此删除或禁用配置来源并重新初始化时，Runtime 不会继续保留上一轮的本地路径或其他覆盖。
 
 可用 Facade 查询本次启动实际提交的来源，返回顺序也就是应用顺序：
 
@@ -140,7 +144,7 @@ var sources: PackedStringArray = StellaRuntime.get_applied_config_sources()
 # 典型结果：["res://stella.cfg", "res://stella.local.cfg"]
 ```
 
-GUT 命令行运行器会自动跳过隐式的 `res://stella.local.cfg`，避免本机配置污染测试。其他自动化、CI 或一次性诊断可显式禁用本地层：
+自动化、CI 或一次性诊断应通过通用环境变量显式禁用本地层，避免当前机器的 `res://stella.local.cfg` 污染结果：
 
 ```bash
 STELLA_DISABLE_LOCAL_CONFIG=1 godot --headless --path /path/to/project --quit
@@ -155,6 +159,8 @@ STELLA_DISABLE_LOCAL_CONFIG=1 godot --headless --path /path/to/project --quit
 ### Step 4 — 搭建游戏场景
 
 参考 `examples/demo/` 的结构搭建自己的标题场景和游戏场景，然后在 `stella.cfg` 的 `[overrides]` 中指向它们。
+
+使用插件提供的默认 bootstrap 入口时，`[overrides].title_scene` 同时控制首次启动进入的标题场景和之后的返回标题行为；启动配置会在场景重定向和 Presenter 消费配置前完成解析与应用。
 
 游戏场景中使用插件的 Presenter 脚本（`BackgroundPresenter`、`StagePresenter` 等），通过 `StellaRuntime` 的 Facade API 控制游戏流程。`BackgroundPresenter` 独立管理 `@bg` 基础背景；人物、前景、事件图和其他可变换图片统一放在动态 `StageLayer` 中。StageLayer 按稳定 ID 创建任意数量的图片层，不预建位置槽。
 

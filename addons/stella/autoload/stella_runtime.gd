@@ -33,7 +33,7 @@ var flowchart_state: FlowchartState
 var flowchart_visited: FlowchartVisitedState
 var scenario_graph: ScenarioGraph
 
-## Resource base paths — populated from config, can be overridden manually.
+## Resource base paths — always mirrored from the resolved config snapshot.
 var backgrounds_path: String = "res://art/backgrounds/"
 var characters_path: String = "res://art/characters/"
 var stage_assets_path: String = "res://art/stage/"
@@ -57,7 +57,7 @@ func _notification(what: int) -> void:
 func _ready():
 	# Resolve project config before any subsystem, presenter, or scene consumes it.
 	var local_config_path := LOCAL_CONFIG_PATH
-	if _should_skip_implicit_local_config(OS.get_cmdline_args()):
+	if _is_implicit_local_config_disabled():
 		local_config_path = ""
 	config = _load_project_config(CONFIG_PATH, local_config_path)
 	_apply_config()
@@ -175,40 +175,23 @@ func _report_config_error(failed_config: StellaConfig) -> void:
 	push_error(message)
 
 
-## GUT starts through a --script entry point before test setup can run. Skip
-## only the implicit project-local source on that path so the suite never reads
-## a developer's real stella.local.cfg; explicit synthetic paths still load.
-func _should_skip_implicit_local_config(args: PackedStringArray) -> bool:
-	if OS.has_environment(DISABLE_LOCAL_CONFIG_ENV):
-		var raw_value := OS.get_environment(DISABLE_LOCAL_CONFIG_ENV).strip_edges().to_lower()
-		if raw_value not in ["", "0", "false", "no", "off"]:
-			return true
-	return _is_gut_command_line(args)
-
-
-func _is_gut_command_line(args: PackedStringArray) -> bool:
-	for arg: String in args:
-		var normalized_arg := arg.replace("\\", "/")
-		if (
-			normalized_arg in [
-				"addons/gut/gut_cmdln.gd",
-				"res://addons/gut/gut_cmdln.gd",
-			]
-			or normalized_arg.ends_with("/addons/gut/gut_cmdln.gd")
-		):
-			return true
-	return false
+## Explicit opt-out for CI, tests, and other hermetic automation. Runtime
+## behavior never depends on a particular test runner or script filename.
+func _is_implicit_local_config_disabled() -> bool:
+	if not OS.has_environment(DISABLE_LOCAL_CONFIG_ENV):
+		return false
+	var raw_value := OS.get_environment(DISABLE_LOCAL_CONFIG_ENV).strip_edges().to_lower()
+	return raw_value not in ["", "0", "false", "no", "off"]
 
 
 ## Apply config values to runtime paths.
 func _apply_config() -> void:
-	if config.has_config_file:
-		backgrounds_path = config.backgrounds_path
-		characters_path = config.characters_path
-		stage_assets_path = config.stage_path
-		bgm_path = config.bgm_path
-		se_path = config.se_path
-		voice_path = config.voice_path
+	backgrounds_path = config.backgrounds_path
+	characters_path = config.characters_path
+	stage_assets_path = config.stage_path
+	bgm_path = config.bgm_path
+	se_path = config.se_path
+	voice_path = config.voice_path
 
 	if config.title_scene != "":
 		title_scene_path = config.title_scene
