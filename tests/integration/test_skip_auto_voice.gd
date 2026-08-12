@@ -274,7 +274,7 @@ func test_raw_voice_started_from_replaced_finish_wins_over_owned_request() -> vo
 	audio_presenter._on_voice_playback_finished()
 
 
-func test_raw_voice_finished_still_completes_the_current_queue() -> void:
+func test_raw_voice_finished_cannot_complete_an_owned_queue() -> void:
 	var dialogue = get_tree().root.find_child("DialoguePanel", true, false)
 	var audio_presenter := StellaRuntime.get_node_or_null("AudioPresenter")
 	assert_not_null(dialogue)
@@ -291,10 +291,14 @@ func test_raw_voice_finished_still_completes_the_current_queue() -> void:
 
 	audio_presenter._voice_player.stop()
 	_bus.voice_finished.emit()
-	assert_false(dialogue._playback_queue_active,
-		"legacy raw completion still drains the current dialogue queue")
-	assert_false(dialogue._voice_playing,
-		"legacy raw completion still clears current playback state")
+	assert_true(dialogue._playback_queue_active,
+		"an unrelated raw FINISH cannot claim the current owned token")
+	assert_true(dialogue._voice_playing,
+		"an unrelated raw FINISH cannot clear canonical playback state")
+	audio_presenter._on_voice_playback_finished()
+	await get_tree().process_frame
+	assert_false(dialogue._playback_queue_active)
+	assert_false(dialogue._voice_playing)
 
 
 func test_synchronous_owned_finish_during_start_does_not_strand_queue() -> void:
@@ -327,7 +331,7 @@ func test_synchronous_owned_finish_during_start_does_not_strand_queue() -> void:
 		"the queue cannot restore an already completed playback token")
 
 
-func test_synchronous_raw_finish_during_start_does_not_strand_queue() -> void:
+func test_synchronous_raw_finish_during_start_does_not_complete_owned_queue() -> void:
 	var dialogue = get_tree().root.find_child("DialoguePanel", true, false)
 	var audio_presenter := StellaRuntime.get_node_or_null("AudioPresenter")
 	assert_not_null(dialogue)
@@ -350,13 +354,13 @@ func test_synchronous_raw_finish_during_start_does_not_strand_queue() -> void:
 	}], "adv")
 	_bus.voice_started.disconnect(on_started)
 	assert_true(did_finish[0])
-	assert_false(dialogue._voice_playing)
-	assert_false(dialogue._playback_queue_active,
-		"legacy raw completion is recorded before the queue installs its wait")
-	assert_eq(dialogue._playback_voice_token, -1)
-	# A direct raw compatibility event cannot clear AudioPresenter's private
-	# token; clean it up through the real callback after asserting Presenter state.
+	assert_true(dialogue._voice_playing)
+	assert_true(dialogue._playback_queue_active,
+		"raw completion cannot satisfy a canonical waiter before it is installed")
+	assert_gt(dialogue._playback_voice_token, 0)
 	audio_presenter._on_voice_playback_finished()
+	await get_tree().process_frame
+	assert_false(dialogue._playback_queue_active)
 
 
 func test_old_voice_started_tail_cannot_revive_a_muted_replacement() -> void:
@@ -419,23 +423,23 @@ func test_voice_play_ack_uses_audio_acceptance_after_early_mute() -> void:
 	StellaRuntime.set_setting("auto_play_wait_voice", true)
 	StellaRuntime.set_setting("auto_play_delay", 0.01)
 	StellaRuntime.set_setting("character_voice_enabled", {"sakura": true})
-	var audio_callback := Callable(audio_presenter, "_on_voice_play")
-	assert_true(_bus.voice_play.is_connected(audio_callback))
-	if not _bus.voice_play.is_connected(audio_callback):
+	var audio_callback := Callable(audio_presenter, "_on_voice_playback_requested")
+	assert_true(_bus.voice_playback_requested.is_connected(audio_callback))
+	if not _bus.voice_playback_requested.is_connected(audio_callback):
 		return
 	# Put the mutating extension before AudioPresenter. Presenter has already
 	# precomputed the clip duration, but Audio must acknowledge the final muted
 	# decision synchronously instead of leaving the queue waiting for FINISHED.
-	_bus.voice_play.disconnect(audio_callback)
+	_bus.voice_playback_requested.disconnect(audio_callback)
 	var did_mute := [false]
-	var mute_before_audio := func(_asset: String, _character: String):
+	var mute_before_audio := func(_request: VoicePlaybackRequest):
 		if did_mute[0]:
 			return
 		did_mute[0] = true
 		StellaRuntime.set_setting(
 			"character_voice_enabled", {"sakura": false})
-	_bus.voice_play.connect(mute_before_audio)
-	_bus.voice_play.connect(audio_callback)
+	_bus.voice_playback_requested.connect(mute_before_audio)
+	_bus.voice_playback_requested.connect(audio_callback)
 	StellaRuntime.auto_play.is_active = true
 	var advance_count := [0]
 	var on_advance := func(): advance_count[0] += 1
@@ -444,7 +448,7 @@ func test_voice_play_ack_uses_audio_acceptance_after_early_mute() -> void:
 	_bus.show_dialogue.emit("sakura", [{
 		"text": "TOCTOU", "voice": "narration_001", "expression": "",
 	}], "adv")
-	_bus.voice_play.disconnect(mute_before_audio)
+	_bus.voice_playback_requested.disconnect(mute_before_audio)
 	assert_true(did_mute[0])
 	var advanced: bool = await wait_until(
 		func(): return advance_count[0] == 1,

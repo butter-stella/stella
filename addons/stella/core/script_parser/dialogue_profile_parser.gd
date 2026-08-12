@@ -61,13 +61,23 @@ const AUTOWRAP_MODES := {
 static func collect(tokens: Array, source_path: String = "") -> Dictionary:
 	var profiles: Dictionary = {}
 	var diagnostics: Array = []
+	var invalid_profiles: Dictionary = {}
 	for token_value in tokens:
 		var token: DslToken = token_value
 		if token.type != DslToken.Type.AT_COMMAND:
 			continue
 		if _command_name(token.raw_text) != "dialogue_profile":
 			continue
-		_parse_declaration(token, profiles, diagnostics, source_path)
+		var diagnostic_start := diagnostics.size()
+		var profile_name := _parse_declaration(
+			token, profiles, diagnostics, source_path)
+		if not profile_name.is_empty():
+			for index in range(diagnostic_start, diagnostics.size()):
+				if String(diagnostics[index].get("level", "")) == "error":
+					invalid_profiles[profile_name] = true
+					break
+	for profile_name in invalid_profiles:
+		profiles.erase(profile_name)
 	return {"profiles": profiles, "diagnostics": diagnostics}
 
 
@@ -148,7 +158,7 @@ static func _parse_declaration(
 	profiles: Dictionary,
 	diagnostics: Array,
 	source_path: String,
-) -> void:
+) -> String:
 	var args := _strip_inline_comment(
 		token.raw_text.substr("@dialogue_profile".length()).strip_edges())
 	var parts := _split_args(args)
@@ -156,13 +166,13 @@ static func _parse_declaration(
 		_diagnostic(diagnostics, "error",
 			"DslParser: @dialogue_profile is missing a profile name (line %d)"
 			% token.line, token.line)
-		return
+		return ""
 	var profile_name := _unquote(String(parts[0]))
 	if not _valid_profile_name(profile_name):
 		_diagnostic(diagnostics, "error",
 			"DslParser: invalid dialogue profile name '%s' (line %d)"
 			% [profile_name, token.line], token.line)
-		return
+		return ""
 	if not profiles.has(profile_name):
 		profiles[profile_name] = {}
 	var profile: Dictionary = profiles[profile_name]
@@ -172,7 +182,7 @@ static func _parse_declaration(
 		_diagnostic(diagnostics, "warning",
 			"DslParser: dialogue profile '%s' declaration has no properties (line %d)"
 			% [profile_name, token.line], token.line)
-		return
+		return profile_name
 
 	for index in range(1, parts.size()):
 		var assignment := String(parts[index])
@@ -198,6 +208,7 @@ static func _parse_declaration(
 			_store_profile_property(
 				profile, key, parsed["value"], token.line, diagnostics)
 	profiles[profile_name] = profile
+	return profile_name
 
 
 static func _parse_property(
@@ -271,19 +282,18 @@ static func _store_profile_property(
 ) -> void:
 	if key == "advance_indicator_texture" \
 		and profile.has("advance_indicator_scene"):
-		_diagnostic(diagnostics, "warning",
+		_diagnostic(diagnostics, "error",
 			"DslParser: dialogue profile advance_indicator_texture and " \
-			+ "advance_indicator_scene are mutually exclusive; scene takes precedence " \
+			+ "advance_indicator_scene are mutually exclusive " \
 			+ "(line %d)" % line, line)
 		return
 	if key == "advance_indicator_scene" \
 		and profile.has("advance_indicator_texture"):
-		_diagnostic(diagnostics, "warning",
+		_diagnostic(diagnostics, "error",
 			"DslParser: dialogue profile advance_indicator_texture and " \
-			+ "advance_indicator_scene are mutually exclusive; scene takes precedence " \
+			+ "advance_indicator_scene are mutually exclusive " \
 			+ "(line %d)" % line, line)
-		profile.erase("advance_indicator_texture")
-		_remove_field_provenance(profile, "advance_indicator_texture")
+		return
 	profile[key] = value
 	_record_field_provenance(profile, key, line)
 

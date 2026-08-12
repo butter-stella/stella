@@ -140,11 +140,10 @@ func test_add_entry_preserves_authored_blank_lines_inside_and_outside_lists():
 
 
 func test_add_entry_strips_only_registered_custom_bbcode_effects():
-	_mgr.set_registered_bbcode_effect_names(["custom"])
 	_mgr.add_entry("a", _segs(
 		"[custom amp=2]visible[/custom]"
 		+ "[custom=2]literal main value[/custom]"
-		+ "[unknown amp=2]literal[/unknown]"), 0, func(): return {})
+		+ "[unknown amp=2]literal[/unknown]"), 0, func(): return {}, ["custom"])
 	assert_eq(
 		_mgr.get_entries()[0]["text"],
 		"visible[custom=2]literal main value[/custom]"
@@ -153,9 +152,8 @@ func test_add_entry_strips_only_registered_custom_bbcode_effects():
 	)
 
 	_mgr.clear()
-	_mgr.set_registered_bbcode_effect_names([])
 	_mgr.add_entry("a", _segs("[custom amp=2]literal[/custom]"), 1,
-		func(): return {})
+		func(): return {}, [])
 	assert_eq(
 		_mgr.get_entries()[0]["text"],
 		"[custom amp=2]literal[/custom]",

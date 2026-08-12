@@ -49,6 +49,58 @@ func test_scenario_context_snapshot_protocol():
 	assert_eq(ctx.nvl_page_epoch, 7)
 
 
+func test_scenario_context_snapshot_round_trips_authored_nvl_page_entries():
+	var scenario := ScenarioData.new()
+	scenario.id = "chapter1"
+	var ctx := ScenarioContext.new(scenario)
+	ctx.current_dialogue_mode = "nvl"
+	ctx.nvl_page_epoch = 3
+	ctx.current_scene_index = 1
+	ctx.current_command_index = 4
+	ctx.record_nvl_page_entry(10, "alice", [{
+		"text": "[b]First[/b]",
+		"voice": "voice_1",
+		"stage_ops": [{"type": "show", "position": Vector2(3, 4)}],
+	}])
+	ctx.current_command_index = 5
+	ctx.record_nvl_page_entry(11, "bob", [{
+		"text": "Second",
+		"voice": "voice_2",
+	}])
+
+	var snapshot := ctx.capture_snapshot()
+	assert_not_null(JSON.parse_string(JSON.stringify(snapshot)),
+		"NVL snapshot state contains authored JSON-safe inputs, not stage resources")
+	var restored := ScenarioContext.new(scenario)
+	restored.restore_snapshot(snapshot)
+	assert_eq(restored.nvl_page_entries, [{
+		"command_uid": 10,
+		"scene_index": 1,
+		"command_index": 4,
+		"character": "alice",
+		"segments": [{"text": "[b]First[/b]", "voice": "voice_1"}],
+	}, {
+		"command_uid": 11,
+		"scene_index": 1,
+		"command_index": 5,
+		"character": "bob",
+		"segments": [{"text": "Second", "voice": "voice_2"}],
+	}])
+	var replayed := restored.record_nvl_page_entry(11, "bob", [{
+		"text": "Second",
+		"voice": "voice_2",
+	}])
+	assert_eq(replayed.size(), 2,
+		"the current command re-executed by restore must not duplicate the page tail")
+	var live_append := restored.record_nvl_page_entry(12, "carol", [{
+		"text": "Third",
+		"voice": "voice_3",
+	}])
+	assert_true(live_append.is_empty(),
+		"ordinary NVL playback stays on the incremental hot path")
+	assert_eq(restored.nvl_page_entries.size(), 3)
+
+
 func test_scenario_context_snapshot_round_trips_runtime_profile_names_only():
 	var scenario := ScenarioData.new()
 	scenario.dialogue_profiles = {

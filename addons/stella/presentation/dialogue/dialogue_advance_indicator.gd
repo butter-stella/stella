@@ -255,6 +255,9 @@ var _position_valid := false
 var _endpoint_probe := EndpointProbeEffect.new()
 var _probed_label: RichTextLabel
 var _probe_mirror: RichTextLabel
+var _probe_source: String = ""
+var _probe_layout_signature: Array = []
+var _probe_incremental_enabled: bool = false
 var _lifecycle_revision := 0
 
 
@@ -375,10 +378,39 @@ func _clear_source_for_revision(revision: int) -> bool:
 ## shaping inputs and a no-op outer effect. The live label is never cleared or
 ## edited: its public text, tag stack, selection, visible-character state and
 ## scroll state all remain untouched.
-func prepare_layout_probe(label: RichTextLabel) -> void:
-	_clear_layout_probe()
+func prepare_layout_probe(
+	label: RichTextLabel,
+	allow_incremental_append: bool = false,
+) -> void:
+	_endpoint_probe.reset()
 	if label == null or not is_instance_valid(label) or not is_instance_valid(_content):
+		_clear_layout_probe()
 		return
+	var source := label.text
+	var signature := _layout_probe_signature(label)
+	if (
+		allow_incremental_append
+		and _probe_incremental_enabled
+		and is_instance_valid(_probe_mirror)
+		and _probed_label == label
+		and _probe_layout_signature == signature
+		and source.begins_with(_probe_source)
+		and not _probe_source.contains("[")
+	):
+		var suffix := source.substr(_probe_source.length())
+		# Plain NVL is the hot path. BBCode can carry an authored stack across
+		# entry boundaries, so any new bracketed markup intentionally falls back
+		# to a full canonical rebuild instead of guessing parser state.
+		if not suffix.contains("["):
+			if not suffix.is_empty():
+				_probe_mirror.push_customfx(_endpoint_probe, {})
+				_probe_mirror.add_text(suffix)
+				_probe_mirror.pop_all()
+			_probe_source = source
+			_probe_mirror.size = label.size
+			_probe_mirror.queue_redraw()
+			return
+	_clear_layout_probe()
 	var mirror := RichTextLabel.new()
 	mirror.name = &"__StellaEndpointProbe"
 	_copy_layout_properties(label, mirror)
@@ -396,7 +428,6 @@ func prepare_layout_probe(label: RichTextLabel) -> void:
 	mirror.position = Vector2.ZERO
 	mirror.size = label.size
 
-	var source := label.text
 	mirror.clear()
 	mirror.push_customfx(_endpoint_probe, {})
 	if mirror.bbcode_enabled:
@@ -409,6 +440,9 @@ func prepare_layout_probe(label: RichTextLabel) -> void:
 	mirror.pop_all()
 	_probe_mirror = mirror
 	_probed_label = label
+	_probe_source = source
+	_probe_layout_signature = signature
+	_probe_incremental_enabled = allow_incremental_append
 
 
 ## Scrolls the mirror to its own final viewport after its first layout. The
@@ -495,7 +529,7 @@ func position_after(label: RichTextLabel, offset: Vector2) -> bool:
 		hide_indicator()
 		return false
 	var endpoint_x := (probed_endpoint as Vector2).x
-	_clear_layout_probe()
+	_finish_layout_probe()
 
 	var vertical_begin := 0.0
 	var vertical_separation := 0.0
@@ -564,7 +598,7 @@ func hide_indicator() -> void:
 
 
 func _hide_indicator_for_revision(revision: int) -> bool:
-	_clear_layout_probe()
+	_finish_layout_probe()
 	var content := _content
 	if is_instance_valid(content):
 		if not _set_content_ready(false, revision, content):
@@ -677,6 +711,33 @@ func _clear_layout_probe() -> void:
 	if is_instance_valid(_probe_mirror):
 		_probe_mirror.free()
 	_probe_mirror = null
+	_probe_source = ""
+	_probe_layout_signature.clear()
+	_probe_incremental_enabled = false
+
+
+func _finish_layout_probe() -> void:
+	_endpoint_probe.reset()
+	if not _probe_incremental_enabled:
+		_clear_layout_probe()
+
+
+func _layout_probe_signature(label: RichTextLabel) -> Array:
+	return [
+		label.size,
+		label.bbcode_enabled,
+		label.fit_content,
+		label.scroll_active,
+		label.autowrap_mode,
+		label.autowrap_trim_flags,
+		label.horizontal_alignment,
+		label.vertical_alignment,
+		label.text_direction,
+		label.layout_direction,
+		label.get_theme_font_size(&"normal_font_size"),
+		label.get_theme_constant(&"line_separation"),
+		label.custom_effects.hash(),
+	]
 
 
 func _endpoint_is_visible(

@@ -97,64 +97,41 @@ func test_unconfigured_presenter_never_creates_an_indicator() -> void:
 	assert_eq(_text_label(_presenter).text, "Legacy dialogue")
 
 
-func test_resource_fallback_configures_indicator_without_signal_metadata() -> void:
+func test_resource_fallback_cannot_author_an_advance_indicator() -> void:
 	var mode_profile := DialogueModeProfile.new()
-	mode_profile.advance_indicator_texture = load(
-		INDICATOR_TEXTURE_PATH) as Texture2D
-	mode_profile.advance_indicator_offset = INDICATOR_OFFSET
+	mode_profile.override_panel_modulate = true
+	mode_profile.panel_modulate = Color(0.2, 0.3, 0.4, 1.0)
 	var profile := DialoguePresentationProfile.new()
 	profile.adv = mode_profile
 	_presenter.set_presentation_profile(profile)
 
-	# Exercise the legacy public three-argument signal. Scene-side Resource
-	# configuration must not depend on SignalBus's stack-scoped STLA metadata.
 	SignalBus.show_dialogue.emit(
 		"", [_segment("Resource fallback")], "adv")
 	if not await _wait_for_typing_to_finish(_presenter):
 		return
-	var indicator := await _wait_for_indicator(_presenter)
-	if indicator == null:
-		return
 
 	assert_eq(_text_label(_presenter).text, "Resource fallback")
-	_assert_indicator_at_last_line(
-		_text_label(_presenter), indicator, INDICATOR_OFFSET)
+	assert_eq(_presenter.modulate, Color(0.2, 0.3, 0.4, 1.0),
+		"legacy Resource layout remains supported")
+	assert_null(_presenter.get_node_or_null("AdvanceIndicator"),
+		"new indicator authoring has one canonical .stla schema")
 
 
-func test_resource_fallback_hot_swap_updates_the_ready_indicator() -> void:
-	var texture_mode := DialogueModeProfile.new()
-	texture_mode.advance_indicator_texture = load(
-		INDICATOR_TEXTURE_PATH) as Texture2D
-	var texture_profile := DialoguePresentationProfile.new()
-	texture_profile.adv = texture_mode
-	_presenter.set_presentation_profile(texture_profile)
-
-	SignalBus.show_dialogue.emit(
-		"", [_segment("Hot-swappable fallback")], "adv")
-	if not await _wait_for_typing_to_finish(_presenter):
-		return
-	var indicator := await _wait_for_indicator(_presenter)
+func test_stla_profile_is_canonical_when_resource_layout_is_also_configured() -> void:
+	var layout_mode := DialogueModeProfile.new()
+	layout_mode.override_panel_modulate = true
+	layout_mode.panel_modulate = Color(0.3, 0.4, 0.5, 1.0)
+	var layout_profile := DialoguePresentationProfile.new()
+	layout_profile.adv = layout_mode
+	_presenter.set_presentation_profile(layout_profile)
+	var indicator := await _show_and_wait_for_indicator(
+		_presenter, "STLA indicator remains canonical", "adv", _scene_profile())
 	if indicator == null:
 		return
-
-	_presenter.set_presentation_profile(null)
-	assert_false(indicator.visible,
-		"removing a ready Resource profile must synchronously hide its marker")
-	assert_eq(indicator.get_child_count(), 0,
-		"removing a Resource profile must free its old marker content")
-
-	var scene_mode := DialogueModeProfile.new()
-	scene_mode.advance_indicator_scene = load(
-		INDICATOR_SCENE_PATH) as PackedScene
-	var scene_profile := DialoguePresentationProfile.new()
-	scene_profile.adv = scene_mode
-	_presenter.set_presentation_profile(scene_profile)
-	var replacement := await _wait_for_indicator(_presenter)
-	if replacement == null:
-		return
-	assert_same(replacement, indicator,
-		"hot replacement reuses the engine-owned holder")
-	assert_not_null(replacement.get_node_or_null("SyntheticAdvanceIndicator"))
+	assert_eq(_presenter.modulate, Color(0.9, 0.8, 0.7, 0.95),
+		"the canonical STLA profile replaces the fallback Resource as one unit")
+	assert_not_null(indicator.get_node_or_null("SyntheticAdvanceIndicator"))
+	assert_true(indicator.visible)
 
 
 func test_wrapped_adv_indicator_tracks_the_last_rendered_line() -> void:
@@ -341,6 +318,9 @@ func test_accumulated_nvl_moves_one_indicator_to_the_newest_endpoint() -> void:
 	var label := _text_label(_presenter)
 	var first_position := _canvas_global_position(first)
 	var first_line_count := label.get_line_count()
+	var first_probe_mirror: RichTextLabel = _presenter._advance_indicator._probe_mirror
+	assert_not_null(first_probe_mirror,
+		"plain NVL keeps one transparent layout mirror for later appends")
 	_assert_indicator_at_last_line(label, first, INDICATOR_OFFSET)
 
 	_presenter._char_interval = 0.05
@@ -368,6 +348,11 @@ func test_accumulated_nvl_moves_one_indicator_to_the_newest_endpoint() -> void:
 	assert_gt(label.get_line_count(), first_line_count)
 	assert_gt(_canvas_global_position(second).y, first_position.y,
 		"the endpoint must move down to the newest accumulated NVL entry")
+	assert_same(
+		_presenter._advance_indicator._probe_mirror,
+		first_probe_mirror,
+		"plain NVL appends must reuse the existing shaped mirror",
+	)
 	_assert_indicator_at_last_line(label, second, INDICATOR_OFFSET)
 	assert_eq(
 		label.text,
@@ -1038,6 +1023,36 @@ func test_auto_play_shows_during_wait_then_advance_hides_it() -> void:
 	SignalBus.advance_requested.disconnect(on_advance)
 
 
+func test_reenabling_auto_does_not_revive_the_retired_delay() -> void:
+	StellaRuntime.set_setting("auto_play_delay", 0.4)
+	StellaRuntime.set_setting("auto_play_wait_voice", false)
+	var indicator := await _show_and_wait_for_indicator(
+		_presenter, "Auto attempt ownership", "adv", _texture_profile())
+	if indicator == null:
+		return
+	var advance_count := [0]
+	var on_advance := func(): advance_count[0] += 1
+	SignalBus.advance_requested.connect(on_advance)
+
+	StellaRuntime.auto_play.is_active = true
+	await get_tree().create_timer(0.25).timeout
+	StellaRuntime.auto_play.is_active = false
+	StellaRuntime.auto_play.is_active = true
+	await get_tree().create_timer(0.22).timeout
+
+	assert_eq(advance_count[0], 0,
+		"re-enabling Auto starts a fresh delay instead of reviving the old timer")
+	assert_true(indicator.visible)
+	var advanced: bool = await wait_until(
+		func(): return advance_count[0] == 1,
+		0.35,
+		"the replacement Auto attempt advances after its own full delay",
+	)
+	assert_true(advanced)
+	assert_eq(advance_count[0], 1)
+	SignalBus.advance_requested.disconnect(on_advance)
+
+
 func test_stella_action_auto_from_ready_enters_the_auto_tail() -> void:
 	StellaRuntime.set_setting("auto_play_delay", 0.05)
 	StellaRuntime.set_setting("auto_play_wait_voice", false)
@@ -1452,30 +1467,12 @@ func test_full_rect_control_scene_is_rejected_without_orphan_content() -> void:
 	var packed := PackedScene.new()
 	assert_eq(packed.pack(root), OK)
 	root.free()
-	var mode_profile := DialogueModeProfile.new()
-	mode_profile.advance_indicator_scene = packed
-	var profile := DialoguePresentationProfile.new()
-	profile.adv = mode_profile
-	_presenter.set_presentation_profile(profile)
-
-	SignalBus.show_dialogue.emit(
-		"", [_segment("Invalid custom root")], "adv")
-	if not await _wait_for_typing_to_finish(_presenter):
-		return
-	assert_push_warning(
-		"DialoguePresenter advance indicator [Resource fallback mode 'adv'; "
-		+ "DialoguePresentationProfile '<in-memory DialoguePresentationProfile>'; "
-		+ "DialogueModeProfile '<in-memory DialogueModeProfile>'; "
-		+ "advance_indicator_scene source '<in-memory PackedScene>']: "
-		+ "advance indicator scene Control root must use top-left anchors and "
-		+ "author its size with offsets or minimum size. Fix: Set all four root "
-		+ "Control anchors to 0 and define its size with offsets or minimum size.")
-	var indicator := _presenter.get_node_or_null("AdvanceIndicator") as CanvasItem
-	assert_not_null(indicator)
-	if indicator != null:
-		assert_false(indicator.visible)
-		assert_eq(indicator.get_child_count(), 0,
-			"a rejected scene must not leave instantiated marker content behind")
+	var indicator := DialogueAdvanceIndicator.new()
+	add_child_autoqfree(indicator)
+	var error := indicator.configure(packed, "none")
+	assert_string_contains(error, "must use top-left anchors")
+	assert_eq(indicator.get_child_count(), 0,
+		"a rejected scene must not leave instantiated marker content behind")
 
 
 func test_top_level_control_scene_is_attached_to_the_endpoint_holder() -> void:
@@ -1486,19 +1483,9 @@ func test_top_level_control_scene_is_attached_to_the_endpoint_holder() -> void:
 	var packed := PackedScene.new()
 	assert_eq(packed.pack(root), OK)
 	root.free()
-	var mode_profile := DialogueModeProfile.new()
-	mode_profile.advance_indicator_scene = packed
-	var profile := DialoguePresentationProfile.new()
-	profile.adv = mode_profile
-	_presenter.set_presentation_profile(profile)
-
-	SignalBus.show_dialogue.emit(
-		"", [_segment("Normalize top-level custom roots")], "adv")
-	if not await _wait_for_typing_to_finish(_presenter):
-		return
-	var indicator := await _wait_for_indicator(_presenter)
-	if indicator == null:
-		return
+	var indicator := DialogueAdvanceIndicator.new()
+	add_child_autoqfree(indicator)
+	assert_eq(indicator.configure(packed, "none"), "")
 	var content := _first_canvas_child(indicator)
 	assert_false(content.top_level,
 		"custom CanvasItem roots must inherit the holder's endpoint transform")
@@ -1810,13 +1797,15 @@ func test_owned_dialogue_voice_started_tail_rejects_replacement() -> void:
 	SignalBus.voice_finished.emit()
 
 
-func test_low_level_voice_progress_keeps_its_original_playback_owner() -> void:
+func test_typed_voice_progress_rejects_a_replaced_playback_owner() -> void:
 	if is_instance_valid(_presenter):
 		_presenter.queue_free()
 		await get_tree().process_frame
 	StellaRuntime.voice_path = "res://examples/demo/audio/voice/"
 	var did_replace := [false]
-	var on_progress_early := func(_position: float, _duration: float):
+	var on_progress_early := func(event: VoicePlaybackEvent):
+		if event.kind != VoicePlaybackEvent.Kind.PROGRESS:
+			return
 		if did_replace[0]:
 			return
 		did_replace[0] = true
@@ -1826,7 +1815,7 @@ func test_low_level_voice_progress_keeps_its_original_playback_owner() -> void:
 			"expression": "",
 		}], "adv", _texture_profile(), true)
 	# This extension must precede the scene-local Presenter on the public signal.
-	SignalBus.voice_progress.connect(on_progress_early)
+	SignalBus.voice_playback_event.connect(on_progress_early)
 	_presenter = FIXTURE.instantiate()
 	_configure_fixed_text_layout(_presenter)
 	add_child_autoqfree(_presenter)
@@ -1842,35 +1831,27 @@ func test_low_level_voice_progress_keeps_its_original_playback_owner() -> void:
 	_presenter._playback_voice_token = 701
 	var accepted_low_progress: Array = []
 	var accepted_dialogue_progress: Array = []
-	var on_progress_late := func(position: float, duration: float):
-		if SignalBus.voice_progress_event_is_current(position, duration):
-			accepted_low_progress.append([position, duration])
+	var on_progress_late := func(event: VoicePlaybackEvent):
+		if event.kind == VoicePlaybackEvent.Kind.PROGRESS and event.is_current():
+			accepted_low_progress.append([event.position, event.duration])
 	var on_dialogue_progress := func(position: float, duration: float):
 		accepted_dialogue_progress.append([position, duration])
-	SignalBus.voice_progress.connect(on_progress_late)
+	SignalBus.voice_playback_event.connect(on_progress_late)
 	SignalBus.dialogue_voice_progress.connect(on_dialogue_progress)
 
-	SignalBus.emit_owned_voice_progress(
+	SignalBus.emit_voice_playback_event(VoicePlaybackEvent.progress(
 		0.25, 1.0, 701,
 		_presenter._voice_queue_event_owner_is_current.bind(owner_gen, queue_gen),
-	)
-	SignalBus.voice_progress.disconnect(on_progress_early)
-	SignalBus.voice_progress.disconnect(on_progress_late)
+	))
+	SignalBus.voice_playback_event.disconnect(on_progress_early)
+	SignalBus.voice_playback_event.disconnect(on_progress_late)
 	SignalBus.dialogue_voice_progress.disconnect(on_dialogue_progress)
 
 	assert_true(did_replace[0])
 	assert_eq(accepted_low_progress.size(), 0,
 		"a late low-level consumer rejects the retired playback tail")
-	assert_eq(accepted_dialogue_progress.size(), 1)
-	if not accepted_dialogue_progress.is_empty():
-		assert_almost_eq(
-			float(accepted_dialogue_progress[0][0]), 1.25, 0.001,
-			"the relay snapshots the original cumulative position before replacement",
-		)
-		assert_almost_eq(
-			float(accepted_dialogue_progress[0][1]), 3.0, 0.001,
-			"the old position cannot be combined with replacement total duration",
-		)
+	assert_eq(accepted_dialogue_progress.size(), 0,
+		"a typed event retired by an earlier listener cannot reach the dialogue relay")
 	var audio_presenter := StellaRuntime.get_node_or_null("AudioPresenter")
 	if audio_presenter != null:
 		audio_presenter._voice_player.stop()
@@ -1903,10 +1884,10 @@ func test_high_level_voice_progress_tail_rejects_replacement() -> void:
 	add_child_autoqfree(progress_bar)
 	await get_tree().process_frame
 
-	SignalBus.emit_owned_voice_progress(
+	SignalBus.emit_voice_playback_event(VoicePlaybackEvent.progress(
 		0.25, 1.0, 702,
 		_presenter._voice_queue_event_owner_is_current.bind(owner_gen, queue_gen),
-	)
+	))
 	SignalBus.dialogue_voice_progress.disconnect(on_progress_early)
 	assert_true(did_replace[0])
 	assert_true(progress_bar.visible)
@@ -2100,11 +2081,7 @@ func test_owned_voice_tail_cannot_restart_retired_audio() -> void:
 			"replacement", replacement_segments, "adv",
 			_texture_profile(), true)
 	SignalBus.voice_play.connect(on_voice_play)
-	# A second real AudioPresenter connects after the extension, reproducing the
-	# signal-tail ordering without depending on autoload connection order.
-	var late_audio: Node = AUDIO_PRESENTER_SCRIPT.new()
-	add_child_autoqfree(late_audio)
-	await get_tree().process_frame
+	var audio_presenter := StellaRuntime.get_node("AudioPresenter")
 	_presenter = FIXTURE.instantiate()
 	_configure_fixed_text_layout(_presenter)
 	add_child_autoqfree(_presenter)
@@ -2120,13 +2097,13 @@ func test_owned_voice_tail_cannot_restart_retired_audio() -> void:
 
 	assert_true(did_replace[0])
 	assert_eq(_presenter._dialogue_segments, replacement_segments)
-	assert_eq(late_audio._current_voice_character, "replacement")
-	assert_not_null(late_audio._voice_player.stream)
-	if late_audio._voice_player.stream != null:
+	assert_eq(audio_presenter._current_voice_character, "replacement")
+	assert_not_null(audio_presenter._voice_player.stream)
+	if audio_presenter._voice_player.stream != null:
 		assert_true(
-			late_audio._voice_player.stream.resource_path.ends_with(
+			audio_presenter._voice_player.stream.resource_path.ends_with(
 				"narration_002.wav"),
-			"AudioPresenter must retain replacement audio after the retired tail",
+			"the canonical AudioPresenter retains replacement audio",
 		)
 	SignalBus.emit_advance_requested()
 
@@ -2144,9 +2121,7 @@ func test_same_dialogue_replay_retires_the_previous_voice_tail() -> void:
 		SignalBus.dialogue_voice_replay_requested.emit(
 			["narration_002"], "replay")
 	SignalBus.voice_play.connect(on_voice_play)
-	var late_audio: Node = AUDIO_PRESENTER_SCRIPT.new()
-	add_child_autoqfree(late_audio)
-	await get_tree().process_frame
+	var audio_presenter := StellaRuntime.get_node("AudioPresenter")
 	_presenter = FIXTURE.instantiate()
 	_configure_fixed_text_layout(_presenter)
 	add_child_autoqfree(_presenter)
@@ -2163,18 +2138,18 @@ func test_same_dialogue_replay_retires_the_previous_voice_tail() -> void:
 	assert_true(did_replay[0])
 	assert_eq(_presenter._dialogue_gen,
 		_presenter._playback_owner_dialogue_gen)
-	assert_eq(late_audio._current_voice_character, "replay")
-	assert_not_null(late_audio._voice_player.stream)
-	if late_audio._voice_player.stream != null:
+	assert_eq(audio_presenter._current_voice_character, "replay")
+	assert_not_null(audio_presenter._voice_player.stream)
+	if audio_presenter._voice_player.stream != null:
 		assert_true(
-			late_audio._voice_player.stream.resource_path.ends_with(
+			audio_presenter._voice_player.stream.resource_path.ends_with(
 				"narration_002.wav"),
 			"same-line replay queue must suppress the retired voice signal tail",
 		)
 	SignalBus.emit_advance_requested()
 
 
-func test_hide_during_owned_voice_emit_blocks_later_audio_consumers() -> void:
+func test_hide_during_compat_voice_notification_retires_dialogue_queue() -> void:
 	if is_instance_valid(_presenter):
 		_presenter.queue_free()
 		await get_tree().process_frame
@@ -2186,9 +2161,6 @@ func test_hide_during_owned_voice_emit_blocks_later_audio_consumers() -> void:
 		did_hide[0] = true
 		SignalBus.hide_dialogue.emit()
 	SignalBus.voice_play.connect(on_voice_play)
-	var late_audio: Node = AUDIO_PRESENTER_SCRIPT.new()
-	add_child_autoqfree(late_audio)
-	await get_tree().process_frame
 	_presenter = FIXTURE.instantiate()
 	_configure_fixed_text_layout(_presenter)
 	add_child_autoqfree(_presenter)
@@ -2205,8 +2177,7 @@ func test_hide_during_owned_voice_emit_blocks_later_audio_consumers() -> void:
 	assert_true(did_hide[0])
 	assert_false(_presenter.visible)
 	assert_false(_presenter._playback_queue_active)
-	assert_null(late_audio._voice_player.stream,
-		"AudioPresenter connected after the hiding listener rejects retired audio")
+	SignalBus.emit_advance_requested()
 
 
 func test_direct_raw_voice_remains_legacy_compatible() -> void:
@@ -2214,18 +2185,16 @@ func test_direct_raw_voice_remains_legacy_compatible() -> void:
 		_presenter.queue_free()
 		await get_tree().process_frame
 	StellaRuntime.voice_path = "res://examples/demo/audio/voice/"
-	var late_audio: Node = AUDIO_PRESENTER_SCRIPT.new()
-	add_child_autoqfree(late_audio)
-	await get_tree().process_frame
+	var audio_presenter := StellaRuntime.get_node("AudioPresenter")
 
 	# Public raw voice requests outside a Presenter-owned frame retain their
 	# established behavior for extensions and command handlers.
 	SignalBus.voice_play.emit("narration_001", "raw")
 
-	assert_eq(late_audio._current_voice_character, "raw")
-	assert_not_null(late_audio._voice_player.stream)
-	if late_audio._voice_player.stream != null:
-		assert_true(late_audio._voice_player.stream.resource_path.ends_with(
+	assert_eq(audio_presenter._current_voice_character, "raw")
+	assert_not_null(audio_presenter._voice_player.stream)
+	if audio_presenter._voice_player.stream != null:
+		assert_true(audio_presenter._voice_player.stream.resource_path.ends_with(
 			"narration_001.wav"))
 	SignalBus.emit_advance_requested()
 
@@ -2243,9 +2212,7 @@ func test_nested_raw_different_voice_remains_legacy_compatible() -> void:
 		SignalBus.voice_play.emit("narration_002", "raw")
 		SignalBus.hide_dialogue.emit()
 	SignalBus.voice_play.connect(on_voice_play)
-	var late_audio: Node = AUDIO_PRESENTER_SCRIPT.new()
-	add_child_autoqfree(late_audio)
-	await get_tree().process_frame
+	var audio_presenter := StellaRuntime.get_node("AudioPresenter")
 	_presenter = FIXTURE.instantiate()
 	_configure_fixed_text_layout(_presenter)
 	add_child_autoqfree(_presenter)
@@ -2260,10 +2227,10 @@ func test_nested_raw_different_voice_remains_legacy_compatible() -> void:
 	SignalBus.voice_play.disconnect(on_voice_play)
 
 	assert_true(did_emit_raw[0])
-	assert_eq(late_audio._current_voice_character, "raw")
-	assert_not_null(late_audio._voice_player.stream)
-	if late_audio._voice_player.stream != null:
-		assert_true(late_audio._voice_player.stream.resource_path.ends_with(
+	assert_eq(audio_presenter._current_voice_character, "raw")
+	assert_not_null(audio_presenter._voice_player.stream)
+	if audio_presenter._voice_player.stream != null:
+		assert_true(audio_presenter._voice_player.stream.resource_path.ends_with(
 			"narration_002.wav"))
 	SignalBus.emit_advance_requested()
 
@@ -2299,9 +2266,15 @@ func test_empty_raw_show_does_not_retire_the_active_owned_queue() -> void:
 	assert_eq(_presenter._playback_queue_gen, queue_gen)
 	assert_true(_presenter._playback_queue_active)
 
+	# An unrelated raw FINISH cannot complete an accepted typed playback.
 	SignalBus.voice_finished.emit()
+	assert_eq(voice_plays, ["narration_001"])
+	var audio_presenter := StellaRuntime.get_node("AudioPresenter")
+	audio_presenter._voice_player.stop()
+	audio_presenter._on_voice_playback_finished()
 	assert_eq(voice_plays, ["narration_001", "narration_002"])
-	SignalBus.voice_finished.emit()
+	audio_presenter._voice_player.stop()
+	audio_presenter._on_voice_playback_finished()
 	assert_false(_presenter._playback_queue_active)
 	assert_true(await _wait_for_typing_to_finish(_presenter),
 		"the accepted line still reaches its natural ready boundary")
@@ -2325,8 +2298,8 @@ func test_profile_ready_hook_cannot_overwrite_reentrant_show() -> void:
 			"", replacement_segments, "adv", _texture_profile(), true)
 		replacement_gen[0] = _presenter._dialogue_gen
 	var fallback_mode := DialogueModeProfile.new()
-	fallback_mode.advance_indicator_scene = load(
-		INDICATOR_SCENE_PATH) as PackedScene
+	fallback_mode.override_panel_modulate = true
+	fallback_mode.panel_modulate = Color(0.2, 0.3, 0.4, 1.0)
 	var fallback_profile := DialoguePresentationProfile.new()
 	fallback_profile.adv = fallback_mode
 
@@ -2348,22 +2321,12 @@ func test_profile_ready_hook_cannot_overwrite_reentrant_show() -> void:
 		"the replacement texture source survives the retired fallback setter")
 
 
-func test_same_generation_profile_swap_commits_the_final_indicator_offset() -> void:
-	var initial_offset := Vector2(7.0, 5.0)
-	var replacement_offset := Vector2(71.0, 53.0)
-	var initial_mode := DialogueModeProfile.new()
-	initial_mode.advance_indicator_scene = load(
-		INDICATOR_SCENE_PATH) as PackedScene
-	initial_mode.advance_indicator_offset = initial_offset
-	var initial_profile := DialoguePresentationProfile.new()
-	initial_profile.adv = initial_mode
+func test_same_generation_resource_layout_swap_keeps_stla_indicator_config() -> void:
 	var replacement_mode := DialogueModeProfile.new()
-	replacement_mode.advance_indicator_texture = load(
-		INDICATOR_TEXTURE_PATH) as Texture2D
-	replacement_mode.advance_indicator_offset = replacement_offset
+	replacement_mode.override_panel_modulate = true
+	replacement_mode.panel_modulate = Color(0.3, 0.4, 0.5, 1.0)
 	var replacement_profile := DialoguePresentationProfile.new()
 	replacement_profile.adv = replacement_mode
-	_presenter.set_presentation_profile(initial_profile)
 	var did_swap := [false]
 	INDICATOR_SCENE_SCRIPT.ready_callback = func(ready: bool):
 		if ready or did_swap[0]:
@@ -2371,36 +2334,28 @@ func test_same_generation_profile_swap_commits_the_final_indicator_offset() -> v
 		did_swap[0] = true
 		_presenter.set_presentation_profile(replacement_profile)
 
-	SignalBus.show_dialogue.emit(
-		"", [_segment("Same-generation fallback profile swap")], "adv")
+	SignalBus.emit_show_dialogue(
+		"", [_segment("Same-generation resource layout swap")], "adv",
+		_scene_profile(), true)
 	INDICATOR_SCENE_SCRIPT.ready_callback = Callable()
 	assert_true(did_swap[0])
 	assert_same(_presenter.presentation_profile, replacement_profile)
-	assert_eq(_presenter._advance_indicator_offset, replacement_offset,
-		"the superseded configure frame must not restore its old offset")
+	assert_eq(_presenter._advance_indicator_offset, INDICATOR_OFFSET)
 	assert_not_null(_presenter._advance_indicator)
 	if _presenter._advance_indicator != null:
-		assert_true(_presenter._advance_indicator._source is Texture2D,
-			"the replacement profile owns source and offset as one commit")
+		assert_true(_presenter._advance_indicator._source is PackedScene,
+			"Resource layout cannot replace the canonical STLA source")
 	var completed := await _wait_for_typing_to_finish(_presenter)
 	if completed:
 		assert_not_null(await _wait_for_indicator(_presenter))
 
 
-func test_first_indicator_add_child_cannot_restore_retired_profile_source() -> void:
-	var initial_mode := DialogueModeProfile.new()
-	initial_mode.advance_indicator_scene = load(
-		INDICATOR_SCENE_PATH) as PackedScene
-	initial_mode.advance_indicator_offset = Vector2(7.0, 5.0)
-	var initial_profile := DialoguePresentationProfile.new()
-	initial_profile.adv = initial_mode
+func test_first_indicator_add_child_keeps_stla_source_during_layout_swap() -> void:
 	var replacement_mode := DialogueModeProfile.new()
-	replacement_mode.advance_indicator_texture = load(
-		INDICATOR_TEXTURE_PATH) as Texture2D
-	replacement_mode.advance_indicator_offset = Vector2(71.0, 53.0)
+	replacement_mode.override_panel_modulate = true
+	replacement_mode.panel_modulate = Color(0.3, 0.4, 0.5, 1.0)
 	var replacement_profile := DialoguePresentationProfile.new()
 	replacement_profile.adv = replacement_mode
-	_presenter.set_presentation_profile(initial_profile)
 	var did_swap := [false]
 	var on_child_entered := func(child: Node):
 		if did_swap[0] or child.name != "AdvanceIndicator":
@@ -2409,113 +2364,17 @@ func test_first_indicator_add_child_cannot_restore_retired_profile_source() -> v
 		_presenter.set_presentation_profile(replacement_profile)
 	_presenter.child_entered_tree.connect(on_child_entered)
 
-	SignalBus.show_dialogue.emit(
-		"", [_segment("First holder reentrant profile swap")], "adv")
+	SignalBus.emit_show_dialogue(
+		"", [_segment("First holder reentrant layout swap")], "adv",
+		_scene_profile(), true)
 	_presenter.child_entered_tree.disconnect(on_child_entered)
 	assert_true(did_swap[0])
 	assert_same(_presenter.presentation_profile, replacement_profile)
-	assert_eq(_presenter._advance_indicator_offset, Vector2(71.0, 53.0))
+	assert_eq(_presenter._advance_indicator_offset, INDICATOR_OFFSET)
 	assert_not_null(_presenter._advance_indicator)
 	if _presenter._advance_indicator != null:
-		assert_true(_presenter._advance_indicator._source is Texture2D,
-			"add_child reentrancy cannot pair the retired source with new offset")
-
-
-func test_nested_same_payload_raw_low_voice_events_keep_raw_identity() -> void:
-	var bus: Node = SIGNAL_BUS_SCRIPT.new()
-	var finish_owner := [true]
-	var finish_reentered := [false]
-	var normalized_finish_tokens: Array[int] = []
-	var finish_currentness: Array[bool] = []
-	bus.voice_playback_finished.connect(func(token: int):
-		normalized_finish_tokens.append(token))
-	bus.voice_finished.connect(func():
-		if finish_reentered[0]:
-			return
-		finish_reentered[0] = true
-		finish_owner[0] = false
-		bus.voice_finished.emit())
-	bus.voice_finished.connect(func():
-		finish_currentness.append(
-			bus.voice_finished_event_is_current(7101)))
-
-	bus.emit_owned_voice_finished(
-		77, func(): return finish_owner[0])
-	assert_eq(normalized_finish_tokens, [77, -1],
-		"the nested no-argument raw FINISH receives the legacy -1 token")
-	assert_eq(finish_currentness, [true, false],
-		"one consumer sees nested raw current before the retired owned tail")
-
-	var start_owner := [true]
-	var start_reentered := [false]
-	var normalized_starts: Array = []
-	var start_currentness: Array[bool] = []
-	bus.voice_playback_started.connect(
-		func(_character: String, _asset: String, token: int, current: bool,
-				_dispatch_serial: int):
-			normalized_starts.append([token, current]))
-	bus.voice_started.connect(func(character: String, asset: String):
-		if start_reentered[0]:
-			return
-		start_reentered[0] = true
-		start_owner[0] = false
-		bus.voice_started.emit(character, asset))
-	bus.voice_started.connect(func(character: String, asset: String):
-		start_currentness.append(
-			bus.voice_started_event_is_current(character, asset, 7102)))
-
-	bus.emit_owned_voice_started(
-		"sakura", "same_asset", 88, func(): return start_owner[0])
-	assert_eq(normalized_starts, [[88, true], [-1, true]],
-		"normalized START distinguishes owned outer and same-payload raw nested")
-	assert_eq(start_currentness, [true, false])
-	bus.free()
-
-
-func test_normalized_listener_reentry_supersedes_outer_start_and_progress() -> void:
-	var bus: Node = SIGNAL_BUS_SCRIPT.new()
-	var start_reentered := [false]
-	var start_dispatches: Array = []
-	bus.voice_playback_started.connect(
-		func(character: String, asset: String, _token: int, _current: bool,
-				_dispatch_serial: int):
-			if start_reentered[0]:
-				return
-			start_reentered[0] = true
-			bus.voice_started.emit(character, asset))
-	bus.voice_playback_started.connect(
-		func(_character: String, _asset: String, token: int, _current: bool,
-				dispatch_serial: int):
-			start_dispatches.append([
-				token,
-				dispatch_serial == bus.current_voice_started_dispatch_serial(),
-			]))
-	bus.emit_owned_voice_started(
-		"sakura", "same_asset", 91, func(): return true)
-	assert_eq(start_dispatches, [[-1, true], [91, false]],
-		"nested raw normalized START wins over the suspended owned callback")
-
-	var progress_reentered := [false]
-	var progress_dispatches: Array = []
-	bus.voice_playback_progress.connect(
-		func(position: float, duration: float, _token: int, _current: bool,
-				_dispatch_serial: int):
-			if progress_reentered[0]:
-				return
-			progress_reentered[0] = true
-			bus.voice_progress.emit(position, duration))
-	bus.voice_playback_progress.connect(
-		func(_position: float, _duration: float, token: int, _current: bool,
-				dispatch_serial: int):
-			progress_dispatches.append([
-				token,
-				dispatch_serial == bus.current_voice_progress_dispatch_serial(),
-			]))
-	bus.emit_owned_voice_progress(
-		0.25, 1.0, 92, func(): return true)
-	assert_eq(progress_dispatches, [[-1, true], [92, false]],
-		"nested raw normalized PROGRESS suppresses the retired outer relay")
-	bus.free()
+		assert_true(_presenter._advance_indicator._source is PackedScene,
+			"add_child reentrancy keeps the STLA indicator source")
 
 
 func test_nested_same_payload_raw_high_voice_events_keep_raw_identity() -> void:
@@ -2555,24 +2414,22 @@ func test_nested_same_payload_raw_high_voice_events_keep_raw_identity() -> void:
 	bus.free()
 
 
-func test_nested_same_payload_raw_voice_play_is_not_claimed_as_owned() -> void:
+func test_nested_same_payload_raw_voice_is_a_distinct_typed_request() -> void:
 	var bus: Node = SIGNAL_BUS_SCRIPT.new()
 	var reentered := [false]
 	var ownership: Array[bool] = []
+	bus.voice_playback_requested.connect(func(request: VoicePlaybackRequest):
+		ownership.append(request.owner_validator.is_valid()))
 	bus.voice_play.connect(func(asset: String, character: String):
 		if reentered[0]:
 			return
 		reentered[0] = true
 		bus.voice_play.emit(asset, character))
-	bus.voice_play.connect(func(asset: String, character: String):
-		var request: Dictionary = bus.claim_current_voice_play_request(
-			asset, character, 7301)
-		ownership.append(bool(request.get("owned", false))))
 
-	bus.emit_owned_voice_play_with_result(
+	bus.request_voice_playback(
 		"same_asset", "sakura", func(): return true)
-	assert_eq(ownership, [false, true],
-		"nested raw request gets an independent legacy claim before outer owned")
+	assert_eq(ownership, [true, false],
+		"the raw adapter creates a separate unowned typed request")
 	bus.free()
 
 
@@ -2616,12 +2473,10 @@ func test_scene_custom_effect_tags_share_visual_and_backlog_scanning() -> void:
 		"bare and valued custom effect tags are not expression markers")
 	assert_eq(label.get_parsed_text(), "A[custom=2]B[/custom]",
 		"Godot applies bare custom BBCode and displays its invalid main-value form")
-	# Exercise BacklogManager's lazy Presentation provider directly. Runtime's
-	# global show listener may be intentionally disconnected by isolated test
-	# fixtures, so this assertion must not depend on suite order.
+	# Exercise BacklogManager's explicit per-request effect registry directly.
 	StellaRuntime.backlog_manager.clear()
 	StellaRuntime.backlog_manager.add_entry(
-		"sakura", [_segment(source)], 154001)
+		"sakura", [_segment(source)], 154001, Callable(), ["custom"])
 	var entries: Array = StellaRuntime.backlog_manager.get_entries()
 	assert_eq(entries.size(), 1)
 	if entries.size() == 1:

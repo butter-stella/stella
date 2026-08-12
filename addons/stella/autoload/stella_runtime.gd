@@ -110,8 +110,11 @@ func _ready():
 	# Issue #97: detect chapter transitions for flowchart state tracking.
 	engine.scene_changed.connect(_on_scene_changed_for_flowchart)
 
-	# Wire dialogue to backlog
-	SignalBus.show_dialogue.connect(_on_dialogue_for_backlog)
+	# Runtime owns canonical Backlog capture directly from the typed request.
+	# Presentation may subsequently enrich the same entry with custom effect names.
+	SignalBus.dialogue_requested.connect(_on_dialogue_for_backlog)
+	SignalBus.dialogue_backlog_effects_resolved.connect(
+		_on_dialogue_backlog_effects_resolved)
 	# Wire choice presentation to choice-history (rewind-to-previous-choice).
 	SignalBus.choice_show.connect(_on_choice_for_history)
 
@@ -409,14 +412,32 @@ func _on_scene_changed_for_flowchart(scene_id: String) -> void:
 				flowchart_visited.mark_edge_visited(edge.get_edge_id())
 
 
-func _on_dialogue_for_backlog(character: String, segments: Array, _mode: String):
+func _on_dialogue_for_backlog(
+	request: DialogueRequest,
+	effect_names: Array = [],
+) -> void:
 	if engine == null or engine.context == null:
 		return
 	var cmd = engine.context.current_command()
 	var uid: int = -1
 	if cmd != null:
 		uid = cmd.uid
-	backlog_manager.add_entry(character, segments, uid, _capture_rollback_snapshot)
+	backlog_manager.add_entry(
+		request.character,
+		request.segments,
+		uid,
+		_capture_rollback_snapshot,
+		effect_names,
+	)
+
+
+func _on_dialogue_backlog_effects_resolved(
+	request: DialogueRequest,
+	effect_names: Array,
+) -> void:
+	if effect_names.is_empty():
+		return
+	_on_dialogue_for_backlog(request, effect_names)
 
 
 ## Capture a rollback snapshot every time ChoiceHandler surfaces a menu.

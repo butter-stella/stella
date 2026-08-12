@@ -13,6 +13,11 @@ var return_stack: Array = []  # Array of {scene_index, command_index} for @call 
 ## nvl_page_epoch increments only when that path enters NVL from another mode.
 var current_dialogue_mode: String = "adv"
 var nvl_page_epoch: int = 0
+## Canonical authored entries for the active NVL page. Saving these inputs (and
+## never RichTextLabel's rendered string) lets restore rebuild the same page
+## after presentation nodes have been hard-reset.
+var nvl_page_entries: Array = []
+var _nvl_snapshot_replay_pending: bool = false
 ## Named presentation selection on the actual runtime path. Profiles themselves
 ## live on ScenarioData; snapshots only persist these JSON-safe references.
 var current_dialogue_profile_name: String = ""
@@ -52,6 +57,7 @@ func capture_snapshot() -> Dictionary:
 		"return_stack": return_stack.duplicate(true),
 		"dialogue_mode": current_dialogue_mode,
 		"nvl_page_epoch": nvl_page_epoch,
+		"nvl_page_entries": nvl_page_entries.duplicate(true),
 		"dialogue_profile_name": current_dialogue_profile_name,
 		"dialogue_declarative_presentation": (
 			current_dialogue_uses_declarative_presentation
@@ -78,6 +84,12 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 	if current_dialogue_mode not in ["adv", "nvl", "overlay"]:
 		current_dialogue_mode = "adv"
 	nvl_page_epoch = maxi(0, int(snapshot.get("nvl_page_epoch", 0)))
+	nvl_page_entries.clear()
+	if current_dialogue_mode == "nvl":
+		for raw_entry in snapshot.get("nvl_page_entries", []):
+			if raw_entry is Dictionary:
+				nvl_page_entries.append(_sanitize_nvl_page_entry(raw_entry))
+	_nvl_snapshot_replay_pending = not nvl_page_entries.is_empty()
 	current_dialogue_profile_name = _validated_profile_name(
 		str(snapshot.get("dialogue_profile_name", "")), "current")
 	current_dialogue_uses_declarative_presentation = bool(snapshot.get(
@@ -95,9 +107,61 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 func apply_dialogue_mode(mode: String) -> void:
 	if mode == current_dialogue_mode:
 		return
+	nvl_page_entries.clear()
+	_nvl_snapshot_replay_pending = false
 	current_dialogue_mode = mode
 	if mode == "nvl":
 		nvl_page_epoch += 1
+
+
+## Record the authored input for an NVL entry. Ordinary live playback returns an
+## empty Array so each SHOW can use the Presenter's incremental accumulator.
+## Only the first command re-executed after snapshot restore returns the complete
+## authored page for a one-time deterministic rebuild; its saved tail is not
+## appended twice. This avoids copying and reparsing the growing page per entry.
+func record_nvl_page_entry(
+	command_uid: int,
+	character: String,
+	segments: Array,
+) -> Array:
+	var entry := _sanitize_nvl_page_entry({
+		"command_uid": command_uid,
+		"scene_index": current_scene_index,
+		"command_index": current_command_index,
+		"character": character,
+		"segments": segments,
+	})
+	if _nvl_snapshot_replay_pending:
+		_nvl_snapshot_replay_pending = false
+		if not nvl_page_entries.is_empty():
+			var tail: Dictionary = nvl_page_entries[-1]
+			if (
+				int(tail.get("command_uid", -2)) == command_uid
+				and int(tail.get("scene_index", -2)) == current_scene_index
+				and int(tail.get("command_index", -2)) == current_command_index
+			):
+				return nvl_page_entries.duplicate(true)
+		nvl_page_entries.append(entry)
+		return nvl_page_entries.duplicate(true)
+	nvl_page_entries.append(entry)
+	return []
+
+
+func _sanitize_nvl_page_entry(raw_entry: Dictionary) -> Dictionary:
+	var clean_segments: Array = []
+	for raw_segment in raw_entry.get("segments", []):
+		if raw_segment is Dictionary:
+			clean_segments.append({
+				"text": String(raw_segment.get("text", "")),
+				"voice": String(raw_segment.get("voice", "")),
+			})
+	return {
+		"command_uid": int(raw_entry.get("command_uid", -1)),
+		"scene_index": int(raw_entry.get("scene_index", -1)),
+		"command_index": int(raw_entry.get("command_index", -1)),
+		"character": String(raw_entry.get("character", "")),
+		"segments": clean_segments,
+	}
 
 
 ## A programmatic/legacy command carries its own one-shot profile Dictionary.

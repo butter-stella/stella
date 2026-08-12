@@ -18,6 +18,20 @@ class HideGlyphEffect:
 		return true
 
 
+class MovingGlyphEffect:
+	extends RichTextEffect
+
+	var bbcode := "moving_endpoint"
+	var shift_x := 0.0
+
+
+	func _process_custom_fx(char_fx: CharFXTransform) -> bool:
+		var shifted := char_fx.transform
+		shifted.origin.x += shift_x
+		char_fx.transform = shifted
+		return true
+
+
 var _presenter: Control
 
 
@@ -122,6 +136,75 @@ func test_renderer_probe_excludes_glyphs_hidden_by_custom_effect() -> void:
 	helper.show_ready()
 	assert_false(helper.visible,
 		"an all-hidden line must not display an advance indicator")
+
+
+func test_dynamic_effect_endpoint_is_a_ready_snapshot_until_explicit_reflow() -> void:
+	var fixture := _make_probe_fixture(Vector2(260.0, 120.0))
+	var label: RichTextLabel = fixture["label"]
+	var effect := MovingGlyphEffect.new()
+	label.custom_effects = [effect]
+
+	var initial_x := await _place_source(
+		fixture, "[moving_endpoint]X[/moving_endpoint]")
+	effect.shift_x = 24.0
+	label.queue_redraw()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var helper: DialogueAdvanceIndicator = fixture["helper"]
+	assert_almost_eq(
+		helper.position.x,
+		initial_x,
+		0.01,
+		"time-varying RichTextEffects do not move the ready snapshot every frame",
+	)
+
+	var reflowed_x := await _place_current_layout(fixture)
+	assert_almost_eq(
+		reflowed_x,
+		initial_x + effect.shift_x,
+		2.0,
+		"an explicit layout pass samples the effect's current final glyph transform",
+	)
+
+
+func test_long_plain_nvl_probe_appends_stay_bounded() -> void:
+	var fixture := _make_probe_fixture(Vector2(520.0, 1800.0))
+	var label: RichTextLabel = fixture["label"]
+	var helper: DialogueAdvanceIndicator = fixture["helper"]
+	var source := "entry-000 " + "plain text ".repeat(3)
+	label.text = source
+	await get_tree().process_frame
+	helper.prepare_layout_probe(label, true)
+	await get_tree().process_frame
+	helper.sync_layout_probe_scroll()
+	await get_tree().process_frame
+	assert_true(helper.isolate_layout_probe_endpoint())
+	await get_tree().process_frame
+	assert_true(helper.position_after(label, Vector2.ZERO))
+	var original_mirror := helper._probe_mirror
+	var started := Time.get_ticks_msec()
+
+	for index in range(1, 41):
+		source += "\nentry-%03d %s" % [index, "plain text ".repeat(3)]
+		label.text = source
+		await get_tree().process_frame
+		helper.prepare_layout_probe(label, true)
+		await get_tree().process_frame
+		helper.sync_layout_probe_scroll()
+		await get_tree().process_frame
+		assert_true(helper.isolate_layout_probe_endpoint())
+		await get_tree().process_frame
+		assert_true(helper.position_after(label, Vector2.ZERO))
+
+	assert_same(helper._probe_mirror, original_mirror,
+		"a long plain NVL page must not recreate and reparse its mirror per entry")
+	assert_eq(helper._probe_source, source)
+	var elapsed_msec := Time.get_ticks_msec() - started
+	assert_lt(
+		elapsed_msec,
+		4000,
+		"40 long NVL appends including draw/isolate/position stay below 4 seconds",
+	)
 
 
 func test_renderer_probe_handles_inline_images_at_bidi_endpoints() -> void:

@@ -79,6 +79,10 @@ var _indicator_deferred_gen: int = -1
 var _indicator_flushing_deferred: bool = false
 var _skip_pending_dialogue_gen: int = -1
 var _auto_pending_dialogue_gen: int = -1
+## Monotonic ownership for an Auto tail. Dialogue generations identify the
+## displayed line, but toggling Auto off and back on can reuse that same line.
+var _auto_attempt_serial: int = 0
+var _auto_pending_attempt: int = -1
 
 ## Icon paths — set these to customize toolbar button icons.
 var toolbar_icons: Dictionary = {
@@ -134,15 +138,13 @@ var _playback_is_dialogue: bool = true
 
 
 func _ready():
-	SignalBus.show_dialogue.connect(_on_show_dialogue)
+	SignalBus.dialogue_requested.connect(_on_dialogue_requested)
 	SignalBus.hide_dialogue.connect(_on_hide_dialogue)
 	# SignalBus emits this pre-dispatch event before every public/raw advance.
 	# A replacement Presenter created later in that same signal stack never sees
 	# the old transition, so it cannot accidentally retire the newly shown line.
 	SignalBus.advance_dispatch_started.connect(_on_advance_dispatch_started)
-	SignalBus.voice_playback_progress.connect(_on_voice_progress_relay)
-	SignalBus.voice_playback_started.connect(_on_voice_playback_started)
-	SignalBus.voice_playback_finished.connect(_on_voice_playback_finished)
+	SignalBus.voice_playback_event.connect(_on_voice_playback_event)
 	SignalBus.dialogue_voice_replay_requested.connect(_on_dialogue_voice_replay_requested)
 	SignalBus.scenario_started_event.connect(_on_scenario_started)
 	SignalBus.scene_changed_event.connect(_on_scene_changed)
@@ -155,7 +157,7 @@ func _ready():
 	# advanced to the command being presented, so can_jump_to_previous_choice()
 	# reads the right current_cmd_uid. scenario lifecycle signals handle
 	# start/end-of-run resets.
-	SignalBus.show_dialogue.connect(func(_c, _s, _m): _refresh_prev_choice_btn())
+	SignalBus.dialogue_requested.connect(func(_request): _refresh_prev_choice_btn())
 	SignalBus.choice_show.connect(func(_p, _o): _refresh_prev_choice_btn())
 	SignalBus.scenario_started_event.connect(func(_id): _refresh_prev_choice_btn())
 	SignalBus.scenario_ended_event.connect(func(_id): _refresh_prev_choice_btn())
@@ -179,10 +181,6 @@ func _ready():
 	_update_toggle_buttons()
 	_capture_authored_presentation()
 	_validate_configured_profiles()
-	if StellaRuntime.backlog_manager != null:
-		StellaRuntime.backlog_manager.set_registered_bbcode_effect_names_provider(
-			_collect_backlog_custom_effect_names)
-	_sync_backlog_custom_effect_names()
 	text_label.resized.connect(_on_indicator_layout_changed)
 	text_label.theme_changed.connect(_on_indicator_layout_changed)
 	text_label.get_v_scroll_bar().value_changed.connect(
@@ -652,7 +650,7 @@ func _on_auto_play_active_changed(active: bool) -> void:
 	if not active:
 		# Retire an outstanding delay immediately. Its coroutine also checks the
 		# active controller, but the token prevents a later re-enable from reviving it.
-		_auto_pending_dialogue_gen = -1
+		_retire_auto_play_attempt()
 		return
 	if not StellaRuntime.game_state.is_playing():
 		# Public facade/actions may configure Auto while a system overlay owns
@@ -696,7 +694,7 @@ func _on_skip_active_changed(active: bool) -> void:
 		# Retire the old typewriter coroutine rather than letting it reach the
 		# normal completion hook after this independent skip-delay path starts.
 		var gen := _retire_typewriter_generation()
-		_auto_pending_dialogue_gen = -1
+		_retire_auto_play_attempt()
 		_is_typing = false
 		text_label.visible_characters = -1
 		_invalidate_advance_indicator()
@@ -762,7 +760,7 @@ func complete_typewriter() -> bool:
 		return false
 	_skip_pending_dialogue_gen = -1
 	var gen := _retire_typewriter_generation()
-	_auto_pending_dialogue_gen = -1
+	_retire_auto_play_attempt()
 	_is_typing = false
 	text_label.visible_characters = -1
 	# Retire the old generation before any custom marker hook or public
@@ -941,27 +939,24 @@ func _mark_current_line_read() -> void:
 ## - Inline `[expr:name]` markers and `{wait/speed}` effects from each segment's text
 ##   are merged into global timelines with offset adjustment
 ## - Click-to-finish: snap text and the local avatar to their final authored state
-func _on_show_dialogue(character: String, segments: Array, mode: String) -> void:
-	if segments.size() == 0:
+func _on_dialogue_requested(dialogue_request: DialogueRequest) -> void:
+	if dialogue_request == null or dialogue_request.segments.is_empty():
 		return
 	if not is_inside_tree() or is_queued_for_deletion():
 		return
-	# Read stack-scoped metadata against the original Array identity before
-	# duplicating the request for a possible stage-dispatch reentry queue.
-	var custom_effect_registry := _sync_backlog_custom_effect_names()
-	var dispatch_metadata := SignalBus.current_dialogue_metadata(segments)
-	var profile_data: Dictionary = dispatch_metadata.get("profile", {})
-	var profile_provenance: Dictionary = dispatch_metadata.get("provenance", {})
+	var effect_names := _collect_backlog_custom_effect_names()
+	var custom_effect_registry := _effect_name_registry(effect_names)
+	SignalBus.dialogue_backlog_effects_resolved.emit(dialogue_request, effect_names)
 	var revision := _next_boundary_revision()
 	var request := {
-		"character": character,
-		"segments": segments.duplicate(true),
-		"mode": mode,
-		"nvl_page_key": String(dispatch_metadata.get("nvl_page_key", "")),
-		"presentation_profile": profile_data.duplicate(true),
-		"presentation_provenance": profile_provenance.duplicate(true),
-		"declarative_presentation": bool(
-			dispatch_metadata.get("declarative", false)),
+		"character": dialogue_request.character,
+		"segments": dialogue_request.segments.duplicate(true),
+		"mode": dialogue_request.mode,
+		"nvl_page_key": dialogue_request.nvl_page_key,
+		"nvl_page_entries": dialogue_request.nvl_page_entries.duplicate(true),
+		"presentation_profile": dialogue_request.presentation_profile.duplicate(true),
+		"presentation_provenance": dialogue_request.presentation_provenance.duplicate(true),
+		"declarative_presentation": dialogue_request.declarative_presentation,
 		"custom_effect_registry": custom_effect_registry.duplicate(true),
 		"boundary_revision": revision,
 	}
@@ -982,6 +977,12 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 		return
 	_queued_dialogue_requests.clear()
 	_accept_dialogue_request(request)
+
+
+## Compatibility for tests/extensions that called the old presenter callback
+## directly. Runtime delivery always enters through dialogue_requested.
+func _on_show_dialogue(character: String, segments: Array, mode: String) -> void:
+	_on_dialogue_requested(DialogueRequest.new(character, segments, mode))
 
 
 func _accept_dialogue_request(request: Dictionary) -> void:
@@ -1039,6 +1040,7 @@ func _show_dialogue_request(request: Dictionary) -> void:
 		request_segments,
 		String(request.get("mode", "adv")),
 		String(request.get("nvl_page_key", "")),
+		request.get("nvl_page_entries", []),
 		profile_data,
 		profile_provenance,
 		bool(request.get("declarative_presentation", false)),
@@ -1051,6 +1053,7 @@ func _show_dialogue_now(
 	segments: Array,
 	mode: String,
 	nvl_page_key: String,
+	nvl_page_entries: Array,
 	stla_profile_data: Dictionary,
 	stla_profile_provenance: Dictionary,
 	uses_stla_presentation: bool,
@@ -1063,7 +1066,7 @@ func _show_dialogue_now(
 		else null
 	)
 	_skip_pending_dialogue_gen = -1
-	_auto_pending_dialogue_gen = -1
+	_retire_auto_play_attempt()
 
 	# Publish replacement ownership before cancellation or any custom indicator
 	# hook can synchronously emit signals or queue another SHOW.
@@ -1170,9 +1173,17 @@ func _show_dialogue_now(
 		var entry_prefix: String = entry_format["prefix"]
 		var speaker_prefix := "%s：" % character if not character.is_empty() else ""
 		new_line_text = entry_prefix + speaker_prefix + full_text
-		var separator: String = (
-			entry_format["separator"] if _nvl_has_entries else "")
-		var previously_visible := _nvl_text + separator
+		var previously_visible := ""
+		if not nvl_page_entries.is_empty():
+			var history := _build_nvl_authored_history(
+				nvl_page_entries, entry_format, custom_effect_registry)
+			previously_visible = history
+			if nvl_page_entries.size() > 1:
+				previously_visible += String(entry_format["separator"])
+		else:
+			var separator: String = (
+				entry_format["separator"] if _nvl_has_entries else "")
+			previously_visible = _nvl_text + separator
 		var combined := previously_visible + new_line_text
 		authored_source_start = (
 			previously_visible.length()
@@ -1419,9 +1430,12 @@ func _continue_auto_play_after_ready(gen: int) -> void:
 		return
 	# Multiple completion surfaces (typewriter, cancelled skip, extensions) may
 	# converge on the same ready line. Only one auto delay may own that line.
-	if _auto_pending_dialogue_gen == gen:
+	if _auto_pending_dialogue_gen == gen and _auto_pending_attempt >= 0:
 		return
+	_auto_attempt_serial += 1
+	var attempt := _auto_attempt_serial
 	_auto_pending_dialogue_gen = gen
+	_auto_pending_attempt = attempt
 	if (
 		StellaRuntime.get_setting("auto_play_wait_voice")
 		and _playback_is_dialogue
@@ -1435,45 +1449,54 @@ func _continue_auto_play_after_ready(gen: int) -> void:
 			if (
 				gen != _dialogue_gen
 				or _auto_pending_dialogue_gen != gen
+				or _auto_pending_attempt != attempt
 				or not StellaRuntime.game_state.is_playing()
 			):
 				return
 		if _playback_is_dialogue and _voice_playing:
-			if not await _wait_for_active_voice_finished(gen):
+			if not await _wait_for_active_voice_finished(gen, attempt):
 				return
 	var auto_play_delay: float = StellaRuntime.get_setting("auto_play_delay")
 	await get_tree().create_timer(auto_play_delay).timeout
 	if (
 		gen != _dialogue_gen
 		or _auto_pending_dialogue_gen != gen
+		or _auto_pending_attempt != attempt
 		or not StellaRuntime.game_state.is_playing()
 	):
 		return
 	_auto_pending_dialogue_gen = -1
+	_auto_pending_attempt = -1
 	if StellaRuntime.is_auto_playing() \
 		and StellaRuntime.game_state.is_playing():
 		SignalBus.emit_advance_requested()
 
 
-func _wait_for_active_voice_finished(gen: int) -> bool:
+func _wait_for_active_voice_finished(gen: int, attempt: int) -> bool:
 	var expected_token := _active_voice_token
 	while _voice_playing:
-		var finished_token: int = await SignalBus.voice_playback_finished
+		var event: VoicePlaybackEvent = await SignalBus.voice_playback_event
 		if (
 			gen != _dialogue_gen
 			or _auto_pending_dialogue_gen != gen
+			or _auto_pending_attempt != attempt
 			or not StellaRuntime.game_state.is_playing()
 		):
 			return false
-		# A raw FINISHED remains the legacy completion escape hatch. Owned stale
-		# completions cannot release a wait for a different accepted clip.
 		if (
-			finished_token < 0
-			or expected_token < 0
-			or finished_token == expected_token
+			event.kind == VoicePlaybackEvent.Kind.FINISHED
+			and event.playback_token >= 0
+			and event.playback_token == expected_token
+			and event.is_current()
 		):
 			return true
 	return true
+
+
+func _retire_auto_play_attempt() -> void:
+	_auto_attempt_serial += 1
+	_auto_pending_dialogue_gen = -1
+	_auto_pending_attempt = -1
 
 
 func _configure_advance_indicator(
@@ -1499,8 +1522,6 @@ func _configure_advance_indicator(
 		return true
 	_advance_indicator_offset = Vector2.ZERO
 	var mode_profile := stla_mode_profile
-	if mode_profile == null and presentation_profile != null:
-		mode_profile = presentation_profile.get_mode(mode)
 	if mode_profile == null or not mode_profile.has_advance_indicator():
 		if _advance_indicator != null:
 			_run_indicator_operation(func(): _advance_indicator.clear_source())
@@ -1538,7 +1559,7 @@ func _configure_advance_indicator(
 			return true
 	var configure_error := String(_run_indicator_operation(func():
 		return _advance_indicator.configure(
-			source, mode_profile.advance_indicator_animation)))
+			source, mode_profile.get_advance_indicator_animation())))
 	if owner_gen != _dialogue_gen:
 		return false
 	if configuration_revision != _indicator_configuration_revision:
@@ -1547,7 +1568,7 @@ func _configure_advance_indicator(
 		_advance_indicator_warning(mode, mode_profile, configure_error)
 		_run_indicator_operation(func(): _advance_indicator.clear_source())
 		return owner_gen == _dialogue_gen
-	_advance_indicator_offset = mode_profile.advance_indicator_offset
+	_advance_indicator_offset = mode_profile.get_advance_indicator_offset()
 	return true
 
 
@@ -1601,7 +1622,7 @@ func _mark_dialogue_ready_for_indicator(gen: int) -> void:
 func _show_advance_indicator_after_layout(gen: int, token: int) -> void:
 	# The transparent renderer probe uses the same text/theme/layout inputs while
 	# leaving the live label's tag stack, selection and scroll state untouched.
-	_advance_indicator.prepare_layout_probe(text_label)
+	_advance_indicator.prepare_layout_probe(text_label, _current_mode == "nvl")
 	# Containers, fit_content and RichTextLabel wrapping settle on this boundary.
 	await get_tree().process_frame
 	if not _indicator_request_is_current(gen, token):
@@ -1691,7 +1712,7 @@ func _on_advance_dispatch_started(_serial: int) -> void:
 	# advance and unexpectedly start from the dispatch drain tail.
 	_queued_voice_replay_request.clear()
 	_skip_pending_dialogue_gen = -1
-	_auto_pending_dialogue_gen = -1
+	_retire_auto_play_attempt()
 	# Advancing is a hard async boundary for the current line. Normal input only
 	# reaches it after completion; defensive external emits during typing snap to
 	# the same final state. Retire the generation before finalization because its
@@ -1739,7 +1760,7 @@ func _retire_indicator_transition() -> void:
 
 func _apply_indicator_transition_boundary(revision: int) -> void:
 	_skip_pending_dialogue_gen = -1
-	_auto_pending_dialogue_gen = -1
+	_retire_auto_play_attempt()
 	if not _retire_dialogue_lifecycle(true):
 		return
 	if revision != _boundary_revision:
@@ -1838,17 +1859,17 @@ func _run_voice_queue(
 		_playback_voice_token = -1
 		if should_request_voice:
 			_current_voice = voice
-			var result := SignalBus.emit_owned_voice_play_with_result(
+			var voice_request := SignalBus.request_voice_playback(
 				voice, character, owner_validator)
-			if not bool(result.get("current", false)):
+			if not voice_request.is_current():
 				_retire_voice_queue_if_current(queue_gen)
 				return
 			if not _voice_queue_is_current(owner_gen, queue_gen):
 				_retire_voice_queue_if_current(queue_gen)
 				return
-			if bool(result.get("accepted", false)):
-				previous_voice_token = int(result.get("token", -1))
-				previous_completion_state = result.get("completion_state", {})
+			if voice_request.accepted:
+				previous_voice_token = voice_request.playback_token
+				previous_completion_state = voice_request.completion_state
 				_playback_voice_token = previous_voice_token
 
 	# Wait for the LAST segment's voice to actually finish before declaring the
@@ -2170,11 +2191,15 @@ func _wait_for_voice_playback_finished(
 	while _voice_queue_is_current(owner_gen, queue_gen):
 		if bool(completion_state.get("finished", false)):
 			return true
-		var finished_token: int = await SignalBus.voice_playback_finished
+		var event: VoicePlaybackEvent = await SignalBus.voice_playback_event
 		if not _voice_queue_is_current(owner_gen, queue_gen):
 			return false
-		# Direct raw FINISHED is the established extension/testing completion path.
-		if finished_token < 0 or finished_token == expected_token:
+		if (
+			event.kind == VoicePlaybackEvent.Kind.FINISHED
+			and event.playback_token == expected_token
+			and event.playback_token >= 0
+			and event.is_current()
+		):
 			return true
 	return false
 
@@ -2249,22 +2274,27 @@ func _finalize_dialogue(character: String, segments: Array, gen: int) -> void:
 	_drain_deferred_presentation_work()
 
 
-func _on_voice_playback_started(
-	character: String,
-	asset: String,
-	playback_token: int,
-	event_is_current: bool,
-	dispatch_serial: int,
-) -> void:
-	if not event_is_current \
-		or dispatch_serial != SignalBus.current_voice_started_dispatch_serial() \
-		or not SignalBus.voice_playback_token_event_is_current(playback_token):
+func _on_voice_playback_event(event: VoicePlaybackEvent) -> void:
+	if event == null or not event.is_current():
 		return
-	_active_voice_token = playback_token
-	_voice_playing = true
+	match event.kind:
+		VoicePlaybackEvent.Kind.STARTED:
+			if event.playback_token < 0 and _active_voice_token >= 0:
+				return
+			_active_voice_token = event.playback_token
+			_voice_playing = true
+		VoicePlaybackEvent.Kind.PROGRESS:
+			if event.playback_token < 0 and _playback_voice_token >= 0:
+				return
+			_relay_voice_progress(
+				event.position, event.duration, event.playback_token)
+		VoicePlaybackEvent.Kind.FINISHED:
+			_on_voice_playback_finished(event.playback_token)
 
 
 func _on_voice_playback_finished(playback_token: int) -> void:
+	if playback_token < 0 and _active_voice_token >= 0:
+		return
 	if playback_token >= 0 and playback_token != _active_voice_token:
 		return
 	_active_voice_token = -1
@@ -2273,23 +2303,11 @@ func _on_voice_playback_finished(playback_token: int) -> void:
 		_playback_voice_token = -1
 
 
-## Relays low-level voice_progress (per-clip) into dialogue_voice_progress
-## (per-dialogue), adding the cumulative duration of already-finished segments.
-## Only relays during DIALOGUE playback — backlog/external replays don't drive
-## the in-game progress bar.
-func _on_voice_progress_relay(
+func _relay_voice_progress(
 	position: float,
-	duration: float,
+	_duration: float,
 	playback_token: int,
-	event_is_current: bool,
-	dispatch_serial: int,
 ) -> void:
-	if not event_is_current \
-		or dispatch_serial != SignalBus.current_voice_progress_dispatch_serial() \
-		or not SignalBus.voice_playback_token_event_is_current(playback_token):
-		return
-	if playback_token >= 0 and playback_token != _playback_voice_token:
-		return
 	if _playback_total_duration <= 0.0 or not _playback_is_dialogue:
 		return
 	var total_pos = _playback_played_duration + position
@@ -2326,14 +2344,12 @@ func _is_character_voice_enabled(character: String) -> bool:
 	return true
 
 
-func _sync_backlog_custom_effect_names() -> Dictionary:
-	var effect_names := _collect_backlog_custom_effect_names()
+func _effect_name_registry(effect_names: Array) -> Dictionary:
 	var effect_registry: Dictionary = {}
-	for effect_name: String in effect_names:
-		effect_registry[effect_name] = true
-	if StellaRuntime.backlog_manager != null:
-		StellaRuntime.backlog_manager.set_registered_bbcode_effect_names(
-			effect_names)
+	for raw_effect_name in effect_names:
+		var effect_name := String(raw_effect_name)
+		if not effect_name.is_empty():
+			effect_registry[effect_name] = true
 	return effect_registry
 
 
@@ -2671,10 +2687,6 @@ func _validate_configured_profiles() -> void:
 			continue
 		for error in mode_profile.validation_errors():
 			_profile_warning(mode, String(error))
-		for warning in mode_profile.advance_indicator_warnings():
-			_advance_indicator_warning(mode, mode_profile, String(warning))
-		for error in mode_profile.advance_indicator_validation_errors():
-			_advance_indicator_warning(mode, mode_profile, String(error))
 		if mode_profile.override_text_rect and _text_rect_target == null:
 			_profile_warning(mode,
 				"text_rect_target_path '%s' does not resolve to a Control" % text_rect_target_path)
@@ -2710,36 +2722,18 @@ func _advance_indicator_warning(
 		"indicator_field", "advance_indicator_scene"))
 	var indicator_source := String(provenance.get(
 		"indicator_source", "<unknown resource>"))
-	var origin := ""
-	if provenance.get("kind") == "stla":
-		var declaration_line := int(provenance.get("declaration_line", 0))
-		var line_text := str(declaration_line) if declaration_line > 0 else "<unknown>"
-		origin = (
-			"STLA profile '%s'; STLA source '%s'; %s declared at line %s; "
-			+ "indicator source '%s'"
-		) % [
-			provenance.get("profile_name", "<unnamed>"),
-			provenance.get("profile_source", "<unknown STLA>"),
-			field_name,
-			line_text,
-			indicator_source,
-		]
-	else:
-		var presentation_source := "<in-memory DialoguePresentationProfile>"
-		if presentation_profile != null \
-			and not presentation_profile.resource_path.is_empty():
-			presentation_source = presentation_profile.resource_path
-		origin = (
-			"Resource fallback mode '%s'; DialoguePresentationProfile '%s'; "
-			+ "DialogueModeProfile '%s'; %s source '%s'"
-		) % [
-			mode,
-			presentation_source,
-			provenance.get(
-				"mode_profile_source", "<in-memory DialogueModeProfile>"),
-			field_name,
-			indicator_source,
-		]
+	var declaration_line := int(provenance.get("declaration_line", 0))
+	var line_text := str(declaration_line) if declaration_line > 0 else "<unknown>"
+	var origin := (
+		"STLA profile '%s'; STLA source '%s'; %s declared at line %s; "
+		+ "indicator source '%s'"
+	) % [
+		provenance.get("profile_name", "<unnamed>"),
+		provenance.get("profile_source", "<unknown STLA>"),
+		field_name,
+		line_text,
+		indicator_source,
+	]
 
 	var warning_key := "advance-indicator:%s:%s" % [origin, message]
 	if _profile_warning_keys.has(warning_key):
@@ -2864,6 +2858,34 @@ func _reset_nvl_accumulator() -> void:
 	_active_nvl_page_key = ""
 
 
+func _build_nvl_authored_history(
+	entries: Array,
+	entry_format: Dictionary,
+	custom_effect_registry: Dictionary,
+) -> String:
+	var rendered_entries: Array[String] = []
+	# The final entry is the current command and is processed by the normal
+	# timeline below. Earlier entries are rebuilt from authored source only; their
+	# effects are stripped without replaying waits, speed changes, or expressions.
+	for entry_index in range(maxi(0, entries.size() - 1)):
+		var entry: Dictionary = entries[entry_index]
+		var authored_text := ""
+		for raw_segment in entry.get("segments", []):
+			if raw_segment is Dictionary:
+				var processed := ExpressionTimeline.parse_inline_annotations(
+					String(raw_segment.get("text", "")), custom_effect_registry)
+				authored_text += String(processed.get("clean_text", ""))
+		var entry_character := String(entry.get("character", ""))
+		var speaker_prefix := (
+			"%s：" % entry_character if not entry_character.is_empty() else "")
+		rendered_entries.append(
+			String(entry_format.get("prefix", ""))
+			+ speaker_prefix
+			+ authored_text
+		)
+	return String(entry_format.get("separator", "")).join(rendered_entries)
+
+
 func _on_hide_dialogue():
 	_request_lifecycle_boundary(_LIFECYCLE_HIDE)
 
@@ -2885,7 +2907,7 @@ func _apply_hide_dialogue_boundary(revision: int) -> void:
 	_dialogue_gen += 1
 	var hide_gen := _dialogue_gen
 	_skip_pending_dialogue_gen = -1
-	_auto_pending_dialogue_gen = -1
+	_retire_auto_play_attempt()
 	_ctrl_held = false
 	_invalidate_advance_indicator()
 	if hide_gen != _dialogue_gen:

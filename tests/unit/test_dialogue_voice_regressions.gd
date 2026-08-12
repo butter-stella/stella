@@ -273,31 +273,35 @@ func test_dialogue_voice_finished_waits_for_last_segment():
 	dialogue._run_voice_queue(
 		"sakura", segments, dialogue._dialogue_gen, queue_gen)
 	await get_tree().process_frame
+	var audio_presenter := StellaRuntime.get_node_or_null("AudioPresenter")
+	assert_not_null(audio_presenter)
+	if audio_presenter == null:
+		StellaRuntime.voice_path = original_voice_path
+		return
 
 	# After kickoff: seg[0]'s voice is "playing"; queue is awaiting voice_finished.
 	# dialogue_voice_finished must NOT have fired yet.
 	assert_eq(finished_count[0], 0, "must not finish before any segment ends")
 
 	# Simulate seg[0] ending → queue advances to seg[1]
-	SignalBus.voice_finished.emit()
+	audio_presenter._voice_player.stop()
+	audio_presenter._on_voice_playback_finished()
 	await get_tree().process_frame
 	assert_eq(finished_count[0], 0, "must not finish after seg[0] ends")
 
 	# seg[1] ends → queue advances to seg[2]
-	SignalBus.voice_finished.emit()
+	audio_presenter._voice_player.stop()
+	audio_presenter._on_voice_playback_finished()
 	await get_tree().process_frame
 	assert_eq(finished_count[0], 0,
 		"must not finish when LAST segment merely STARTS — wait for its end")
 
 	# seg[2] (last) ends → queue should now emit dialogue_voice_finished
-	SignalBus.voice_finished.emit()
+	audio_presenter._voice_player.stop()
+	audio_presenter._on_voice_playback_finished()
 	await get_tree().process_frame
 	assert_eq(finished_count[0], 1,
 		"dialogue_voice_finished must fire only after the last segment ends")
-	var audio_presenter := StellaRuntime.get_node_or_null("AudioPresenter")
-	if audio_presenter != null:
-		audio_presenter._voice_player.stop()
-		audio_presenter._on_voice_playback_finished()
 	StellaRuntime.voice_path = original_voice_path
 
 

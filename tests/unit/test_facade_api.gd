@@ -499,8 +499,9 @@ func _disconnect_game_presenters():
 			"stage_state_apply_requested", "stage_transition_started",
 			"stage_transitions_finish_requested",
 			"bgm_play", "bgm_stop", "se_play", "se_stop",
-			"voice_play", "voice_playback_started", "voice_playback_progress",
-			"voice_playback_finished", "dialogue_voice_replay_requested",
+			"dialogue_requested", "dialogue_backlog_effects_resolved",
+			"voice_play", "voice_playback_requested", "voice_playback_event",
+			"dialogue_voice_replay_requested",
 			"dialogue_voice_started", "dialogue_voice_progress",
 			"dialogue_voice_finished",
 			"system_se_play", "advance_dispatch_started",
@@ -532,8 +533,8 @@ func _disconnect_game_presenters():
 		SignalBus._on_show_dialogue_dispatch_started),
 		"game presenter cleanup must preserve SignalBus dispatch hooks")
 	if global_audio_presenter != null:
-		assert_true(SignalBus.voice_play.is_connected(
-			global_audio_presenter._on_voice_play),
+		assert_true(SignalBus.voice_playback_requested.is_connected(
+			global_audio_presenter._on_voice_playback_requested),
 			"game presenter cleanup must preserve the global AudioPresenter")
 	# DialoguePresenter also observes the controller objects directly rather than
 	# through SignalBus. The deferred scene loaded by this test remains alive for
@@ -555,10 +556,6 @@ func _disconnect_game_presenters():
 			if callback_owner != null and callback_owner != StellaRuntime \
 					and not callback_owner is GutTest:
 				controller_signal.disconnect(callback)
-	StellaRuntime.backlog_manager.set_registered_bbcode_effect_names_provider(
-		Callable())
-
-
 ## --- Overlay Config ---
 
 func test_config_has_overlay_scene_overrides():

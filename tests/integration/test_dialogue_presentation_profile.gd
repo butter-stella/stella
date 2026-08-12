@@ -112,6 +112,44 @@ func test_nvl_profile_accumulates_three_prefixed_entries_and_restores_authored_a
 	assert_true(finished)
 
 
+func test_nvl_snapshot_restore_rebuilds_the_authored_page() -> void:
+	_presenter = FIXTURE.instantiate()
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	_presenter._char_interval = 0.0
+
+	_start_scenario_fixture()
+	if not await _wait_for_dialogue(0, "・First"):
+		return
+	SignalBus.advance_requested.emit()
+	if not await _wait_for_dialogue(1, "・First・Second"):
+		return
+	var snapshot := _engine.context.capture_snapshot()
+	var scenario := _engine.context.scenario_data
+	assert_eq(snapshot.get("nvl_page_entries", []).size(), 2)
+
+	# Save/load hard-resets presentation nodes, then re-executes the saved command
+	# in a fresh ScenarioContext. The restored page must come from authored entries
+	# in the snapshot, not from the retired RichTextLabel string.
+	_engine.context.is_finished = true
+	SignalBus.engine_abort_requested.emit()
+	await get_tree().process_frame
+	SignalBus.hide_dialogue.emit()
+	assert_eq(_presenter._nvl_text, "")
+
+	var restored_engine := ScenarioEngine.new()
+	restored_engine.registry = StellaRuntime.registry
+	restored_engine.load_scenario(scenario)
+	restored_engine.context.restore_snapshot(snapshot)
+	_engine = restored_engine
+	_engine.run()
+
+	if not await _wait_for_dialogue(1, "・First・Second"):
+		return
+	assert_eq(_engine.context.nvl_page_entries.size(), 2,
+		"re-executing the restored current command must not duplicate its entry")
+
+
 func test_runtime_jump_reentry_starts_a_fresh_nvl_page_after_off() -> void:
 	await _start_runtime_fixture_at("jump_loop_entry")
 	if not await _wait_for_runtime_nvl(1, "・Jump page"):

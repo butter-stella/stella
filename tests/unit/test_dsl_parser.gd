@@ -117,7 +117,7 @@ func test_dialogue_profile_rejects_invalid_nvl_entry_escape_with_source_line():
 @scene start
 @nvl profile=broken
 「line」""")
-	assert_eq(data.diagnostics.size(), 1)
+	assert_eq(data.diagnostics.size(), 2)
 	assert_eq(data.diagnostics[0]["line"], 1)
 	assert_string_contains(str(data.diagnostics[0]["message"]).to_lower(), "escape")
 	var profile := data.get_dialogue_profile("broken")
@@ -131,7 +131,7 @@ func test_dialogue_profile_rejects_unterminated_nvl_entry_string_with_source_lin
 @scene start
 @nvl profile=broken
 「line」""")
-	assert_eq(data.diagnostics.size(), 1)
+	assert_eq(data.diagnostics.size(), 2)
 	assert_eq(data.diagnostics[0]["line"], 1)
 	assert_string_contains(str(data.diagnostics[0]["message"]).to_lower(), "unterminated")
 	var profile := data.get_dialogue_profile("broken")
@@ -145,7 +145,7 @@ func test_dialogue_profile_rejects_bbcode_in_nvl_entry_format():
 @scene start
 @nvl profile=broken
 「line」""")
-	assert_eq(data.diagnostics.size(), 1)
+	assert_eq(data.diagnostics.size(), 2)
 	assert_eq(data.diagnostics[0]["line"], 1)
 	assert_string_contains(str(data.diagnostics[0]["message"]), "BBCode")
 	var profile := data.get_dialogue_profile("broken")
@@ -239,7 +239,7 @@ advance_indicator_scene=\"%s\" advance_indicator_animation=bob
 	assert_true(runtime_profile.advance_indicator_validation_errors().is_empty())
 
 
-func test_dialogue_profile_advance_indicator_scene_wins_source_conflict():
+func test_dialogue_profile_rejects_mutually_exclusive_indicator_sources_atomically():
 	var data = _parse(("""@dialogue_profile texture_first \
 advance_indicator_texture=\"%s\" advance_indicator_scene=\"%s\"
 @dialogue_profile scene_first advance_indicator_scene=\"%s\"
@@ -255,18 +255,13 @@ advance_indicator_texture=\"%s\" advance_indicator_scene=\"%s\"
 		ADVANCE_INDICATOR_SCENE_PATH,
 		ADVANCE_INDICATOR_TEXTURE_PATH,
 	])
-	assert_eq(data.diagnostics.size(), 2)
-	for diagnostic in data.diagnostics:
-		assert_eq(diagnostic.get("level"), "warning")
-		assert_string_contains(str(diagnostic.get("message")), "mutually exclusive")
+	assert_true(_has_diagnostic(data, "error", "mutually exclusive"))
 	for profile_name in ["texture_first", "scene_first"]:
-		var profile := data.get_dialogue_profile(profile_name)
-		assert_eq(profile.get("advance_indicator_scene"), ADVANCE_INDICATOR_SCENE_PATH)
-		assert_false(profile.has("advance_indicator_texture"),
-			"scene must win independent of declaration order")
+		assert_true(data.get_dialogue_profile(profile_name).is_empty(),
+			"a source conflict rejects the whole Profile independent of order")
 
 
-func test_dialogue_profile_bad_indicator_source_does_not_discard_layout():
+func test_dialogue_profile_bad_indicator_source_rejects_profile_atomically():
 	var data = _parse(("""@dialogue_profile missing horizontal_alignment=center \
 advance_indicator_texture=\"res://missing/indicator.png\"
 @dialogue_profile wrong_type line_spacing=7 \
@@ -277,21 +272,15 @@ advance_indicator_scene=\"%s\"
 「missing」
 @adv profile=wrong_type
 「wrong type」""") % ADVANCE_INDICATOR_TEXTURE_PATH)
-	assert_eq(data.diagnostics.size(), 2)
-	assert_eq(data.diagnostics[0].get("line"), 1)
-	assert_string_contains(str(data.diagnostics[0].get("message")), "does not exist")
-	assert_eq(data.diagnostics[1].get("line"), 2)
-	assert_string_contains(str(data.diagnostics[1].get("message")), "PackedScene")
-
-	var missing_profile := data.get_dialogue_profile("missing")
-	assert_eq(missing_profile.get("horizontal_alignment"), HORIZONTAL_ALIGNMENT_CENTER)
-	assert_false(missing_profile.has("advance_indicator_texture"))
-	var wrong_type_profile := data.get_dialogue_profile("wrong_type")
-	assert_eq(wrong_type_profile.get("line_spacing"), 7)
-	assert_false(wrong_type_profile.has("advance_indicator_scene"))
+	assert_true(_has_diagnostic(data, "error", "does not exist"))
+	assert_true(_has_diagnostic(data, "error", "PackedScene"))
+	assert_true(data.get_dialogue_profile("missing").is_empty())
+	assert_true(data.get_dialogue_profile("wrong_type").is_empty())
+	assert_true(_has_diagnostic(data, "error", "unknown dialogue profile 'missing'"))
+	assert_true(_has_diagnostic(data, "error", "unknown dialogue profile 'wrong_type'"))
 
 
-func test_dialogue_profile_rejects_invalid_indicator_offset_and_animation_locally():
+func test_dialogue_profile_rejects_invalid_indicator_fields_atomically():
 	var data = _parse(("""@dialogue_profile broken line_spacing=5 \
 advance_indicator_texture=\"%s\" advance_indicator_offset=1 \
 advance_indicator_animation=spin
@@ -299,14 +288,11 @@ advance_indicator_animation=spin
 @scene start
 @adv profile=broken
 「line」""") % ADVANCE_INDICATOR_TEXTURE_PATH)
-	assert_eq(data.diagnostics.size(), 2)
+	assert_eq(data.diagnostics.size(), 3)
 	assert_true(_has_diagnostic(data, "error", "two comma-separated numbers"))
 	assert_true(_has_diagnostic(data, "error", "advance_indicator_animation"))
-	var profile := data.get_dialogue_profile("broken")
-	assert_eq(profile.get("line_spacing"), 5)
-	assert_eq(profile.get("advance_indicator_texture"), ADVANCE_INDICATOR_TEXTURE_PATH)
-	assert_false(profile.has("advance_indicator_offset"))
-	assert_false(profile.has("advance_indicator_animation"))
+	assert_true(data.get_dialogue_profile("broken").is_empty())
+	assert_true(_has_diagnostic(data, "error", "unknown dialogue profile 'broken'"))
 
 
 func test_dialogue_profile_rejects_non_project_indicator_paths():
@@ -318,46 +304,29 @@ func test_dialogue_profile_rejects_non_project_indicator_paths():
 「one」
 @adv profile=writable
 「two」""")
-	assert_eq(data.diagnostics.size(), 2)
-	for diagnostic in data.diagnostics:
-		assert_string_contains(str(diagnostic.get("message")), "res:// or uid://")
+	assert_eq(data.diagnostics.size(), 4)
+	assert_eq(data.diagnostics.filter(func(diagnostic):
+		return "res:// or uid://" in String(diagnostic.get("message", ""))).size(), 2)
+	assert_true(_has_diagnostic(data, "error", "unknown dialogue profile 'relative'"))
+	assert_true(_has_diagnostic(data, "error", "unknown dialogue profile 'writable'"))
 
 
-func test_dialogue_mode_profile_resource_fallback_is_typed_and_locally_validated():
+func test_dialogue_mode_profile_indicator_is_created_only_from_stla_data():
 	var profile := DialogueModeProfile.new()
 	assert_false(profile.has_advance_indicator())
-	assert_eq(profile.advance_indicator_offset, Vector2.ZERO)
-	assert_eq(profile.advance_indicator_animation, "none")
+	assert_eq(profile.get_advance_indicator_offset(), Vector2.ZERO)
+	assert_eq(profile.get_advance_indicator_animation(), "none")
 	assert_true(profile.advance_indicator_validation_errors().is_empty())
 
-	profile.advance_indicator_texture = load(ADVANCE_INDICATOR_TEXTURE_PATH) as Texture2D
-	profile.advance_indicator_offset = Vector2(3.0, -1.0)
-	profile.advance_indicator_animation = "pulse"
+	profile = DialogueModeProfile.from_dictionary({
+		"advance_indicator_texture": ADVANCE_INDICATOR_TEXTURE_PATH,
+		"advance_indicator_offset": Vector2(3.0, -1.0),
+		"advance_indicator_animation": "pulse",
+	})
 	assert_true(profile.has_advance_indicator())
 	assert_not_null(profile.resolve_advance_indicator_texture())
-	assert_null(profile.resolve_advance_indicator_scene())
-	assert_true(profile.advance_indicator_validation_errors().is_empty())
-
-	profile.advance_indicator_scene = load(ADVANCE_INDICATOR_SCENE_PATH) as PackedScene
-	assert_not_null(profile.resolve_advance_indicator_scene())
-	assert_null(profile.resolve_advance_indicator_texture(),
-		"Resource fallback must give scenes deterministic priority")
-	assert_true(profile.advance_indicator_validation_errors().is_empty(),
-		"a deterministic source conflict must not disable the indicator")
-	assert_eq(profile.advance_indicator_warnings().size(), 1)
-	assert_string_contains(profile.advance_indicator_warnings()[0], "mutually exclusive")
-	assert_true(profile.validation_errors().is_empty(),
-		"indicator errors must never trigger whole-profile layout fallback")
-
-	profile.advance_indicator_texture = null
-	profile.advance_indicator_offset = Vector2(INF, 0.0)
-	profile.advance_indicator_animation = "spin"
-	var indicator_errors: PackedStringArray = profile.advance_indicator_validation_errors()
-	assert_eq(indicator_errors.size(), 2)
-	assert_true(indicator_errors.has("advance_indicator_offset must contain only finite values"))
-	assert_true(indicator_errors.has(
-		"advance_indicator_animation has unsupported value 'spin'"))
-	assert_true(profile.validation_errors().is_empty())
+	assert_eq(profile.get_advance_indicator_offset(), Vector2(3.0, -1.0))
+	assert_eq(profile.get_advance_indicator_animation(), "pulse")
 
 
 func test_bg_full_params():

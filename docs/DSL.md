@@ -158,7 +158,7 @@ warning，并按普通文本显示。
 
 这两个属性支持带引号的纯文本字符串及常用转义：`\\`、`\"`、`\n`、`\r`、`\t`。例如 `entry_separator="\n\n"` 会在记录间留出一个空行。这里不支持 BBCode 标签，方括号会产生解析诊断；样式仍应通过 Profile 的文字属性或场景 theme 配置。未配置时前缀为空、记录之间换行。
 
-Advance indicator 是可选的、按 Profile 独立配置的表现节点。`advance_indicator_texture` 和 `advance_indicator_scene` 二选一：前者适合普通箭头、菱形等图片，后者适合项目自带粒子或状态脚本的复杂标记；若同时配置，解析器会发出 warning 并确定性地采用 scene。场景根节点必须是 `CanvasItem`；`Control` 根必须使用左上角锚点（四个 anchor 都为 `0`），并用 offset 或 minimum size 明确尺寸，`Node2D` 根则会被归一化为非 top-level。根节点原点会放在最终渲染行的文字端点；若实现 `set_advance_ready(ready: bool)`，Presenter 会在显示/隐藏时同步通知状态。`advance_indicator_offset` 中正 x 向右、正 y 向下，`pulse` 改变透明度，`bob` 做轻微上下浮动；自定义场景也可以选择 `none` 并自行表现。
+Advance indicator 是可选的、按 Profile 独立配置的表现节点。`advance_indicator_texture` 和 `advance_indicator_scene` 二选一：前者适合普通箭头、菱形等图片，后者适合项目自带粒子或状态脚本的复杂标记；同时配置会让整个 Profile 声明原子失败，不会采用隐式优先级或部分视觉降级。场景根节点必须是 `CanvasItem`；`Control` 根必须使用左上角锚点（四个 anchor 都为 `0`），并用 offset 或 minimum size 明确尺寸，`Node2D` 根则会被归一化为非 top-level。根节点原点会放在最终渲染行的文字端点；若实现 `set_advance_ready(ready: bool)`，Presenter 会在显示/隐藏时同步通知状态。`advance_indicator_offset` 中正 x 向右、正 y 向下，`pulse` 改变透明度，`bob` 做轻微上下浮动；自定义场景也可以选择 `none` 并自行表现。Indicator 只通过 `.stla` Profile 创作；高级 `DialoguePresentationProfile` Resource 继续兼容既有布局字段，但不会形成第二套 indicator schema。
 
 内置端点定位复用一个透明、隔离的 `RichTextLabel` 排版镜像，并从 Godot 实际绘制的 glyph transform 读取逻辑末端。因此控件级/BBCode 段落对齐、`[indent]`、`[ul]` / `[ol]` 列表、混合 LTR/RTL 与滚动条占宽都使用与正文相同的引擎排版结果，不要求项目提供自定义 Presenter；镜像不会改写正文标签的 text、可见字符、选择或滚动状态。
 
@@ -166,7 +166,7 @@ Advance indicator 是可选的、按 Profile 独立配置的表现节点。`adva
 
 内置场景已提供 `quick_menu` 分组，并将默认文字布局根作为可定位区域，所以常见 NVL/overlay 版式只需要写 STLA。只有项目新增了特殊 frame、logo 或其他自定义 UI 时，才需要在 Godot 场景里给这些节点分组，例如 `adv_chrome`。
 
-无效数字、越界/倒置 anchors、负 margin、非法枚举、未知属性、不完整的引号字符串、非法字符串转义、entry format 中的 BBCode 方括号、不存在/类型不符的 indicator 资源、同时配置 texture 与 scene，或不存在的 Profile，都会生成包含 STLA 行号的解析诊断。无法实例化、根节点不是 `CanvasItem`，或 `Control` 根使用非左上角锚点的 indicator scene，会在运行时给出一次性警告并仅禁用标记，不影响同一 Profile 的其他布局。该 warning 会列出准确的 Profile 名、`.stla` 来源路径、当前 indicator 字段及资源路径、该字段的声明行和可执行修复动作；多个 Profile 即使使用同一模式和同一错误场景也会分别报告。高级 `DialoguePresentationProfile` Resource 兜底配置没有 STLA 行号，warning 会明确标记为 `Resource fallback`，并列出 Presentation/Mode Profile 及 indicator 资源路径（内存中创建的 Resource 会明确显示为 `<in-memory ...>`）。编译器把 Profile 与 provenance 分开保存在当前 `ScenarioData`，运行时 sidecar 只携带 mode、Profile 名和 ADV 恢复动作；存档保存当前/ADV 的 Profile 名与声明式状态，恢复时从当前 scenario registry 解析，因此分支、回滚、`@jump` 与 `@call` 都遵循实际执行路径。provenance 不写入正文、Backlog 或存档；`off` 会恢复该路径配置的 ADV 场景基线。
+无效数字、越界/倒置 anchors、负 margin、非法枚举、未知属性、不完整的引号字符串、非法字符串转义、entry format 中的 BBCode 方括号、不存在/类型不符的 indicator 资源、同时配置 texture 与 scene，或不存在的 Profile，都会生成包含 STLA 行号的解析诊断，并让对应 Profile 声明整体失效。无法实例化、根节点不是 `CanvasItem`，或 `Control` 根使用非左上角锚点的 indicator scene，会在运行时给出一次性警告并仅禁用标记。该 warning 会列出准确的 Profile 名、`.stla` 来源路径、当前 indicator 字段及资源路径、该字段的声明行和可执行修复动作；多个 Profile 即使使用同一模式和同一错误场景也会分别报告。编译器把 Profile 与 provenance 分开保存在当前 `ScenarioData`，运行时 sidecar 只携带 mode、Profile 名和 ADV 恢复动作；存档保存当前/ADV 的 Profile 名与声明式状态，恢复时从当前 scenario registry 解析，因此分支、回滚、`@jump` 与 `@call` 都遵循实际执行路径。provenance 不写入正文、Backlog 或存档；`off` 会恢复该路径配置的 ADV 场景基线。
 
 ### 3.4 背景
 
