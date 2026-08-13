@@ -67,7 +67,46 @@ func test_read_flag_legacy_snapshot_migrates_to_v2_and_remains_queryable() -> vo
 		"a canonical request may fall back to an actually migrated v1 address")
 	var snapshot := rfm.capture_snapshot()
 	assert_eq(snapshot.get("version"), 2)
-	assert_eq(snapshot.get("flags", []).size(), 1)
+	assert_eq(snapshot.get("flags", []).size(), 0)
+	assert_eq(snapshot.get("legacy_flags", []), ["main:start:3"])
+
+
+func test_ambiguous_v1_key_preserves_raw_lookup_instead_of_guessing_tuple() -> void:
+	var rfm := ReadFlagManager.new()
+	rfm.restore_snapshot({"route:a:scene:7": true})
+
+	assert_true(rfm.is_read("route:a", "scene", 7))
+	assert_true(rfm.is_read("route", "a:scene", 7),
+		"v1 ambiguity preserves both historical string-equivalent queries")
+	var snapshot := rfm.capture_snapshot()
+	var restored := ReadFlagManager.new()
+	restored.restore_snapshot(snapshot)
+	assert_eq(restored.capture_snapshot().get("legacy_flags", []),
+		["route:a:scene:7"])
+
+
+func test_unknown_snapshot_version_is_rejected_without_mutation() -> void:
+	var rfm := ReadFlagManager.new()
+	rfm.mark_read("current", "scene", 1)
+	rfm.restore_snapshot({"version": 99, "flags": []})
+
+	assert_push_error("ReadFlagManager: unsupported snapshot version")
+	assert_true(rfm.is_read("current", "scene", 1))
+
+
+func test_malformed_v2_is_rejected_atomically() -> void:
+	var rfm := ReadFlagManager.new()
+	rfm.restore_snapshot({
+		"version": 2,
+		"flags": [
+			{"scenario": "valid", "scene": "start", "command_uid": 1},
+			{"scenario": "broken"},
+		],
+	})
+
+	assert_push_error("ReadFlagManager: malformed v2 snapshot record")
+	assert_false(rfm.is_read("valid", "start", 1),
+		"a malformed snapshot cannot be partially applied")
 
 
 func test_equal_basenames_keep_distinct_canonical_read_history() -> void:

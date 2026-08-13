@@ -105,10 +105,15 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 	)
 	if context != null:
 		context.clear_dialogue_activation(activation)
-	if (
-		outcome != DialogueActivation.Outcome.ADVANCED
-		or not owns_activation
-	):
+	if outcome == DialogueActivation.Outcome.ABORTED:
+		# A consumer-facing request.abort() cancels the authored command; it must
+		# not look like successful completion to ScenarioEngine and advance the
+		# cursor into the next line. Stale/rejected activations do not own the
+		# context and therefore cannot stop a replacement run.
+		if owns_activation and context != null:
+			context.is_finished = true
+		return
+	if outcome != DialogueActivation.Outcome.ADVANCED or not owns_activation:
 		return
 
 	# Read state belongs to command completion, not to presentation. Aborted lines
@@ -117,9 +122,13 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 		push_warning(
 			"DialogueHandler: cannot mark a completed dialogue without a valid identity"
 		)
-		return
-	_read_flags.mark_dialogue_read(
-		scenario_identity,
-		scene_id,
-		command_uid,
-	)
+	else:
+		_read_flags.mark_dialogue_read(
+			scenario_identity,
+			scene_id,
+			command_uid,
+		)
+	# Compatibility presentation notifications are deliberately last. A
+	# synchronous extension may re-enter Core from this signal, but the durable
+	# commit and owner release above are already complete.
+	SignalBus.emit_dialogue_advance_committed(activation)

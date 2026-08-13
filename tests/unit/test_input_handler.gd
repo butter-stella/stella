@@ -2,6 +2,14 @@ extends GutTest
 ## Tests for InputHandler logic.
 
 
+class ResolvedDialogueStub extends Node:
+	var request_count: int = 0
+
+	func request_current_dialogue_advance() -> bool:
+		request_count += 1
+		return false
+
+
 # ─── Mouse advance ───
 
 func test_left_click_advances_when_playing():
@@ -72,6 +80,29 @@ func test_enter_advances_when_playing():
 
 	assert_eq(received.size(), 1)
 	SignalBus.advance_requested.disconnect(cb)
+	handler.queue_free()
+
+
+func test_resolved_dialogue_falls_back_to_click_wait_notification() -> void:
+	var handler = _make_handler()
+	var dialogue := ResolvedDialogueStub.new()
+	var wait_handler := WaitHandler.new()
+	var wait_command := CommandData.new()
+	wait_command.type = "wait"
+	wait_command.params = {"mode": "click"}
+	var wait_done := [false]
+	var run_wait := func() -> void:
+		await wait_handler.execute(wait_command, ScenarioContext.new())
+		wait_done[0] = true
+	run_wait.call()
+
+	handler._request_dialogue_advance(dialogue)
+	await get_tree().process_frame
+
+	assert_eq(dialogue.request_count, 1)
+	assert_true(wait_done[0],
+		"a stale resolved dialogue owner must not swallow @wait click input")
+	dialogue.free()
 	handler.queue_free()
 
 

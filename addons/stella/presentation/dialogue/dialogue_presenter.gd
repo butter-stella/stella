@@ -150,7 +150,9 @@ var _playback_is_dialogue: bool = true
 func _ready():
 	SignalBus.dialogue_requested.connect(_on_dialogue_requested)
 	SignalBus.hide_dialogue.connect(_on_hide_dialogue)
-	# SignalBus emits this pre-dispatch event before every public/raw advance.
+	SignalBus.dialogue_advance_committed.connect(
+		_on_dialogue_advance_committed)
+	# SignalBus emits this pre-dispatch event before every direct public/raw advance.
 	# A replacement Presenter created later in that same signal stack never sees
 	# the old transition, so it cannot accidentally retire the newly shown line.
 	SignalBus.advance_dispatch_started.connect(_on_advance_dispatch_started)
@@ -427,7 +429,9 @@ func _retire_dialogue_lifecycle(
 	if owner_gen != _dialogue_gen or queue_gen != _playback_queue_gen:
 		return false
 	_queued_voice_replay_request.clear()
-	_queued_dialogue_requests.clear()
+	_abort_queued_dialogue_requests()
+	if owner_gen != _dialogue_gen or queue_gen != _playback_queue_gen:
+		return false
 	_finalization_pending = false
 	_cancel_pending_stage_operation_requests()
 	var finish_records: Array = _stage_transition_records.values()
@@ -475,7 +479,9 @@ func _request_lifecycle_boundary(action: StringName) -> void:
 	):
 		return
 	var revision := _next_boundary_revision()
-	_queued_dialogue_requests.clear()
+	_abort_queued_dialogue_requests()
+	if revision != _boundary_revision:
+		return
 	_queued_voice_replay_request.clear()
 	_finalization_pending = false
 	if _presentation_dispatch_depth > 0 or _finalization_in_progress:
@@ -939,27 +945,15 @@ func _capture_request_identity(request: Dictionary) -> void:
 	_current_command_uid = command.uid if command != null else -1
 
 
-func _is_current_line_read() -> bool:
-	if _current_command_uid < 0 and _current_command_index < 0:
-		return false
-	if not _current_scenario_identity.is_empty() and _current_command_uid >= 0:
-		return StellaRuntime.read_flags.is_dialogue_read(
-			_current_scenario_identity,
-			_current_scenario_id,
-			_current_scene_id,
-			_current_command_uid,
-			_current_command_index,
-		)
-	return StellaRuntime.read_flags.is_read(
-		_current_scenario_id, _current_scene_id, _current_command_index)
-
-
 ## Input, auto-play, and skip acknowledge the exact request currently rendered.
 ## Legacy raw SHOW calls have no blocking activation and retain their global
 ## compatibility notification.
 func request_current_dialogue_advance() -> bool:
 	if _current_dialogue_activation != null:
-		return _current_dialogue_activation.advance()
+		if _current_dialogue_activation.advance():
+			return true
+		_current_dialogue_activation = null
+		return false
 	SignalBus.emit_advance_requested()
 	return true
 
@@ -1011,11 +1005,33 @@ func _on_dialogue_requested(dialogue_request: DialogueRequest) -> void:
 		# Multiple synchronous SHOW requests cannot all own the same UI. Match the
 		# normal signal semantics by letting the newest request supersede earlier
 		# queued requests before presentation control returns to the dialogue.
-		_queued_dialogue_requests.clear()
+		_abort_queued_dialogue_requests()
+		if int(request.get("boundary_revision", -1)) != _boundary_revision:
+			_abort_dialogue_request(request)
+			return
 		_queued_dialogue_requests.append(request)
 		return
-	_queued_dialogue_requests.clear()
+	_abort_queued_dialogue_requests()
 	_accept_dialogue_request(request)
+
+
+## A Presenter can render only one queued replacement. Every displaced typed
+## request must be explicitly cancelled so its DialogueHandler cannot remain
+## suspended after the UI chooses a newer owner.
+func _abort_queued_dialogue_requests() -> void:
+	var displaced := _queued_dialogue_requests.duplicate()
+	_queued_dialogue_requests.clear()
+	for queued_request in displaced:
+		if not queued_request is Dictionary:
+			continue
+		var request: Dictionary = queued_request
+		_abort_dialogue_request(request)
+
+
+func _abort_dialogue_request(request: Dictionary) -> void:
+	var activation := request.get("activation") as DialogueActivation
+	if activation != null:
+		activation.abort()
 
 
 ## Compatibility for tests/extensions that called the old presenter callback
@@ -1027,6 +1043,7 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 func _accept_dialogue_request(request: Dictionary) -> void:
 	var revision := int(request.get("boundary_revision", -1))
 	if revision != _boundary_revision:
+		_abort_dialogue_request(request)
 		return
 	_boundary_operation_depth += 1
 	_queued_voice_replay_request.clear()
@@ -1756,7 +1773,32 @@ func _invalidate_advance_indicator() -> void:
 			_run_indicator_operation(func(): _advance_indicator.hide_indicator())
 
 
+func _on_dialogue_advance_committed(activation_id: int) -> void:
+	if (
+		_current_dialogue_activation != null
+		and _current_dialogue_activation.get_instance_id() == activation_id
+	):
+		_current_dialogue_activation = null
+		_finalize_current_dialogue_for_advance()
+		return
+	# A synchronous headless consumer may commit while this Presenter has the
+	# matching SHOW parked behind another presentation dispatch. Remove only that
+	# retired request; it must never render later or affect the active owner.
+	for index in range(_queued_dialogue_requests.size()):
+		var queued: Dictionary = _queued_dialogue_requests[index]
+		var activation := queued.get("activation") as DialogueActivation
+		if activation != null and activation.get_instance_id() == activation_id:
+			_queued_dialogue_requests.remove_at(index)
+			return
+
+
 func _on_advance_dispatch_started(_serial: int) -> void:
+	# This path is only for a direct legacy advance_requested emission. Canonical
+	# dialogue commits use the owner-scoped callback above and suppress this echo.
+	_finalize_current_dialogue_for_advance()
+
+
+func _finalize_current_dialogue_for_advance() -> void:
 	var was_typing := _is_typing
 	var needs_voice_finalization := _logical_dialogue_voice_session_is_open()
 	var needs_stage_finalization := (
@@ -3016,7 +3058,7 @@ func _apply_hide_dialogue_boundary(revision: int) -> void:
 	_finalization_transition_records.clear()
 	_cancel_pending_stage_operation_requests()
 	_stage_operation_request_results.clear()
-	_queued_dialogue_requests.clear()
+	_abort_queued_dialogue_requests()
 	_queued_voice_replay_request.clear()
 	_finalization_pending = false
 	_finalization_in_progress = false

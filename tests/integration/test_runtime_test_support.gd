@@ -221,7 +221,7 @@ func test_runtime_reset_immediately_reapplies_audio_defaults() -> void:
 		"a killed fade-in must not restore its pre-reset target")
 
 
-func test_reset_for_test_does_not_leave_parallel_children_waiting() -> void:
+func test_reset_for_test_does_not_advance_past_aborted_dialogue() -> void:
 	var advance_connection_count := SignalBus.advance_requested.get_connections().size()
 	var abort_connection_count := SignalBus.engine_abort_requested.get_connections().size()
 	var shown_texts: Array[String] = []
@@ -229,7 +229,7 @@ func test_reset_for_test_does_not_leave_parallel_children_waiting() -> void:
 		shown_texts.append(String(segments[0].get("text", "")))
 	SignalBus.show_dialogue.connect(dialogue_listener)
 
-	_runtime.engine.load_scenario(_build_blocking_parallel_scenario())
+	_runtime.engine.load_scenario(_build_two_dialogue_scenario())
 	var old_context: ScenarioContext = _runtime.engine.context
 	_runtime.engine.run()
 	await get_tree().process_frame
@@ -241,7 +241,7 @@ func test_reset_for_test_does_not_leave_parallel_children_waiting() -> void:
 	assert_eq(
 		SignalBus.engine_abort_requested.get_connections().size(),
 		abort_connection_count + 1,
-		"the first parallel dialogue owns one request-scoped abort listener",
+		"the current dialogue owns one request-scoped abort listener",
 	)
 
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
@@ -249,9 +249,9 @@ func test_reset_for_test_does_not_leave_parallel_children_waiting() -> void:
 
 	assert_true(old_context.is_finished)
 	assert_eq(shown_texts, ["first"],
-		"abort must not dispatch a later parallel child after its signal was spent")
+		"abort must not dispatch the next authored dialogue")
 	assert_eq(SignalBus.advance_requested.get_connections().size(), advance_connection_count,
-		"parallel must not start another child after the abort")
+		"abort must not start another dialogue after the reset")
 	assert_eq(SignalBus.engine_abort_requested.get_connections().size(), abort_connection_count,
 		"the one-shot abort loser must be disconnected")
 	assert_eq(_scenario_ended_count[0], 0)
@@ -313,6 +313,44 @@ func test_reset_for_test_cancels_a_delayed_skip_advance() -> void:
 		"the old skip timer must not advance the next test")
 
 
+func test_real_input_routes_dialogue_then_click_wait_then_dialogue() -> void:
+	var game: Node = load("res://addons/stella/scenes/game.tscn").instantiate()
+	add_child_autoqfree(game)
+	await get_tree().process_frame
+	var input_handler: Node = game.get_node("InputHandler")
+	var dialogue: Control = game.get_node("UILayer/DialoguePanel")
+	dialogue._char_interval = 0.0
+	var requests: Array[DialogueRequest] = []
+	var on_request := func(request: DialogueRequest) -> void:
+		requests.append(request)
+	SignalBus.dialogue_requested.connect(on_request)
+
+	_runtime.engine.load_scenario(_build_dialogue_wait_dialogue_scenario())
+	_runtime.engine.run()
+	assert_true(await wait_until(
+		func(): return requests.size() == 1 and not dialogue._is_typing,
+		1.0,
+		"first dialogue becomes ready",
+	))
+	input_handler._request_dialogue_advance(dialogue)
+	assert_true(await wait_until(
+		func(): return _runtime.engine.context.current_command_index == 1,
+		1.0,
+		"engine enters click wait",
+	))
+	input_handler._request_dialogue_advance(dialogue)
+	assert_true(await wait_until(
+		func(): return requests.size() == 2,
+		1.0,
+		"click wait releases into second dialogue",
+	))
+
+	assert_eq(requests[0].get_segments()[0].get("text"), "first")
+	assert_eq(requests[1].get_segments()[0].get("text"), "second")
+	requests[1].abort()
+	SignalBus.dialogue_requested.disconnect(on_request)
+
+
 func _build_blocking_scenario() -> ScenarioData:
 	var data := ScenarioData.new()
 	data.id = "runtime_reset_test"
@@ -329,20 +367,32 @@ func _build_blocking_scenario() -> ScenarioData:
 	return data
 
 
-func _build_blocking_parallel_scenario() -> ScenarioData:
+func _build_two_dialogue_scenario() -> ScenarioData:
 	var data := ScenarioData.new()
-	data.id = "runtime_reset_parallel_test"
+	data.id = "runtime_reset_two_dialogue_test"
 	var scene := SceneData.new()
 	scene.id = "start"
-	var parallel := CommandData.new()
-	parallel.type = "parallel"
-	parallel.params = {
-		"commands": [
-			_dialogue_command("first"),
-			_dialogue_command("must not start"),
-		],
-	}
-	scene.commands.append(parallel)
+	scene.commands = [
+		_dialogue_command("first"),
+		_dialogue_command("must not start"),
+	]
+	data.scenes.append(scene)
+	return data
+
+
+func _build_dialogue_wait_dialogue_scenario() -> ScenarioData:
+	var data := ScenarioData.new()
+	data.id = "runtime_input_routing_test"
+	var scene := SceneData.new()
+	scene.id = "start"
+	var wait := CommandData.new()
+	wait.type = "wait"
+	wait.params = {"mode": "click"}
+	scene.commands = [
+		_dialogue_command("first"),
+		wait,
+		_dialogue_command("second"),
+	]
 	data.scenes.append(scene)
 	return data
 

@@ -337,6 +337,28 @@ func test_parallel_handler_dispatches_with_live_registry():
 	assert_eq(child_handler.execution_count, 1)
 
 
+func test_parallel_handler_rejects_blocking_child_before_dispatching_siblings():
+	var registry = CommandRegistry.new()
+	var parallel_handler = ParallelHandler.new()
+	var child_handler = CountingHandler.new()
+	parallel_handler.set_registry(registry)
+	registry.register(parallel_handler)
+	registry.register(child_handler)
+	var first = CommandData.new()
+	first.type = "counting"
+	var blocking = CommandData.new()
+	blocking.type = "wait"
+	var parallel_command = CommandData.new()
+	parallel_command.type = "parallel"
+	parallel_command.params = {"commands": [first, blocking]}
+
+	await parallel_handler.execute(parallel_command, ScenarioContext.new())
+
+	assert_push_warning("ParallelHandler: blocking 'wait' child is not allowed")
+	assert_eq(child_handler.execution_count, 0,
+		"invalid programmatic blocks are rejected atomically")
+
+
 func test_parallel_handler_releases_and_handles_expired_registry():
 	var registry = CommandRegistry.new()
 	var parallel_handler = ParallelHandler.new()
@@ -368,3 +390,40 @@ func test_dsl_parser_parallel():
 	assert_eq(sub_commands.size(), 2)
 	assert_eq(sub_commands[0].type, "bg")
 	assert_eq(sub_commands[1].type, "stage_layer")
+
+
+func test_parallel_block_with_dialogue_is_rejected_atomically() -> void:
+	var source = """@scene start
+@parallel
+@bg bg_school
+「blocking」
+@end"""
+	var data = DslParser.parse(DslLexer.tokenize(source), "t")
+
+	assert_true(_has_diagnostic(
+		data, "error", "blocking 'dialogue' command is not allowed"))
+	assert_eq(data.scenes[0].commands, [],
+		"no sibling operation from an invalid parallel block may compile")
+
+
+func test_parallel_block_with_click_wait_is_rejected_atomically() -> void:
+	var source = """@scene start
+@parallel
+@bg bg_school
+@wait click
+@end"""
+	var data = DslParser.parse(DslLexer.tokenize(source), "t")
+
+	assert_true(_has_diagnostic(
+		data, "error", "blocking 'wait' command is not allowed"))
+	assert_eq(data.scenes[0].commands, [])
+
+
+func _has_diagnostic(data: ScenarioData, level: String, text: String) -> bool:
+	for diagnostic in data.diagnostics:
+		if (
+			diagnostic.get("level") == level
+			and text in String(diagnostic.get("message", ""))
+		):
+			return true
+	return false

@@ -1594,6 +1594,40 @@ func test_advance_dispatch_does_not_invalidate_a_synchronously_shown_replacement
 		"the old transition must not retire a synchronously shown generation")
 
 
+func test_owned_advance_notification_cannot_finalize_another_activation() -> void:
+	var outer := DialogueActivation.new()
+	var inner := DialogueActivation.new()
+	_presenter._current_dialogue_activation = outer
+	_presenter._is_typing = true
+	assert_true(inner.advance())
+
+	SignalBus.emit_dialogue_advance_committed(inner)
+
+	assert_true(_presenter._is_typing,
+		"a committed inner id cannot retire the pending outer presentation")
+	assert_same(_presenter._current_dialogue_activation, outer)
+	outer.abort()
+
+
+func test_newest_queued_request_aborts_displaced_activation() -> void:
+	var first := DialogueActivation.new()
+	var latest := DialogueActivation.new()
+	_presenter._presentation_dispatch_depth = 1
+	SignalBus.emit_dialogue_request(DialogueRequest.new(
+		"", [_segment("Dropped")], "adv", {}, false, "", {}, [],
+		"dropped", 1, first))
+	SignalBus.emit_dialogue_request(DialogueRequest.new(
+		"", [_segment("Latest")], "adv", {}, false, "", {}, [],
+		"latest", 2, latest))
+	_presenter._presentation_dispatch_depth = 0
+
+	assert_eq(first.get_outcome(), DialogueActivation.Outcome.ABORTED,
+		"a request removed from the UI queue must resolve its Handler")
+	assert_true(latest.is_pending())
+	assert_eq(_presenter._queued_dialogue_requests.size(), 1)
+	latest.abort()
+
+
 func test_finalize_signal_cannot_retire_a_synchronously_shown_replacement() -> void:
 	_presenter._char_interval = 0.05
 	SignalBus.emit_show_dialogue(

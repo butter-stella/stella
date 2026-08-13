@@ -124,6 +124,7 @@ func test_headless_dialogue_marks_only_commands_advanced_normally() -> void:
 	engine.registry = registry
 	engine.load_scenario(scenario)
 	var context := engine.context
+	var scenario_identity := scenario.get_read_identity()
 	var shown_texts: Array[String] = []
 	var requests: Array[DialogueRequest] = []
 	var on_dialogue := func(request: DialogueRequest) -> void:
@@ -136,7 +137,7 @@ func test_headless_dialogue_marks_only_commands_advanced_normally() -> void:
 	assert_eq(shown_texts, ["First"])
 	assert_eq(context.current_command_index, 0)
 	assert_false(read_flags.is_dialogue_read(
-		"id:headless_read_flags", "headless_read_flags", "start", 0, 0))
+		scenario_identity, "headless_read_flags", "start", 0, 0))
 
 	assert_true(requests[0].advance())
 	await get_tree().process_frame
@@ -144,9 +145,9 @@ func test_headless_dialogue_marks_only_commands_advanced_normally() -> void:
 	assert_eq(context.current_command_index, 1,
 		"the engine advances to the next command before dispatching it")
 	assert_true(read_flags.is_dialogue_read(
-		"id:headless_read_flags", "headless_read_flags", "start", 0, 0))
+		scenario_identity, "headless_read_flags", "start", 0, 0))
 	assert_false(read_flags.is_dialogue_read(
-		"id:headless_read_flags", "headless_read_flags", "start", 1, 1),
+		scenario_identity, "headless_read_flags", "start", 1, 1),
 		"the currently waiting command is not read yet")
 
 	# Runtime cancellation replaces the active context before waking the handler.
@@ -154,7 +155,7 @@ func test_headless_dialogue_marks_only_commands_advanced_normally() -> void:
 	SignalBus.engine_abort_requested.emit()
 	await get_tree().process_frame
 	assert_false(read_flags.is_dialogue_read(
-		"id:headless_read_flags", "headless_read_flags", "start", 1, 1),
+		scenario_identity, "headless_read_flags", "start", 1, 1),
 		"aborting the second command must leave it unread")
 	SignalBus.dialogue_requested.disconnect(on_dialogue)
 

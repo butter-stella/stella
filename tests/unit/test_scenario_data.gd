@@ -179,6 +179,33 @@ func test_read_identity_uses_simplified_full_source_path() -> void:
 	assert_eq(data.get_read_identity(), "path:res://route_a/main.stla")
 
 
+func test_content_change_invalidates_position_based_read_identity() -> void:
+	var original := DslParser.parse(
+		DslLexer.tokenize("@scene start\n「B」"),
+		"main",
+		"res://story/main.stla",
+	)
+	var updated := DslParser.parse(
+		DslLexer.tokenize("@scene start\n「A」\n「B」"),
+		"main",
+		"res://story/main.stla",
+	)
+	original.assign_command_uids()
+	updated.assign_command_uids()
+	var flags := ReadFlagManager.new()
+	flags.mark_dialogue_read(
+		original.get_read_identity(), "start", original.scenes[0].commands[0].uid)
+
+	assert_ne(original.get_read_identity(), updated.get_read_identity())
+	assert_false(flags.is_dialogue_read(
+		updated.get_read_identity(),
+		"main",
+		"start",
+		updated.scenes[0].commands[0].uid,
+		0,
+	), "an inserted command must fail closed instead of inheriting B's old flag")
+
+
 # ─── ChapterData (issue #97) ───
 
 func test_chapter_data_default_fields():

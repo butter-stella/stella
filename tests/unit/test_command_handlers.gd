@@ -94,6 +94,60 @@ func test_dialogue_handler_abort_does_not_mark_read() -> void:
 
 	assert_false(_dialogue_is_read(),
 		"an aborted dialogue has not advanced and must stay unread")
+	assert_true(_context.is_finished,
+		"request.abort() cancels the authored command instead of skipping it")
+
+
+func test_dialogue_commit_precedes_compatibility_advance_notification() -> void:
+	var handler := DialogueHandler.new(_read_flags)
+	var cmd := _build_cmd("dialogue", {"text": "Committed first"})
+	cmd.uid = 17
+	var read_during_notification := [false]
+	var on_advance := func() -> void:
+		read_during_notification[0] = _read_flags.is_dialogue_read(
+			"id:test", "test", "start", 17, 0)
+	_bus.advance_requested.connect(on_advance)
+	_bus.dialogue_requested.connect(
+		func(request: DialogueRequest): request.advance(),
+		CONNECT_ONE_SHOT,
+	)
+
+	await handler.execute(cmd, _context)
+	_bus.advance_requested.disconnect(on_advance)
+
+	assert_true(read_during_notification[0],
+		"legacy listeners may run only after owner validation and durable commit")
+
+
+func test_compatibility_listener_reentry_cannot_steal_first_commit() -> void:
+	var handler := DialogueHandler.new(_read_flags)
+	var first := _build_cmd("dialogue", {"text": "First"})
+	first.uid = 20
+	var second := _build_cmd("dialogue", {"text": "Second"})
+	second.uid = 21
+	var requests: Array[DialogueRequest] = []
+	var on_request := func(request: DialogueRequest) -> void:
+		requests.append(request)
+		if requests.size() == 1:
+			request.advance()
+	var reentered := [false]
+	var on_advance := func() -> void:
+		if reentered[0]:
+			return
+		reentered[0] = true
+		handler.execute(second, _context)
+	_bus.dialogue_requested.connect(on_request)
+	_bus.advance_requested.connect(on_advance)
+
+	await handler.execute(first, _context)
+
+	assert_true(_read_flags.is_dialogue_read(
+		"id:test", "test", "start", 20, 0))
+	assert_eq(requests.size(), 2)
+	assert_true(requests[1].get_activation().is_pending())
+	requests[1].abort()
+	_bus.dialogue_requested.disconnect(on_request)
+	_bus.advance_requested.disconnect(on_advance)
 
 
 func test_dialogue_handler_marks_the_position_captured_before_await() -> void:

@@ -18,7 +18,7 @@ _input:
   1. 鼠标下有交互控件（Button/Slider）？→ return，让 GUI 处理
   2. 打字中？→ 完成打字 + set_input_as_handled（消费事件）
   3. UI 隐藏？→ 恢复 UI + set_input_as_handled
-  4. 否则 → 当前 `DialogueRequest.advance()`（推进该次命令激活）
+  4. 否则 → 当前 pending `DialogueRequest.advance()`；若没有 pending owner，广播兼容 advance（用于 `@wait click`）
 
 _unhandled_input:
   键盘（空格/回车/Ctrl）→ UI 隐藏时先恢复并消费按键，否则正常处理
@@ -65,4 +65,4 @@ Presenter 同时观察 `AutoPlayController` / `SkipController` 的状态变化�
 
 AVG 标准行为：打字未完成时点击 = 完成打字（不推进），打字完成后点击 = 推进。
 
-实现：`_input` 调用 Presenter 的 `complete_typewriter()`，由 Presenter 同步取消旧的字符/等待协程、应用最终头像状态，并把当前对话剩余的 `@combine` 舞台操作按声明顺序归约后以 cut 投影。成功后输入层再用 `set_input_as_handled()` 消费事件，因此既不会同时推进，也不会留下跨到下一句的 Tween。仅完成打字不会把该行标为已读；`DialogueHandler` 在当前 request 的 `DialogueActivation` 被正常确认、且 engine/context owner 仍有效后写入已读记录，中止则保持未读，因此无界面执行也遵守相同语义。Presenter 的输入、Auto 与 Skip 都调用当前 `DialogueRequest.advance()`；SignalBus 随后广播无参数 `advance_requested` 作为表现层兼容通知，用于收束舞台与语音。扩展直接广播该旧信号不会完成任何剧情 waiter，也不会误推进另一个 activation。
+实现：`_input` 调用 Presenter 的 `complete_typewriter()`，由 Presenter 同步取消旧的字符/等待协程、应用最终头像状态，并把当前对话剩余的 `@combine` 舞台操作按声明顺序归约后以 cut 投影。成功后输入层再用 `set_input_as_handled()` 消费事件，因此既不会同时推进，也不会留下跨到下一句的 Tween。仅完成打字不会把该行标为已读；`DialogueHandler` 在当前 request 的 `DialogueActivation` 被正常确认、且 engine/context owner 仍有效后写入已读记录，中止则保持未读并终止当前 context，因此无界面执行也遵守相同语义。Presenter 的输入、Auto 与 Skip 都调用当前 `DialogueRequest.advance()`；Core 提交已读后先发送带 activation identity 的内建完成事件，再广播无参数 `advance_requested` 作为扩展/音频兼容通知。若 Presenter 没有 pending dialogue activation，输入层改发该无参通知以解除 `@wait click`。扩展直接广播旧信号不会完成任何 DialogueHandler waiter，也不会误推进另一个 activation。

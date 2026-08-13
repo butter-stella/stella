@@ -6,6 +6,9 @@ extends Node
 ## Canonical internal request. Core and built-in presenters consume this typed,
 ## self-contained payload; show_dialogue below remains the extension adapter.
 signal dialogue_requested(request: DialogueRequest)
+## Core emits this only after the owning DialogueHandler has committed the
+## activation. Built-in presentation validates the id before retiring UI state.
+signal dialogue_advance_committed(activation_id: int)
 ## Presentation may enrich the current typed request with the names of active
 ## custom RichTextEffects. Runtime already stored the canonical entry directly;
 ## this value-only event lets it recompute that same entry without retaining a
@@ -30,8 +33,7 @@ signal advance_dispatch_started(serial: int)
 var _dialogue_presentation_stack: Array[Dictionary] = []
 var _show_dialogue_dispatch_serial: int = 0
 var _dialogue_request_serial: int = 0
-var _dialogue_request_dispatch_depth: int = 0
-var _pending_dialogue_advance_notifications: Array[int] = []
+var _owned_dialogue_advance_echo_pending: int = 0
 var _last_raw_show_dispatch_serial: int = -1
 var _last_raw_show_segments: Variant = null
 var _advance_dispatch_serial: int = 0
@@ -107,21 +109,8 @@ func emit_dialogue_request(request: DialogueRequest) -> void:
 		request.get_scene_id(),
 		request.get_legacy_command_index(),
 	)
-	var activation := canonical.get_activation()
-	if activation != null:
-		if activation.is_pending():
-			activation.resolved.connect(
-				_on_dialogue_activation_resolved.bind(
-					activation.get_instance_id()
-				),
-				CONNECT_ONE_SHOT,
-			)
-		else:
-			_on_dialogue_activation_resolved(
-				activation.get_outcome(), activation.get_instance_id())
 	# Built-in state observes an immutable snapshot before the mutable public
 	# compatibility signal is delivered to extensions.
-	_dialogue_request_dispatch_depth += 1
 	dialogue_requested.emit(canonical)
 	var compatibility_segments := canonical.get_segments()
 	_dialogue_presentation_stack.append({
@@ -141,30 +130,21 @@ func emit_dialogue_request(request: DialogueRequest) -> void:
 	show_dialogue.emit(
 		canonical.get_character(), compatibility_segments, canonical.get_mode())
 	_dialogue_presentation_stack.pop_back()
-	_dialogue_request_dispatch_depth -= 1
-	if _dialogue_request_dispatch_depth == 0:
-		_flush_dialogue_advance_notifications()
 
 
-func _on_dialogue_activation_resolved(
-	outcome: DialogueActivation.Outcome,
-	activation_id: int,
-) -> void:
-	if outcome != DialogueActivation.Outcome.ADVANCED:
-		return
-	if _dialogue_request_dispatch_depth > 0:
-		_pending_dialogue_advance_notifications.append(activation_id)
-		return
+## Publish presentation completion only after Core has validated ownership and
+## committed durable read state. The typed event preserves the exact owner;
+## advance_requested remains a notification for extensions and AudioPresenter.
+func emit_dialogue_advance_committed(activation: DialogueActivation) -> bool:
+	if (
+		activation == null
+		or activation.get_outcome() != DialogueActivation.Outcome.ADVANCED
+	):
+		return false
+	dialogue_advance_committed.emit(activation.get_instance_id())
+	_owned_dialogue_advance_echo_pending += 1
 	advance_requested.emit()
-
-
-func _flush_dialogue_advance_notifications() -> void:
-	if _pending_dialogue_advance_notifications.is_empty():
-		return
-	var pending := _pending_dialogue_advance_notifications.duplicate()
-	_pending_dialogue_advance_notifications.clear()
-	for _activation_id in pending:
-		advance_requested.emit()
+	return true
 
 
 ## Compatibility notification emitter. Direct advance_requested.emit() remains
@@ -520,6 +500,9 @@ func _on_show_dialogue_dispatch_started(
 
 
 func _on_advance_requested_dispatch_started() -> void:
+	if _owned_dialogue_advance_echo_pending > 0:
+		_owned_dialogue_advance_echo_pending -= 1
+		return
 	_advance_dispatch_serial += 1
 	advance_dispatch_started.emit(_advance_dispatch_serial)
 

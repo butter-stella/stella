@@ -51,8 +51,8 @@ func is_runtime_owner_current() -> bool:
 
 
 ## Only one blocking dialogue may own a context at a time. A reentrant or
-## malformed second activation explicitly aborts the first instead of letting
-## one acknowledgement complete both commands.
+## malformed second activation is rejected instead of stealing ownership from
+## the command that the engine is still executing.
 func install_dialogue_activation(activation: DialogueActivation) -> bool:
 	if activation == null:
 		return false
@@ -63,7 +63,8 @@ func install_dialogue_activation(activation: DialogueActivation) -> bool:
 		_active_dialogue_activation != null
 		and _active_dialogue_activation != activation
 	):
-		_active_dialogue_activation.abort()
+		activation.abort()
+		return false
 	_active_dialogue_activation = activation
 	return true
 

@@ -127,7 +127,7 @@ func test_engine_executes_multiple_commands_in_order():
 	assert_eq(handler.executed[2].get_string("text"), "Third")
 
 
-func test_parallel_dialogues_have_distinct_authored_read_identities() -> void:
+func test_parallel_handler_rejects_blocking_dialogue_children_atomically() -> void:
 	var read_flags := ReadFlagManager.new()
 	var dialogue_handler := DialogueHandler.new(read_flags)
 	var parallel_handler := ParallelHandler.new()
@@ -139,25 +139,41 @@ func test_parallel_dialogues_have_distinct_authored_read_identities() -> void:
 	var parallel := _build_cmd("parallel", {"commands": [first, second]})
 	var scenario := _build_scenario([{"id": "start", "commands": []}])
 	scenario.scenes[0].commands.append(parallel)
-	var requests: Array[DialogueRequest] = []
-	var capture := func(request: DialogueRequest): requests.append(request)
-	SignalBus.dialogue_requested.connect(capture)
-
 	_engine.load_scenario(scenario)
-	_engine.run()
-	assert_eq(requests.size(), 1)
+	await _engine.run()
+
+	assert_push_warning("ParallelHandler: blocking 'dialogue' child is not allowed")
 	assert_ne(first.uid, second.uid)
-	requests[0].advance()
-	await get_tree().process_frame
-	assert_eq(requests.size(), 2)
-	assert_true(read_flags.is_dialogue_read(
+	assert_false(read_flags.is_dialogue_read(
 		"id:test", "test", "start", first.uid, 0))
 	assert_false(read_flags.is_dialogue_read(
-		"id:test", "test", "start", second.uid, 0),
-		"the first nested dialogue must not pre-mark its sibling")
-	requests[1].abort()
-	_engine.stop()
-	SignalBus.dialogue_requested.disconnect(capture)
+		"id:test", "test", "start", second.uid, 0))
+
+
+func test_dialogue_request_abort_stops_engine_before_next_command() -> void:
+	var read_flags := ReadFlagManager.new()
+	_registry.register(DialogueHandler.new(read_flags))
+	var scenario := _build_scenario([{
+		"id": "start",
+		"commands": [
+			{"type": "dialogue", "params": {"text": "First"}},
+			{"type": "dialogue", "params": {"text": "Must not run"}},
+		],
+	}])
+	var shown: Array[String] = []
+	var on_request := func(request: DialogueRequest) -> void:
+		shown.append(request.get_segments()[0].get("text", ""))
+		request.abort()
+	SignalBus.dialogue_requested.connect(on_request)
+
+	_engine.load_scenario(scenario)
+	await _engine.run()
+	SignalBus.dialogue_requested.disconnect(on_request)
+
+	assert_eq(shown, ["First"])
+	assert_eq(_engine.context.current_command_index, 0,
+		"abort must not look like successful command completion")
+	assert_true(_engine.context.is_finished)
 
 
 func test_engine_advances_to_next_scene():

@@ -7,6 +7,10 @@ var title: String = ""
 ## scenarios keep their full resource path so equal basenames in different
 ## directories never share read history.
 var source_path: String = ""
+## Semantic-token fingerprint for fail-closed read history. Command UIDs are
+## deterministic only within one parsed source version; changing authored
+## content must therefore produce a different persistent scenario identity.
+var content_fingerprint: String = ""
 var scenes: Array = []  # Array[SceneData]
 ## Chapters in declaration order (issue #97). Each chapter owns one or more
 ## scenes. Populated by DslParser; empty for scenarios constructed manually
@@ -37,9 +41,12 @@ func get_dialogue_profile_provenance(profile_name: String) -> Dictionary:
 
 
 func get_read_identity() -> String:
+	var source_identity := "id:%s" % id
 	if not source_path.is_empty():
-		return "path:%s" % source_path.simplify_path()
-	return "id:%s" % id
+		source_identity = "path:%s" % source_path.simplify_path()
+	if not content_fingerprint.is_empty():
+		return "%s#content:%s" % [source_identity, content_fingerprint]
+	return source_identity
 
 
 func get_scene(scene_id: String) -> SceneData:

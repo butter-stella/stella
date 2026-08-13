@@ -129,10 +129,11 @@ func _get_dialogue():
 
 func _request_dialogue_advance(dialogue) -> void:
 	if dialogue != null and dialogue.has_method("request_current_dialogue_advance"):
-		dialogue.request_current_dialogue_advance()
-		return
+		if bool(dialogue.request_current_dialogue_advance()):
+			return
 	# Compatibility for custom scenes that still expose only the legacy global
-	# input notification. New DialogueHandler commands require request.advance().
+	# input notification, and for non-dialogue blockers such as @wait click.
+	# New DialogueHandler commands require request.advance().
 	SignalBus.emit_advance_requested()
 
 
