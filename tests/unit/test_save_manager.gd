@@ -47,6 +47,9 @@ class MockProvider:
 func _make_validation_scenario() -> ScenarioData:
 	var data := ScenarioData.new()
 	data.id = "save_validation"
+	data.source_identity = ScenarioData.make_source_identity(
+		"res://tests/save_validation.stla",
+	)
 	var scene := SceneData.new()
 	scene.id = "start"
 	scene.commands = [CommandData.new(), CommandData.new()]
@@ -58,6 +61,9 @@ func _make_valid_save_snapshot() -> Dictionary:
 	return {
 		"scenario_context": {
 			"scenario_id": "save_validation",
+			"scenario_source_identity": ScenarioData.make_source_identity(
+				"res://tests/save_validation.stla",
+			),
 			"scene_index": 0,
 			"command_index": 1,
 			"is_finished": false,
@@ -224,6 +230,45 @@ func test_scenario_aware_read_rejects_semantically_invalid_position():
 	# Runtime transaction always supplies the destination ScenarioData.
 	assert_not_null(_manager.read_save_data(1))
 	assert_null(_manager.read_save_data(1, _make_validation_scenario()))
+
+
+func test_scenario_identity_distinguishes_same_basename_and_rejects_legacy():
+	var scenario_a := _make_validation_scenario()
+	scenario_a.id = "shared"
+	scenario_a.source_identity = ScenarioData.make_source_identity(
+		"res://tests/review_a/shared.stla",
+	)
+	var scenario_b := _make_validation_scenario()
+	scenario_b.id = "shared"
+	scenario_b.source_identity = ScenarioData.make_source_identity(
+		"res://tests/review_b/shared.stla",
+	)
+	var snapshot := _make_valid_save_snapshot()
+	snapshot["scenario_context"]["scenario_id"] = "shared"
+	snapshot["scenario_context"]["scenario_source_identity"] = (
+		scenario_a.source_identity
+	)
+
+	assert_true(scenario_a.source_identity.begins_with(
+		"stella-source-v1:sha256:",
+	))
+	assert_false(scenario_a.source_identity.contains("review_a"),
+		"save identity must not copy the authored source path")
+	assert_eq(
+		scenario_a.source_identity,
+		ScenarioData.make_source_identity(
+			"res://tests/review_a/../review_a/shared.stla",
+		),
+		"equivalent normalized paths must share an identity",
+	)
+	assert_true(_manager.validate_data_for_scenario(snapshot, scenario_a))
+	assert_false(_manager.validate_data_for_scenario(snapshot, scenario_b),
+		"same-basename authored sources must not share persisted state")
+
+	var legacy := snapshot.duplicate(true)
+	legacy["scenario_context"].erase("scenario_source_identity")
+	assert_false(_manager.validate_data_for_scenario(legacy, scenario_a),
+		"pre-v1 saves require explicit migration and must fail closed")
 
 
 func test_save_validation_covers_builtin_provider_field_types_atomically():

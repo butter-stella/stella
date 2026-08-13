@@ -320,6 +320,8 @@ StellaRuntime.delete_save(slot_id)   # 删除存档
 StellaRuntime.get_save_list()        # 获取所有有存档的槽位
 ```
 
+Runtime 会把规范化剧本来源的版本化 identity 写入存档，并在 `load_game()`、`quick_load()`、`continue_from_save()` 和 `continue_game()` 导航前校验它。这样不同目录下同为 `shared.stla` 的剧本也不会串档，存档 JSON 中不会写入私有来源路径。缺少该 identity 的旧版存档会 fail-closed；如果产品必须保留旧档，请在升级发布前由宿主迁移工具读取旧 JSON、根据产品自己的旧版本映射确认目标剧本，再显式写入新 identity，不要仅按文件 basename 自动猜测。
+
 ### 播放控制
 
 ```gdscript

@@ -992,25 +992,39 @@ func _title_scene_is_enterable(scene: PackedScene) -> bool:
 		return false
 	var pending: Array[Dictionary] = [{
 		"scene": scene,
-		"skip_root_script": false,
+		"script_overrides": {},
 	}]
 	var visited: Dictionary = {}
 	while not pending.is_empty():
 		var entry: Dictionary = pending.pop_back()
 		var current: PackedScene = entry["scene"]
-		var skip_root_script: bool = entry["skip_root_script"]
+		var incoming_script_overrides: Dictionary = entry["script_overrides"]
 		if not current.can_instantiate():
 			return false
+		# SceneState exposes each inherited layer independently. Build the
+		# effective script values by full relative NodePath so an outer layer's
+		# `Child/script = null` (or safe replacement) shadows the base child's
+		# serialized script just as PackedScene.instantiate() does.
+		var effective_script_overrides := _title_scene_script_properties(
+			current.get_state(),
+		)
+		for node_path: String in incoming_script_overrides:
+			effective_script_overrides[node_path] = (
+				incoming_script_overrides[node_path]
+			)
 		var identity := current.resource_path
 		if identity == "":
 			identity = str(current.get_instance_id())
-		identity += ":skip_root=%s" % skip_root_script
+		identity += ":scripts=%s" % _title_script_overrides_identity(
+			effective_script_overrides,
+		)
 		if visited.has(identity):
 			continue
 		visited[identity] = true
 
 		var state := current.get_state()
 		for node_index in state.get_node_count():
+			var node_path := String(state.get_node_path(node_index))
 			var nested_scene := state.get_node_instance(node_index)
 			var node_native_type := _title_node_native_type(
 				state,
@@ -1025,40 +1039,75 @@ func _title_scene_is_enterable(scene: PackedScene) -> bool:
 			if nested_scene != null:
 				pending.append({
 					"scene": nested_scene,
-					"skip_root_script": (
-						(skip_root_script and node_index == 0)
-						or _title_node_has_script_property(state, node_index)
+					"script_overrides": _title_nested_script_overrides(
+						effective_script_overrides,
+						node_path,
 					),
 				})
-			for property_index in state.get_node_property_count(node_index):
-				if state.get_node_property_name(node_index, property_index) != &"script":
-					continue
-				if skip_root_script and node_index == 0:
-					continue
-				var script_value: Variant = state.get_node_property_value(
-					node_index,
-					property_index,
-				)
-				# An inherited scene may explicitly clear its inherited root script
-				# with `script = null`. Missing external scripts are rejected earlier
-				# by the recursive dependency preflight, so null is safe here.
-				if script_value == null:
-					continue
-				if not script_value is Script:
-					return false
-				if not _title_script_is_enterable(
-					script_value as Script,
-					node_native_type,
-				):
-					return false
+			if not effective_script_overrides.has(node_path):
+				continue
+			var script_value: Variant = effective_script_overrides[node_path]
+			# An inherited scene may explicitly clear any inherited node script
+			# with `script = null`. Missing external scripts are rejected earlier
+			# by the recursive dependency preflight, so null is safe here.
+			if script_value == null:
+				continue
+			if not script_value is Script:
+				return false
+			if not _title_script_is_enterable(
+				script_value as Script,
+				node_native_type,
+			):
+				return false
 	return true
 
 
-func _title_node_has_script_property(state: SceneState, node_index: int) -> bool:
-	for property_index in state.get_node_property_count(node_index):
-		if state.get_node_property_name(node_index, property_index) == &"script":
-			return true
-	return false
+func _title_scene_script_properties(state: SceneState) -> Dictionary:
+	var result: Dictionary = {}
+	for node_index in state.get_node_count():
+		for property_index in state.get_node_property_count(node_index):
+			if state.get_node_property_name(node_index, property_index) != &"script":
+				continue
+			result[String(state.get_node_path(node_index))] = (
+				state.get_node_property_value(node_index, property_index)
+			)
+	return result
+
+
+func _title_nested_script_overrides(
+	script_overrides: Dictionary,
+	nested_node_path: String,
+) -> Dictionary:
+	if nested_node_path == ".":
+		return script_overrides.duplicate()
+	var result: Dictionary = {}
+	var child_prefix := nested_node_path + "/"
+	for override_path: String in script_overrides:
+		if override_path == nested_node_path:
+			result["."] = script_overrides[override_path]
+		elif override_path.begins_with(child_prefix):
+			result[override_path.substr(child_prefix.length())] = (
+				script_overrides[override_path]
+			)
+	return result
+
+
+func _title_script_overrides_identity(script_overrides: Dictionary) -> String:
+	var paths: Array = script_overrides.keys()
+	paths.sort()
+	var parts := PackedStringArray()
+	for override_path: String in paths:
+		var value: Variant = script_overrides[override_path]
+		var value_identity := "null"
+		if value is Script:
+			var script := value as Script
+			value_identity = script.resource_path
+			if value_identity.is_empty():
+				value_identity = str(script.get_instance_id())
+		elif value != null:
+			value_identity = "invalid:%d" % typeof(value)
+		parts.append("%s=%s" % [override_path, value_identity])
+	return "|".join(parts).sha256_text()
 
 
 func _title_node_native_type(
@@ -1267,18 +1316,43 @@ func _read_text_resource_dependencies(path: String) -> Dictionary:
 		return {"ok": false, "dependencies": []}
 	if bytes.is_empty():
 		return {"ok": false, "dependencies": []}
-	if bytes[0] != 0x5B: # '['; exported binary-token resources use RSCC/RSRC.
+	# Only explicit Godot binary resource magic may enter the structured loader
+	# path. A malformed text file that starts with whitespace/comment data must
+	# stay in the side-effect-free parser below; otherwise ResourceLoader can
+	# echo its private source tokens and paths while reporting parse failures.
+	if _resource_bytes_have_binary_magic(bytes):
 		return _structured_resource_dependencies(path)
 	if bytes.has(0):
 		return {"ok": false, "dependencies": []}
-	var text := bytes.get_string_from_utf8()
-	if text.to_utf8_buffer() != bytes:
+	var text_bytes := bytes
+	if (
+		bytes.size() >= 3
+		and bytes[0] == 0xEF
+		and bytes[1] == 0xBB
+		and bytes[2] == 0xBF
+	):
+		text_bytes = bytes.slice(3)
+	var text := text_bytes.get_string_from_utf8()
+	if text.to_utf8_buffer() != text_bytes:
 		return {"ok": false, "dependencies": []}
+	if not text.is_empty() and text.unicode_at(0) == 0xFEFF:
+		text = text.substr(1)
 	var lines := text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
 	if lines.is_empty():
 		return {"ok": false, "dependencies": []}
 	var expected_header := "gd_scene" if extension == "tscn" else "gd_resource"
-	var header := _parse_resource_tag(lines[0])
+	var header_line_index := -1
+	var header_text := ""
+	for line_index in lines.size():
+		var candidate := _strip_resource_comment(lines[line_index]).strip_edges()
+		if candidate.is_empty():
+			continue
+		header_line_index = line_index
+		header_text = candidate
+		break
+	if header_line_index < 0:
+		return {"ok": false, "dependencies": []}
+	var header := _parse_resource_tag(header_text)
 	if not header.get("ok", false) or header.get("name", "") != expected_header:
 		return {"ok": false, "dependencies": []}
 
@@ -1290,7 +1364,7 @@ func _read_text_resource_dependencies(path: String) -> Dictionary:
 		return {"ok": false, "dependencies": []}
 	var saw_body_tag := false
 	var assignment_state: Dictionary = {}
-	for line_index in range(1, lines.size()):
+	for line_index in range(header_line_index + 1, lines.size()):
 		var raw_line: String = lines[line_index]
 		if not assignment_state.is_empty():
 			assignment_state["value_parts"].append(raw_line)
@@ -1365,6 +1439,19 @@ func _read_text_resource_dependencies(path: String) -> Dictionary:
 		"ok": saw_body_tag and assignment_state.is_empty(),
 		"dependencies": dependencies,
 	}
+
+
+func _resource_bytes_have_binary_magic(bytes: PackedByteArray) -> bool:
+	if bytes.size() < 4:
+		return false
+	# Godot binary resources begin with RSCC (compressed) or RSRC. Do not infer
+	# binary format from an arbitrary non-'[' first byte.
+	return (
+		bytes[0] == 0x52 # R
+		and bytes[1] == 0x53 # S
+		and bytes[2] in [0x43, 0x52] # C/R
+		and bytes[3] == 0x43 # C
+	)
 
 
 func _append_resource_tag_references(
@@ -1990,6 +2077,7 @@ func _parse_scenario(scenario_path: String) -> ScenarioData:
 	var tokens = DslLexer.tokenize(source)
 	var scenario_id = scenario_path.get_file().get_basename()
 	var data = DslParser.parse(tokens, scenario_id, scenario_path)
+	data.source_identity = ScenarioData.make_source_identity(scenario_path)
 	# Surface parser diagnostics (issue #97). DslParser is intentionally silent
 	# about console reporting; this is the integration point where parse-time
 	# errors/warnings reach the developer.

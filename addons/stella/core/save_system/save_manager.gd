@@ -297,15 +297,22 @@ func _scenario_snapshot_is_valid(
 	var snapshot: Dictionary = raw_snapshot
 	if not snapshot.has("scene_index") or not snapshot.has("command_index"):
 		return false
-	if snapshot.has("scenario_id"):
-		if not snapshot["scenario_id"] is String:
-			return false
-		var saved_scenario_id: String = snapshot["scenario_id"]
-		if (
-			not saved_scenario_id.is_empty()
-			and saved_scenario_id != scenario_data.id
-		):
-			return false
+	# Runtime saves from before source identity v1 cannot be safely mapped to a
+	# target when two authored files share a basename. Fail closed instead of
+	# guessing; generic SaveManager reads without ScenarioData remain available
+	# to migration tooling that wants to inspect legacy JSON explicitly.
+	if (
+		not snapshot.has("scenario_id")
+		or not snapshot["scenario_id"] is String
+		or String(snapshot["scenario_id"]).is_empty()
+		or snapshot["scenario_id"] != scenario_data.id
+		or not snapshot.has("scenario_source_identity")
+		or not snapshot["scenario_source_identity"] is String
+		or String(snapshot["scenario_source_identity"]).is_empty()
+		or scenario_data.source_identity.is_empty()
+		or snapshot["scenario_source_identity"] != scenario_data.source_identity
+	):
+		return false
 	if not _scenario_position_is_valid(snapshot, scenario_data):
 		return false
 	if snapshot.has("is_finished") and not snapshot["is_finished"] is bool:

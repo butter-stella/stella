@@ -27,6 +27,10 @@ const TEST_INVALID_CONSTRUCTOR_TITLE_PATH = (
 const TEST_INVALID_PACKED_CONSTRUCTOR_TITLE_PATH = (
 	"user://test_invalid_packed_constructor_title.tscn"
 )
+const TEST_PREAMBLE_TITLE_PATH = "user://test_preamble_title.tscn"
+const TEST_INVALID_PREAMBLE_TITLE_PATH = (
+	"user://test_invalid_preamble_title.tscn"
+)
 const TEST_DEGRADED_GAME_PATH = "user://test_degraded_game.tscn"
 const UID_DEPENDENCY_SCRIPT = (
 	"res://tests/fixtures/pck_smoke/export_probe_runner.gd"
@@ -51,6 +55,8 @@ const TEST_CONFIG_PATHS = [
 	TEST_UNDECLARED_SUB_TITLE_PATH,
 	TEST_INVALID_CONSTRUCTOR_TITLE_PATH,
 	TEST_INVALID_PACKED_CONSTRUCTOR_TITLE_PATH,
+	TEST_PREAMBLE_TITLE_PATH,
+	TEST_INVALID_PREAMBLE_TITLE_PATH,
 	TEST_DEGRADED_GAME_PATH,
 	"user://test_stella.cfg",
 	"user://test_stella_partial.cfg",
@@ -328,15 +334,24 @@ func test_title_resolver_rejects_empty_and_required_constructor_scenes():
 
 
 func test_title_resolver_accepts_inherited_scene_that_explicitly_clears_script():
-	var cleared_path := (
-		"res://tests/fixtures/startup/cleared_inherited_script_title.tscn"
-	)
-	_runtime.title_scene_path = cleared_path
-	var resolved: PackedScene = _runtime.resolve_title_scene()
-
-	assert_not_null(resolved)
-	assert_eq(resolved.resource_path, cleared_path)
-	assert_eq(_runtime.title_scene_path, cleared_path)
+	for cleared_path: String in [
+		"res://tests/fixtures/startup/cleared_inherited_script_title.tscn",
+		(
+			"res://tests/fixtures/startup/"
+			+ "cleared_inherited_child_script_title.tscn"
+		),
+	]:
+		_runtime.title_scene_path = cleared_path
+		var resolved: PackedScene = _runtime.resolve_title_scene()
+		assert_not_null(resolved)
+		assert_eq(resolved.resource_path, cleared_path)
+		assert_eq(_runtime.title_scene_path, cleared_path)
+		var instance := resolved.instantiate()
+		assert_not_null(instance)
+		if instance != null:
+			if instance.has_node("Child"):
+				assert_null(instance.get_node("Child").get_script())
+			instance.free()
 	assert_engine_error_count(0)
 
 
@@ -415,6 +430,43 @@ func test_scene_preflight_rejects_undeclared_refs_and_invalid_constructor_safely
 		assert_push_error("falling back to the built-in title scene")
 	assert_engine_error_count(0,
 		"safe preflight must reject private tokens before Godot parses them")
+
+
+func test_scene_preflight_handles_legal_preamble_without_parser_fallback():
+	var valid_contents := PackedByteArray([0xEF, 0xBB, 0xBF])
+	valid_contents.append_array(
+		(
+			"\r\n; legal leading ConfigFile-style resource comment\r\n\r\n"
+			+ "[gd_scene format=3]\r\n\r\n"
+			+ "[node name=\"PreambleTitle\" type=\"Node\"]\r\n"
+		).to_utf8_buffer()
+	)
+	_write_project_config_bytes(TEST_PREAMBLE_TITLE_PATH, valid_contents)
+	var dependency_result: Dictionary = (
+		_runtime._read_text_resource_dependencies(TEST_PREAMBLE_TITLE_PATH)
+	)
+	assert_true(dependency_result.get("ok", false))
+
+	_write_raw_project_config(
+		TEST_INVALID_PREAMBLE_TITLE_PATH,
+		(
+			"\n; legal leading comment must not select ResourceLoader fallback\n\n"
+			+ "[gd_scene format=3]\n\n"
+			+ "[node name=\"InvalidPreambleTitle\" type=\"Node\"]\n"
+			+ "metadata/private = PRIVATE_LEADING_PREAMBLE_SENTINEL\n"
+		),
+	)
+	assert_false(
+		_runtime._read_text_resource_dependencies(
+			TEST_INVALID_PREAMBLE_TITLE_PATH,
+		).get("ok", true)
+	)
+	var fallback := load(_runtime.DEFAULT_TITLE_SCENE) as PackedScene
+	_runtime.title_scene_path = TEST_INVALID_PREAMBLE_TITLE_PATH
+	assert_eq(_runtime.resolve_title_scene(fallback), fallback)
+	assert_push_error("falling back to the built-in title scene")
+	assert_engine_error_count(0,
+		"legal preamble must not expose malformed private resource source")
 
 
 func test_navigation_scene_uses_the_same_deep_dependency_preflight():

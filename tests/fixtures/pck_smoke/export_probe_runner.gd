@@ -25,6 +25,8 @@ const NAVIGATION_SCENARIO = (
 	"res://tests/fixtures/scenarios/dialogue/presentation_profile.stla"
 )
 const NAVIGATION_SAVE_SLOT = 9173
+const SAME_NAME_SCENARIO_A = "user://stella_review_a/shared.stla"
+const SAME_NAME_SCENARIO_B = "user://stella_review_b/shared.stla"
 
 
 func run() -> void:
@@ -206,6 +208,7 @@ func _probe_navigation_interleaving() -> void:
 	StellaRuntime.delete_save(NAVIGATION_SAVE_SLOT)
 	StellaRuntime.delete_quick_save()
 	StellaRuntime.delete_auto_save()
+	await _probe_same_basename_save_identity(failures)
 
 	# Produce both manual and continue snapshots from a real parsed scenario.
 	# The engine need not run yet; each facade will install and run its own
@@ -284,6 +287,108 @@ func _probe_navigation_interleaving() -> void:
 	if DirAccess.dir_exists_absolute(probe_save_dir):
 		DirAccess.remove_absolute(probe_save_dir)
 	_finish("navigation-interleaving-ok", failures)
+
+
+func _probe_same_basename_save_identity(
+	failures: PackedStringArray,
+) -> void:
+	var scenario_paths := [SAME_NAME_SCENARIO_A, SAME_NAME_SCENARIO_B]
+	for scenario_path: String in scenario_paths:
+		var absolute_dir := ProjectSettings.globalize_path(
+			scenario_path.get_base_dir(),
+		)
+		if DirAccess.make_dir_recursive_absolute(absolute_dir) != OK:
+			failures.append("could not create same-name scenario directory")
+			_cleanup_same_basename_scenarios()
+			return
+		var scenario_file := FileAccess.open(scenario_path, FileAccess.WRITE)
+		if scenario_file == null:
+			failures.append("could not create same-name scenario fixture")
+			_cleanup_same_basename_scenarios()
+			return
+		var suffix := "a" if scenario_path == SAME_NAME_SCENARIO_A else "b"
+		scenario_file.store_string(
+			"@chapter review_%s \"Review %s\"\n"
+			% [suffix, suffix.to_upper()]
+			+ "@scene start\n"
+			+ "@set branch = \"%s\"\n" % suffix
+		)
+		scenario_file.close()
+
+	if not StellaRuntime._prepare_scenario(SAME_NAME_SCENARIO_A):
+		failures.append("could not prepare first same-name scenario")
+		_cleanup_same_basename_scenarios()
+		return
+	StellaRuntime._last_scenario_path = SAME_NAME_SCENARIO_A
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	var active_context: ScenarioContext = StellaRuntime.engine.context
+	if active_context == null:
+		failures.append("same-name scenario did not establish a context")
+		_cleanup_same_basename_scenarios()
+		return
+	var active_scene := get_tree().current_scene
+	var active_scene_path := (
+		active_scene.scene_file_path if active_scene != null else ""
+	)
+	var identity_a := active_context.scenario_data.source_identity
+	var parsed_b: ScenarioData = StellaRuntime._parse_scenario(
+		SAME_NAME_SCENARIO_B,
+	)
+	if (
+		parsed_b == null
+		or active_context.scenario_data.id != "shared"
+		or parsed_b.id != "shared"
+		or identity_a.is_empty()
+		or parsed_b.source_identity.is_empty()
+		or identity_a == parsed_b.source_identity
+	):
+		failures.append("same-basename scenarios did not get distinct identities")
+		_cleanup_same_basename_scenarios()
+		return
+
+	var identity_slot := NAVIGATION_SAVE_SLOT + 10
+	StellaRuntime.save(identity_slot)
+	StellaRuntime.quick_save()
+	StellaRuntime._last_scenario_path = SAME_NAME_SCENARIO_B
+	var load_result: Variant = await StellaRuntime.load_game(
+		identity_slot,
+		SAME_NAME_SCENARIO_B,
+		NAVIGATION_GAME_SCENE,
+	)
+	var quick_result: Variant = await StellaRuntime.quick_load()
+	var manual_continue_result: Variant = await StellaRuntime.continue_from_save(
+		identity_slot,
+	)
+	var continue_result: Variant = await StellaRuntime.continue_game()
+	if load_result != false:
+		failures.append("load_game accepted a save from same-named source A")
+	if quick_result != false:
+		failures.append("quick_load accepted a save from same-named source A")
+	if manual_continue_result != false:
+		failures.append("continue_from_save accepted same-named source A")
+	if continue_result != false:
+		failures.append("continue_game accepted same-named source A")
+	if StellaRuntime.engine.context != active_context or active_context.is_finished:
+		failures.append("same-name save rejection replaced the active context")
+	var final_scene := get_tree().current_scene
+	if final_scene == null or final_scene.scene_file_path != active_scene_path:
+		failures.append("same-name save rejection replaced the active scene")
+	if not StellaRuntime._navigation_kind.is_empty():
+		failures.append("same-name save rejection acquired navigation ownership")
+
+	StellaRuntime.delete_save(identity_slot)
+	StellaRuntime.delete_quick_save()
+	_cleanup_same_basename_scenarios()
+
+
+func _cleanup_same_basename_scenarios() -> void:
+	for scenario_path: String in [SAME_NAME_SCENARIO_A, SAME_NAME_SCENARIO_B]:
+		var absolute_path := ProjectSettings.globalize_path(scenario_path)
+		if FileAccess.file_exists(scenario_path):
+			DirAccess.remove_absolute(absolute_path)
+		var absolute_dir := absolute_path.get_base_dir()
+		if DirAccess.dir_exists_absolute(absolute_dir):
+			DirAccess.remove_absolute(absolute_dir)
 
 
 func _probe_failed_navigation_preserves_owner(
@@ -648,6 +753,9 @@ func _write_degraded_title_fixtures() -> PackedStringArray:
 	var invalid_packed_constructor_path := (
 		"user://stella_probe_invalid_packed_constructor_title.tscn"
 	)
+	var leading_preamble_path := (
+		"user://stella_probe_leading_preamble_title.tscn"
+	)
 	var sources := {
 		missing_script_path: (
 			"[gd_scene load_steps=2 format=3]\n\n"
@@ -717,6 +825,12 @@ func _write_degraded_title_fixtures() -> PackedStringArray:
 			+ "[node name=\"InvalidPackedTitle\" type=\"Node\"]\n"
 			+ "metadata/private = "
 			+ "PackedByteArray(\"PRIVATE_PACKED_SENTINEL\")\n"
+		),
+		leading_preamble_path: (
+			"\n; legal leading resource comment\n\n"
+			+ "[gd_scene format=3]\n\n"
+			+ "[node name=\"LeadingPreambleTitle\" type=\"Node\"]\n"
+			+ "metadata/private = PRIVATE_LEADING_PREAMBLE_SENTINEL\n"
 		),
 	}
 	var paths := PackedStringArray()
