@@ -3,6 +3,9 @@
 class_name StellaConfig
 extends RefCounted
 
+const _MAX_CONFIG_SOURCE_BYTES := 1024 * 1024
+const _MAX_CONFIG_STRING_BYTES := 256 * 1024
+
 const _CONFIG_SCHEMA := {
 	"game": {
 		"title": {"property": "game_title", "type": TYPE_STRING},
@@ -51,6 +54,7 @@ class _ConfigCursor:
 
 	var text: String
 	var offset: int = 0
+	var byte_offset: int = 0
 	var line: int = 1
 	var column: int = 1
 	var _previous_was_carriage_return: bool = false
@@ -78,6 +82,15 @@ class _ConfigCursor:
 			return ""
 		var character := text.substr(offset, 1)
 		offset += 1
+		var codepoint := character.unicode_at(0)
+		if codepoint <= 0x7F:
+			byte_offset += 1
+		elif codepoint <= 0x7FF:
+			byte_offset += 2
+		elif codepoint <= 0xFFFF:
+			byte_offset += 3
+		else:
+			byte_offset += 4
 		if character == "\r":
 			line += 1
 			column = 1
@@ -153,13 +166,40 @@ func load_from_path(path: String) -> Error:
 		_set_error(path, open_error, error_string(open_error))
 		return open_error
 
-	var source := file.get_as_text()
+	# Read at most one byte past the public limit. This bounds memory before any
+	# UTF-8 conversion or tokenization and also catches a file that grows between
+	# open() and the read.
+	var source_bytes := file.get_buffer(_MAX_CONFIG_SOURCE_BYTES + 1)
 	var read_error: Error = file.get_error()
 	file.close()
+	if source_bytes.size() > _MAX_CONFIG_SOURCE_BYTES:
+		_set_error(
+			path,
+			ERR_INVALID_DATA,
+			"configuration source exceeds the 1048576-byte limit",
+		)
+		return ERR_INVALID_DATA
 	if read_error not in [OK, ERR_FILE_EOF]:
 		_set_error(path, read_error, error_string(read_error))
 		return read_error
 
+	var utf8_result := _validate_utf8(source_bytes)
+	if utf8_result["error"] != OK:
+		var utf8_line: int = utf8_result["line"]
+		var utf8_column: int = utf8_result["column"]
+		_set_error(
+			path,
+			ERR_INVALID_DATA,
+			"line %d, column %d: source is not valid UTF-8; save it as UTF-8" % [
+				utf8_line,
+				utf8_column,
+			],
+			utf8_line,
+			utf8_column,
+		)
+		return ERR_INVALID_DATA
+
+	var source := source_bytes.get_string_from_utf8()
 	var parsed := _parse_config(source)
 	var parse_error: Error = parsed["error"]
 	if parse_error != OK:
@@ -421,20 +461,49 @@ func _parse_config_value(cursor: _ConfigCursor) -> Dictionary:
 func _parse_quoted_string(cursor: _ConfigCursor) -> Dictionary:
 	var start_line := cursor.line
 	var start_column := cursor.column
-	var value := ""
 	cursor.advance()
+	var value_byte_start := cursor.byte_offset
+	var segment_start := cursor.offset
+	var fragments := PackedStringArray()
 
 	while not cursor.is_at_end():
+		var character_offset := cursor.offset
+		var character_byte_offset := cursor.byte_offset
 		var character := cursor.advance()
 		if character == "\"":
-			return {"error": OK, "value": value}
+			if character_byte_offset - value_byte_start > _MAX_CONFIG_STRING_BYTES:
+				return _parse_failure(
+					ERR_INVALID_DATA,
+					"quoted String exceeds the 262144-byte limit",
+					start_line,
+					start_column,
+				)
+			if character_offset > segment_start:
+				fragments.append(cursor.text.substr(
+					segment_start,
+					character_offset - segment_start,
+				))
+			return {"error": OK, "value": "".join(fragments)}
 		if character == "\\":
+			if character_offset > segment_start:
+				fragments.append(cursor.text.substr(
+					segment_start,
+					character_offset - segment_start,
+				))
 			var escape_result := _parse_string_escape(cursor)
 			if escape_result["error"] != OK:
 				return escape_result
-			value += escape_result["value"]
+			fragments.append(escape_result["value"])
+			segment_start = cursor.offset
+		if cursor.byte_offset - value_byte_start > _MAX_CONFIG_STRING_BYTES:
+			return _parse_failure(
+				ERR_INVALID_DATA,
+				"quoted String exceeds the 262144-byte limit",
+				start_line,
+				start_column,
+			)
+		if character == "\\":
 			continue
-		value += character
 
 	return _parse_failure(
 		ERR_PARSE_ERROR,
@@ -463,8 +532,6 @@ func _parse_string_escape(cursor: _ConfigCursor) -> Dictionary:
 			return {"error": OK, "value": "\\"}
 		"/":
 			return {"error": OK, "value": "/"}
-		"a":
-			return {"error": OK, "value": String.chr(7)}
 		"b":
 			return {"error": OK, "value": String.chr(8)}
 		"f":
@@ -475,10 +542,10 @@ func _parse_string_escape(cursor: _ConfigCursor) -> Dictionary:
 			return {"error": OK, "value": "\r"}
 		"t":
 			return {"error": OK, "value": "\t"}
-		"v":
-			return {"error": OK, "value": String.chr(11)}
 		"u":
-			return _parse_unicode_escape(cursor, escape_line, escape_column)
+			return _parse_unicode_escape(cursor, escape_line, escape_column, 4)
+		"U":
+			return _parse_unicode_escape(cursor, escape_line, escape_column, 6)
 
 	# VariantParser/ConfigFile accepts unknown escapes and keeps the character
 	# after dropping the backslash (for example, `\q` becomes `q`). Preserve
@@ -491,9 +558,10 @@ func _parse_unicode_escape(
 	cursor: _ConfigCursor,
 	escape_line: int,
 	escape_column: int,
+	digit_count: int,
 ) -> Dictionary:
 	var codepoint := 0
-	for _digit_index in range(4):
+	for _digit_index in range(digit_count):
 		var character := cursor.peek()
 		var digit := _hex_digit_value(character)
 		if digit < 0:
@@ -509,19 +577,127 @@ func _parse_unicode_escape(
 	if codepoint >= 0xD800 and codepoint <= 0xDFFF:
 		return _parse_failure(
 			ERR_PARSE_ERROR,
-			"unsupported Unicode surrogate escape",
+			"invalid Unicode codepoint escape",
 			escape_line,
 			escape_column,
 		)
+	# Godot 4.6 ConfigFile accepts an out-of-range six-digit \U escape and
+	# materializes U+FFFD. Match it directly without asking String.chr() to emit
+	# an engine warning containing source digits.
+	if codepoint > 0x10FFFF:
+		return {"error": OK, "value": String.chr(0xFFFD)}
 	return {"error": OK, "value": String.chr(codepoint)}
+
+
+## Validate bytes before String conversion. Godot's get_as_text() and
+## get_string_from_utf8() replace malformed input with U+FFFD, which would turn
+## a rejected source into a successfully modified one. The validator also
+## returns a safe one-based source location without including raw bytes.
+func _validate_utf8(bytes: PackedByteArray) -> Dictionary:
+	var index := 0
+	var line := 1
+	var column := 1
+	var previous_was_carriage_return := false
+
+	# A leading UTF-8 BOM is accepted and omitted by _ConfigCursor. Do not count
+	# it as a visible column so byte-validation diagnostics align with the parser.
+	if (
+		bytes.size() >= 3
+		and bytes[0] == 0xEF
+		and bytes[1] == 0xBB
+		and bytes[2] == 0xBF
+	):
+		index = 3
+
+	while index < bytes.size():
+		var first: int = bytes[index]
+		var codepoint := 0
+		var width := 0
+		if first <= 0x7F:
+			codepoint = first
+			width = 1
+		elif first >= 0xC2 and first <= 0xDF:
+			width = 2
+			if index + width > bytes.size() or not _is_utf8_continuation(bytes[index + 1]):
+				return _utf8_failure(line, column)
+			codepoint = ((first & 0x1F) << 6) | (bytes[index + 1] & 0x3F)
+		elif first >= 0xE0 and first <= 0xEF:
+			width = 3
+			if index + width > bytes.size():
+				return _utf8_failure(line, column)
+			var second: int = bytes[index + 1]
+			var third: int = bytes[index + 2]
+			if (
+				not _is_utf8_continuation(third)
+				or (first == 0xE0 and (second < 0xA0 or second > 0xBF))
+				or (first == 0xED and (second < 0x80 or second > 0x9F))
+				or (first != 0xE0 and first != 0xED and not _is_utf8_continuation(second))
+			):
+				return _utf8_failure(line, column)
+			codepoint = (
+				((first & 0x0F) << 12)
+				| ((second & 0x3F) << 6)
+				| (third & 0x3F)
+			)
+		elif first >= 0xF0 and first <= 0xF4:
+			width = 4
+			if index + width > bytes.size():
+				return _utf8_failure(line, column)
+			var second: int = bytes[index + 1]
+			var third: int = bytes[index + 2]
+			var fourth: int = bytes[index + 3]
+			if (
+				not _is_utf8_continuation(third)
+				or not _is_utf8_continuation(fourth)
+				or (first == 0xF0 and (second < 0x90 or second > 0xBF))
+				or (first == 0xF4 and (second < 0x80 or second > 0x8F))
+				or (first != 0xF0 and first != 0xF4 and not _is_utf8_continuation(second))
+			):
+				return _utf8_failure(line, column)
+			codepoint = (
+				((first & 0x07) << 18)
+				| ((second & 0x3F) << 12)
+				| ((third & 0x3F) << 6)
+				| (fourth & 0x3F)
+			)
+		else:
+			return _utf8_failure(line, column)
+
+		index += width
+		if codepoint == 0x0D:
+			line += 1
+			column = 1
+			previous_was_carriage_return = true
+		elif codepoint == 0x0A:
+			if not previous_was_carriage_return:
+				line += 1
+			column = 1
+			previous_was_carriage_return = false
+		else:
+			column += 1
+			previous_was_carriage_return = false
+
+	return {"error": OK, "line": 0, "column": 0}
+
+
+func _is_utf8_continuation(byte: int) -> bool:
+	return byte >= 0x80 and byte <= 0xBF
+
+
+func _utf8_failure(line: int, column: int) -> Dictionary:
+	return {
+		"error": ERR_INVALID_DATA,
+		"line": line,
+		"column": column,
+	}
 
 
 func _parse_integer(cursor: _ConfigCursor) -> Dictionary:
 	var value_line := cursor.line
 	var value_column := cursor.column
-	var encoded := ""
+	var value_start := cursor.offset
 	if cursor.peek() in ["+", "-"]:
-		encoded += cursor.advance()
+		cursor.advance()
 	if not _is_ascii_digit(cursor.peek()):
 		return _parse_failure(
 			ERR_PARSE_ERROR,
@@ -530,7 +706,8 @@ func _parse_integer(cursor: _ConfigCursor) -> Dictionary:
 			value_column,
 		)
 	while _is_ascii_digit(cursor.peek()):
-		encoded += cursor.advance()
+		cursor.advance()
+	var encoded := cursor.text.substr(value_start, cursor.offset - value_start)
 
 	var digits := encoded
 	var negative := encoded.begins_with("-")
@@ -565,10 +742,11 @@ func _decimal_digits_exceed_limit(digits: String, limit: String) -> bool:
 func _parse_identifier(cursor: _ConfigCursor) -> String:
 	if not _is_identifier_start(cursor.peek()):
 		return ""
-	var identifier := cursor.advance()
+	var identifier_start := cursor.offset
+	cursor.advance()
 	while _is_identifier_continue(cursor.peek()):
-		identifier += cursor.advance()
-	return identifier
+		cursor.advance()
+	return cursor.text.substr(identifier_start, cursor.offset - identifier_start)
 
 
 func _skip_config_trivia(cursor: _ConfigCursor) -> void:

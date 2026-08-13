@@ -151,6 +151,29 @@ jobs:
             exit 1
           fi
 
+          rm -f -- "$local_config" "$marker"
+          printf '%s\n' \
+            '[game]' \
+            'title_bgm = ""' \
+            '[overrides]' \
+            'title_scene = "res://tests/fixtures/startup/nested_instance_recursive_title.tscn"' \
+            > "$local_config"
+          nested_recursive_status=0
+          STELLA_EXPORT_PROBE_MODE="source-fallback" \
+            STELLA_EXPORT_PROBE_EXPECTED_TITLE="Stella Demo" \
+            STELLA_EXPORT_PROBE_MARKER="$marker" \
+            godot --headless --path . --quit-after 60 \
+            res://tests/fixtures/pck_smoke/export_probe_host.tscn \
+            >"$fallback_log" 2>&1 || nested_recursive_status=$?
+          cat "$fallback_log"
+          if (( nested_recursive_status != 0 )); then
+            exit "$nested_recursive_status"
+          fi
+          if ! grep -Fxq 'fallback-ok' "$marker"; then
+            echo "::error::nested recursive override did not finish on the built-in title"
+            exit 1
+          fi
+
           cleanup
           trap - EXIT
         timeout-minutes: 2

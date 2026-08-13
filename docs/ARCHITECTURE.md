@@ -98,7 +98,7 @@ flowchart LR
     DEFAULTS --> BASE --> LOCAL --> APPLY --> CONSUMERS --> SCENE --> PRESENTERS
 ```
 
-每一层都按 key 合并，优先级为 `defaults < base < local`。来源不存在时是无副作用的 no-op；来源存在时，`StellaConfig.load_from_path()` 会先读完整文件并校验文件中声明的 section、key 和值类型，只有全部成功才提交这一来源及其来源记录。未知 section/key、类型错误或语法损坏都会原子拒绝整个来源。因此损坏的本地层不会留下半套覆盖，基础层仍保持完整；损坏的基础层保持 defaults，报告错误并阻止本地层掩盖共享配置错误。语法诊断只保留来源、安全的行列位置和预期修复提示，schema 诊断只保留相关 section/key（类型错误另带预期类型），均不回显配置值。`get_applied_config_sources()` 只返回成功提交的来源，并保持实际应用顺序。
+每一层都按 key 合并，优先级为 `defaults < base < local`。来源不存在时是无副作用的 no-op；来源存在时，`StellaConfig.load_from_path()` 会先读完整文件并校验文件中声明的 section、key 和值类型，只有全部成功才提交这一来源及其来源记录。未知 section/key、类型错误、非法 UTF-8 或语法损坏都会原子拒绝整个来源。因此损坏的本地层不会留下半套覆盖，基础层仍保持完整；损坏的基础层保持 defaults，报告错误并阻止本地层掩盖共享配置错误。每个来源最多 1 MiB，每个 quoted String 的原始 UTF-8 表示最多 256 KiB；解析器按连续片段线性组装字符串，先检查字节编码和上限，再创建 resolved value。语法诊断只保留来源、安全的行列位置和预期修复提示，schema 诊断只保留相关 section/key（类型错误另带预期类型），均不回显配置值。`get_applied_config_sources()` 只返回成功提交的来源，并保持实际应用顺序。
 
 解析不是在旧对象上反复打补丁。`_load_project_config()` 每次都从新的 `StellaConfig` 和内置默认值开始，`_apply_config()` 则无条件完整复制 resolved snapshot（即使没有来源成功应用），因此删除或禁用配置来源后重新解析不会让 Runtime 镜像残留上一次的路径或其他值；需要复用配置对象的调用方可用 `StellaConfig.reset()` 恢复默认值，并同时清空 `has_config_file`、来源列表和错误元数据。完成解析和应用后才创建 Core 子系统与全局 Presenter；项目默认主场景是无 UI 的 `bootstrap.tscn`，它随后按最终 `title_scene` 进入首次场景，无效路径会诊断并回退内置标题。首次启动和之后返回标题使用同一个 override。已有项目若使用自定义主场景，插件不会覆盖；旧版内置标题主场景会迁移到 bootstrap。场景内 Presenter 在此之后构造或进入 ready，不会观察到部分应用的配置。
 
@@ -506,7 +506,7 @@ sakura「我本来很开心的...[expr:surprised]但是听到这个消息之后.
 ### 4.2 语音收藏 / 鉴赏
 
 - `VoiceBookmarkManager`（`core/bookmark/`）：游戏中收藏语音 → 收藏界面浏览/重播 → 可跳转回对应场景继续游玩。依赖快照机制，收藏时自动捕获状态快照。
-- `UnlockManager`（`core/gallery/`）：CG / 音乐 / 场景的解锁与鉴赏，依赖 global 变量持久化。
+- `UnlockManager`（`core/gallery/`）：CG / 音乐 / 场景的解锁进度 provider。`StellaRuntime` 的 CG Facade 是 `[features].cg_gallery` 的生产消费者：关闭时拒绝新 CG 解锁并隐藏查询结果，同时继续保留 provider 中已有进度，避免临时关闭功能破坏存档兼容性；框架不内置 Gallery UI。
 
 ### 4.3 本地化
 

@@ -69,6 +69,14 @@ func _write_raw_project_config(path: String, contents: String) -> void:
 		file.close()
 
 
+func _write_project_config_bytes(path: String, contents: PackedByteArray) -> void:
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	assert_not_null(file)
+	if file != null:
+		file.store_buffer(contents)
+		file.close()
+
+
 func test_defaults_when_no_file():
 	# Loading a non-existent file should use all defaults
 	assert_eq(config.load_from_path(TEST_MISSING_CONFIG_PATH), ERR_FILE_NOT_FOUND)
@@ -237,11 +245,13 @@ func test_runtime_title_scene_defaults_to_builtin():
 	assert_eq(_runtime.title_scene_path, "res://addons/stella/scenes/title.tscn")
 
 
-func test_title_resolver_rejects_direct_and_inherited_bootstrap_scripts():
+func test_title_resolver_rejects_bootstrap_scripts_anywhere_in_packed_tree():
 	var fallback := load(_runtime.DEFAULT_TITLE_SCENE) as PackedScene
 	for recursive_path: String in [
 		"res://tests/fixtures/startup/recursive_title.tscn",
 		"res://tests/fixtures/startup/inherited_recursive_title.tscn",
+		"res://tests/fixtures/startup/nested_recursive_title.tscn",
+		"res://tests/fixtures/startup/nested_instance_recursive_title.tscn",
 	]:
 		_runtime.title_scene_path = recursive_path
 		var resolved: PackedScene = _runtime.resolve_title_scene(fallback)
@@ -507,6 +517,84 @@ func test_parser_preserves_config_file_unknown_escape_compatibility():
 
 	assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), OK)
 	assert_eq(config.game_title, "unknown q escape")
+	assert_engine_error_count(0)
+
+
+func test_parser_matches_config_file_upper_unicode_and_literal_a_v_escapes():
+	_write_raw_project_config(
+		TEST_LOCAL_CONFIG_PATH,
+		"[game]\ntitle = \"Emoji: \\U01f600; replacement: \\U110000; a: \\a; v: \\v\"\n",
+	)
+
+	assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), OK)
+	assert_eq(config.game_title, "Emoji: 😀; replacement: �; a: a; v: v")
+	assert_engine_error_count(0,
+		"Godot 4.6.1 ConfigFile-compatible escapes must not emit parser errors")
+
+
+func test_malformed_utf8_is_rejected_atomically_with_safe_location():
+	var invalid_sequences: Array[PackedByteArray] = [
+		PackedByteArray([0xC0, 0xAF]),
+		PackedByteArray([0xED, 0xA0, 0x80]),
+		PackedByteArray([0xF4, 0x90, 0x80, 0x80]),
+		PackedByteArray([0xE2, 0x82]),
+	]
+	for invalid_sequence: PackedByteArray in invalid_sequences:
+		config.reset()
+		var contents := "[game]\ntitle = \"".to_utf8_buffer()
+		contents.append_array(invalid_sequence)
+		contents.append_array((PRIVATE_SENTINEL + "\"\n").to_utf8_buffer())
+		_write_project_config_bytes(TEST_LOCAL_CONFIG_PATH, contents)
+
+		assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), ERR_INVALID_DATA)
+		assert_eq(config.game_title, "Stella")
+		assert_false(config.has_config_file)
+		assert_eq(config.get_applied_sources(), PackedStringArray())
+		assert_eq(config.last_error_line, 2)
+		assert_eq(config.last_error_column, 10)
+		assert_true(config.last_error_detail.contains("source is not valid UTF-8"))
+		assert_false(config.last_error_detail.contains(PRIVATE_SENTINEL))
+	assert_engine_error_count(0,
+		"Malformed UTF-8 must be rejected before Godot inserts replacement characters")
+
+
+func test_large_quoted_string_parses_without_quadratic_concatenation():
+	var payload := "x".repeat(128 * 1024)
+	_write_raw_project_config(
+		TEST_LOCAL_CONFIG_PATH,
+		"[game]\ntitle = \"" + payload + "\"\n",
+	)
+
+	assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), OK)
+	assert_eq(config.game_title.length(), payload.length())
+	assert_eq(config.game_title, payload)
+	assert_engine_error_count(0)
+
+
+func test_oversized_quoted_string_is_rejected_atomically():
+	var payload := "x".repeat(256 * 1024 + 1)
+	_write_raw_project_config(
+		TEST_LOCAL_CONFIG_PATH,
+		"[game]\ntitle = \"" + payload + "\"\n",
+	)
+
+	assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), ERR_INVALID_DATA)
+	assert_eq(config.game_title, "Stella")
+	assert_false(config.has_config_file)
+	assert_true(config.last_error_detail.contains("262144-byte limit"))
+	assert_engine_error_count(0)
+
+
+func test_oversized_source_is_rejected_before_decoding():
+	var contents := PackedByteArray()
+	contents.resize(1024 * 1024 + 1)
+	contents.fill(0x41)
+	_write_project_config_bytes(TEST_LOCAL_CONFIG_PATH, contents)
+
+	assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), ERR_INVALID_DATA)
+	assert_eq(config.game_title, "Stella")
+	assert_false(config.has_config_file)
+	assert_true(config.last_error_detail.contains("1048576-byte limit"))
 	assert_engine_error_count(0)
 
 

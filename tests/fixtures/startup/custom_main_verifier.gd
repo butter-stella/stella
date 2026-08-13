@@ -28,7 +28,32 @@ func verify_after_return(initial_failures: PackedStringArray) -> void:
 	if title_label == null or title_label.text != EXPECTED_TITLE:
 		failures.append("fallback title consumer did not receive resolved game.title")
 
+	var autosave_path := StellaRuntime.save_manager.save_dir + "autosave.json"
+	var autosave := _read_json_dictionary(autosave_path)
+	var provider_snapshot: Dictionary = autosave.get(
+		"return_to_title_order_probe",
+		{},
+	)
+	if provider_snapshot.get("phase", "") != "alive":
+		failures.append("return_to_title autosaved after the outgoing scene exited")
+	if FileAccess.file_exists(autosave_path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(autosave_path))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(
+		StellaRuntime.save_manager.save_dir.trim_suffix("/"),
+	))
+
 	_finish(failures)
+
+
+func _read_json_dictionary(path: String) -> Dictionary:
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return {}
+	var parsed: Variant = JSON.parse_string(file.get_as_text())
+	file.close()
+	if parsed is Dictionary:
+		return parsed
+	return {}
 
 
 func _finish(failures: PackedStringArray) -> void:

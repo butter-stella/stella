@@ -332,8 +332,9 @@ func resolve_title_scene(fallback_scene: PackedScene = null) -> PackedScene:
 	return fallback
 
 
-## A bootstrap-derived title scene would execute the redirect behavior again.
-## Inspect the packed root, including inherited scene roots, before entering it.
+## A title scene containing bootstrap behavior anywhere in its packed tree
+## would redirect again after entering. Inspect every node script and nested
+## PackedScene instance, including inherited roots, before accepting it.
 func _scene_root_uses_bootstrap(scene: PackedScene) -> bool:
 	var pending: Array[PackedScene] = [scene]
 	var visited: Dictionary = {}
@@ -349,17 +350,21 @@ func _scene_root_uses_bootstrap(scene: PackedScene) -> bool:
 		var state := current.get_state()
 		if state.get_node_count() == 0:
 			continue
-		var inherited_root := state.get_node_instance(0)
-		if inherited_root != null:
-			pending.append(inherited_root)
-		for property_index in state.get_node_property_count(0):
-			if state.get_node_property_name(0, property_index) != &"script":
-				continue
-			var script := state.get_node_property_value(0, property_index) as Script
-			while script != null:
-				if script.resource_path.simplify_path() == BOOTSTRAP_SCRIPT:
-					return true
-				script = script.get_base_script()
+		for node_index in state.get_node_count():
+			var nested_scene := state.get_node_instance(node_index)
+			if nested_scene != null:
+				pending.append(nested_scene)
+			for property_index in state.get_node_property_count(node_index):
+				if state.get_node_property_name(node_index, property_index) != &"script":
+					continue
+				var script := state.get_node_property_value(
+					node_index,
+					property_index,
+				) as Script
+				while script != null:
+					if script.resource_path.simplify_path() == BOOTSTRAP_SCRIPT:
+						return true
+					script = script.get_base_script()
 	return false
 
 
@@ -376,6 +381,11 @@ func return_to_title() -> void:
 	if title_scene == null:
 		push_error("StellaRuntime: built-in title scene is unavailable")
 		return
+
+	# Snapshot scene-owned providers while the outgoing scene is still alive.
+	# change_scene_to_packed() synchronously removes it and runs _exit_tree(), so
+	# saving after the request can capture teardown state instead of gameplay.
+	auto_save()
 	var scene_error := get_tree().change_scene_to_packed(title_scene)
 	if scene_error != OK:
 		push_error(
@@ -384,7 +394,6 @@ func return_to_title() -> void:
 		)
 		return
 
-	auto_save()
 	_close_current_overlay()
 	backlog_manager.clear()
 	choice_history_manager.clear()
@@ -959,6 +968,35 @@ func _close_current_overlay() -> void:
 		_current_overlay = null
 		if layer != null:
 			layer.queue_free()
+
+
+# ─── Facade API: CG Gallery ───
+
+## Record a CG unlock when the project has enabled its gallery feature.
+## UnlockManager remains registered as a save provider while disabled so
+## existing progress survives a temporary feature opt-out.
+func unlock_cg(cg_id: String) -> bool:
+	if not config.cg_gallery:
+		return false
+	if cg_id.is_empty():
+		push_warning("StellaRuntime.unlock_cg: cg_id must not be empty")
+		return false
+	unlock_manager.unlock("cg", cg_id)
+	return true
+
+
+## Disabled galleries expose no CG progress through the public facade.
+func is_cg_unlocked(cg_id: String) -> bool:
+	if not config.cg_gallery:
+		return false
+	return unlock_manager.is_unlocked("cg", cg_id)
+
+
+## Return a copy so UI code cannot mutate the persisted provider state.
+func get_unlocked_cgs() -> Array:
+	if not config.cg_gallery:
+		return []
+	return unlock_manager.get_unlocked("cg").duplicate()
 
 
 # ─── Facade API: Backlog ───

@@ -6,17 +6,20 @@ const GAME_SCENE = preload("res://addons/stella/scenes/game.tscn")
 
 var _runtime: Node
 var _original_backlog_enabled: bool
+var _original_cg_gallery_enabled: bool
 
 
 func before_each() -> void:
 	_runtime = get_tree().root.get_node("StellaRuntime")
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
 	_original_backlog_enabled = _runtime.config.backlog
+	_original_cg_gallery_enabled = _runtime.config.cg_gallery
 
 
 func after_each() -> void:
 	_runtime._close_current_overlay()
 	_runtime.config.backlog = _original_backlog_enabled
+	_runtime.config.cg_gallery = _original_cg_gallery_enabled
 	await get_tree().process_frame
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
 
@@ -51,6 +54,30 @@ func test_enabled_backlog_is_present_in_builtin_dialogue_toolbar() -> void:
 
 	var toolbar: HBoxContainer = game.get_node("UILayer/DialoguePanel/Toolbar")
 	assert_not_null(_find_button_with_text(toolbar, "记录"))
+
+
+func test_disabled_cg_gallery_preserves_but_hides_progress_and_rejects_unlocks() -> void:
+	_runtime.config.cg_gallery = false
+	_runtime.unlock_manager.unlock("cg", "legacy_cg")
+
+	assert_false(_runtime.unlock_cg("disabled_cg"))
+	assert_false(_runtime.is_cg_unlocked("legacy_cg"))
+	assert_eq(_runtime.get_unlocked_cgs(), [])
+	assert_false(_runtime.unlock_manager.is_unlocked("cg", "disabled_cg"))
+	assert_true(_runtime.unlock_manager.is_unlocked("cg", "legacy_cg"),
+		"disabling the UI contract must not destroy persisted compatibility data")
+
+
+func test_enabled_cg_gallery_facade_records_and_exposes_unlocks() -> void:
+	_runtime.config.cg_gallery = true
+
+	assert_true(_runtime.unlock_cg("gallery_cg"))
+	assert_true(_runtime.is_cg_unlocked("gallery_cg"))
+	var unlocked: Array = _runtime.get_unlocked_cgs()
+	assert_eq(unlocked, ["gallery_cg"])
+	unlocked.clear()
+	assert_true(_runtime.is_cg_unlocked("gallery_cg"),
+		"callers must receive a copy of persisted gallery state")
 
 
 func _find_button_with_text(toolbar: HBoxContainer, text: String) -> Button:

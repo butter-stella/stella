@@ -31,6 +31,12 @@ func _ready() -> void:
 		or StellaRuntime.game_state.current_state != state_before_backlog
 	):
 		failures.append("disabled backlog feature was not consumed")
+	if (
+		not StellaRuntime.unlock_cg("startup_probe_cg")
+		or not StellaRuntime.is_cg_unlocked("startup_probe_cg")
+		or StellaRuntime.get_unlocked_cgs() != ["startup_probe_cg"]
+	):
+		failures.append("enabled CG gallery feature was not consumed")
 
 	# SaveLoadScreen must build exactly the configured number of real slot
 	# buttons, not merely expose the merged integer on StellaConfig.

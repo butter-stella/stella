@@ -98,7 +98,7 @@ save_load_scene = ""
 backlog_scene = ""
 ```
 
-`save_slots` 的合法范围是 `1..100`，超出范围会和其他 schema 错误一样原子拒绝整个来源。`backlog` 会控制内置对话工具栏和 Backlog overlay；`cg_gallery` 目前是为兼容已有配置保留的字段，框架尚未提供内置 Gallery UI，宿主项目若实现 Gallery 可以读取该开关。
+`save_slots` 的合法范围是 `1..100`，超出范围会和其他 schema 错误一样原子拒绝整个来源。`backlog` 会控制内置对话工具栏和 Backlog overlay；`cg_gallery` 控制 `StellaRuntime` 的 CG 解锁/查询 Facade：关闭时不记录新 CG，查询也不暴露已有进度，但底层存档 provider 仍保留旧进度，重新启用后可继续使用。框架尚未提供内置 Gallery UI，宿主项目可用下文的 Facade 构建界面。
 
 #### 分层配置与本地覆盖
 
@@ -142,7 +142,7 @@ game_scene = "res://private_preview/ui/preview_game.tscn"
 
 配置按 key 独立解析，优先级为“内置默认值 < `stella.cfg` < `stella.local.cfg`”。这套规则一致覆盖 `[game]`、`[paths]`、`[features]`、`[system_se]` 和 `[overrides]`；后一个文件只覆盖其中明确写出的 key，例如上面的本地文件不会改变基础配置中的 `game.title`。
 
-配置语法使用 Stella schema 所需的常用子集：字符串必须用双引号包围，布尔值写作 `true` / `false`，整数使用十进制，注释以分号 `;` 开头。显式写入空字符串也是一次有效覆盖。
+配置语法使用 Stella schema 所需的常用子集：文件必须是 UTF-8；字符串必须用双引号包围，布尔值写作 `true` / `false`，整数使用十进制，注释以分号 `;` 开头。字符串转义兼容 Godot 4.6 `ConfigFile`，包括 `\\`、`\"`、`\n`、`\uXXXX` 和 `\UXXXXXX`；未知转义也沿用其“去掉反斜杠、保留后一字符”的行为。显式写入空字符串也是一次有效覆盖。单个来源最多 1 MiB，单个 quoted String 的原始 UTF-8 表示最多 256 KiB；超限和非法 UTF-8 都会按无部分提交的错误处理。
 
 两个文件都是可选来源：缺失的文件不会报错，也不会清空较低优先级已经解析出的值。每个存在的来源会先完成读取和 schema 校验，再一次性提交；类型错误、未知 section/key 或语法损坏都会原子拒绝整个来源，该来源不会部分生效，也不会出现在已应用来源列表中。基础配置失败时保留默认值并停止继续叠加，本地覆盖失败时则完整保留已经生效的基础配置。语法错误诊断会带来源路径、安全的行列位置和预期修复提示；schema 错误会指出相关 section/key，类型错误还会带预期类型，且二者都不会打印配置值。
 
@@ -335,6 +335,16 @@ StellaRuntime.show_save_load()       # 打开存档/读档
 StellaRuntime.show_backlog()         # 打开回想记录
 StellaRuntime.close_overlay()        # 关闭当前覆盖层
 ```
+
+### CG Gallery
+
+```gdscript
+StellaRuntime.unlock_cg(cg_id)       # 启用 cg_gallery 时记录解锁
+StellaRuntime.is_cg_unlocked(cg_id)  # 查询单个 CG
+StellaRuntime.get_unlocked_cgs()     # 获取已解锁 CG 的副本
+```
+
+`cg_gallery=false` 时三个 API 都 fail-closed：写入返回 `false`，查询返回 `false` / 空数组；已有存档进度不会被清除。
 
 ### 设置
 
