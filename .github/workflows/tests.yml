@@ -110,7 +110,7 @@ jobs:
             '[game]' \
             'title_bgm = ""' \
             '[overrides]' \
-            'title_scene = "res://tests/fixtures/startup/missing_title.tscn"' \
+            'title_scene = "res://tests/fixtures/startup/required_init_title.tscn"' \
             > "$local_config"
           fallback_status=0
           STELLA_EXPORT_PROBE_MODE="source-fallback" \
@@ -198,7 +198,7 @@ jobs:
             'title = "Synthetic Custom Main Probe"' \
             'title_bgm = ""' \
             '[overrides]' \
-            'title_scene = "res://tests/fixtures/startup/missing_title.tscn"' \
+            'title_scene = "res://tests/fixtures/startup/required_init_title.tscn"' \
             > "$local_config"
 
           probe_status=0

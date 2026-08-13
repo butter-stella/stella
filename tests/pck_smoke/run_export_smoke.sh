@@ -4,13 +4,18 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 godot_bin="${GODOT_BIN:-godot}"
 root_preset="$repo_root/export_presets.cfg"
+root_local="$repo_root/stella.local.cfg"
 fixture_preset="$repo_root/tests/fixtures/pck_smoke/export_presets.cfg"
 smoke_root=""
 installed_fixture=0
+installed_local=0
 
 cleanup() {
 	if (( installed_fixture == 1 )); then
 		rm -f -- "$root_preset"
+	fi
+	if (( installed_local == 1 )); then
+		rm -f -- "$root_local"
 	fi
 	if [[ -n "$smoke_root" && -d "$smoke_root" ]]; then
 		rm -rf -- "$smoke_root"
@@ -25,9 +30,13 @@ fi
 
 # A repository may later gain real release presets. Keep those authoritative:
 # this smoke never overwrites them, and generates only its temporary fixture.
-if [[ -e "$root_preset" ]]; then
+if [[ -e "$root_preset" || -L "$root_preset" ]]; then
 	echo "error: refusing to replace existing export_presets.cfg" >&2
 	echo "move it aside explicitly before running the CI-only export smoke" >&2
+	exit 1
+fi
+if [[ -e "$root_local" || -L "$root_local" ]]; then
+	echo "error: refusing to replace existing stella.local.cfg" >&2
 	exit 1
 fi
 
@@ -43,8 +52,13 @@ case "$run_dir/" in
 		;;
 esac
 
-cp -- "$fixture_preset" "$root_preset"
 installed_fixture=1
+cp -- "$fixture_preset" "$root_preset"
+installed_local=1
+printf '%s\n' \
+	'[game]' \
+	'title = "PCK_LOCAL_CONFIG_MUST_NOT_BE_EXPORTED"' \
+	> "$root_local"
 
 run_probe() {
 	local preset_name="$1"
@@ -68,7 +82,6 @@ run_probe() {
 
 	if ! (
 		cd "$run_dir"
-		STELLA_DISABLE_LOCAL_CONFIG=1 \
 		STELLA_EXPORT_PROBE_MODE="$probe_mode" \
 		STELLA_EXPORT_PROBE_MARKER="$marker_path" \
 			"$godot_bin" --headless --main-pack "$pack_path" --quit-after 600 \

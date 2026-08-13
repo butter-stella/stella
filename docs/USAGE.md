@@ -142,9 +142,11 @@ game_scene = "res://private_preview/ui/preview_game.tscn"
 
 配置按 key 独立解析，优先级为“内置默认值 < `stella.cfg` < `stella.local.cfg`”。这套规则一致覆盖 `[game]`、`[paths]`、`[features]`、`[system_se]` 和 `[overrides]`；后一个文件只覆盖其中明确写出的 key，例如上面的本地文件不会改变基础配置中的 `game.title`。
 
-配置语法使用 Stella schema 所需的常用子集：文件必须是 UTF-8；字符串必须用双引号包围，布尔值写作 `true` / `false`，整数使用十进制，注释以分号 `;` 开头。字符串转义兼容 Godot 4.6 `ConfigFile`，包括 `\\`、`\"`、`\n`、`\uXXXX` 和 `\UXXXXXX`；未知转义也沿用其“去掉反斜杠、保留后一字符”的行为。显式写入空字符串也是一次有效覆盖。单个来源最多 1 MiB，单个 quoted String 的原始 UTF-8 表示最多 256 KiB；超限和非法 UTF-8 都会按无部分提交的错误处理。
+配置语法使用 Stella schema 所需的常用子集：文件必须是 UTF-8 且不能含 NUL 字节；字符串必须用双引号包围，布尔值写作 `true` / `false`，整数使用十进制。完整行注释以分号 `;` 开头；完成的 section header 或赋值后也兼容 Godot 4.6 `ConfigFile` 的行尾 `#` 注释。字符串转义兼容 `ConfigFile`，包括 `\\`、`\"`、`\n`、`\uXXXX`、`\UXXXXXX` 及 UTF-16 surrogate pair；未知转义也沿用其“去掉反斜杠、保留后一字符”的行为。显式写入空字符串也是一次有效覆盖。单个来源最多 1 MiB，单个 quoted String 的原始 UTF-8 表示最多 256 KiB；超限、NUL 和非法 UTF-8 都会按无部分提交的错误处理。
 
 两个文件都是可选来源：缺失的文件不会报错，也不会清空较低优先级已经解析出的值。每个存在的来源会先完成读取和 schema 校验，再一次性提交；类型错误、未知 section/key 或语法损坏都会原子拒绝整个来源，该来源不会部分生效，也不会出现在已应用来源列表中。基础配置失败时保留默认值并停止继续叠加，本地覆盖失败时则完整保留已经生效的基础配置。语法错误诊断会带来源路径、安全的行列位置和预期修复提示；schema 错误会指出相关 section/key，类型错误还会带预期类型，且二者都不会打印配置值。
+
+兼容边界：分层配置解析器仍兼容上述 Godot 4.6 标量写法，但从引入严格 Stella schema 的版本起，未知 section/key 不再像旧解析器那样静默忽略。这是有意的校验收紧。升级前请把宿主自定义元数据移出 `stella.cfg` / `stella.local.cfg`，或改用 Stella 已声明的 section/key；解析器不会透传未知条目，因此不能把“仅使用基础文件”理解为可继续接受旧的自定义键。
 
 Runtime 每次解析后都会完整应用 resolved snapshot，包括没有配置文件时的内置默认值。因此删除或禁用配置来源并重新初始化时，Runtime 不会继续保留上一轮的本地路径或其他覆盖。
 
@@ -167,7 +169,7 @@ STELLA_DISABLE_LOCAL_CONFIG=1 godot --headless --path /path/to/project --quit
 
 Godot 无法从字符串形式的动态路径自动发现 `[overrides]` 中的场景依赖。使用 **Export All Resources** 时应确认这些资源没有被 exclude filter 排除；使用 **Export Selected Scenes/Resources** 时，必须把配置引用的 `title_scene`、`game_scene`、`settings_scene`、`save_load_scene`、`backlog_scene` 和 `flowchart_scene` 全部加入导出资源集。无效或遗漏的自定义标题会回退内置标题，但遗漏 game/overlay 仍会让对应功能不可用。
 
-导出后应从源码目录外启动 PCK 或发布包并走一遍标题、开始游戏及各 overlay，而不只检查导出命令的退出码。仓库维护者可在安装 Godot 4.6.1 后运行标准 smoke；脚本会拒绝覆盖已有 `export_presets.cfg`，临时使用 CI fixture，并验证 Binary Tokens、Compressed Binary Tokens 及 Selected Scenes fallback 的真实配置 consumer：
+导出后应从源码目录外启动 PCK 或发布包并走一遍标题、开始游戏及各 overlay，而不只检查导出命令的退出码。仓库维护者可在安装 Godot 4.6.1 后运行标准 smoke；脚本会拒绝覆盖已有 `export_presets.cfg` 或 `stella.local.cfg`，创建一个必须被 export exclude filter 剔除的 synthetic local poison，临时使用 CI fixture，并验证三种 PCK 都看不到该文件，同时覆盖 Binary Tokens、Compressed Binary Tokens 及 Selected Scenes fallback 的真实配置 consumer：
 
 ```bash
 GODOT_BIN=godot tests/pck_smoke/run_export_smoke.sh

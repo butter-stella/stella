@@ -10,7 +10,13 @@ const EXPECTED_CONFIG_SOURCE = "res://stella.cfg"
 
 
 func run() -> void:
-	match OS.get_environment("STELLA_EXPORT_PROBE_MODE"):
+	var probe_mode := OS.get_environment("STELLA_EXPORT_PROBE_MODE")
+	if probe_mode in ["config", "fallback"] and FileAccess.file_exists(
+		"res://stella.local.cfg"
+	):
+		_fail("export contains the excluded stella.local.cfg")
+		return
+	match probe_mode:
 		"config":
 			await _probe_exported_config()
 		"fallback":

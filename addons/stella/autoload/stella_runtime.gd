@@ -164,14 +164,21 @@ func get_applied_config_sources() -> PackedStringArray:
 	return config.get_applied_sources()
 
 
-## Return whether a source path exists, including a directory at that path.
-## The latter is treated as a present-but-unreadable source and diagnosed.
+## Return whether a source path exists, including a directory or dangling link
+## at that path. Those are treated as present-but-unreadable and diagnosed.
 func _config_source_exists(path: String) -> bool:
 	if path == "":
 		return false
 	if FileAccess.file_exists(path):
 		return true
-	return DirAccess.dir_exists_absolute(ProjectSettings.globalize_path(path))
+	var absolute_path := ProjectSettings.globalize_path(path)
+	if DirAccess.dir_exists_absolute(absolute_path):
+		return true
+	var parent_path := absolute_path.get_base_dir()
+	if not DirAccess.dir_exists_absolute(parent_path):
+		return false
+	var parent := DirAccess.open(parent_path)
+	return parent != null and parent.is_link(absolute_path.get_file())
 
 
 func _report_config_error(failed_config: StellaConfig) -> void:
@@ -321,7 +328,7 @@ func resolve_title_scene(fallback_scene: PackedScene = null) -> PackedScene:
 
 	var configured_path := title_scene_path.simplify_path()
 	var configured_scene := _load_title_scene(configured_path)
-	if configured_scene != null and not _scene_root_uses_bootstrap(configured_scene):
+	if _title_scene_is_enterable(configured_scene):
 		return configured_scene
 
 	push_error(
@@ -329,17 +336,25 @@ func resolve_title_scene(fallback_scene: PackedScene = null) -> PackedScene:
 		+ "falling back to the built-in title scene"
 	)
 	title_scene_path = DEFAULT_TITLE_SCENE
-	return fallback
+	if _title_scene_is_enterable(fallback):
+		return fallback
+	push_error("StellaRuntime: built-in title scene is not enterable")
+	return null
 
 
-## A title scene containing bootstrap behavior anywhere in its packed tree
-## would redirect again after entering. Inspect every node script and nested
-## PackedScene instance, including inherited roots, before accepting it.
-func _scene_root_uses_bootstrap(scene: PackedScene) -> bool:
+## Validate the complete packed tree before SceneTree accepts it. Empty scenes,
+## abstract/invalid scripts, scripts whose effective _init requires arguments,
+## and bootstrap behavior would otherwise fail or silently lose behavior only
+## after a scene transition has already begun.
+func _title_scene_is_enterable(scene: PackedScene) -> bool:
+	if scene == null or not scene.can_instantiate():
+		return false
 	var pending: Array[PackedScene] = [scene]
 	var visited: Dictionary = {}
 	while not pending.is_empty():
 		var current: PackedScene = pending.pop_back()
+		if not current.can_instantiate():
+			return false
 		var identity := current.resource_path
 		if identity == "":
 			identity = str(current.get_instance_id())
@@ -348,8 +363,6 @@ func _scene_root_uses_bootstrap(scene: PackedScene) -> bool:
 		visited[identity] = true
 
 		var state := current.get_state()
-		if state.get_node_count() == 0:
-			continue
 		for node_index in state.get_node_count():
 			var nested_scene := state.get_node_instance(node_index)
 			if nested_scene != null:
@@ -361,11 +374,33 @@ func _scene_root_uses_bootstrap(scene: PackedScene) -> bool:
 					node_index,
 					property_index,
 				) as Script
-				while script != null:
-					if script.resource_path.simplify_path() == BOOTSTRAP_SCRIPT:
-						return true
-					script = script.get_base_script()
-	return false
+				if not _title_script_is_enterable(script):
+					return false
+	return true
+
+
+func _title_script_is_enterable(script: Script) -> bool:
+	if script == null:
+		return true
+	if not script.can_instantiate() or script.is_abstract():
+		return false
+
+	var current := script
+	while current != null:
+		if current.resource_path.simplify_path() == BOOTSTRAP_SCRIPT:
+			return false
+		current = current.get_base_script()
+
+	# get_script_method_list() returns the effective override first, followed by
+	# inherited methods. A child that does not override _init therefore exposes
+	# its inherited constructor here, while a no-argument override remains valid.
+	for method: Dictionary in script.get_script_method_list():
+		if method.get("name", &"") != &"_init":
+			continue
+		var arguments: Array = method.get("args", [])
+		var default_arguments: Array = method.get("default_args", [])
+		return arguments.size() <= default_arguments.size()
+	return true
 
 
 func _load_title_scene(path: String) -> PackedScene:
@@ -389,10 +424,23 @@ func return_to_title() -> void:
 	var scene_error := get_tree().change_scene_to_packed(title_scene)
 	if scene_error != OK:
 		push_error(
-			"StellaRuntime: failed to enter the title scene (%s)"
-			% error_string(scene_error)
+			(
+				"StellaRuntime: failed to enter the configured title scene (%s); "
+				+ "falling back to the built-in title scene"
+			) % error_string(scene_error)
 		)
-		return
+		title_scene_path = DEFAULT_TITLE_SCENE
+		title_scene = DEFAULT_TITLE_PACKED_SCENE
+		if not _title_scene_is_enterable(title_scene):
+			push_error("StellaRuntime: built-in title scene is not enterable")
+			return
+		scene_error = get_tree().change_scene_to_packed(title_scene)
+		if scene_error != OK:
+			push_error(
+				"StellaRuntime: failed to enter the built-in title scene (%s)"
+				% error_string(scene_error)
+			)
+			return
 
 	_close_current_overlay()
 	backlog_manager.clear()

@@ -190,9 +190,10 @@ func load_from_path(path: String) -> Error:
 		_set_error(
 			path,
 			ERR_INVALID_DATA,
-			"line %d, column %d: source is not valid UTF-8; save it as UTF-8" % [
+			"line %d, column %d: %s" % [
 				utf8_line,
 				utf8_column,
+				utf8_result["detail"],
 			],
 			utf8_line,
 			utf8_column,
@@ -560,6 +561,55 @@ func _parse_unicode_escape(
 	escape_column: int,
 	digit_count: int,
 ) -> Dictionary:
+	var parsed_codepoint := _parse_unicode_digits(cursor, digit_count)
+	if parsed_codepoint["error"] != OK:
+		return parsed_codepoint
+	var codepoint: int = parsed_codepoint["codepoint"]
+
+	# Godot 4.6 ConfigFile combines UTF-16 surrogate escape pairs, including a
+	# four-digit \u half followed by a six-digit \U half (and vice versa).
+	if codepoint >= 0xD800 and codepoint <= 0xDBFF:
+		if cursor.peek() != "\\" or cursor.peek(1) not in ["u", "U"]:
+			return _parse_failure(
+				ERR_PARSE_ERROR,
+				"invalid Unicode surrogate pair",
+				escape_line,
+				escape_column,
+			)
+		var low_escape_line := cursor.line
+		var low_escape_column := cursor.column
+		cursor.advance()
+		var low_escape_kind := cursor.advance()
+		var low_digit_count := 4 if low_escape_kind == "u" else 6
+		var parsed_low := _parse_unicode_digits(cursor, low_digit_count)
+		if parsed_low["error"] != OK:
+			return parsed_low
+		var low_codepoint: int = parsed_low["codepoint"]
+		if low_codepoint < 0xDC00 or low_codepoint > 0xDFFF:
+			return _parse_failure(
+				ERR_PARSE_ERROR,
+				"invalid Unicode surrogate pair",
+				low_escape_line,
+				low_escape_column,
+			)
+		codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (low_codepoint - 0xDC00)
+	elif codepoint >= 0xDC00 and codepoint <= 0xDFFF:
+		return _parse_failure(
+			ERR_PARSE_ERROR,
+			"invalid Unicode surrogate pair",
+			escape_line,
+			escape_column,
+		)
+
+	# Godot 4.6 ConfigFile accepts an out-of-range six-digit \U escape and
+	# materializes U+FFFD. Match it directly without asking String.chr() to emit
+	# an engine warning containing source digits.
+	if codepoint > 0x10FFFF:
+		return {"error": OK, "value": String.chr(0xFFFD)}
+	return {"error": OK, "value": String.chr(codepoint)}
+
+
+func _parse_unicode_digits(cursor: _ConfigCursor, digit_count: int) -> Dictionary:
 	var codepoint := 0
 	for _digit_index in range(digit_count):
 		var character := cursor.peek()
@@ -573,20 +623,7 @@ func _parse_unicode_escape(
 			)
 		codepoint = codepoint * 16 + digit
 		cursor.advance()
-
-	if codepoint >= 0xD800 and codepoint <= 0xDFFF:
-		return _parse_failure(
-			ERR_PARSE_ERROR,
-			"invalid Unicode codepoint escape",
-			escape_line,
-			escape_column,
-		)
-	# Godot 4.6 ConfigFile accepts an out-of-range six-digit \U escape and
-	# materializes U+FFFD. Match it directly without asking String.chr() to emit
-	# an engine warning containing source digits.
-	if codepoint > 0x10FFFF:
-		return {"error": OK, "value": String.chr(0xFFFD)}
-	return {"error": OK, "value": String.chr(codepoint)}
+	return {"error": OK, "codepoint": codepoint}
 
 
 ## Validate bytes before String conversion. Godot's get_as_text() and
@@ -611,6 +648,12 @@ func _validate_utf8(bytes: PackedByteArray) -> Dictionary:
 
 	while index < bytes.size():
 		var first: int = bytes[index]
+		if first == 0:
+			return _utf8_failure(
+				line,
+				column,
+				"source contains a NUL byte; remove it and save as UTF-8 text",
+			)
 		var codepoint := 0
 		var width := 0
 		if first <= 0x7F:
@@ -677,18 +720,23 @@ func _validate_utf8(bytes: PackedByteArray) -> Dictionary:
 			column += 1
 			previous_was_carriage_return = false
 
-	return {"error": OK, "line": 0, "column": 0}
+	return {"error": OK, "line": 0, "column": 0, "detail": ""}
 
 
 func _is_utf8_continuation(byte: int) -> bool:
 	return byte >= 0x80 and byte <= 0xBF
 
 
-func _utf8_failure(line: int, column: int) -> Dictionary:
+func _utf8_failure(
+	line: int,
+	column: int,
+	detail: String = "source is not valid UTF-8; save it as UTF-8",
+) -> Dictionary:
 	return {
 		"error": ERR_INVALID_DATA,
 		"line": line,
 		"column": column,
+		"detail": detail,
 	}
 
 
@@ -762,7 +810,10 @@ func _skip_config_trivia(cursor: _ConfigCursor) -> void:
 
 func _finish_config_line(cursor: _ConfigCursor, context: String) -> Dictionary:
 	cursor.skip_horizontal_whitespace()
-	if cursor.peek() == ";":
+	# ConfigFile accepts '#' as a trailing comment delimiter after a complete
+	# section header or assignment. A line-leading '#' is intentionally not
+	# trivia because ConfigFile does not consistently treat it as a comment.
+	if cursor.peek() in [";", "#"]:
 		_skip_config_comment(cursor)
 	if cursor.is_at_end():
 		return {"error": OK}

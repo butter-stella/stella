@@ -3,11 +3,13 @@ extends GutTest
 const TEST_BASE_CONFIG_PATH = "user://test_project_base.cfg"
 const TEST_LOCAL_CONFIG_PATH = "user://test_project_local.cfg"
 const TEST_MISSING_CONFIG_PATH = "user://test_project_missing.cfg"
+const TEST_EMPTY_TITLE_PATH = "user://test_empty_title.scn"
 const PRIVATE_SENTINEL = "PRIVATE_VALUE_MUST_NOT_APPEAR_IN_DIAGNOSTIC"
 const TEST_CONFIG_PATHS = [
 	TEST_BASE_CONFIG_PATH,
 	TEST_LOCAL_CONFIG_PATH,
 	TEST_MISSING_CONFIG_PATH,
+	TEST_EMPTY_TITLE_PATH,
 	"user://test_stella.cfg",
 	"user://test_stella_partial.cfg",
 	"user://test_stella_has.cfg",
@@ -47,7 +49,10 @@ func after_each():
 func _remove_test_project_configs() -> void:
 	for path: String in TEST_CONFIG_PATHS:
 		var absolute_path := ProjectSettings.globalize_path(path)
-		if FileAccess.file_exists(path):
+		var parent := DirAccess.open(absolute_path.get_base_dir())
+		if parent != null and parent.is_link(absolute_path.get_file()):
+			parent.remove(absolute_path.get_file())
+		elif FileAccess.file_exists(path):
 			DirAccess.remove_absolute(absolute_path)
 		elif DirAccess.dir_exists_absolute(absolute_path):
 			DirAccess.remove_absolute(absolute_path)
@@ -254,6 +259,21 @@ func test_title_resolver_rejects_bootstrap_scripts_anywhere_in_packed_tree():
 		"res://tests/fixtures/startup/nested_instance_recursive_title.tscn",
 	]:
 		_runtime.title_scene_path = recursive_path
+		var resolved: PackedScene = _runtime.resolve_title_scene(fallback)
+		assert_eq(resolved, fallback)
+		assert_eq(_runtime.title_scene_path, _runtime.DEFAULT_TITLE_SCENE)
+		assert_push_error("falling back to the built-in title scene")
+
+
+func test_title_resolver_rejects_empty_and_required_constructor_scenes():
+	var empty_scene := PackedScene.new()
+	assert_eq(ResourceSaver.save(empty_scene, TEST_EMPTY_TITLE_PATH), OK)
+	var fallback := load(_runtime.DEFAULT_TITLE_SCENE) as PackedScene
+	for invalid_path: String in [
+		TEST_EMPTY_TITLE_PATH,
+		"res://tests/fixtures/startup/required_init_title.tscn",
+	]:
+		_runtime.title_scene_path = invalid_path
 		var resolved: PackedScene = _runtime.resolve_title_scene(fallback)
 		assert_eq(resolved, fallback)
 		assert_eq(_runtime.title_scene_path, _runtime.DEFAULT_TITLE_SCENE)
@@ -493,16 +513,16 @@ func test_parser_supports_comments_crlf_whitespace_and_quoted_escapes():
 		TEST_LOCAL_CONFIG_PATH,
 		(
 			"  ; leading comment\r\n"
-			+ "[ game ] ; section comment\r\n"
-			+ " title = \"Line\\nQuote: \\\";\\\" Slash: \\\\ Snowman: \\u2603\" ; value comment\r\n"
-			+ "[features]\r\n"
+			+ "[ game ] # trailing section comment\r\n"
+			+ " title = \"Line\\nQuote: \\\";#\\\" Slash: \\\\ Snowman: \\u2603\" # value comment\r\n"
+			+ "[features]# compact trailing comment\r\n"
 			+ "\tbacklog = false\r\n"
-			+ "\tsave_slots = 12 ; final comment"
+			+ "\tsave_slots = 12# final comment"
 		),
 	)
 
 	assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), OK)
-	assert_eq(config.game_title, "Line\nQuote: \";\" Slash: \\ Snowman: ☃")
+	assert_eq(config.game_title, "Line\nQuote: \";#\" Slash: \\ Snowman: ☃")
 	assert_false(config.backlog)
 	assert_eq(config.save_slots, 12)
 	assert_eq(config.last_error_line, 0)
@@ -532,6 +552,42 @@ func test_parser_matches_config_file_upper_unicode_and_literal_a_v_escapes():
 		"Godot 4.6.1 ConfigFile-compatible escapes must not emit parser errors")
 
 
+func test_parser_matches_config_file_surrogate_pair_escapes():
+	for encoded_pair: String in [
+		"\\uD83D\\uDE00",
+		"\\uD83D\\U00DE00",
+		"\\U00D83D\\uDE00",
+		"\\U00D83D\\U00DE00",
+	]:
+		config.reset()
+		_write_raw_project_config(
+			TEST_LOCAL_CONFIG_PATH,
+			"[game]\ntitle = \"%s\"\n" % encoded_pair,
+		)
+		assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), OK)
+		assert_eq(config.game_title, "😀")
+	assert_engine_error_count(0,
+		"ConfigFile-compatible surrogate pairs must not emit parser errors")
+
+
+func test_parser_rejects_unpaired_surrogate_escapes_safely():
+	for invalid_pair: String in [
+		"\\uD83D",
+		"\\uDE00",
+		"\\uD83D\\u0041",
+	]:
+		config.reset()
+		_write_raw_project_config(
+			TEST_LOCAL_CONFIG_PATH,
+			"[game]\ntitle = \"%s\"\n" % invalid_pair,
+		)
+		assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), ERR_PARSE_ERROR)
+		assert_eq(config.game_title, "Stella")
+		assert_true(config.last_error_detail.contains("surrogate pair"))
+	assert_engine_error_count(0,
+		"Invalid surrogate halves must not reach String.chr()")
+
+
 func test_malformed_utf8_is_rejected_atomically_with_safe_location():
 	var invalid_sequences: Array[PackedByteArray] = [
 		PackedByteArray([0xC0, 0xAF]),
@@ -556,6 +612,35 @@ func test_malformed_utf8_is_rejected_atomically_with_safe_location():
 		assert_false(config.last_error_detail.contains(PRIVATE_SENTINEL))
 	assert_engine_error_count(0,
 		"Malformed UTF-8 must be rejected before Godot inserts replacement characters")
+
+
+func test_nul_byte_rejects_the_local_source_before_string_conversion():
+	_write_project_config(TEST_BASE_CONFIG_PATH, {
+		"game": {"title": "Base Game"},
+		"features": {"save_slots": 9},
+	})
+	var local_bytes := "[game]\ntitle = \"Local Must Not Commit\"\n".to_utf8_buffer()
+	local_bytes.append(0)
+	local_bytes.append_array("[features]\nsave_slots = 0\n".to_utf8_buffer())
+	_write_project_config_bytes(TEST_LOCAL_CONFIG_PATH, local_bytes)
+
+	var loaded: StellaConfig = _runtime._load_project_config(
+		TEST_BASE_CONFIG_PATH,
+		TEST_LOCAL_CONFIG_PATH,
+	)
+	assert_push_error("failed to load config source")
+
+	assert_eq(loaded.game_title, "Base Game")
+	assert_eq(loaded.save_slots, 9)
+	assert_eq(loaded.get_applied_sources(), PackedStringArray([
+		TEST_BASE_CONFIG_PATH,
+	]))
+	assert_eq(loaded.last_error, ERR_INVALID_DATA)
+	assert_eq(loaded.last_error_source, TEST_LOCAL_CONFIG_PATH)
+	assert_eq(loaded.last_error_line, 3)
+	assert_eq(loaded.last_error_column, 1)
+	assert_true(loaded.last_error_detail.contains("NUL byte"))
+	assert_engine_error_count(0)
 
 
 func test_large_quoted_string_parses_without_quadratic_concatenation():
@@ -754,6 +839,36 @@ func test_unreadable_present_local_reports_error_and_preserves_base():
 	assert_eq(DirAccess.make_dir_absolute(
 		ProjectSettings.globalize_path(TEST_LOCAL_CONFIG_PATH),
 	), OK)
+
+	var loaded: StellaConfig = _runtime._load_project_config(
+		TEST_BASE_CONFIG_PATH,
+		TEST_LOCAL_CONFIG_PATH,
+	)
+	assert_push_error("failed to load config source")
+
+	assert_eq(loaded.game_title, "Base Game")
+	assert_true(loaded.has_config_file)
+	assert_ne(loaded.last_error, OK)
+	assert_eq(loaded.last_error_source, TEST_LOCAL_CONFIG_PATH)
+	assert_eq(loaded.get_applied_sources(), PackedStringArray([
+		TEST_BASE_CONFIG_PATH,
+	]))
+
+
+func test_dangling_local_symlink_reports_error_and_preserves_base():
+	_write_project_config(TEST_BASE_CONFIG_PATH, {
+		"game": {"title": "Base Game"},
+	})
+	var absolute_local := ProjectSettings.globalize_path(TEST_LOCAL_CONFIG_PATH)
+	var parent := DirAccess.open(absolute_local.get_base_dir())
+	assert_not_null(parent)
+	if parent == null:
+		return
+	assert_eq(parent.create_link(
+		"missing-private.cfg",
+		absolute_local.get_file(),
+	), OK)
+	assert_true(parent.is_link(absolute_local.get_file()))
 
 	var loaded: StellaConfig = _runtime._load_project_config(
 		TEST_BASE_CONFIG_PATH,
