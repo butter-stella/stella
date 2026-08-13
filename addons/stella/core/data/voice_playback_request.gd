@@ -6,6 +6,7 @@ class_name VoicePlaybackRequest extends RefCounted
 var _asset: String = ""
 var _character: String = ""
 var _owner_validator: Callable
+var _has_owner_validator: bool = false
 
 
 func _init(
@@ -16,6 +17,7 @@ func _init(
 	_asset = p_asset
 	_character = p_character
 	_owner_validator = p_owner_validator
+	_has_owner_validator = not p_owner_validator.is_null()
 
 
 func get_asset() -> String:
@@ -27,8 +29,10 @@ func get_character() -> String:
 
 
 func has_owner_validator() -> bool:
-	return _owner_validator.is_valid()
+	return _has_owner_validator
 
 
 func is_current() -> bool:
-	return not _owner_validator.is_valid() or bool(_owner_validator.call())
+	if not _has_owner_validator:
+		return true
+	return _owner_validator.is_valid() and bool(_owner_validator.call())

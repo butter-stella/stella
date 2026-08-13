@@ -206,6 +206,49 @@ func test_retired_typed_logical_event_cannot_mutate_demo_ui() -> void:
 		"a retired FINISHED event is rejected before built-in UI consumes it")
 
 
+func test_typed_voice_payloads_stay_retired_after_guard_owner_is_freed() -> void:
+	var owner := Node.new()
+	add_child(owner)
+	var owner_guard := Callable(owner, "is_inside_tree")
+	var request := VoicePlaybackRequest.new("voice", "speaker", owner_guard)
+	var physical := VoicePlaybackEvent.finished(17, owner_guard)
+	var logical := DialogueVoicePlaybackEvent.finished(owner_guard)
+	assert_true(request.is_current())
+	assert_true(physical.is_current())
+	assert_true(logical.is_current())
+
+	owner.free()
+	assert_false(owner_guard.is_valid())
+	assert_true(request.has_owner_validator(),
+		"a released guard must not be reclassified as an unowned request")
+	assert_false(request.is_current())
+	assert_false(physical.is_current())
+	assert_false(logical.is_current())
+
+
+func test_typed_listener_releasing_owner_suppresses_legacy_voice_tail() -> void:
+	var owner := Node.new()
+	add_child(owner)
+	var owner_guard := Callable(owner, "is_inside_tree")
+	var legacy_finished_count := [0]
+	var release_owner: Callable = func(_event: DialogueVoicePlaybackEvent):
+		owner.free()
+	var on_legacy_finished: Callable = func():
+		legacy_finished_count[0] += 1
+	SignalBus.dialogue_voice_playback_event.connect(release_owner)
+	SignalBus.dialogue_voice_finished.connect(on_legacy_finished)
+
+	var accepted := SignalBus.emit_dialogue_voice_playback_event(
+		DialogueVoicePlaybackEvent.finished(owner_guard))
+
+	SignalBus.dialogue_voice_playback_event.disconnect(release_owner)
+	SignalBus.dialogue_voice_finished.disconnect(on_legacy_finished)
+	assert_false(accepted,
+		"releasing the guarded owner retires the event during typed dispatch")
+	assert_eq(legacy_finished_count[0], 0,
+		"a retired typed event cannot emit a legacy compatibility tail")
+
+
 func _assert_getter_only(value: Object, removed_public_names: Array) -> void:
 	var property_names: Array[String] = []
 	for property in value.get_property_list():
