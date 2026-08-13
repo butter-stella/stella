@@ -83,7 +83,7 @@ flowchart TB
 
 ### 1.2 启动配置数据流
 
-项目配置必须在任何消费者构造前解析为一个一致的快照。`StellaRuntime._ready()` 的启动顺序是：
+项目配置必须在任何消费者构造前解析为一个一致的快照。`StellaRuntime._init()` 先解析并应用配置，随后 `_ready()` 才构造子系统；因此即使插件保留宿主自定义主场景，该场景的成员初始化器与 `_init()` 也能读取最终快照。启动顺序是：
 
 ```mermaid
 flowchart LR
@@ -102,7 +102,9 @@ flowchart LR
 
 解析不是在旧对象上反复打补丁。`_load_project_config()` 每次都从新的 `StellaConfig` 和内置默认值开始，`_apply_config()` 则无条件完整复制 resolved snapshot（即使没有来源成功应用），因此删除或禁用配置来源后重新解析不会让 Runtime 镜像残留上一次的路径或其他值；需要复用配置对象的调用方可用 `StellaConfig.reset()` 恢复默认值，并同时清空 `has_config_file`、来源列表和错误元数据。完成解析和应用后才创建 Core 子系统与全局 Presenter；项目默认主场景是无 UI 的 `bootstrap.tscn`，它随后按最终 `title_scene` 进入首次场景，无效路径会诊断并回退内置标题。首次启动和之后返回标题使用同一个 override。已有项目若使用自定义主场景，插件不会覆盖；旧版内置标题主场景会迁移到 bootstrap。场景内 Presenter 在此之后构造或进入 ready，不会观察到部分应用的配置。
 
-测试隔离属于同一启动边界。CI 和测试 wrapper 必须显式设置 `STELLA_DISABLE_LOCAL_CONFIG=1`；该开关只跳过隐式的 `res://stella.local.cfg`，显式传给测试辅助路径的 synthetic 配置仍正常解析。CI 的 GUT 与 rendering job 都会在项目根创建合法的 poison local 配置并带此变量运行；完整 GUT 还直接断言 Runtime 的 `game_title` 未采用 poison 值，而不是只依赖来源记录。
+测试隔离属于同一启动边界。CI 和标准测试命令必须显式设置 `STELLA_DISABLE_LOCAL_CONFIG=1`；该开关只跳过隐式的 `res://stella.local.cfg`，显式传给测试辅助路径的 synthetic 配置仍正常解析。CI 的 GUT 与 rendering job 都会在项目根创建合法的 poison local 配置并带此变量运行；完整 GUT 还直接断言 Runtime 的 `game_title` 未采用 poison 值，而不是只依赖来源记录。
+
+配置中的 scene override 是字符串形式的动态依赖，Selected Scenes/Resources 导出无法自动追踪它们；宿主导出 preset 必须显式收录 title/game/各 overlay scene。bootstrap 对内置 fallback title 使用静态 PackedScene 依赖，确保即使只选择 bootstrap 也能安全回退。CI 另以 Godot 4.6.1 把 Binary Tokens、Compressed Binary Tokens 和 Selected Scenes 三种 PCK 导出后从源码目录外启动，断言最终 `current_scene` 与配置 consumer 的真实值，避免“导出成功但运行态配置损坏”的假绿。
 
 ---
 

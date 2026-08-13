@@ -98,9 +98,20 @@ save_load_scene = ""
 backlog_scene = ""
 ```
 
+`save_slots` 的合法范围是 `1..100`，超出范围会和其他 schema 错误一样原子拒绝整个来源。`backlog` 会控制内置对话工具栏和 Backlog overlay；`cg_gallery` 目前是为兼容已有配置保留的字段，框架尚未提供内置 Gallery UI，宿主项目若实现 Gallery 可以读取该开关。
+
 #### 分层配置与本地覆盖
 
-将可公开、可复现的项目配置提交到受版本控制的 `stella.cfg`（tracked），只把当前开发者或当前机器需要的覆盖写入已被 Git 忽略的 `stella.local.cfg`（ignored）。例如，仓库中提交的基础配置可以是：
+将可公开、可复现的项目配置提交到受版本控制的 `stella.cfg`（tracked），只把当前开发者或当前机器需要的覆盖写入已被 Git 忽略的 `stella.local.cfg`（ignored）。
+
+Stella 插件或 Release zip 不会修改宿主仓库的 `.gitignore`；每个宿主项目必须自行加入根目录规则 `/stella.local.cfg`。提交前可用下面的命令同时验证 ignore 已生效且文件未被跟踪：
+
+```bash
+git check-ignore --quiet -- stella.local.cfg && \
+  ! git ls-files --error-unmatch stella.local.cfg >/dev/null 2>&1
+```
+
+例如，仓库中提交的基础配置可以是：
 
 ```ini
 ; stella.cfg（提交到仓库）
@@ -152,7 +163,15 @@ STELLA_DISABLE_LOCAL_CONFIG=1 godot --headless --path /path/to/project --quit
 
 该环境变量只跳过启动时隐式加载的本地文件；测试代码显式传入的 synthetic 配置路径仍可用于验证分层行为。
 
-发布公共构建时，请在每个 Godot Export Preset 的资源过滤规则中显式包含 `stella.cfg`，并显式排除 `stella.local.cfg` 以及实际存放私有或生成内容的目录（例如上面的 `private_preview/`）。`.gitignore` 只控制 Git 是否跟踪文件，**不会**阻止 Godot 将它打包进导出产物。导出后还应检查资源清单或 PCK，确认这些排除规则确实生效。
+发布公共构建时，请在每个 Godot Export Preset 的资源过滤规则中显式包含 `stella.cfg`，并显式排除 `stella.local.cfg` 以及实际存放私有或生成内容的目录（例如上面的 `private_preview/`）。`.gitignore` 只控制 Git 是否跟踪文件，**不会**阻止 Godot 将它打包进导出产物。
+
+Godot 无法从字符串形式的动态路径自动发现 `[overrides]` 中的场景依赖。使用 **Export All Resources** 时应确认这些资源没有被 exclude filter 排除；使用 **Export Selected Scenes/Resources** 时，必须把配置引用的 `title_scene`、`game_scene`、`settings_scene`、`save_load_scene`、`backlog_scene` 和 `flowchart_scene` 全部加入导出资源集。无效或遗漏的自定义标题会回退内置标题，但遗漏 game/overlay 仍会让对应功能不可用。
+
+导出后应从源码目录外启动 PCK 或发布包并走一遍标题、开始游戏及各 overlay，而不只检查导出命令的退出码。仓库维护者可在安装 Godot 4.6.1 后运行标准 smoke；脚本会拒绝覆盖已有 `export_presets.cfg`，临时使用 CI fixture，并验证 Binary Tokens、Compressed Binary Tokens 及 Selected Scenes fallback 的真实配置 consumer：
+
+```bash
+GODOT_BIN=godot tests/pck_smoke/run_export_smoke.sh
+```
 
 `stella.local.cfg` 只是方便开发的覆盖层，不是 secrets vault：它既不加密，也不保证不会被误导出、备份或读取。不要在其中存放 API token、密码或其他凭据；凭据应通过环境变量或专用密钥管理服务提供。
 

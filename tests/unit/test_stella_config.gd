@@ -124,6 +124,38 @@ func test_load_from_config_file():
 	assert_eq(config.game_scene, "")
 
 
+func test_config_file_saved_primitives_round_trip_in_a_base_only_config():
+	var expected_title := (
+		"First line\nSecond line\tTabbed\rCarriage "
+		+ "Quote: \" Backslash: \\ Bell: " + String.chr(7)
+		+ " Backspace: " + String.chr(8)
+		+ " Form feed: " + String.chr(12)
+		+ " Vertical tab: " + String.chr(11)
+	)
+	_write_project_config(TEST_BASE_CONFIG_PATH, {
+		"game": {
+			"title": expected_title,
+		},
+		"features": {
+			"backlog": false,
+			"save_slots": 100,
+		},
+	})
+	var loaded: StellaConfig = _runtime._load_project_config(
+		TEST_BASE_CONFIG_PATH,
+		TEST_MISSING_CONFIG_PATH,
+	)
+
+	assert_eq(loaded.game_title, expected_title)
+	assert_false(loaded.backlog)
+	assert_eq(loaded.save_slots, 100)
+	assert_eq(loaded.get_applied_sources(), PackedStringArray([
+		TEST_BASE_CONFIG_PATH,
+	]))
+	assert_engine_error_count(0,
+		"ConfigFile-generated primitive values must parse without raw engine errors")
+
+
 func test_partial_config_uses_defaults_for_missing():
 	var path = "user://test_stella_partial.cfg"
 	var cf = ConfigFile.new()
@@ -203,6 +235,19 @@ func test_runtime_title_scene_defaults_to_builtin():
 	_runtime._apply_config()
 
 	assert_eq(_runtime.title_scene_path, "res://addons/stella/scenes/title.tscn")
+
+
+func test_title_resolver_rejects_direct_and_inherited_bootstrap_scripts():
+	var fallback := load(_runtime.DEFAULT_TITLE_SCENE) as PackedScene
+	for recursive_path: String in [
+		"res://tests/fixtures/startup/recursive_title.tscn",
+		"res://tests/fixtures/startup/inherited_recursive_title.tscn",
+	]:
+		_runtime.title_scene_path = recursive_path
+		var resolved: PackedScene = _runtime.resolve_title_scene(fallback)
+		assert_eq(resolved, fallback)
+		assert_eq(_runtime.title_scene_path, _runtime.DEFAULT_TITLE_SCENE)
+		assert_push_error("falling back to the built-in title scene")
 
 
 func test_runtime_title_scene_from_config_override():
@@ -454,6 +499,28 @@ func test_parser_supports_comments_crlf_whitespace_and_quoted_escapes():
 	assert_eq(config.last_error_column, 0)
 
 
+func test_parser_preserves_config_file_unknown_escape_compatibility():
+	_write_raw_project_config(
+		TEST_LOCAL_CONFIG_PATH,
+		"[game]\ntitle = \"unknown \\q escape\"\n",
+	)
+
+	assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), OK)
+	assert_eq(config.game_title, "unknown q escape")
+	assert_engine_error_count(0)
+
+
+func test_parser_accepts_a_utf8_bom_without_escaped_unicode_source_literals():
+	_write_raw_project_config(
+		TEST_LOCAL_CONFIG_PATH,
+		String.chr(0xFEFF) + "[game]\ntitle = \"BOM Game\"\n",
+	)
+
+	assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), OK)
+	assert_eq(config.game_title, "BOM Game")
+	assert_engine_error_count(0)
+
+
 func test_trailing_content_rejects_the_whole_source():
 	_write_raw_project_config(
 		TEST_LOCAL_CONFIG_PATH,
@@ -492,6 +559,45 @@ func test_out_of_range_int_is_rejected_atomically_without_raw_engine_errors():
 		assert_false(config.last_error_detail.contains(unsafe_number))
 	assert_engine_error_count(0,
 		"Range validation must not pass unsafe digits to String.to_int()")
+
+
+func test_save_slots_accepts_supported_range_boundaries():
+	for slot_count: int in [1, 100]:
+		config.reset()
+		_write_project_config(TEST_LOCAL_CONFIG_PATH, {
+			"features": {
+				"save_slots": slot_count,
+			},
+		})
+
+		assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), OK)
+		assert_eq(config.save_slots, slot_count)
+	assert_engine_error_count(0)
+
+
+func test_save_slots_outside_supported_range_is_rejected_atomically_and_safely():
+	for slot_count: int in [0, 101, -1]:
+		config.reset()
+		_write_project_config(TEST_LOCAL_CONFIG_PATH, {
+			"game": {
+				"title": PRIVATE_SENTINEL,
+			},
+			"features": {
+				"save_slots": slot_count,
+			},
+		})
+
+		assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), ERR_INVALID_DATA)
+		assert_eq(config.game_title, "Stella",
+			"A range failure must reject the entire source")
+		assert_eq(config.save_slots, 8)
+		assert_false(config.has_config_file)
+		assert_eq(config.get_applied_sources(), PackedStringArray())
+		assert_true(config.last_error_detail.contains("[features] save_slots"))
+		assert_true(config.last_error_detail.contains("between 1 and 100"))
+		assert_false(config.last_error_detail.contains(PRIVATE_SENTINEL))
+	assert_engine_error_count(0,
+		"Business-range validation must not emit raw parser errors")
 
 
 func test_malformed_present_local_reports_error_and_preserves_base():

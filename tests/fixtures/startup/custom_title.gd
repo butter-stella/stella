@@ -21,12 +21,30 @@ func _ready() -> void:
 		failures.append("resolved game title did not reach the title consumer")
 	if StellaRuntime.config.scenario_path != EXPECTED_SCENARIO:
 		failures.append("resolved scenario did not reach the first scene")
+
+	# Exercise the production feature consumers before the first title frame is
+	# presented. A disabled backlog must neither open UI nor change state.
+	var state_before_backlog: int = StellaRuntime.game_state.current_state
+	StellaRuntime.show_backlog()
 	if (
-		not StellaRuntime.config.cg_gallery
-		or StellaRuntime.config.backlog
-		or StellaRuntime.config.save_slots != 3
+		StellaRuntime._current_overlay != null
+		or StellaRuntime.game_state.current_state != state_before_backlog
 	):
-		failures.append("resolved feature flags did not reach the first scene")
+		failures.append("disabled backlog feature was not consumed")
+
+	# SaveLoadScreen must build exactly the configured number of real slot
+	# buttons, not merely expose the merged integer on StellaConfig.
+	StellaRuntime.show_save_load("load")
+	var save_load_screen := StellaRuntime._current_overlay
+	var slots_container: GridContainer = null
+	if save_load_screen != null:
+		slots_container = save_load_screen.get_node_or_null(
+			"MarginContainer/VBox/SlotsContainer"
+		) as GridContainer
+	if slots_container == null or slots_container.get_child_count() != 3:
+		failures.append("SaveLoadScreen did not consume save_slots")
+	StellaRuntime.close_overlay()
+	await get_tree().process_frame
 
 	var expected_sources := PackedStringArray([
 		"res://stella.cfg",

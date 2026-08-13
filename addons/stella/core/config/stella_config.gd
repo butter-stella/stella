@@ -20,7 +20,12 @@ const _CONFIG_SCHEMA := {
 	"features": {
 		"cg_gallery": {"property": "cg_gallery", "type": TYPE_BOOL},
 		"backlog": {"property": "backlog", "type": TYPE_BOOL},
-		"save_slots": {"property": "save_slots", "type": TYPE_INT},
+		"save_slots": {
+			"property": "save_slots",
+			"type": TYPE_INT,
+			"minimum": 1,
+			"maximum": 100,
+		},
 	},
 	"system_se": {
 		"select": {"property": "se_select", "type": TYPE_STRING},
@@ -37,9 +42,10 @@ const _CONFIG_SCHEMA := {
 }
 
 
-## Minimal cursor for Stella's deliberately small config grammar. Newlines are
-## normalized up front so every parser diagnostic uses stable, one-based
-## line/column positions for both LF and CRLF inputs.
+## Minimal cursor for Stella's deliberately small config grammar. Raw control
+## characters are preserved because ConfigFile.save() writes String newlines,
+## tabs, and carriage returns literally inside quotes. Diagnostics still count
+## CRLF as one physical line ending.
 class _ConfigCursor:
 	extends RefCounted
 
@@ -47,11 +53,12 @@ class _ConfigCursor:
 	var offset: int = 0
 	var line: int = 1
 	var column: int = 1
+	var _previous_was_carriage_return: bool = false
 
 
 	func _init(raw_text: String) -> void:
-		text = raw_text.replace("\r\n", "\n").replace("\r", "\n")
-		if text.begins_with("\uFEFF"):
+		text = raw_text
+		if not text.is_empty() and text.unicode_at(0) == 0xFEFF:
 			text = text.substr(1)
 
 
@@ -71,11 +78,18 @@ class _ConfigCursor:
 			return ""
 		var character := text.substr(offset, 1)
 		offset += 1
-		if character == "\n":
+		if character == "\r":
 			line += 1
 			column = 1
+			_previous_was_carriage_return = true
+		elif character == "\n":
+			if not _previous_was_carriage_return:
+				line += 1
+			column = 1
+			_previous_was_carriage_return = false
 		else:
 			column += 1
+			_previous_was_carriage_return = false
 		return character
 
 
@@ -346,6 +360,22 @@ func _parse_assignment(cursor: _ConfigCursor, section: String) -> Dictionary:
 			value_line,
 			value_column,
 		)
+	if expected_type == TYPE_INT and entry.has("minimum"):
+		var integer_value: int = value
+		var minimum: int = entry["minimum"]
+		var maximum: int = entry["maximum"]
+		if integer_value < minimum or integer_value > maximum:
+			return _parse_failure(
+				ERR_INVALID_DATA,
+				"value for [%s] %s must be between %d and %d" % [
+					section,
+					key,
+					minimum,
+					maximum,
+				],
+				value_line,
+				value_column,
+			)
 
 	var line_result := _finish_config_line(cursor, "value")
 	if line_result["error"] != OK:
@@ -395,31 +425,15 @@ func _parse_quoted_string(cursor: _ConfigCursor) -> Dictionary:
 	cursor.advance()
 
 	while not cursor.is_at_end():
-		var character_line := cursor.line
-		var character_column := cursor.column
 		var character := cursor.advance()
 		if character == "\"":
 			return {"error": OK, "value": value}
-		if character == "\n":
-			return _parse_failure(
-				ERR_PARSE_ERROR,
-				"quoted String contains an unescaped line break",
-				character_line,
-				character_column,
-			)
 		if character == "\\":
 			var escape_result := _parse_string_escape(cursor)
 			if escape_result["error"] != OK:
 				return escape_result
 			value += escape_result["value"]
 			continue
-		if character.unicode_at(0) < 0x20:
-			return _parse_failure(
-				ERR_PARSE_ERROR,
-				"quoted String contains an unescaped control character",
-				character_line,
-				character_column,
-			)
 		value += character
 
 	return _parse_failure(
@@ -466,12 +480,11 @@ func _parse_string_escape(cursor: _ConfigCursor) -> Dictionary:
 		"u":
 			return _parse_unicode_escape(cursor, escape_line, escape_column)
 
-	return _parse_failure(
-		ERR_PARSE_ERROR,
-		"unsupported String escape",
-		escape_line,
-		escape_column,
-	)
+	# VariantParser/ConfigFile accepts unknown escapes and keeps the character
+	# after dropping the backslash (for example, `\q` becomes `q`). Preserve
+	# that established String compatibility without ever reflecting the value in
+	# diagnostics.
+	return {"error": OK, "value": escaped}
 
 
 func _parse_unicode_escape(
@@ -563,8 +576,8 @@ func _skip_config_trivia(cursor: _ConfigCursor) -> void:
 		cursor.skip_horizontal_whitespace()
 		if cursor.peek() == ";":
 			_skip_config_comment(cursor)
-		if cursor.peek() == "\n":
-			cursor.advance()
+		if _is_line_break(cursor.peek()):
+			_consume_line_break(cursor)
 			continue
 		return
 
@@ -575,8 +588,8 @@ func _finish_config_line(cursor: _ConfigCursor, context: String) -> Dictionary:
 		_skip_config_comment(cursor)
 	if cursor.is_at_end():
 		return {"error": OK}
-	if cursor.peek() == "\n":
-		cursor.advance()
+	if _is_line_break(cursor.peek()):
+		_consume_line_break(cursor)
 		return {"error": OK}
 	return _parse_failure(
 		ERR_PARSE_ERROR,
@@ -587,7 +600,17 @@ func _finish_config_line(cursor: _ConfigCursor, context: String) -> Dictionary:
 
 
 func _skip_config_comment(cursor: _ConfigCursor) -> void:
-	while not cursor.is_at_end() and cursor.peek() != "\n":
+	while not cursor.is_at_end() and not _is_line_break(cursor.peek()):
+		cursor.advance()
+
+
+func _is_line_break(character: String) -> bool:
+	return character == "\n" or character == "\r"
+
+
+func _consume_line_break(cursor: _ConfigCursor) -> void:
+	var first := cursor.advance()
+	if first == "\r" and cursor.peek() == "\n":
 		cursor.advance()
 
 

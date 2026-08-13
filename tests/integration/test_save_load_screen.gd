@@ -73,6 +73,17 @@ func test_mode_change_after_ready_rebuilds_slots_without_duplicates() -> void:
 	_assert_slot_state(screen, 1, true)
 
 
+func test_configured_save_slot_count_builds_exact_number_of_buttons() -> void:
+	_runtime.config.save_slots = 3
+	var screen: Control = SAVE_LOAD_SCENE.instantiate()
+	add_child_autoqfree(screen)
+	await get_tree().process_frame
+
+	assert_eq(screen.slots_container.get_child_count(), 3,
+		"SaveLoadScreen must consume the configured save_slots value")
+	assert_eq(screen.slots_container.get_child(2).text, "Slot 3\n— 空 —")
+
+
 func test_tabs_use_the_same_public_mode_transition() -> void:
 	var screen: Control = SAVE_LOAD_SCENE.instantiate()
 	add_child_autoqfree(screen)

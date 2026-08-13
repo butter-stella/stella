@@ -163,6 +163,8 @@ func _setup_toolbar():
 		child.queue_free()
 
 	for btn_info in buttons:
+		if btn_info["id"] == "backlog" and not StellaRuntime.config.backlog:
+			continue
 		var btn = Button.new()
 		btn.flat = true
 		btn.custom_minimum_size = Vector2(60, 30)

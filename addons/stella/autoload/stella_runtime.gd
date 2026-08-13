@@ -6,6 +6,10 @@ const CONFIG_PATH = "res://stella.cfg"
 const LOCAL_CONFIG_PATH = "res://stella.local.cfg"
 const DISABLE_LOCAL_CONFIG_ENV = "STELLA_DISABLE_LOCAL_CONFIG"
 const DEFAULT_TITLE_SCENE = "res://addons/stella/scenes/title.tscn"
+const DEFAULT_TITLE_PACKED_SCENE: PackedScene = preload(
+	"res://addons/stella/scenes/title.tscn"
+)
+const BOOTSTRAP_SCRIPT = "res://addons/stella/scenes/bootstrap.gd"
 const DEFAULT_GAME_SCENE = "res://addons/stella/scenes/game.tscn"
 const DEFAULT_SETTINGS_SCENE = "res://addons/stella/scenes/settings.tscn"
 const DEFAULT_SAVE_LOAD_SCENE = "res://addons/stella/scenes/save_load.tscn"
@@ -49,19 +53,24 @@ var _last_scenario_path: String = ""
 var _current_overlay: Node = null
 
 
-func _notification(what: int) -> void:
-	if what == NOTIFICATION_WM_CLOSE_REQUEST:
-		auto_save()
-
-
-func _ready():
-	# Resolve project config before any subsystem, presenter, or scene consumes it.
+func _init() -> void:
+	# Autoload _ready() runs before the main scene enters the tree, but Godot has
+	# already instantiated that scene by then. Resolve the immutable startup
+	# snapshot in _init() so member initializers and _init() methods on a custom
+	# main scene observe the final base + local values as well.
 	var local_config_path := LOCAL_CONFIG_PATH
 	if _is_implicit_local_config_disabled():
 		local_config_path = ""
 	config = _load_project_config(CONFIG_PATH, local_config_path)
 	_apply_config()
 
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		auto_save()
+
+
+func _ready():
 	save_manager = SaveManager.new()
 	settings_manager = SettingsManager.new()
 	settings_manager.load_settings()
@@ -298,8 +307,78 @@ func continue_from_save(slot_id: int) -> bool:
 	return true
 
 
-## Return to title screen.
+## Resolve the configured title scene with the built-in title as an atomic
+## fallback. Both startup and return-to-title use this path so an invalid local
+## override cannot leave the runtime in a title state while a game scene remains
+## visible.
+func resolve_title_scene(fallback_scene: PackedScene = null) -> PackedScene:
+	var fallback := fallback_scene
+	if fallback == null:
+		fallback = DEFAULT_TITLE_PACKED_SCENE
+
+	var configured_path := title_scene_path.simplify_path()
+	var configured_scene := _load_title_scene(configured_path)
+	if configured_scene != null and not _scene_root_uses_bootstrap(configured_scene):
+		return configured_scene
+
+	push_error(
+		"StellaRuntime: [overrides].title_scene is not a loadable title scene; "
+		+ "falling back to the built-in title scene"
+	)
+	title_scene_path = DEFAULT_TITLE_SCENE
+	return fallback
+
+
+## A bootstrap-derived title scene would execute the redirect behavior again.
+## Inspect the packed root, including inherited scene roots, before entering it.
+func _scene_root_uses_bootstrap(scene: PackedScene) -> bool:
+	var pending: Array[PackedScene] = [scene]
+	var visited: Dictionary = {}
+	while not pending.is_empty():
+		var current: PackedScene = pending.pop_back()
+		var identity := current.resource_path
+		if identity == "":
+			identity = str(current.get_instance_id())
+		if visited.has(identity):
+			continue
+		visited[identity] = true
+
+		var state := current.get_state()
+		if state.get_node_count() == 0:
+			continue
+		var inherited_root := state.get_node_instance(0)
+		if inherited_root != null:
+			pending.append(inherited_root)
+		for property_index in state.get_node_property_count(0):
+			if state.get_node_property_name(0, property_index) != &"script":
+				continue
+			var script := state.get_node_property_value(0, property_index) as Script
+			while script != null:
+				if script.resource_path.simplify_path() == BOOTSTRAP_SCRIPT:
+					return true
+				script = script.get_base_script()
+	return false
+
+
+func _load_title_scene(path: String) -> PackedScene:
+	if path == "" or not ResourceLoader.exists(path, "PackedScene"):
+		return null
+	return load(path) as PackedScene
+## Return to title screen. Destructive cleanup and state transition happen only
+## after SceneTree accepts the resolved (or built-in fallback) scene.
 func return_to_title() -> void:
+	var title_scene := resolve_title_scene()
+	if title_scene == null:
+		push_error("StellaRuntime: built-in title scene is unavailable")
+		return
+	var scene_error := get_tree().change_scene_to_packed(title_scene)
+	if scene_error != OK:
+		push_error(
+			"StellaRuntime: failed to enter the title scene (%s)"
+			% error_string(scene_error)
+		)
+		return
+
 	auto_save()
 	_close_current_overlay()
 	backlog_manager.clear()
@@ -307,8 +386,6 @@ func return_to_title() -> void:
 	auto_play.stop()
 	skip_controller.stop()
 	game_state.transition_to(GameStateMachine.State.TITLE)
-	if title_scene_path != "":
-		get_tree().change_scene_to_file(title_scene_path)
 	if config.title_bgm != "":
 		_play_title_bgm()
 
@@ -800,6 +877,8 @@ func _emit_stage_operation(
 
 ## Show the backlog overlay.
 func show_backlog() -> void:
+	if not config.backlog:
+		return
 	var scene_path = config.backlog_scene if config.backlog_scene != "" else DEFAULT_BACKLOG_SCENE
 	_open_overlay(scene_path)
 	game_state.transition_to(GameStateMachine.State.BACKLOG)

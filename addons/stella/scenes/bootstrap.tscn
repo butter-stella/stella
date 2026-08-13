@@ -1,6 +1,8 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://addons/stella/scenes/bootstrap.gd" id="1_bootstrap"]
+[ext_resource type="PackedScene" path="res://addons/stella/scenes/title.tscn" id="2_default_title"]
 
 [node name="StellaBootstrap" type="Node"]
 script = ExtResource("1_bootstrap")
+metadata/_stella_default_title_dependency = ExtResource("2_default_title")
