@@ -8,6 +8,18 @@ const EXPECTED_GAME_TITLE = "Stella Demo"
 const EXPECTED_SCENARIO = "res://examples/demo/scenarios/demo.stla"
 const EXPECTED_BACKGROUNDS = "res://examples/demo/art/backgrounds/"
 const EXPECTED_CONFIG_SOURCE = "res://stella.cfg"
+const UID_DEPENDENCY_SCRIPT = (
+	"res://tests/fixtures/pck_smoke/export_probe_runner.gd"
+)
+const UID_DEPENDENCY_TEXT = "uid://4elip3ufjpp"
+const NAVIGATION_TITLE_SCENE = (
+	"res://tests/fixtures/startup/cleared_inherited_script_title.tscn"
+)
+const NAVIGATION_GAME_SCENE = "res://tests/fixtures/startup/game.tscn"
+const NAVIGATION_SCENARIO = (
+	"res://tests/fixtures/scenarios/dialogue/presentation_profile.stla"
+)
+const NAVIGATION_SAVE_SLOT = 9173
 
 
 func run() -> void:
@@ -28,6 +40,8 @@ func run() -> void:
 			await _probe_degraded_title_fallbacks()
 		"ready-return":
 			await _probe_ready_return()
+		"navigation-interleaving":
+			await _probe_navigation_interleaving()
 		var unsupported_mode:
 			_fail("unsupported probe mode: %s" % unsupported_mode)
 
@@ -37,6 +51,7 @@ func _probe_exported_config() -> void:
 		return
 
 	var failures := PackedStringArray()
+	_probe_relocated_uid_dependency(failures)
 	if StellaRuntime.config == null:
 		failures.append("StellaRuntime config is null")
 	else:
@@ -67,6 +82,7 @@ func _probe_selected_scenes_fallback() -> void:
 		return
 
 	var failures := PackedStringArray()
+	_probe_relocated_uid_dependency(failures)
 	var current_scene := get_tree().current_scene
 	if current_scene == null or current_scene.scene_file_path != BUILT_IN_TITLE_SCENE:
 		failures.append("fallback did not finish on the built-in title scene")
@@ -176,6 +192,136 @@ func _probe_ready_return() -> void:
 	_finish("ready-return-ok", failures)
 
 
+func _probe_navigation_interleaving() -> void:
+	var failures := PackedStringArray()
+	var original_save_dir: String = StellaRuntime.save_manager.save_dir
+	var original_game_scene: String = StellaRuntime.config.game_scene
+	StellaRuntime.save_manager.save_dir = "user://stella_navigation_probe_saves/"
+	StellaRuntime.config.game_scene = NAVIGATION_GAME_SCENE
+	StellaRuntime.delete_save(NAVIGATION_SAVE_SLOT)
+	StellaRuntime.delete_quick_save()
+	StellaRuntime.delete_auto_save()
+
+	# Produce both manual and continue snapshots from a real parsed scenario.
+	# The engine need not run yet; each facade will install and run its own
+	# restored context after it wins the navigation generation.
+	StellaRuntime._last_scenario_path = NAVIGATION_SCENARIO
+	StellaRuntime._prepare_scenario(NAVIGATION_SCENARIO)
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	StellaRuntime.save(NAVIGATION_SAVE_SLOT)
+	StellaRuntime.quick_save()
+	StellaRuntime._cancel_active_gameplay()
+
+	var later_gameplay_facades: Array[Dictionary] = [
+		{"name": "start_game", "call": _invoke_navigation_start_game},
+		{"name": "load_game", "call": _invoke_navigation_load_game},
+		{
+			"name": "continue_from_save",
+			"call": _invoke_navigation_continue_from_save,
+		},
+		{"name": "quick_load", "call": _invoke_navigation_quick_load},
+		{"name": "continue_game", "call": _invoke_navigation_continue_game},
+	]
+	for facade: Dictionary in later_gameplay_facades:
+		# Give return_to_title a live, unfinished outgoing context so its real
+		# autosave is also a valid candidate for continue_game.
+		StellaRuntime._prepare_scenario(NAVIGATION_SCENARIO)
+		StellaRuntime.title_scene_path = NAVIGATION_TITLE_SCENE
+		StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+		StellaRuntime.return_to_title()
+		(facade["call"] as Callable).call_deferred()
+		if not await _wait_for_navigation_destination(
+			NAVIGATION_GAME_SCENE,
+			GameStateMachine.State.PLAYING,
+			true,
+		):
+			failures.append(
+				"%s did not supersede return_to_title" % facade["name"]
+			)
+			break
+		if StellaRuntime.title_scene_path != NAVIGATION_TITLE_SCENE:
+			failures.append(
+				"stale return normalized the title path after %s won"
+				% facade["name"]
+			)
+		StellaRuntime._cancel_active_gameplay()
+
+	# Reverse the ordering: a later return owns the final scene and must leave no
+	# context from the superseded start_game continuation alive.
+	if failures.is_empty():
+		StellaRuntime.title_scene_path = NAVIGATION_TITLE_SCENE
+		StellaRuntime.start_game(NAVIGATION_SCENARIO, NAVIGATION_GAME_SCENE)
+		StellaRuntime.return_to_title()
+		if not await _wait_for_navigation_destination(
+			NAVIGATION_TITLE_SCENE,
+			GameStateMachine.State.TITLE,
+			false,
+		):
+			failures.append("return_to_title did not supersede start_game")
+
+	StellaRuntime._cancel_active_gameplay()
+	StellaRuntime.delete_save(NAVIGATION_SAVE_SLOT)
+	StellaRuntime.delete_quick_save()
+	StellaRuntime.delete_auto_save()
+	var probe_save_dir := ProjectSettings.globalize_path(
+		StellaRuntime.save_manager.save_dir,
+	)
+	StellaRuntime.save_manager.save_dir = original_save_dir
+	StellaRuntime.config.game_scene = original_game_scene
+	if DirAccess.dir_exists_absolute(probe_save_dir):
+		DirAccess.remove_absolute(probe_save_dir)
+	_finish("navigation-interleaving-ok", failures)
+
+
+func _invoke_navigation_start_game() -> void:
+	await StellaRuntime.start_game(NAVIGATION_SCENARIO, NAVIGATION_GAME_SCENE)
+
+
+func _invoke_navigation_load_game() -> void:
+	await StellaRuntime.load_game(
+		NAVIGATION_SAVE_SLOT,
+		NAVIGATION_SCENARIO,
+		NAVIGATION_GAME_SCENE,
+	)
+
+
+func _invoke_navigation_continue_from_save() -> void:
+	await StellaRuntime.continue_from_save(NAVIGATION_SAVE_SLOT)
+
+
+func _invoke_navigation_quick_load() -> void:
+	await StellaRuntime.quick_load()
+
+
+func _invoke_navigation_continue_game() -> void:
+	await StellaRuntime.continue_game()
+
+
+func _wait_for_navigation_destination(
+	expected_path: String,
+	expected_state: int,
+	expect_context: bool,
+) -> bool:
+	for _frame_index in range(240):
+		var current_scene := get_tree().current_scene
+		var context_matches := (
+			StellaRuntime.engine.context != null
+			if expect_context
+			else StellaRuntime.engine.context == null
+		)
+		if (
+			StellaRuntime._navigation_kind.is_empty()
+			and current_scene != null
+			and current_scene.scene_file_path.simplify_path()
+				== expected_path.simplify_path()
+			and StellaRuntime.game_state.current_state == expected_state
+			and context_matches
+		):
+			return true
+		await get_tree().process_frame
+	return false
+
+
 func _write_degraded_title_fixtures() -> PackedStringArray:
 	var missing_script_path := "user://stella_probe_missing_script_title.tscn"
 	var missing_nested_path := "user://stella_probe_missing_nested_title.tscn"
@@ -223,6 +369,37 @@ func _cleanup_degraded_title_fixtures(paths: PackedStringArray) -> void:
 	for path: String in paths:
 		if FileAccess.file_exists(path):
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+
+func _probe_relocated_uid_dependency(failures: PackedStringArray) -> void:
+	var scene_path := "user://stella_probe_uid_relocated_title.tscn"
+	var file := FileAccess.open(scene_path, FileAccess.WRITE)
+	if file == null:
+		failures.append("could not create the relocated-UID title fixture")
+		return
+	file.store_string(
+		"[gd_scene load_steps=2 format=3]\n\n"
+		+ ("[ext_resource type=\"Script\" uid=\"%s\" "
+			% UID_DEPENDENCY_TEXT)
+		+ "path=\"user://stale_relocated_dependency.gd\" "
+		+ "id=\"1_script\"]\n\n"
+		+ "[node name=\"UidRelocatedTitle\" type=\"Node\"]\n"
+		+ "script = ExtResource(\"1_script\")\n"
+	)
+	file.close()
+
+	var dependencies := ResourceLoader.get_dependencies(scene_path)
+	if dependencies.size() != 1:
+		failures.append("relocated-UID fixture did not expose one dependency")
+	elif (
+		StellaRuntime._resource_dependency_path(dependencies[0])
+		!= UID_DEPENDENCY_SCRIPT
+	):
+		failures.append("dependency preflight preferred the stale UID fallback")
+	var loaded := StellaRuntime._load_title_scene(scene_path)
+	if loaded == null:
+		failures.append("relocated UID title was rejected")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(scene_path))
 
 
 func _wait_for_return_completion() -> bool:

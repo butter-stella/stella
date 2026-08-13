@@ -7,6 +7,11 @@ const TEST_EMPTY_TITLE_PATH = "user://test_empty_title.scn"
 const TEST_MISSING_SCRIPT_TITLE_PATH = "user://test_missing_script_title.tscn"
 const TEST_MISSING_NESTED_TITLE_PATH = "user://test_missing_nested_title.tscn"
 const TEST_WRONG_SCRIPT_BASE_TITLE_PATH = "user://test_wrong_script_base_title.tscn"
+const TEST_UID_RELOCATED_TITLE_PATH = "user://test_uid_relocated_title.tscn"
+const UID_DEPENDENCY_SCRIPT = (
+	"res://tests/fixtures/pck_smoke/export_probe_runner.gd"
+)
+const UID_DEPENDENCY_TEXT = "uid://4elip3ufjpp"
 const PRIVATE_SENTINEL = "PRIVATE_VALUE_MUST_NOT_APPEAR_IN_DIAGNOSTIC"
 const TEST_CONFIG_PATHS = [
 	TEST_BASE_CONFIG_PATH,
@@ -16,6 +21,7 @@ const TEST_CONFIG_PATHS = [
 	TEST_MISSING_SCRIPT_TITLE_PATH,
 	TEST_MISSING_NESTED_TITLE_PATH,
 	TEST_WRONG_SCRIPT_BASE_TITLE_PATH,
+	TEST_UID_RELOCATED_TITLE_PATH,
 	"user://test_stella.cfg",
 	"user://test_stella_partial.cfg",
 	"user://test_stella_has.cfg",
@@ -285,6 +291,51 @@ func test_title_resolver_rejects_empty_and_required_constructor_scenes():
 		assert_eq(resolved, fallback)
 		assert_eq(_runtime.title_scene_path, _runtime.DEFAULT_TITLE_SCENE)
 		assert_push_error("falling back to the built-in title scene")
+
+
+func test_title_resolver_accepts_inherited_scene_that_explicitly_clears_script():
+	var cleared_path := (
+		"res://tests/fixtures/startup/cleared_inherited_script_title.tscn"
+	)
+	_runtime.title_scene_path = cleared_path
+	var resolved: PackedScene = _runtime.resolve_title_scene()
+
+	assert_not_null(resolved)
+	assert_eq(resolved.resource_path, cleared_path)
+	assert_eq(_runtime.title_scene_path, cleared_path)
+	assert_engine_error_count(0)
+
+
+func test_title_dependency_prefers_relocated_uid_over_stale_fallback_path():
+	assert_true(ResourceLoader.exists(UID_DEPENDENCY_SCRIPT, "Script"))
+	assert_true(ResourceUID.has_id(ResourceUID.text_to_id(UID_DEPENDENCY_TEXT)))
+	_write_raw_project_config(
+		TEST_UID_RELOCATED_TITLE_PATH,
+		(
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"Script\" uid=\"%s\" "
+			% UID_DEPENDENCY_TEXT
+			+ "path=\"user://stale_relocated_dependency.gd\" "
+			+ "id=\"1_script\"]\n\n"
+			+ "[node name=\"UidRelocatedTitle\" type=\"Node\"]\n"
+			+ "script = ExtResource(\"1_script\")\n"
+		),
+	)
+
+	var dependencies := ResourceLoader.get_dependencies(
+		TEST_UID_RELOCATED_TITLE_PATH,
+	)
+	assert_eq(dependencies.size(), 1)
+	assert_eq(
+		_runtime._resource_dependency_path(dependencies[0]),
+		UID_DEPENDENCY_SCRIPT,
+	)
+	_runtime.title_scene_path = TEST_UID_RELOCATED_TITLE_PATH
+	var resolved: PackedScene = _runtime.resolve_title_scene()
+	assert_not_null(resolved)
+	assert_eq(resolved.resource_path, TEST_UID_RELOCATED_TITLE_PATH)
+	assert_eq(_runtime.title_scene_path, TEST_UID_RELOCATED_TITLE_PATH)
+	assert_engine_error_count(0)
 
 
 func test_title_resolver_rejects_degraded_dependencies_and_wrong_script_base():

@@ -216,6 +216,22 @@ jobs:
             exit 1
           fi
 
+          rm -f -- "$marker"
+          navigation_status=0
+          STELLA_EXPORT_PROBE_MODE="navigation-interleaving" \
+            STELLA_EXPORT_PROBE_MARKER="$marker" \
+            godot --headless --path . --quit-after 600 \
+            res://tests/fixtures/pck_smoke/export_probe_host.tscn \
+            >"$fallback_log" 2>&1 || navigation_status=$?
+          cat "$fallback_log"
+          if (( navigation_status != 0 )); then
+            exit "$navigation_status"
+          fi
+          if ! grep -Fxq 'navigation-interleaving-ok' "$marker"; then
+            echo "::error::Runtime navigation ownership was not last-call-wins"
+            exit 1
+          fi
+
           cleanup
           trap - EXIT
         timeout-minutes: 2

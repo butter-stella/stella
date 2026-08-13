@@ -52,6 +52,10 @@ var title_scene_path: String = ""
 var _last_scenario_path: String = ""
 var _current_overlay: Node = null
 var _return_to_title_pending: bool = false
+var _navigation_generation: int = 0
+var _navigation_kind: String = ""
+var _navigation_scene_request_pending: bool = false
+var _navigation_pending_scene_path: String = ""
 
 
 func _init() -> void:
@@ -248,24 +252,31 @@ func _get_game_scene_path() -> String:
 
 ## Start a new game — switch to game scene, then run scenario.
 func start_game(scenario_path: String = "", game_scene_path: String = "") -> void:
-	_close_current_overlay()
 	if scenario_path == "":
 		scenario_path = config.scenario_path
 	if game_scene_path == "":
 		game_scene_path = _get_game_scene_path()
 
+	var navigation := _begin_navigation("start_game")
+	_cancel_active_gameplay()
+	_close_current_overlay()
 	_last_scenario_path = scenario_path
 	game_state.transition_to(GameStateMachine.State.PLAYING)
-	get_tree().change_scene_to_file(game_scene_path)
-	# Wait for scene to be ready before starting engine
-	await get_tree().tree_changed
-	await get_tree().process_frame
+	if not await _enter_scene_file_and_confirm(
+		game_scene_path,
+		navigation,
+		"game",
+	):
+		_finish_navigation(navigation)
+		return
+	if not _owns_navigation(navigation):
+		return
 	_start_scenario_internal(scenario_path)
+	_finish_navigation(navigation)
 
 
 ## Load a saved game — switch to game scene, restore state, run.
 func load_game(slot_id: int, scenario_path: String = "", game_scene_path: String = "") -> bool:
-	_close_current_overlay()
 	if not save_manager.has_save(slot_id):
 		return false
 	if scenario_path == "":
@@ -273,12 +284,22 @@ func load_game(slot_id: int, scenario_path: String = "", game_scene_path: String
 	if game_scene_path == "":
 		game_scene_path = _get_game_scene_path()
 
+	var navigation := _begin_navigation("load_game")
+	_cancel_active_gameplay()
+	_close_current_overlay()
 	_last_scenario_path = scenario_path
 	game_state.transition_to(GameStateMachine.State.PLAYING)
-	get_tree().change_scene_to_file(game_scene_path)
-	await get_tree().tree_changed
-	await get_tree().process_frame
+	if not await _enter_scene_file_and_confirm(
+		game_scene_path,
+		navigation,
+		"game",
+	):
+		_finish_navigation(navigation)
+		return false
+	if not _owns_navigation(navigation):
+		return false
 	_load_scenario_and_restore(scenario_path, slot_id)
+	_finish_navigation(navigation)
 	return true
 
 
@@ -292,22 +313,34 @@ func continue_from_save(slot_id: int) -> bool:
 		scenario_path = config.scenario_path
 	if scenario_path == "":
 		return false
-	_last_scenario_path = scenario_path
 
 	# Determine if we're on the title screen (directly or via overlay opened from title)
-	var from_title = _is_on_title_screen()
+	var needs_game_scene := (
+		_is_on_title_screen()
+		or _navigation_scene_request_pending
+		or _return_to_title_pending
+	)
+	var navigation := _begin_navigation("continue_from_save")
+	_cancel_active_gameplay()
+	_last_scenario_path = scenario_path
 
-	if from_title:
+	if needs_game_scene:
 		# From title screen: switch to game scene first.
-		# Close overlay AFTER scene change — queue_free before change_scene_to_file
-		# causes tree_changed to fire from overlay removal instead of scene swap,
-		# so presenters aren't connected when restore signals emit.
+		# Close overlay after the confirmed scene change so its UI remains alive
+		# while an invoked load transaction is pending.
 		game_state.transition_to(GameStateMachine.State.PLAYING)
-		get_tree().change_scene_to_file(_get_game_scene_path())
-		await get_tree().tree_changed
-		await get_tree().process_frame
+		if not await _enter_scene_file_and_confirm(
+			_get_game_scene_path(),
+			navigation,
+			"game",
+		):
+			_finish_navigation(navigation)
+			return false
+		if not _owns_navigation(navigation):
+			return false
 		_close_current_overlay()
 		_load_scenario_and_restore(scenario_path, slot_id)
+		_finish_navigation(navigation)
 		return true
 
 	# In-game: reload in place
@@ -315,6 +348,102 @@ func continue_from_save(slot_id: int) -> bool:
 	_reset_presentation()
 	game_state.transition_to(GameStateMachine.State.PLAYING)
 	_load_scenario_and_restore(scenario_path, slot_id)
+	_finish_navigation(navigation)
+	return true
+
+
+## Begin one Runtime-owned navigation transaction. A later facade call always
+## supersedes the previous owner; suspended continuations must verify this
+## generation before mutating scenes, engine state, or configuration.
+func _begin_navigation(kind: String) -> int:
+	_navigation_generation += 1
+	_navigation_kind = kind
+	if kind != "return_to_title":
+		_return_to_title_pending = false
+	return _navigation_generation
+
+
+func _owns_navigation(generation: int) -> bool:
+	return generation == _navigation_generation
+
+
+func _finish_navigation(generation: int) -> void:
+	if not _owns_navigation(generation):
+		return
+	_navigation_kind = ""
+	_navigation_scene_request_pending = false
+	_navigation_pending_scene_path = ""
+	_return_to_title_pending = false
+
+
+## Detach before aborting so a suspended old ScenarioEngine.run() observes its
+## context-generation guard and cannot emit scenario_ended into the new owner.
+func _cancel_active_gameplay() -> void:
+	if engine == null or engine.context == null:
+		return
+	var old_context: ScenarioContext = engine.context
+	engine.context = null
+	old_context.is_finished = true
+	SignalBus.engine_abort_requested.emit()
+
+
+func _enter_scene_file_and_confirm(
+	scene_path: String,
+	navigation: int,
+	description: String,
+) -> bool:
+	if not await _await_navigation_scene_slot(navigation):
+		return false
+	var expected_path := scene_path.simplify_path()
+	_navigation_scene_request_pending = true
+	_navigation_pending_scene_path = expected_path
+	var scene_error := get_tree().change_scene_to_file(scene_path)
+	if scene_error != OK:
+		if _owns_navigation(navigation):
+			_navigation_scene_request_pending = false
+			_navigation_pending_scene_path = ""
+			push_error(
+				"StellaRuntime: failed to request the %s scene (%s)"
+				% [description, error_string(scene_error)]
+			)
+		return false
+
+	while _owns_navigation(navigation):
+		await get_tree().scene_changed
+		if not _owns_navigation(navigation):
+			return false
+		var current_scene := get_tree().current_scene
+		if (
+			current_scene != null
+			and current_scene.scene_file_path.simplify_path() == expected_path
+		):
+			_navigation_scene_request_pending = false
+			_navigation_pending_scene_path = ""
+			return true
+	return false
+
+
+## SceneTree accepts one main-scene replacement at a time. When a newer facade
+## supersedes an owner with a request already in flight, let that old request
+## settle without letting its suspended continuation commit anything, then give
+## the shared request slot to the new generation.
+func _await_navigation_scene_slot(navigation: int) -> bool:
+	if not _owns_navigation(navigation):
+		return false
+	if not _navigation_scene_request_pending:
+		return true
+
+	var current_scene := get_tree().current_scene
+	if (
+		current_scene == null
+		or current_scene.scene_file_path.simplify_path()
+			!= _navigation_pending_scene_path
+	):
+		await get_tree().scene_changed
+		if not _owns_navigation(navigation):
+			return false
+	_navigation_scene_request_pending = false
+	_navigation_pending_scene_path = ""
 	return true
 
 
@@ -390,8 +519,11 @@ func _title_scene_is_enterable(scene: PackedScene) -> bool:
 					node_index,
 					property_index,
 				)
-				# Missing external scripts are represented as null in the packed
-				# state. Treat that as degradation, not a scriptless title node.
+				# An inherited scene may explicitly clear its inherited root script
+				# with `script = null`. Missing external scripts are rejected earlier
+				# by the recursive dependency preflight, so null is safe here.
+				if script_value == null:
+					continue
 				if not script_value is Script:
 					return false
 				if not _title_script_is_enterable(
@@ -504,9 +636,19 @@ func _title_scene_dependencies_are_available(path: String) -> bool:
 
 func _resource_dependency_path(raw_dependency: String) -> String:
 	var fields := raw_dependency.split("::", true)
-	# Imported/exported resources may report UID::type::fallback-path. Prefer
-	# the stable fallback path when it is present so recursive inspection also
-	# works in PCK builds; ordinary path-only entries use the first field.
+	# Imported/exported resources may report UID::type::fallback-path. A valid
+	# UID follows resource relocation, while the serialized fallback can be
+	# stale. Prefer the registry's canonical path and use the fallback only when
+	# that UID is unavailable (including stripped/older PCK metadata).
+	if not fields.is_empty() and fields[0].begins_with("uid://"):
+		var dependency_uid := ResourceUID.text_to_id(fields[0])
+		if dependency_uid != ResourceUID.INVALID_ID and ResourceUID.has_id(dependency_uid):
+			var canonical_path := ResourceUID.get_id_path(dependency_uid)
+			if (
+				not canonical_path.is_empty()
+				and ResourceLoader.exists(canonical_path)
+			):
+				return canonical_path.simplify_path()
 	if fields.size() >= 3 and not fields[2].is_empty():
 		return fields[2].simplify_path()
 	if fields.is_empty():
@@ -521,25 +663,32 @@ func _resource_dependency_path(raw_dependency: String) -> String:
 func return_to_title() -> void:
 	if _return_to_title_pending:
 		return
+	var navigation := _begin_navigation("return_to_title")
 	_return_to_title_pending = true
-	_return_to_title_transaction.call_deferred()
+	_return_to_title_transaction.call_deferred(navigation)
 
 
-func _return_to_title_transaction() -> void:
+func _return_to_title_transaction(navigation: int) -> void:
+	if not _owns_navigation(navigation):
+		return
 	var title_scene := resolve_title_scene()
 	if title_scene == null:
 		push_error("StellaRuntime: built-in title scene is unavailable")
-		_return_to_title_pending = false
+		_finish_navigation(navigation)
 		return
 
 	# Snapshot scene-owned providers while the outgoing scene is still alive.
 	# The deferred transaction still runs before change_scene_to_packed() removes
 	# it, so saving after the request cannot capture teardown state.
 	auto_save()
+	_cancel_active_gameplay()
 	var entered_title := await _enter_title_scene_and_confirm(
 		title_scene,
 		"configured",
+		navigation,
 	)
+	if not _owns_navigation(navigation):
+		return
 	var title_path := title_scene.resource_path.simplify_path()
 	if not entered_title and title_path != DEFAULT_TITLE_SCENE:
 		push_error(
@@ -550,15 +699,18 @@ func _return_to_title_transaction() -> void:
 		title_scene = DEFAULT_TITLE_PACKED_SCENE
 		if not _title_scene_is_enterable(title_scene):
 			push_error("StellaRuntime: built-in title scene is not enterable")
-			_return_to_title_pending = false
+			_finish_navigation(navigation)
 			return
 		entered_title = await _enter_title_scene_and_confirm(
 			title_scene,
 			"built-in",
+			navigation,
 		)
+		if not _owns_navigation(navigation):
+			return
 	if not entered_title:
 		push_error("StellaRuntime: failed to enter the built-in title scene")
-		_return_to_title_pending = false
+		_finish_navigation(navigation)
 		return
 
 	_close_current_overlay()
@@ -569,41 +721,51 @@ func _return_to_title_transaction() -> void:
 	game_state.transition_to(GameStateMachine.State.TITLE)
 	if config.title_bgm != "":
 		_play_title_bgm()
-	_return_to_title_pending = false
+	_finish_navigation(navigation)
 
 
 func _enter_title_scene_and_confirm(
 	title_scene: PackedScene,
 	description: String,
+	navigation: int,
 ) -> bool:
+	if not await _await_navigation_scene_slot(navigation):
+		return false
 	var expected_path := title_scene.resource_path.simplify_path()
+	_navigation_scene_request_pending = true
+	_navigation_pending_scene_path = expected_path
 	var scene_error := get_tree().change_scene_to_packed(title_scene)
 	if scene_error != OK:
-		push_error(
-			"StellaRuntime: failed to request the %s title scene (%s)"
-			% [description, error_string(scene_error)]
-		)
+		if _owns_navigation(navigation):
+			_navigation_scene_request_pending = false
+			_navigation_pending_scene_path = ""
+			push_error(
+				"StellaRuntime: failed to request the %s title scene (%s)"
+				% [description, error_string(scene_error)]
+			)
 		return false
 
-	await get_tree().scene_changed
-	var current_scene := get_tree().current_scene
-	if (
-		current_scene != null
-		and current_scene.scene_file_path.simplify_path() == expected_path
-	):
-		return true
-	var current_path := "<null>"
-	if current_scene != null:
-		current_path = current_scene.scene_file_path
-	push_error(
-		"StellaRuntime: %s title transition completed on %s instead of %s"
-		% [description, current_path, expected_path]
-	)
+	# Multiple Runtime facades may have queued scene requests in the same idle
+	# turn. Ignore scene_changed events for an older request while this owner is
+	# still current; a newer facade changes the generation and exits this loop.
+	while _owns_navigation(navigation):
+		await get_tree().scene_changed
+		if not _owns_navigation(navigation):
+			return false
+		var current_scene := get_tree().current_scene
+		if (
+			current_scene != null
+			and current_scene.scene_file_path.simplify_path() == expected_path
+		):
+			_navigation_scene_request_pending = false
+			_navigation_pending_scene_path = ""
+			return true
 	return false
 
 
 ## Legacy API — starts scenario in current scene (for testing).
 func start_scenario(scenario_path: String) -> void:
+	_cancel_active_gameplay()
 	_last_scenario_path = scenario_path
 	game_state.transition_to(GameStateMachine.State.PLAYING)
 	_start_scenario_internal(scenario_path)
@@ -857,21 +1019,36 @@ func quick_load() -> bool:
 		scenario_path = config.scenario_path
 	if scenario_path == "":
 		return false
+
+	var needs_game_scene := (
+		_is_on_title_screen()
+		or _navigation_scene_request_pending
+		or _return_to_title_pending
+	)
+	var navigation := _begin_navigation("quick_load")
+	_cancel_active_gameplay()
 	_last_scenario_path = scenario_path
 
-	# From title screen: need to switch to game scene first
-	# Close overlay AFTER scene ready — same reason as continue_from_save.
-	if game_state.current_state == GameStateMachine.State.TITLE:
+	# From title or while superseding another scene request, explicitly assert
+	# the game destination before restoring providers and starting the engine.
+	if needs_game_scene:
 		game_state.transition_to(GameStateMachine.State.PLAYING)
-		get_tree().change_scene_to_file(_get_game_scene_path())
-		await get_tree().tree_changed
-		await get_tree().process_frame
+		if not await _enter_scene_file_and_confirm(
+			_get_game_scene_path(),
+			navigation,
+			"game",
+		):
+			_finish_navigation(navigation)
+			return false
+		if not _owns_navigation(navigation):
+			return false
 		_close_current_overlay()
 		_prepare_scenario(scenario_path)
 		var ok = save_manager.quick_load()
 		if ok:
 			presentation_state.apply_to_presenters()
 			engine.run()
+		_finish_navigation(navigation)
 		return ok
 
 	# In-game: reload in place
@@ -881,6 +1058,7 @@ func quick_load() -> bool:
 	if ok:
 		presentation_state.apply_to_presenters()
 		engine.run()
+	_finish_navigation(navigation)
 	return ok
 
 
@@ -928,21 +1106,36 @@ func continue_game() -> bool:
 		scenario_path = config.scenario_path
 	if scenario_path == "":
 		return false
+
+	var needs_game_scene := (
+		_is_on_title_screen()
+		or _navigation_scene_request_pending
+		or _return_to_title_pending
+	)
+	var navigation := _begin_navigation("continue_game")
+	_cancel_active_gameplay()
 	_last_scenario_path = scenario_path
 
-	# From title screen: switch to game scene first
-	# Close overlay AFTER scene ready — same reason as continue_from_save.
-	if game_state.current_state == GameStateMachine.State.TITLE:
+	# From title or while superseding another scene request, explicitly assert
+	# the game destination before restoring providers and starting the engine.
+	if needs_game_scene:
 		game_state.transition_to(GameStateMachine.State.PLAYING)
-		get_tree().change_scene_to_file(_get_game_scene_path())
-		await get_tree().tree_changed
-		await get_tree().process_frame
+		if not await _enter_scene_file_and_confirm(
+			_get_game_scene_path(),
+			navigation,
+			"game",
+		):
+			_finish_navigation(navigation)
+			return false
+		if not _owns_navigation(navigation):
+			return false
 		_close_current_overlay()
 		_prepare_scenario(scenario_path)
 		var ok = _load_continue(continue_type)
 		if ok:
 			presentation_state.apply_to_presenters()
 			engine.run()
+		_finish_navigation(navigation)
 		return ok
 
 	# In-game: reload in place
@@ -952,6 +1145,7 @@ func continue_game() -> bool:
 	if ok:
 		presentation_state.apply_to_presenters()
 		engine.run()
+	_finish_navigation(navigation)
 	return ok
 
 
