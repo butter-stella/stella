@@ -131,6 +131,7 @@ func test_dialogue_handler_scopes_compiled_presentation_without_changing_signal_
 			received.append({
 				"mode": mode,
 				"profile": _bus.current_dialogue_presentation_profile(),
+				"provenance": _bus.current_dialogue_presentation_provenance(),
 				"declarative": _bus.current_dialogue_uses_declarative_presentation(),
 				"nvl_page_key": _bus.current_dialogue_nvl_page_key(),
 			})
@@ -140,6 +141,12 @@ func test_dialogue_handler_scopes_compiled_presentation_without_changing_signal_
 		"mode": "nvl",
 		"declarative_presentation": true,
 		"presentation_profile": {"line_spacing": 8},
+		"presentation_profile_provenance": {
+			"kind": "stla",
+			"profile_name": "novel",
+			"source_path": "res://story/main.stla",
+			"field_lines": {"line_spacing": 4},
+		},
 	})
 
 	_bus.advance_requested.emit.call_deferred()
@@ -148,6 +155,9 @@ func test_dialogue_handler_scopes_compiled_presentation_without_changing_signal_
 	assert_eq(received.size(), 1)
 	assert_eq(received[0]["mode"], "nvl")
 	assert_eq(received[0]["profile"], {"line_spacing": 8})
+	assert_eq(received[0]["provenance"].get("profile_name"), "novel")
+	assert_eq(received[0]["provenance"].get("source_path"),
+		"res://story/main.stla")
 	assert_true(received[0]["declarative"])
 	var expected_page_key := "%d:1" % _context.get_instance_id()
 	assert_eq(received[0]["nvl_page_key"], expected_page_key)
@@ -155,6 +165,10 @@ func test_dialogue_handler_scopes_compiled_presentation_without_changing_signal_
 		"profile metadata must not leak past synchronous signal dispatch")
 	assert_eq(_bus.current_dialogue_nvl_page_key(), "",
 		"NVL page metadata must not leak past synchronous signal dispatch")
+	assert_eq(_bus.current_dialogue_presentation_provenance(), {},
+		"diagnostic provenance must not leak past synchronous signal dispatch")
+	assert_false(_context.capture_snapshot().has("presentation_profile_provenance"),
+		"diagnostic provenance must not enter scenario save snapshots")
 
 
 func test_dialogue_handler_keys_nvl_pages_by_runtime_activation() -> void:
@@ -200,6 +214,132 @@ func test_stage_layer_handler_emits_canonical_operation_batch():
 	assert_almost_eq(received[0][0][0]["duration"], 0.25, 0.001)
 	assert_false(received[0][1])
 	_bus.stage_operations_requested.disconnect(callback)
+
+
+func test_nested_raw_show_does_not_inherit_outer_presentation_metadata() -> void:
+	var inner_metadata: Array[Dictionary] = []
+	var inner_legacy_metadata: Array[Dictionary] = []
+	var outer_metadata_after_inner: Array[Dictionary] = []
+	var nested := false
+	_bus.show_dialogue.connect(func(character, segments, _mode):
+		if character == "outer" and not nested:
+			nested = true
+			_bus.show_dialogue.emit(
+				"inner", [{
+					"text": "inner", "voice": "", "expression": "",
+				}], "adv")
+		elif character == "inner":
+			inner_metadata.append(_bus.current_dialogue_metadata(segments))
+			inner_legacy_metadata.append(_bus.current_dialogue_metadata())
+	)
+	# This listener receives the outer callback only after the nested raw emit
+	# returns. Payload-keyed lookup must still recover the outer sidecar.
+	_bus.show_dialogue.connect(func(character, segments, _mode):
+		if character == "outer":
+			outer_metadata_after_inner.append(
+				_bus.current_dialogue_metadata(segments))
+	)
+
+	_bus.emit_show_dialogue(
+		"outer",
+		[{"text": "outer", "voice": "", "expression": ""}],
+		"nvl",
+		{"line_spacing": 9},
+		true,
+		"page:7",
+		{"kind": "stla", "profile_name": "outer_profile"},
+	)
+
+	assert_eq(inner_metadata, [{}],
+		"a raw nested three-argument SHOW must keep legacy empty metadata")
+	assert_eq(inner_legacy_metadata, [{}],
+		"no-argument getters must not expose the outer wrapper to a raw nested SHOW")
+	assert_eq(outer_metadata_after_inner.size(), 1)
+	assert_eq(outer_metadata_after_inner[0].get("profile"), {"line_spacing": 9})
+	assert_eq(outer_metadata_after_inner[0].get("nvl_page_key"), "page:7")
+	assert_eq(outer_metadata_after_inner[0].get("provenance", {}).get(
+		"profile_name"), "outer_profile")
+	assert_eq(_bus.current_dialogue_metadata(), {},
+		"nested dispatch metadata must not leak after the wrapper returns")
+
+
+func test_wrapper_metadata_survives_listener_mutating_segments() -> void:
+	var received_metadata: Array[Dictionary] = []
+	_bus.show_dialogue.connect(func(character, segments, _mode):
+		if character != "outer":
+			return
+		segments[0]["text"] = "filtered"
+		segments.append({
+			"text": "appended", "voice": "", "expression": "",
+		})
+	)
+	_bus.show_dialogue.connect(func(character, segments, _mode):
+		if character != "outer":
+			return
+		received_metadata.append(_bus.current_dialogue_metadata(segments))
+	)
+
+	_bus.emit_show_dialogue(
+		"outer",
+		[{"text": "original", "voice": "", "expression": ""}],
+		"nvl",
+		{"line_spacing": 11},
+		true,
+		"page:mutated",
+		{"kind": "stla", "profile_name": "mutable_profile"},
+	)
+
+	assert_eq(received_metadata.size(), 1)
+	assert_eq(received_metadata[0].get("profile"), {"line_spacing": 11},
+		"an earlier public listener may filter the mutable segments payload")
+	assert_eq(received_metadata[0].get("nvl_page_key"), "page:mutated")
+	assert_eq(received_metadata[0].get("provenance", {}).get(
+		"profile_name"), "mutable_profile")
+	assert_eq(_bus.current_dialogue_metadata(), {},
+		"mutated wrapper metadata must still remain synchronous")
+
+
+func test_mutated_nested_raw_payload_cannot_match_outer_metadata_by_value() -> void:
+	var outer_segments := [{
+		"text": "outer", "voice": "", "expression": "",
+	}]
+	var nested_metadata: Array[Dictionary] = []
+	var nesting := [false]
+	var emit_nested := func(character, _segments, _mode):
+		if character != "identity_outer" or nesting[0]:
+			return
+		nesting[0] = true
+		_bus.show_dialogue.emit("identity_inner", [{
+			"text": "inner", "voice": "", "expression": "",
+		}], "nvl")
+		nesting[0] = false
+	var mutate_nested := func(character, segments, _mode):
+		if character == "identity_inner":
+			segments[0]["text"] = "outer"
+	var capture_nested := func(character, segments, _mode):
+		if character == "identity_inner":
+			nested_metadata.append(_bus.current_dialogue_metadata(segments))
+	_bus.show_dialogue.connect(emit_nested)
+	_bus.show_dialogue.connect(mutate_nested)
+	_bus.show_dialogue.connect(capture_nested)
+
+	_bus.emit_show_dialogue(
+		"identity_outer",
+		outer_segments,
+		"nvl",
+		{"line_spacing": 13},
+		true,
+		"page:outer",
+		{"kind": "stla", "profile_name": "outer_profile"},
+	)
+
+	assert_eq(nested_metadata, [{}],
+		"a raw dispatch must not inherit outer metadata after becoming value-equal")
+	assert_false(is_same(outer_segments, _bus._last_raw_show_segments),
+		"raw dispatch identity, not mutable Array value, owns the guard")
+	_bus.show_dialogue.disconnect(emit_nested)
+	_bus.show_dialogue.disconnect(mutate_nested)
+	_bus.show_dialogue.disconnect(capture_nested)
 
 
 # --- BgHandler ---

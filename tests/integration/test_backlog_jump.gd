@@ -49,6 +49,35 @@ func _stop_engine() -> void:
 	await get_tree().process_frame
 
 
+func test_backlog_scene_plain_button_never_exposes_dialogue_bbcode() -> void:
+	_runtime.backlog_manager.add_entry("narrator", [{
+		"text": "[b]Bold[/b][ul]Item[/ul][expr:happy]{wait:10}Done",
+		"voice": "",
+		"expression": "",
+	}], 0)
+	assert_eq(_runtime.backlog_manager.get_entry(0).get("text"),
+		"Bold\n• Item\nDone")
+
+	var screen: Control = load(
+		"res://addons/stella/scenes/backlog.tscn").instantiate()
+	add_child_autoqfree(screen)
+	await get_tree().process_frame
+	var entries_container: VBoxContainer = screen.get_node(
+		"MarginContainer/BacklogScroll/BacklogEntries")
+	var row: HBoxContainer = entries_container.get_child(0)
+	var text_button: Button = null
+	for child in row.get_children():
+		if child is Button:
+			text_button = child
+			break
+	assert_not_null(text_button)
+	if text_button == null:
+		return
+	assert_eq(text_button.text, "Bold\n• Item\nDone")
+	assert_false("[b]" in text_button.text)
+	assert_false("[ul]" in text_button.text)
+
+
 func test_every_entry_carries_a_snapshot():
 	_setup_scenario(5)
 	_runtime.engine.run()

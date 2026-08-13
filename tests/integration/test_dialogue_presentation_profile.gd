@@ -59,7 +59,7 @@ func test_nvl_profile_accumulates_three_prefixed_entries_and_restores_authored_a
 	var background: Control = _presenter.get_node("DialogueBg")
 	var adv_chrome: Control = _presenter.get_node("AdvChrome")
 	var quick_menu: Control = _presenter.get_node("Toolbar")
-	assert_eq(text_label.text, "・First・Second・Third")
+	assert_eq(_presenter._nvl_render_source, "・First・Second・Third")
 	assert_eq(_rect_anchors(_presenter), Vector4(0.0, 0.0, 1.0, 1.0))
 	assert_eq(_rect_offsets(_presenter), Vector4.ZERO)
 	assert_eq(_rect_anchors(text_region), Vector4(0.18, 0.12, 0.82, 0.62))
@@ -112,6 +112,82 @@ func test_nvl_profile_accumulates_three_prefixed_entries_and_restores_authored_a
 	assert_true(finished)
 
 
+func test_nvl_snapshot_restore_rebuilds_the_authored_page() -> void:
+	_presenter = FIXTURE.instantiate()
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	_presenter._char_interval = 0.0
+
+	_start_scenario_fixture()
+	if not await _wait_for_dialogue(0, "・First"):
+		return
+	SignalBus.advance_requested.emit()
+	if not await _wait_for_dialogue(1, "・First・Second"):
+		return
+	var snapshot := _engine.context.capture_snapshot()
+	var scenario := _engine.context.scenario_data
+	assert_eq(snapshot.get("nvl_page_entries", []).size(), 2)
+
+	# Save/load hard-resets presentation nodes, then re-executes the saved command
+	# in a fresh ScenarioContext. The restored page must come from authored entries
+	# in the snapshot, not from the retired RichTextLabel string.
+	_engine.context.is_finished = true
+	SignalBus.engine_abort_requested.emit()
+	await get_tree().process_frame
+	SignalBus.hide_dialogue.emit()
+	assert_eq(_presenter._nvl_text, "")
+
+	var restored_engine := ScenarioEngine.new()
+	restored_engine.registry = StellaRuntime.registry
+	restored_engine.load_scenario(scenario)
+	restored_engine.context.restore_snapshot(snapshot)
+	_engine = restored_engine
+	_engine.run()
+
+	if not await _wait_for_dialogue(1, "・First・Second"):
+		return
+	assert_eq(_engine.context.nvl_page_entries.size(), 2,
+		"re-executing the restored current command must not duplicate its entry")
+
+
+func test_nvl_save_restore_preserves_each_entrys_original_profile_format() -> void:
+	await _start_runtime_fixture_at("cross_profile_restore")
+	if not await _wait_for_runtime_nvl(1, "AOne"):
+		return
+	SignalBus.advance_requested.emit()
+	if not await _wait_for_runtime_nvl(2, "AOne~BTwo"):
+		return
+	var snapshot := _round_trip_context_through_save_file(_engine.context)
+	_assert_cross_profile_snapshot_is_authored_only(snapshot)
+
+	await _restore_runtime_snapshot(snapshot)
+	if not await _wait_for_runtime_nvl(3, "AOne~BTwo"):
+		return
+	assert_eq(_engine.context.nvl_page_entries.size(), 2,
+		"save restore must not duplicate the re-executed current entry")
+
+
+func test_nvl_backlog_rollback_preserves_each_entrys_original_profile_format() -> void:
+	await _start_runtime_fixture_at("cross_profile_restore")
+	if not await _wait_for_runtime_nvl(1, "AOne"):
+		return
+	SignalBus.advance_requested.emit()
+	if not await _wait_for_runtime_nvl(2, "AOne~BTwo"):
+		return
+	var backlog := BacklogManager.new()
+	backlog.add_entry(
+		"", [{"text": "Two", "voice": ""}], 2,
+		func(): return _engine.context.capture_snapshot(), [], "rollback:two")
+	var rollback_snapshot: Dictionary = backlog.jump_to(0).get("snapshot", {})
+	_assert_cross_profile_snapshot_is_authored_only(rollback_snapshot)
+
+	await _restore_runtime_snapshot(rollback_snapshot)
+	if not await _wait_for_runtime_nvl(3, "AOne~BTwo"):
+		return
+	assert_eq(_presenter._nvl_render_source, "AOne~BTwo",
+		"Backlog rollback under the second Profile cannot rewrite the first entry")
+
+
 func test_runtime_jump_reentry_starts_a_fresh_nvl_page_after_off() -> void:
 	await _start_runtime_fixture_at("jump_loop_entry")
 	if not await _wait_for_runtime_nvl(1, "・Jump page"):
@@ -132,7 +208,7 @@ func test_runtime_jump_reentry_starts_a_fresh_nvl_page_after_off() -> void:
 		"the second SHOW must be accepted by the presenter")
 	assert_eq(_presenter._active_nvl_page_key, second_page_key,
 		"the presenter must activate the second runtime page")
-	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "・Jump page",
+	assert_eq(_presenter._nvl_render_source, "・Jump page",
 		"jumping back after @nvl off must activate a new runtime page")
 
 	await _advance_runtime_to_finish("jump-loop fixture")
@@ -158,7 +234,7 @@ func test_repeated_call_activates_a_fresh_nvl_page_after_callee_off() -> void:
 		"the second SHOW must be accepted by the presenter")
 	assert_eq(_presenter._active_nvl_page_key, second_page_key,
 		"the presenter must activate the called scene's second runtime page")
-	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "・Called page",
+	assert_eq(_presenter._nvl_render_source, "・Called page",
 		"each @call activation must get a fresh page even for the same command")
 
 	await _advance_runtime_to_finish("repeated-call fixture")
@@ -172,7 +248,7 @@ func test_true_branch_nvl_page_continues_after_the_conditional() -> void:
 	SignalBus.advance_requested.emit()
 	if not await _wait_for_runtime_nvl(2, "・True branch・After branch"):
 		return
-	assert_eq(_presenter.get_node("TextRegion/TextLabel").text,
+	assert_eq(_presenter._nvl_render_source,
 		"・True branch・After branch",
 		"the continuation must inherit the runtime page selected by the true branch")
 
@@ -187,7 +263,7 @@ func test_false_branch_nvl_page_continues_after_the_conditional() -> void:
 	SignalBus.advance_requested.emit()
 	if not await _wait_for_runtime_nvl(2, "・False branch・After branch"):
 		return
-	assert_eq(_presenter.get_node("TextRegion/TextLabel").text,
+	assert_eq(_presenter._nvl_render_source,
 		"・False branch・After branch",
 		"the continuation must inherit the runtime page selected by the false branch")
 
@@ -202,7 +278,7 @@ func test_repeated_nvl_directive_without_off_keeps_the_runtime_page() -> void:
 	SignalBus.advance_requested.emit()
 	if not await _wait_for_runtime_nvl(2, "・Repeated one・Repeated two"):
 		return
-	assert_eq(_presenter.get_node("TextRegion/TextLabel").text,
+	assert_eq(_presenter._nvl_render_source,
 		"・Repeated one・Repeated two",
 		"repeating @nvl while already active must not create a new runtime page")
 
@@ -246,7 +322,7 @@ func test_no_profile_preserves_the_original_legacy_mode_layouts() -> void:
 
 	await _show_dialogue("Second legacy entry", "nvl")
 	assert_eq(
-		_presenter.get_node("TextRegion/TextLabel").text,
+		_presenter._nvl_render_source,
 		"Legacy NVL\nSecond legacy entry",
 		"unprofiled NVL keeps the historical newline separator",
 	)
@@ -275,7 +351,7 @@ func test_nvl_profile_accepts_a_space_separator() -> void:
 	if not await _emit_profiled_dialogue("", "Two", "nvl", profile):
 		return
 
-	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "›One ›Two")
+	assert_eq(_presenter._nvl_render_source, "›One ›Two")
 
 
 func test_nvl_prefix_is_the_first_typed_character_and_avatar_marker_is_local() -> void:
@@ -324,7 +400,7 @@ func test_nvl_typewriter_keeps_history_visible_and_types_only_the_new_entry() ->
 	)
 	var text_label: RichTextLabel = _presenter.get_node("TextRegion/TextLabel")
 	var history_length := "・Old\n".length()
-	assert_eq(text_label.text, "・Old\n・New")
+	assert_eq(_presenter._nvl_render_source, "・Old\n・New")
 	assert_eq(text_label.visible_characters, history_length,
 		"the accumulated entry and separator are visible before new typing starts")
 
@@ -362,12 +438,12 @@ func test_new_nvl_page_resets_without_an_intervening_non_nvl_dialogue() -> void:
 		return
 	if not await _emit_profiled_dialogue("", "New", "nvl", profile, "scenario-a:12"):
 		return
-	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "・New",
+	assert_eq(_presenter._nvl_render_source, "・New",
 		"a different runtime NVL page key starts a fresh page")
 
 	if not await _emit_profiled_dialogue("", "Continued", "nvl", profile, "scenario-a:12"):
 		return
-	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "・New・Continued",
+	assert_eq(_presenter._nvl_render_source, "・New・Continued",
 		"entries with the same page key keep accumulating")
 
 
@@ -389,7 +465,7 @@ func test_nvl_decoration_does_not_mutate_segments_or_backlog_text() -> void:
 		true,
 	)
 	assert_eq(
-		_presenter.get_node("TextRegion/TextLabel").text,
+		_presenter._nvl_render_source,
 		"・Narrator：Original source text",
 	)
 	assert_eq(segments[0]["text"], "Original source text")
@@ -422,14 +498,16 @@ func test_combine_is_decorated_once_as_one_nvl_entry() -> void:
 	add_child_autoqfree(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 1.0
+	var context := ScenarioContext.new(scenario)
+	context.apply_dialogue_mode_events(command.dialogue_mode_events_before)
 	SignalBus.emit_show_dialogue(
 		command.get_string("character"),
 		segments,
-		command.get_string("mode"),
-		command.params["presentation_profile"],
-		true,
+		context.current_dialogue_mode,
+		context.resolve_current_dialogue_profile(),
+		context.current_dialogue_uses_declarative_presentation,
 	)
-	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "・FirstSecond")
+	assert_eq(_presenter._nvl_render_source, "・FirstSecond")
 	SignalBus.hide_dialogue.emit()
 
 
@@ -449,7 +527,7 @@ func test_resource_fallback_can_override_nvl_entry_format_independently() -> voi
 
 	await _show_dialogue("One", "nvl")
 	await _show_dialogue("Two", "nvl")
-	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "※One※Two")
+	assert_eq(_presenter._nvl_render_source, "※One※Two")
 
 
 func test_named_profile_without_entry_format_keeps_legacy_newline() -> void:
@@ -463,7 +541,7 @@ func test_named_profile_without_entry_format_keeps_legacy_newline() -> void:
 		return
 	if not await _emit_profiled_dialogue("", "Two", "nvl", layout_only_profile):
 		return
-	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "One\nTwo",
+	assert_eq(_presenter._nvl_render_source, "One\nTwo",
 		"entry formatting remains legacy-compatible when a profile only changes layout")
 
 
@@ -509,7 +587,7 @@ func test_invalid_profile_reports_diagnostic_and_falls_back_safely() -> void:
 	await _show_dialogue("Fallback", "nvl")
 	assert_eq(_rect_anchors(_presenter), Vector4(0.0, 0.0, 1.0, 1.0))
 	assert_almost_eq(_presenter.modulate.a, 0.9, 0.0001)
-	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "Fallback",
+	assert_eq(_presenter._nvl_render_source, "Fallback",
 		"invalid entry formatting must not bypass whole-profile fallback")
 
 
@@ -533,7 +611,7 @@ func test_stla_profile_validation_reports_source_lines_and_unknown_references() 
 	)
 
 
-func test_profile_selection_is_compiled_into_commands_and_off_keeps_restore_contract() -> void:
+func test_profile_selection_is_compiled_into_runtime_sidecars_and_off_restores_adv() -> void:
 	var source := """@chapter test "Test"
 @scene start
 @overlay profile=centered
@@ -545,12 +623,28 @@ func test_profile_selection_is_compiled_into_commands_and_off_keeps_restore_cont
 	assert_eq(scenario.diagnostics, [])
 	var overlay_command: CommandData = scenario.scenes[0].commands[0]
 	var adv_command: CommandData = scenario.scenes[0].commands[1]
-	assert_eq(overlay_command.get_string("mode"), "overlay")
-	assert_eq(overlay_command.get_string("presentation_profile_name"), "centered")
-	assert_true(overlay_command.get_bool("declarative_presentation"))
-	assert_eq(adv_command.get_string("mode"), "adv")
-	assert_false(adv_command.has_param("presentation_profile_name"))
-	assert_true(adv_command.get_bool("declarative_presentation"),
+	assert_eq(scenario.get_dialogue_profile("centered").get(
+		"horizontal_alignment"), HORIZONTAL_ALIGNMENT_CENTER)
+	assert_true(overlay_command.get_bool("presentation_from_context"))
+	assert_true(adv_command.get_bool("presentation_from_context"))
+	assert_eq(overlay_command.dialogue_mode_events_before, [{
+		"action": "select_mode",
+		"mode": "overlay",
+		"profile_name": "centered",
+	}])
+	assert_eq(adv_command.dialogue_mode_events_before, [{
+		"action": "restore_adv",
+		"mode": "adv",
+	}])
+
+	var context := ScenarioContext.new(scenario)
+	context.apply_dialogue_mode_events(overlay_command.dialogue_mode_events_before)
+	assert_eq(context.current_dialogue_mode, "overlay")
+	assert_eq(context.current_dialogue_profile_name, "centered")
+	context.apply_dialogue_mode_events(adv_command.dialogue_mode_events_before)
+	assert_eq(context.current_dialogue_mode, "adv")
+	assert_eq(context.current_dialogue_profile_name, "")
+	assert_true(context.current_dialogue_uses_declarative_presentation,
 		"@overlay off must restore the authored ADV baseline")
 
 
@@ -563,8 +657,7 @@ func test_profile_declarations_merge_aliases_and_strip_whitespace_comments() -> 
 「line」"""
 	var scenario := DslParser.parse(DslLexer.tokenize(source), "profile_comments")
 	assert_eq(scenario.diagnostics, [])
-	var command: CommandData = scenario.scenes[0].commands[0]
-	var profile: Dictionary = command.params["presentation_profile"]
+	var profile := scenario.get_dialogue_profile("novel")
 	assert_eq(profile["visibility_groups"], {
 		"quick_menu": true,
 		"adv_chrome": false,
@@ -662,7 +755,7 @@ func test_soft_hidden_show_restores_and_renders_the_new_runtime_page() -> void:
 	assert_gt(_presenter._dialogue_gen, previous_generation,
 		"a SHOW received while soft-hidden must start a new presentation generation")
 	assert_eq(_presenter._active_nvl_page_key, "soft-hide:2")
-	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, "・After soft hide",
+	assert_eq(_presenter._nvl_render_source, "・After soft hide",
 		"the hidden SHOW must render rather than leave the previous page on screen")
 
 
@@ -679,7 +772,7 @@ func test_empty_segments_do_not_mutate_soft_hide_or_nvl_page_state() -> void:
 	_presenter._ui_hidden = true
 	_presenter.visible = false
 	var previous_generation: int = _presenter._dialogue_gen
-	var previous_text: String = _presenter.get_node("TextRegion/TextLabel").text
+	var previous_text: String = _presenter._nvl_render_source
 
 	SignalBus.emit_show_dialogue(
 		"", [], "nvl", profile, true, "empty-show:2")
@@ -688,7 +781,7 @@ func test_empty_segments_do_not_mutate_soft_hide_or_nvl_page_state() -> void:
 	assert_false(_presenter.visible)
 	assert_eq(_presenter._dialogue_gen, previous_generation)
 	assert_eq(_presenter._active_nvl_page_key, "empty-show:1")
-	assert_eq(_presenter.get_node("TextRegion/TextLabel").text, previous_text,
+	assert_eq(_presenter._nvl_render_source, previous_text,
 		"an empty SHOW must not clear or replace the active NVL page")
 
 
@@ -797,11 +890,20 @@ func test_stla_can_configure_adv_and_restore_it_after_nvl() -> void:
 	var scenario := DslParser.parse(DslLexer.tokenize(source), "adv_profile")
 	assert_eq(scenario.diagnostics, [])
 	var commands: Array = scenario.scenes[0].commands
-	assert_eq(commands[0].get_string("presentation_profile_name"), "message")
-	assert_eq(commands[1].get_string("presentation_profile_name"), "novel")
-	assert_eq(commands[2].get_string("presentation_profile_name"), "message")
-	assert_eq(commands[2].get_string("mode"), "adv")
-	assert_true(commands[2].get_bool("declarative_presentation"))
+	var context := ScenarioContext.new(scenario)
+	var states: Array = []
+	for command in commands:
+		context.apply_dialogue_mode_events(command.dialogue_mode_events_before)
+		states.append({
+			"mode": context.current_dialogue_mode,
+			"profile_name": context.current_dialogue_profile_name,
+			"declarative": context.current_dialogue_uses_declarative_presentation,
+		})
+	assert_eq(states, [
+		{"mode": "adv", "profile_name": "message", "declarative": true},
+		{"mode": "nvl", "profile_name": "novel", "declarative": true},
+		{"mode": "adv", "profile_name": "message", "declarative": true},
+	])
 
 
 func _show_dialogue(text: String, mode: String) -> void:
@@ -849,10 +951,14 @@ func _start_scenario_fixture() -> void:
 	var scenario := DslParser.parse(DslLexer.tokenize(source), "dialogue_presentation_profile")
 	assert_eq(scenario.diagnostics, [], "fixture must parse without diagnostics")
 	var first_dialogue: CommandData = scenario.scenes[0].commands[0]
-	assert_eq(first_dialogue.get_string("presentation_profile_name"), "novel")
-	assert_true(first_dialogue.get_bool("declarative_presentation"))
-	assert_false(first_dialogue.params.get("presentation_profile", {}).is_empty(),
-		"the compiled command must own its resolved profile data")
+	assert_true(first_dialogue.get_bool("presentation_from_context"))
+	assert_eq(first_dialogue.dialogue_mode_events_before, [{
+		"action": "select_mode",
+		"mode": "nvl",
+		"profile_name": "novel",
+	}])
+	assert_false(scenario.get_dialogue_profile("novel").is_empty(),
+		"ScenarioData must own the profile selected by runtime sidecars")
 	_engine = ScenarioEngine.new()
 	_engine.registry = StellaRuntime.registry
 	_engine.load_scenario(scenario)
@@ -888,6 +994,54 @@ func _start_runtime_fixture_at(entry_scene_id: String) -> void:
 	_engine.run()
 
 
+func _assert_cross_profile_snapshot_is_authored_only(snapshot: Dictionary) -> void:
+	var entries: Array = snapshot.get("nvl_page_entries", [])
+	assert_eq(entries.size(), 2)
+	if entries.size() != 2:
+		return
+	assert_eq(entries[0].get("profile_name"), "restore_first")
+	assert_eq(entries[1].get("profile_name"), "restore_second")
+	for entry in entries:
+		assert_false(entry.has("presentation_profile"),
+			"snapshot entries persist Profile names, not resolved dictionaries")
+		assert_false(entry.has("presentation_provenance"),
+			"snapshot entries do not serialize diagnostic/runtime metadata")
+
+
+func _round_trip_context_through_save_file(context: ScenarioContext) -> Dictionary:
+	var save_manager := SaveManager.new()
+	save_manager.save_dir = "user://test_cross_profile_nvl_save/"
+	const SLOT := 154
+	save_manager.delete_save(SLOT)
+	save_manager.register_provider(context)
+	save_manager.save(SLOT)
+	assert_true(save_manager.has_save(SLOT),
+		"the regression must exercise SaveManager's JSON file boundary")
+
+	var restored := ScenarioContext.new(context.scenario_data)
+	save_manager.register_provider(restored)
+	assert_true(save_manager.load_save(SLOT))
+	save_manager.delete_save(SLOT)
+	return restored.capture_snapshot()
+
+
+func _restore_runtime_snapshot(snapshot: Dictionary) -> void:
+	var scenario: ScenarioData = _engine.context.scenario_data
+	_engine.context.is_finished = true
+	SignalBus.engine_abort_requested.emit()
+	await get_tree().process_frame
+	SignalBus.hide_dialogue.emit()
+	assert_eq(_presenter._nvl_render_source, "",
+		"hard reset retires only the Presenter's derived NVL document")
+
+	var restored_engine := ScenarioEngine.new()
+	restored_engine.registry = StellaRuntime.registry
+	restored_engine.load_scenario(scenario)
+	restored_engine.context.restore_snapshot(snapshot)
+	_engine = restored_engine
+	_engine.run()
+
+
 func _capture_runtime_nvl_event(_character: String, _segments: Array, mode: String) -> void:
 	if mode == "nvl":
 		_runtime_nvl_event_count += 1
@@ -902,7 +1056,7 @@ func _wait_for_runtime_nvl(event_count: int, expected_text: String) -> bool:
 		func():
 			return (
 				_runtime_nvl_event_count >= event_count
-				and _presenter.get_node("TextRegion/TextLabel").text == expected_text
+				and _presenter._nvl_render_source == expected_text
 				and not _presenter._is_typing
 				and _presenter.get_node(
 					"TextRegion/TextLabel").visible_characters == -1
@@ -972,9 +1126,14 @@ func _advance_runtime_to_finish(fixture_name: String) -> void:
 func _wait_for_dialogue(command_index: int, expected_text: String) -> bool:
 	var reached: bool = await wait_until(
 		func():
+			var presenter_text: String = (
+				_presenter._nvl_render_source
+				if _presenter._current_mode == "nvl"
+				else String(_presenter.get_node("TextRegion/TextLabel").text)
+			)
 			return (
 				_engine.context.current_command_index == command_index
-				and _presenter.get_node("TextRegion/TextLabel").text == expected_text
+				and presenter_text == expected_text
 				and not _presenter._is_typing
 			),
 		1.0,

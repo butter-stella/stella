@@ -8,6 +8,10 @@
 class_name DialogueProfileParser
 extends RefCounted
 
+## Internal authoring provenance. DslParser removes this entry from the runtime
+## profile Dictionary and stores it in ScenarioData's separate provenance map.
+const RUNTIME_PROVENANCE_KEY := "__stella_dialogue_profile_provenance"
+
 const VECTOR_KEYS := [
 	"panel_anchors",
 	"panel_offsets",
@@ -15,6 +19,7 @@ const VECTOR_KEYS := [
 	"text_offsets",
 	"text_margins",
 ]
+const VECTOR2_KEYS := ["advance_indicator_offset"]
 const COLOR_KEYS := ["panel_modulate", "background_modulate"]
 const BOOL_KEYS := [
 	"fit_content",
@@ -24,6 +29,15 @@ const BOOL_KEYS := [
 	"background_visible",
 ]
 const STRING_KEYS := ["entry_prefix", "entry_separator"]
+const RESOURCE_PATH_KEYS := [
+	"advance_indicator_texture",
+	"advance_indicator_scene",
+]
+const ADVANCE_INDICATOR_ANIMATIONS := {
+	"none": "none",
+	"pulse": "pulse",
+	"bob": "bob",
+}
 const HORIZONTAL_ALIGNMENTS := {
 	"left": HORIZONTAL_ALIGNMENT_LEFT,
 	"center": HORIZONTAL_ALIGNMENT_CENTER,
@@ -44,16 +58,26 @@ const AUTOWRAP_MODES := {
 }
 
 
-static func collect(tokens: Array) -> Dictionary:
+static func collect(tokens: Array, source_path: String = "") -> Dictionary:
 	var profiles: Dictionary = {}
 	var diagnostics: Array = []
+	var invalid_profiles: Dictionary = {}
 	for token_value in tokens:
 		var token: DslToken = token_value
 		if token.type != DslToken.Type.AT_COMMAND:
 			continue
 		if _command_name(token.raw_text) != "dialogue_profile":
 			continue
-		_parse_declaration(token, profiles, diagnostics)
+		var diagnostic_start := diagnostics.size()
+		var profile_name := _parse_declaration(
+			token, profiles, diagnostics, source_path)
+		if not profile_name.is_empty():
+			for index in range(diagnostic_start, diagnostics.size()):
+				if String(diagnostics[index].get("level", "")) == "error":
+					invalid_profiles[profile_name] = true
+					break
+	for profile_name in invalid_profiles:
+		profiles.erase(profile_name)
 	return {"profiles": profiles, "diagnostics": diagnostics}
 
 
@@ -133,7 +157,8 @@ static func _parse_declaration(
 	token: DslToken,
 	profiles: Dictionary,
 	diagnostics: Array,
-) -> void:
+	source_path: String,
+) -> String:
 	var args := _strip_inline_comment(
 		token.raw_text.substr("@dialogue_profile".length()).strip_edges())
 	var parts := _split_args(args)
@@ -141,21 +166,23 @@ static func _parse_declaration(
 		_diagnostic(diagnostics, "error",
 			"DslParser: @dialogue_profile is missing a profile name (line %d)"
 			% token.line, token.line)
-		return
+		return ""
 	var profile_name := _unquote(String(parts[0]))
 	if not _valid_profile_name(profile_name):
 		_diagnostic(diagnostics, "error",
 			"DslParser: invalid dialogue profile name '%s' (line %d)"
 			% [profile_name, token.line], token.line)
-		return
+		return ""
 	if not profiles.has(profile_name):
 		profiles[profile_name] = {}
 	var profile: Dictionary = profiles[profile_name]
+	_record_declaration_provenance(
+		profile, profile_name, source_path, token.line)
 	if parts.size() == 1:
 		_diagnostic(diagnostics, "warning",
 			"DslParser: dialogue profile '%s' declaration has no properties (line %d)"
 			% [profile_name, token.line], token.line)
-		return
+		return profile_name
 
 	for index in range(1, parts.size()):
 		var assignment := String(parts[index])
@@ -171,12 +198,17 @@ static func _parse_declaration(
 		if key in STRING_KEYS:
 			parsed = _parse_string_property(
 				key, assignment_value, token.line, diagnostics)
+		elif key in RESOURCE_PATH_KEYS:
+			parsed = _parse_resource_path_property(
+				key, assignment_value, token.line, diagnostics)
 		else:
 			parsed = _parse_property(
 				key, _unquote(assignment_value), token.line, diagnostics, profile)
 		if parsed["valid"] and parsed.get("store", true):
-			profile[key] = parsed["value"]
+			_store_profile_property(
+				profile, key, parsed["value"], token.line, diagnostics)
 	profiles[profile_name] = profile
+	return profile_name
 
 
 static func _parse_property(
@@ -188,6 +220,8 @@ static func _parse_property(
 ) -> Dictionary:
 	if key in VECTOR_KEYS:
 		return _parse_vector4(key, raw_value, line, diagnostics)
+	if key in VECTOR2_KEYS:
+		return _parse_vector2(key, raw_value, line, diagnostics)
 	if key in COLOR_KEYS:
 		if not Color.html_is_valid(raw_value):
 			return _invalid(diagnostics,
@@ -207,6 +241,9 @@ static func _parse_property(
 			return _parse_enum(key, raw_value, VERTICAL_ALIGNMENTS, line, diagnostics)
 		"autowrap_mode":
 			return _parse_enum(key, raw_value, AUTOWRAP_MODES, line, diagnostics)
+		"advance_indicator_animation":
+			return _parse_enum(
+				key, raw_value, ADVANCE_INDICATOR_ANIMATIONS, line, diagnostics)
 		"line_spacing":
 			if not raw_value.is_valid_int():
 				return _invalid(diagnostics,
@@ -234,6 +271,94 @@ static func _parse_property(
 			return _invalid(diagnostics,
 				"DslParser: unknown dialogue profile property '%s' (line %d)"
 				% [key, line], line)
+
+
+static func _store_profile_property(
+	profile: Dictionary,
+	key: String,
+	value: Variant,
+	line: int,
+	diagnostics: Array,
+) -> void:
+	if key == "advance_indicator_texture" \
+		and profile.has("advance_indicator_scene"):
+		_diagnostic(diagnostics, "error",
+			"DslParser: dialogue profile advance_indicator_texture and " \
+			+ "advance_indicator_scene are mutually exclusive " \
+			+ "(line %d)" % line, line)
+		return
+	if key == "advance_indicator_scene" \
+		and profile.has("advance_indicator_texture"):
+		_diagnostic(diagnostics, "error",
+			"DslParser: dialogue profile advance_indicator_texture and " \
+			+ "advance_indicator_scene are mutually exclusive " \
+			+ "(line %d)" % line, line)
+		return
+	profile[key] = value
+	_record_field_provenance(profile, key, line)
+
+
+static func _record_declaration_provenance(
+	profile: Dictionary,
+	profile_name: String,
+	source_path: String,
+	line: int,
+) -> void:
+	var provenance: Dictionary = profile.get(RUNTIME_PROVENANCE_KEY, {}).duplicate(true)
+	provenance["kind"] = "stla"
+	provenance["profile_name"] = profile_name
+	provenance["source_path"] = source_path
+	var declaration_lines: Array = provenance.get("declaration_lines", []).duplicate()
+	declaration_lines.append(line)
+	provenance["declaration_lines"] = declaration_lines
+	if not provenance.has("field_lines"):
+		provenance["field_lines"] = {}
+	profile[RUNTIME_PROVENANCE_KEY] = provenance
+
+
+static func _record_field_provenance(
+	profile: Dictionary,
+	field_name: String,
+	line: int,
+) -> void:
+	var provenance: Dictionary = profile.get(RUNTIME_PROVENANCE_KEY, {}).duplicate(true)
+	var field_lines: Dictionary = provenance.get("field_lines", {}).duplicate()
+	field_lines[field_name] = line
+	provenance["field_lines"] = field_lines
+	profile[RUNTIME_PROVENANCE_KEY] = provenance
+
+
+static func _remove_field_provenance(
+	profile: Dictionary,
+	field_name: String,
+) -> void:
+	var provenance: Dictionary = profile.get(RUNTIME_PROVENANCE_KEY, {}).duplicate(true)
+	var field_lines: Dictionary = provenance.get("field_lines", {}).duplicate()
+	field_lines.erase(field_name)
+	provenance["field_lines"] = field_lines
+	profile[RUNTIME_PROVENANCE_KEY] = provenance
+
+
+static func _parse_vector2(
+	key: String,
+	raw_value: String,
+	line: int,
+	diagnostics: Array,
+) -> Dictionary:
+	var components := raw_value.split(",")
+	if components.size() != 2:
+		return _invalid(diagnostics,
+			"DslParser: dialogue profile %s requires two comma-separated numbers (line %d)"
+			% [key, line], line)
+	var values: Array[float] = []
+	for component_value in components:
+		var component := String(component_value).strip_edges()
+		if not component.is_valid_float() or not is_finite(component.to_float()):
+			return _invalid(diagnostics,
+				"DslParser: dialogue profile %s must contain only finite numbers (line %d)"
+				% [key, line], line)
+		values.append(component.to_float())
+	return _valid(Vector2(values[0], values[1]))
 
 
 static func _parse_vector4(
@@ -294,6 +419,61 @@ static func _parse_string_property(
 	line: int,
 	diagnostics: Array,
 ) -> Dictionary:
+	var parsed := _parse_quoted_string(key, raw_value, line, diagnostics)
+	if not parsed["valid"]:
+		return parsed
+	var decoded: String = parsed["value"]
+	if decoded.contains("[") or decoded.contains("]"):
+		return _invalid(diagnostics,
+			"DslParser: dialogue profile %s is plain text and cannot contain BBCode brackets (line %d)"
+			% [key, line], line)
+	return parsed
+
+
+static func _parse_resource_path_property(
+	key: String,
+	raw_value: String,
+	line: int,
+	diagnostics: Array,
+) -> Dictionary:
+	var parsed := _parse_quoted_string(key, raw_value, line, diagnostics)
+	if not parsed["valid"]:
+		return parsed
+	var resource_path: String = parsed["value"]
+	if resource_path.is_empty():
+		return _invalid(diagnostics,
+			"DslParser: dialogue profile %s cannot be empty (line %d)"
+			% [key, line], line)
+	if not resource_path.begins_with("res://") \
+		and not resource_path.begins_with("uid://"):
+		return _invalid(diagnostics,
+			"DslParser: dialogue profile %s must use a res:// or uid:// resource path (line %d)"
+			% [key, line], line)
+	if not ResourceLoader.exists(resource_path):
+		return _invalid(diagnostics,
+			"DslParser: dialogue profile %s resource does not exist: '%s' (line %d)"
+			% [key, resource_path, line], line)
+	var resource := ResourceLoader.load(resource_path)
+	var valid_type := (
+		(resource is Texture2D) if key == "advance_indicator_texture"
+		else (resource is PackedScene)
+	)
+	if not valid_type:
+		var expected_type := (
+			"Texture2D" if key == "advance_indicator_texture" else "PackedScene")
+		var actual_type := resource.get_class() if resource != null else "unloadable resource"
+		return _invalid(diagnostics,
+			"DslParser: dialogue profile %s must reference a %s, got %s (line %d)"
+			% [key, expected_type, actual_type, line], line)
+	return parsed
+
+
+static func _parse_quoted_string(
+	key: String,
+	raw_value: String,
+	line: int,
+	diagnostics: Array,
+) -> Dictionary:
 	var closing_quote := ""
 	if raw_value.begins_with("\""):
 		closing_quote = "\""
@@ -337,10 +517,6 @@ static func _parse_string_property(
 			if index != raw_value.length() - 1:
 				return _invalid(diagnostics,
 					"DslParser: dialogue profile %s must contain exactly one quoted string (line %d)"
-					% [key, line], line)
-			if decoded.contains("[") or decoded.contains("]"):
-				return _invalid(diagnostics,
-					"DslParser: dialogue profile %s is plain text and cannot contain BBCode brackets (line %d)"
 					% [key, line], line)
 			return _valid(decoded)
 		decoded += character

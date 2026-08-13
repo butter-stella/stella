@@ -25,6 +25,7 @@ var max_entries: int = 200
 
 var _entries: Array = []
 var _cursor: int = -1
+var _pending_enrichment: Dictionary = {}
 
 
 ## Add a backlog entry for a dialogue that just fired.
@@ -35,32 +36,63 @@ var _cursor: int = -1
 ## that diverges (different choice, different branch) has a different uid.
 ## Earlier the manager used (scene_index, command_index) which collided
 ## under @call reuse and dynamic command insertion (issue #88).
-func add_entry(character: String, segments: Array, command_uid: int = -1, snapshot_func: Callable = Callable()) -> void:
+func add_entry(
+	character: String,
+	segments: Array,
+	command_uid: int = -1,
+	snapshot_func: Callable = Callable(),
+	registered_effect_names: Array = [],
+	entry_id: String = "",
+) -> void:
+	var stable_entry_id := (
+		entry_id if not entry_id.is_empty() else "command:%d" % command_uid)
+	var registered_effect_registry: Dictionary = {}
+	for raw_name in registered_effect_names:
+		var effect_name := String(raw_name).strip_edges()
+		if not effect_name.is_empty():
+			registered_effect_registry[effect_name] = true
 	# Browser-history: walking known path → just advance the cursor.
 	var next_idx = _cursor + 1
 	if next_idx < _entries.size():
-		var existing = _entries[next_idx]
-		if existing["command_uid"] == command_uid:
+		var existing: Dictionary = _entries[next_idx]
+		var same_execution := (
+			int(existing["command_uid"]) == command_uid
+			if command_uid >= 0
+			else String(existing.get("entry_id", "")) == stable_entry_id
+		)
+		if same_execution:
+			existing["entry_id"] = stable_entry_id
+			if _pending_enrichment.has(stable_entry_id):
+				var pending: Dictionary = _pending_enrichment[stable_entry_id]
+				_update_entry_text(
+					existing,
+					pending.get("segments", []),
+					pending.get("registry", {}),
+				)
+				_pending_enrichment.erase(stable_entry_id)
+			_entries[next_idx] = existing
 			_cursor = next_idx
 			return
 		# Divergence: drop everything after the cursor.
 		_entries.resize(_cursor + 1)
 
-	var full_text := ""
-	var voices: Array = []
-	for seg in segments:
-		full_text += _strip_inline_markers(String(seg.get("text", "")))
-		var v := String(seg.get("voice", ""))
-		if v != "":
-			voices.append(v)
-
 	var entry: Dictionary = {
 		"character": character,
-		"text": full_text,
-		"voices": voices,
+		"text": "",
+		"voices": [],
 		"command_uid": command_uid,
+		"entry_id": stable_entry_id,
 		"snapshot": snapshot_func.call() if snapshot_func.is_valid() else null,
 	}
+	_update_entry_text(entry, segments, registered_effect_registry)
+	if _pending_enrichment.has(stable_entry_id):
+		var pending: Dictionary = _pending_enrichment[stable_entry_id]
+		_update_entry_text(
+			entry,
+			pending.get("segments", []),
+			pending.get("registry", {}),
+		)
+		_pending_enrichment.erase(stable_entry_id)
 
 	_entries.append(entry)
 	_cursor = _entries.size() - 1
@@ -68,6 +100,51 @@ func add_entry(character: String, segments: Array, command_uid: int = -1, snapsh
 	while _entries.size() > max_entries:
 		_entries.pop_front()
 		_cursor -= 1
+
+
+## Enrich the already captured entry identified by the canonical request. This
+## never consults the mutable browser cursor or current ScenarioContext.
+func enrich_entry(
+	entry_id: String,
+	segments: Array,
+	registered_effect_names: Array,
+) -> bool:
+	if entry_id.is_empty():
+		return false
+	var registry: Dictionary = {}
+	for raw_name in registered_effect_names:
+		var effect_name := String(raw_name).strip_edges()
+		if not effect_name.is_empty():
+			registry[effect_name] = true
+	for index in range(_entries.size() - 1, -1, -1):
+		var entry: Dictionary = _entries[index]
+		if String(entry.get("entry_id", "")) != entry_id:
+			continue
+		_update_entry_text(entry, segments, registry)
+		_entries[index] = entry
+		return true
+	_pending_enrichment[entry_id] = {
+		"segments": segments.duplicate(true),
+		"registry": registry.duplicate(true),
+	}
+	return false
+
+
+func _update_entry_text(
+	entry: Dictionary,
+	segments: Array,
+	registered_effect_registry: Dictionary,
+) -> void:
+	var full_text := ""
+	var voices: Array = []
+	for seg in segments:
+		full_text += DialogueTextNormalizer.to_plain_text(
+			String(seg.get("text", "")), registered_effect_registry)
+		var voice := String(seg.get("voice", ""))
+		if not voice.is_empty():
+			voices.append(voice)
+	entry["text"] = full_text
+	entry["voices"] = voices
 
 
 func get_entries() -> Array:
@@ -107,16 +184,4 @@ func jump_to(index: int) -> Dictionary:
 func clear() -> void:
 	_entries.clear()
 	_cursor = -1
-
-
-## Strip typewriter/timeline directives from segment text so the backlog
-## displays only what the player actually sees:
-## - `[expr:expression]` single-word bracketed expression markers
-## - `{key:value}` inline effects (`{wait:500}`, `{speed:30}`, ...)
-##
-## Uses the same Core parser as DialoguePresenter so backlog text cannot drift
-## from the text the player actually saw.
-static func _strip_inline_markers(text: String) -> String:
-	return String(
-		ExpressionTimeline.parse_inline_annotations(text).get("visible_text", text)
-	)
+	_pending_enrichment.clear()

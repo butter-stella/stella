@@ -11,7 +11,7 @@ var chapter_id: String = ""
 ## synthetic @if/@elif scenes (which inherit from their parent's chapter
 ## but are not author-declared).
 var declared_line: int = 0
-## Dialogue mode transitions that execute when this scene is naturally
+## Dialogue presentation transitions that execute when this scene is naturally
 ## exhausted, before sequential fallthrough or an @call return. Kept outside
-## commands so existing command indices and persisted return points stay stable.
-var dialogue_mode_events_on_exit: Array[String] = []
+## commands so command indices and persisted return points stay stable.
+var dialogue_mode_events_on_exit: Array = []

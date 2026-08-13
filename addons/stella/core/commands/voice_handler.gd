@@ -1,4 +1,5 @@
-## Emits voice_play signal for voice playback.
+## Sends a typed playback request; SignalBus mirrors the legacy signal only as
+## an outbound compatibility notification.
 class_name VoiceHandler extends CommandHandler
 
 
@@ -10,4 +11,4 @@ func execute(data: CommandData, _context: ScenarioContext) -> void:
 	var asset = data.get_string("asset", "")
 	if asset == "":
 		return
-	SignalBus.voice_play.emit(asset, "")
+	SignalBus.request_voice_playback(asset, "")

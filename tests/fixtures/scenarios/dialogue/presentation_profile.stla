@@ -6,6 +6,8 @@
 @dialogue_profile novel background_visible=true background_modulate=#ffffff00
 @dialogue_profile novel show=quick_menu hide=adv_chrome
 @dialogue_profile novel entry_prefix="・" entry_separator=""
+@dialogue_profile restore_first entry_prefix="A" entry_separator="|"
+@dialogue_profile restore_second entry_prefix="B" entry_separator="~"
 
 @chapter dialogue_presentation "Dialogue Presentation Profile"
 @scene start
@@ -71,6 +73,14 @@
 「Repeated one」
 @nvl profile=novel
 「Repeated two」
+@nvl off
+@jump runtime_fixture_done
+
+@scene cross_profile_restore
+@nvl profile=restore_first
+「One」
+@nvl profile=restore_second
+「Two」
 @nvl off
 @jump runtime_fixture_done
 

@@ -57,7 +57,7 @@ jobs:
         timeout-minutes: 5
 
   rendering:
-    name: Stage Rendering Tests
+    name: Rendering Pixel Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -82,7 +82,7 @@ jobs:
       - name: Verify Lavapipe ICD
         run: test -f /usr/share/vulkan/icd.d/lvp_icd.json
 
-      - name: Run stage pixel tests with Mesa Lavapipe
+      - name: Run pixel tests with Mesa Lavapipe
         env:
           STELLA_EXPECT_RENDERING_METHOD: mobile
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json

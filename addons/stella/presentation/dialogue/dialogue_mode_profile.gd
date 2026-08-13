@@ -1,10 +1,13 @@
 ## Runtime representation of one STLA dialogue presentation profile.
 ##
-## DialogueProfileParser normally constructs this from .stla data. Exported
-## fields remain available only for the advanced scene-side fallback.
+## DialogueProfileParser normally constructs this from .stla data. Existing
+## layout fields remain available for the advanced scene-side fallback, while
+## newly added indicator authoring intentionally has one schema: .stla.
 ## Every section is opt-in. Unset sections retain the authored scene state.
 class_name DialogueModeProfile
 extends Resource
+
+const ADVANCE_INDICATOR_ANIMATIONS := ["none", "pulse", "bob"]
 
 @export_group("Panel")
 @export var override_panel_rect: bool = false
@@ -60,11 +63,24 @@ extends Resource
 ## Exact property names supplied by STLA. Resource-authored fallback profiles
 ## leave this empty and continue to use their section-level override toggles.
 var _stla_fields: Dictionary = {}
+## STLA keeps portable paths in CommandData. Resolve them only in Presentation;
+## Resource-authored fallback profiles instead use the typed exported fields.
+var _stla_advance_indicator_texture_path: String = ""
+var _stla_advance_indicator_scene_path: String = ""
+var _stla_advance_indicator_offset: Vector2 = Vector2.ZERO
+var _stla_advance_indicator_animation: String = "none"
+## Runtime-only authoring provenance copied from SignalBus's synchronous
+## presentation sidecar. It is never written to dialogue text or persistence.
+var _stla_provenance: Dictionary = {}
 
 
 ## Build a runtime profile from validated STLA declaration data.
-static func from_dictionary(data: Dictionary) -> DialogueModeProfile:
+static func from_dictionary(
+	data: Dictionary,
+	provenance: Dictionary = {},
+) -> DialogueModeProfile:
 	var profile := DialogueModeProfile.new()
+	profile._stla_provenance = provenance.duplicate(true)
 	for field_name in data:
 		profile._stla_fields[StringName(field_name)] = true
 	if data.has("panel_anchors") or data.has("panel_offsets"):
@@ -99,6 +115,16 @@ static func from_dictionary(data: Dictionary) -> DialogueModeProfile:
 			"scroll_following", profile.scroll_following)
 		profile.autowrap_mode = data.get("autowrap_mode", profile.autowrap_mode)
 		profile.clip_contents = data.get("clip_contents", profile.clip_contents)
+	if data.has("advance_indicator_texture"):
+		profile._stla_advance_indicator_texture_path = String(
+			data["advance_indicator_texture"])
+	if data.has("advance_indicator_scene"):
+		profile._stla_advance_indicator_scene_path = String(
+			data["advance_indicator_scene"])
+	if data.has("advance_indicator_offset"):
+		profile._stla_advance_indicator_offset = data["advance_indicator_offset"]
+	if data.has("advance_indicator_animation"):
+		profile._stla_advance_indicator_animation = data["advance_indicator_animation"]
 	if data.has("entry_prefix"):
 		profile.override_entry_prefix = true
 		profile.entry_prefix = data["entry_prefix"]
@@ -144,6 +170,137 @@ func overrides_property(property_name: StringName) -> bool:
 		&"background_modulate":
 			return override_background_modulate
 	return false
+
+
+## Whether this mode has a declarative STLA source. A missing/unloadable path
+## still returns true here so the
+## caller can surface advance_indicator_validation_errors() instead of silently
+## treating a broken configuration as absent.
+func has_advance_indicator() -> bool:
+	return _has_advance_indicator_scene_source() \
+		or _has_advance_indicator_texture_source()
+
+
+## Resolve the custom scene source. Scene always has priority over texture.
+func resolve_advance_indicator_scene() -> PackedScene:
+	if not _stla_advance_indicator_scene_path.is_empty():
+		if not ResourceLoader.exists(_stla_advance_indicator_scene_path):
+			return null
+		return ResourceLoader.load(
+			_stla_advance_indicator_scene_path) as PackedScene
+	return null
+
+
+## Resolve the texture source only when no scene source is configured.
+func resolve_advance_indicator_texture() -> Texture2D:
+	if _has_advance_indicator_scene_source():
+		return null
+	if not _stla_advance_indicator_texture_path.is_empty():
+		if not ResourceLoader.exists(_stla_advance_indicator_texture_path):
+			return null
+		return ResourceLoader.load(
+			_stla_advance_indicator_texture_path) as Texture2D
+	return null
+
+
+func get_advance_indicator_offset() -> Vector2:
+	return _stla_advance_indicator_offset
+
+
+func get_advance_indicator_animation() -> String:
+	return _stla_advance_indicator_animation
+
+
+## Indicator failures are local presentation failures. DialoguePresenter uses
+## these diagnostics to hide only the indicator; they intentionally do not flow
+## through validation_errors(), whose errors trigger whole-profile layout
+## fallback for legacy Resource profiles.
+func advance_indicator_validation_errors() -> PackedStringArray:
+	var errors := PackedStringArray()
+	if not _stla_advance_indicator_offset.is_finite():
+		errors.append("advance_indicator_offset must contain only finite values")
+	if _stla_advance_indicator_animation not in ADVANCE_INDICATOR_ANIMATIONS:
+		errors.append(
+			"advance_indicator_animation has unsupported value '%s'"
+			% _stla_advance_indicator_animation)
+	_validate_stla_advance_indicator_resource(
+		_stla_advance_indicator_texture_path, false, "advance_indicator_texture", errors)
+	_validate_stla_advance_indicator_resource(
+		_stla_advance_indicator_scene_path, true, "advance_indicator_scene", errors)
+	return errors
+
+
+func advance_indicator_warnings() -> PackedStringArray:
+	# The parser rejects mutually exclusive sources atomically, so a runtime
+	# profile can never contain a partial or precedence-based configuration.
+	return PackedStringArray()
+
+
+## Structured context used only for runtime authoring diagnostics. STLA paths
+## and lines come from the parser sidecar.
+func advance_indicator_diagnostic_provenance() -> Dictionary:
+	var source_field := (
+		"advance_indicator_scene"
+		if _has_advance_indicator_scene_source()
+		else "advance_indicator_texture"
+	)
+	var source_path := ""
+	if source_field == "advance_indicator_scene":
+		source_path = _stla_advance_indicator_scene_path
+	else:
+		source_path = _stla_advance_indicator_texture_path
+
+	if String(_stla_provenance.get("kind", "")) == "stla":
+		var field_lines: Dictionary = _stla_provenance.get("field_lines", {})
+		var declaration_line := int(field_lines.get(source_field, 0))
+		var profile_source := String(_stla_provenance.get("source_path", ""))
+		if profile_source.is_empty():
+			profile_source = "<unknown STLA>"
+		return {
+			"kind": "stla",
+			"profile_name": String(_stla_provenance.get("profile_name", "<unnamed>")),
+			"profile_source": profile_source,
+			"declaration_line": declaration_line,
+			"indicator_field": source_field,
+			"indicator_source": source_path,
+		}
+
+	return {
+		"kind": "stla",
+		"profile_name": "<runtime profile>",
+		"profile_source": "<unknown STLA>",
+		"declaration_line": 0,
+		"indicator_field": source_field,
+		"indicator_source": source_path,
+	}
+
+
+func _has_advance_indicator_texture_source() -> bool:
+	return not _stla_advance_indicator_texture_path.is_empty()
+
+
+func _has_advance_indicator_scene_source() -> bool:
+	return not _stla_advance_indicator_scene_path.is_empty()
+
+
+func _validate_stla_advance_indicator_resource(
+	resource_path: String,
+	expects_scene: bool,
+	field_name: String,
+	errors: PackedStringArray,
+) -> void:
+	if resource_path.is_empty():
+		return
+	if not ResourceLoader.exists(resource_path):
+		errors.append("%s resource no longer exists: '%s'" % [field_name, resource_path])
+		return
+	var resource := ResourceLoader.load(resource_path)
+	var valid_type := (resource is PackedScene) if expects_scene else (resource is Texture2D)
+	if not valid_type:
+		var expected_name := "PackedScene" if expects_scene else "Texture2D"
+		var actual_name := resource.get_class() if resource != null else "unloadable resource"
+		errors.append("%s must resolve to a %s, got %s"
+			% [field_name, expected_name, actual_name])
 
 
 func validation_errors() -> PackedStringArray:

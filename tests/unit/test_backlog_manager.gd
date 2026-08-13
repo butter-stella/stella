@@ -31,6 +31,34 @@ func test_add_entry_stores_basic_fields():
 	assert_eq(entries[0]["character"], "sakura")
 	assert_eq(entries[0]["text"], "hello")
 	assert_eq(entries[0]["command_uid"], 0)
+	assert_eq(entries[0]["entry_id"], "command:0")
+
+
+func test_enrichment_updates_only_the_stable_entry_id():
+	_mgr.add_entry("a", _segs("first"), 10, func(): return {})
+	_mgr.add_entry("b", _segs("second"), 11, func(): return {})
+
+	var updated := _mgr.enrich_entry(
+		"command:10", _segs("[custom amp=2]first[/custom]"), ["custom"])
+
+	assert_true(updated)
+	assert_eq(_mgr.get_entries()[0]["text"], "first")
+	assert_eq(_mgr.get_entries()[1]["text"], "second",
+		"a delayed enrichment for A cannot rewrite the current B entry")
+
+
+func test_enrichment_can_arrive_before_canonical_entry_capture() -> void:
+	var updated := _mgr.enrich_entry(
+		"entry:early", _segs("[custom amp=2]visible[/custom]"), ["custom"])
+	assert_false(updated)
+
+	_mgr.add_entry(
+		"a", _segs("[custom amp=2]visible[/custom]"), 12,
+		func(): return {}, [], "entry:early")
+
+	assert_eq(_mgr.get_entries().size(), 1)
+	assert_eq(_mgr.get_entries()[0]["text"], "visible",
+		"subscriber order cannot turn enrichment into a duplicate backlog row")
 
 
 func test_add_entry_strips_inline_effect_markers():
@@ -48,10 +76,117 @@ func test_add_entry_strips_expression_markers():
 	assert_eq(_mgr.get_entries()[0]["text"], "嗨，最近好吗？")
 
 
-func test_add_entry_preserves_non_expression_brackets_as_literal_text():
-	var segs = [{"text": "[b]重要[/b]文本", "voice": ""}]
+func test_add_entry_preserves_unknown_brackets_as_literal_text():
+	var segs = [{"text": "[note]重要[/note]文本", "voice": ""}]
 	_mgr.add_entry("a", segs, 0, func(): return {})
-	assert_eq(_mgr.get_entries()[0]["text"], "[b]重要[/b]文本")
+	assert_eq(_mgr.get_entries()[0]["text"], "[note]重要[/note]文本")
+
+
+func test_add_entry_converts_builtin_bbcode_to_visible_plain_text():
+	var source := (
+		"[b]A[/b][br][ul]B[/ul]"
+		+ "[p note='a]b' align=right]C[/p][expr:happy]D{wait:10}"
+	)
+	_mgr.add_entry("a", _segs(source), 0, func(): return {})
+	assert_eq(
+		_mgr.get_entries()[0]["text"],
+		"A\n• B\nC\nD",
+		"a plain Button must receive the same visible words, never raw BBCode",
+	)
+
+
+func test_add_entry_preserves_literal_brackets_and_bbcode_bracket_escapes():
+	_mgr.add_entry("a", _segs("[[b]literal[lb]x[rb] [note: value]"), 0, func(): return {})
+	assert_eq(_mgr.get_entries()[0]["text"], "[literal[x] [note: value]")
+
+	_mgr.clear()
+	_mgr.add_entry("a", _segs("[[expr:happy]escaped marker"), 1, func(): return {})
+	assert_eq(_mgr.get_entries()[0]["text"], "[expr:happy]escaped marker",
+		"an escaped marker remains player-visible instead of becoming an expression")
+
+
+func test_add_entry_matches_godot_hex_char_tag_semantics():
+	_mgr.add_entry("a", _segs("[char=65][char=0x42][char=invalid]"), 0,
+		func(): return {})
+	assert_eq(_mgr.get_entries()[0]["text"], "eB�",
+		"Godot parses char values as hexadecimal and displays invalid values as U+FFFD")
+
+	_mgr.clear()
+	_mgr.add_entry("a", _segs("A[rli]B"), 1, func(): return {})
+	assert_eq(_mgr.get_entries()[0]["text"], "A‧B",
+		"plain text mirrors Godot's current player-visible [rli] codepoint")
+
+
+func test_add_entry_recovers_visible_text_after_malformed_image_source():
+	_mgr.add_entry("a", _segs(
+		"[img]res://missing.png[/b]after[/img]tail"), 0, func(): return {})
+	assert_eq(_mgr.get_entries()[0]["text"], "￼[/b]aftertail",
+		"a mismatched tag terminates the image source and must not swallow trailing text")
+
+	_mgr.clear()
+	_mgr.add_entry("a", _segs(
+		"[img]res://missing.png[b]bold[/b][/img]after"), 1, func(): return {})
+	assert_eq(_mgr.get_entries()[0]["text"], "￼boldafter",
+		"BBCode following an image source is ordinary visible content")
+
+	_mgr.clear()
+	_mgr.add_entry("a", _segs(
+		"[img]res://missing[expr:happy].png[/img]after"), 2, func(): return {})
+	assert_eq(_mgr.get_entries()[0]["text"], "￼after",
+		"a removed expression marker stays inside the image source token")
+
+	_mgr.clear()
+	_mgr.add_entry("a", _segs(
+		"[imgbogus]res://missing[/img]after"), 3, func(): return {})
+	assert_eq(_mgr.get_entries()[0]["text"], "￼[/img]after",
+		"broad img tag recognition does not make a mismatched close disappear")
+
+
+func test_add_entry_formats_each_list_line_and_nested_ordered_lists():
+	var source := (
+		"[ul]one\ntwo[/ul]"
+		+ "[ol type=A]alpha\nbeta[/ol]"
+		+ "[ul]outer\n[ol type=i]inner one\ninner two[/ol]\nafter[/ul]"
+	)
+	_mgr.add_entry("a", _segs(source), 0, func(): return {})
+	assert_eq(
+		_mgr.get_entries()[0]["text"],
+		"• one\n• two\nA. alpha\nB. beta\n"
+			+ "• outer\n  i. inner one\n  ii. inner two\n• after",
+		"list markers belong to every item and preserve ordered style and nesting",
+	)
+
+
+func test_add_entry_preserves_authored_blank_lines_inside_and_outside_lists():
+	_mgr.add_entry("a", _segs(
+		"first\n\nsecond[ul]one\n\ntwo[/ul]after"), 0, func(): return {})
+	assert_eq(
+		_mgr.get_entries()[0]["text"],
+		"first\n\nsecond\n• one\n\n• two\nafter",
+		"structural list breaks must not collapse authored blank lines",
+	)
+
+
+func test_add_entry_strips_only_registered_custom_bbcode_effects():
+	_mgr.add_entry("a", _segs(
+		"[custom amp=2]visible[/custom]"
+		+ "[custom=2]literal main value[/custom]"
+		+ "[unknown amp=2]literal[/unknown]"), 0, func(): return {}, ["custom"])
+	assert_eq(
+		_mgr.get_entries()[0]["text"],
+		"visible[custom=2]literal main value[/custom]"
+			+ "[unknown amp=2]literal[/unknown]",
+		"registered custom effects are formatting; truly unknown tags stay literal",
+	)
+
+	_mgr.clear()
+	_mgr.add_entry("a", _segs("[custom amp=2]literal[/custom]"), 1,
+		func(): return {}, [])
+	assert_eq(
+		_mgr.get_entries()[0]["text"],
+		"[custom amp=2]literal[/custom]",
+		"an active scene with no custom effects clears the previous registry",
+	)
 
 
 func test_add_entry_concatenates_combine_segments():
