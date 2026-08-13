@@ -1,0 +1,6 @@
+[gd_scene format=3]
+
+[node name="InheritedChildBaseTitle" type="Node"]
+
+[node name="Child" type="Node" parent="."]
+metadata/probe = "base"

@@ -10,7 +10,8 @@ const EXPECTED_STAGE_PATH = "res://tests/fixtures/stage/"
 const EXPECTED_SE_PATH = "res://examples/demo/audio/se/"
 const EXPECTED_GAME_SCENE = "res://tests/fixtures/startup/game.tscn"
 const EXPECTED_OVERLAY = "StartupProbeOverlay"
-const EXPECTED_CANCEL_SE = "se_cancel"
+const EXPECTED_SELECT_SE = "se_cancel"
+const EXPECTED_CANCEL_SE = "se_select"
 
 
 func _ready() -> void:
@@ -106,6 +107,21 @@ func _ready() -> void:
 		!= EXPECTED_SE_PATH + EXPECTED_CANCEL_SE + ".wav"
 	):
 		failures.append("AudioPresenter did not consume the configured system SE")
+	if system_se_player != null:
+		system_se_player.stop()
+		system_se_player.stream = null
+
+	# The base selects se_select while local overrides it to se_cancel. Trigger
+	# the production choice signal after clearing the prior cancel playback so
+	# this assertion proves the merged select key reached AudioPresenter.
+	SignalBus.choice_selected.emit("startup_probe_choice")
+	if (
+		system_se_player == null
+		or system_se_player.stream == null
+		or system_se_player.stream.resource_path
+		!= EXPECTED_SE_PATH + EXPECTED_SELECT_SE + ".wav"
+	):
+		failures.append("AudioPresenter did not consume the local choice select SE")
 	if system_se_player != null:
 		system_se_player.stop()
 		system_se_player.stream = null

@@ -314,6 +314,26 @@ func _probe_failed_navigation_preserves_owner(
 	if StellaRuntime._last_scenario_path != NAVIGATION_SCENARIO:
 		failures.append("missing game target changed the active scenario path")
 
+	var degraded_game_path := "user://stella_probe_degraded_game.tscn"
+	var degraded_game := FileAccess.open(degraded_game_path, FileAccess.WRITE)
+	if degraded_game == null:
+		failures.append("could not create the degraded game fixture")
+	else:
+		degraded_game.store_string(
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"Script\" "
+			+ "path=\"user://PRIVATE_DEGRADED_GAME_DEPENDENCY.gd\" "
+			+ "id=\"1_missing\"]\n\n"
+			+ "[node name=\"DegradedGame\" type=\"Node\"]\n"
+			+ "script = ExtResource(\"1_missing\")\n"
+		)
+		degraded_game.close()
+		StellaRuntime.start_game(NAVIGATION_SCENARIO, degraded_game_path)
+		await get_tree().process_frame
+		if StellaRuntime.engine.context != active_context or active_context.is_finished:
+			failures.append("degraded game destroyed the active context")
+		if get_tree().current_scene.scene_file_path != active_scene_path:
+			failures.append("degraded game replaced the active scene")
 	StellaRuntime.start_game(
 		"res://tests/fixtures/scenarios/missing_navigation_scenario.stla",
 		NAVIGATION_GAME_SCENE,
@@ -345,6 +365,37 @@ func _probe_failed_navigation_preserves_owner(
 			failures.append("invalid save destroyed the active context")
 		StellaRuntime.delete_save(invalid_save_slot)
 
+	var semantic_save_slot := NAVIGATION_SAVE_SLOT + 2
+	var semantic_save_path := (
+		StellaRuntime.save_manager.save_dir
+		+ "save_%d.json" % semantic_save_slot
+	)
+	var semantic_save := FileAccess.open(semantic_save_path, FileAccess.WRITE)
+	if semantic_save == null:
+		failures.append("could not create the semantic save fixture")
+	else:
+		semantic_save.store_string(JSON.stringify({
+			"scenario_context": {
+				"scenario_id": "presentation_profile",
+				"scene_index": 999999,
+				"command_index": 0,
+			},
+			"timestamp": 1,
+		}))
+		semantic_save.close()
+		var semantic_load_result: Variant = await StellaRuntime.load_game(
+			semantic_save_slot,
+			NAVIGATION_SCENARIO,
+			NAVIGATION_GAME_SCENE,
+		)
+		if semantic_load_result != false:
+			failures.append("semantic save corruption was accepted")
+		await get_tree().process_frame
+		if StellaRuntime.engine.context != active_context or active_context.is_finished:
+			failures.append("semantic save corruption destroyed the active context")
+		if get_tree().current_scene.scene_file_path != active_scene_path:
+			failures.append("semantic save corruption replaced the active scene")
+
 	StellaRuntime._cancel_active_gameplay()
 	StellaRuntime.game_state.transition_to(GameStateMachine.State.TITLE)
 	var title_scene := get_tree().current_scene
@@ -362,6 +413,39 @@ func _probe_failed_navigation_preserves_owner(
 		failures.append("failed title-side start left TITLE state")
 	if not StellaRuntime._navigation_kind.is_empty():
 		failures.append("failed preflight acquired navigation ownership")
+
+	# Repeat the deep-preflight and semantic-save failures from TITLE. Neither
+	# path may create a context, replace the title scene, or acquire navigation
+	# ownership before validation has completed.
+	StellaRuntime.start_game(NAVIGATION_SCENARIO, degraded_game_path)
+	await get_tree().process_frame
+	if StellaRuntime.engine.context != null:
+		failures.append("title-side degraded game created a context")
+	if get_tree().current_scene.scene_file_path != title_scene_path:
+		failures.append("title-side degraded game replaced the title scene")
+	if StellaRuntime.game_state.current_state != GameStateMachine.State.TITLE:
+		failures.append("title-side degraded game left TITLE state")
+	if not StellaRuntime._navigation_kind.is_empty():
+		failures.append("title-side degraded game acquired navigation ownership")
+
+	var title_semantic_result: Variant = await StellaRuntime.load_game(
+		semantic_save_slot,
+		NAVIGATION_SCENARIO,
+		NAVIGATION_GAME_SCENE,
+	)
+	if title_semantic_result != false:
+		failures.append("title-side semantic save corruption was accepted")
+	if StellaRuntime.engine.context != null:
+		failures.append("title-side semantic save created a context")
+	if get_tree().current_scene.scene_file_path != title_scene_path:
+		failures.append("title-side semantic save replaced the title scene")
+	if StellaRuntime.game_state.current_state != GameStateMachine.State.TITLE:
+		failures.append("title-side semantic save left TITLE state")
+
+	DirAccess.remove_absolute(
+		ProjectSettings.globalize_path(degraded_game_path),
+	)
+	StellaRuntime.delete_save(semantic_save_slot)
 
 
 func _probe_uid_navigation(failures: PackedStringArray) -> void:
@@ -556,6 +640,14 @@ func _write_degraded_title_fixtures() -> PackedStringArray:
 	var malformed_texture_title_path := (
 		"user://stella_probe_malformed_texture_title.tscn"
 	)
+	var undeclared_ext_path := "user://stella_probe_undeclared_ext_title.tscn"
+	var undeclared_sub_path := "user://stella_probe_undeclared_sub_title.tscn"
+	var invalid_constructor_path := (
+		"user://stella_probe_invalid_constructor_title.tscn"
+	)
+	var invalid_packed_constructor_path := (
+		"user://stella_probe_invalid_packed_constructor_title.tscn"
+	)
 	var sources := {
 		missing_script_path: (
 			"[gd_scene load_steps=2 format=3]\n\n"
@@ -604,6 +696,27 @@ func _write_degraded_title_fixtures() -> PackedStringArray:
 			% malformed_texture_path
 			+ "[node name=\"MalformedTextureTitle\" type=\"Sprite2D\"]\n"
 			+ "texture = ExtResource(\"1_texture\")\n"
+		),
+		undeclared_ext_path: (
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"UndeclaredExtTitle\" type=\"Node\"]\n"
+			+ "metadata/private = ExtResource(\"PRIVATE_EXT_SENTINEL\")\n"
+		),
+		undeclared_sub_path: (
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"UndeclaredSubTitle\" type=\"Node\"]\n"
+			+ "metadata/private = SubResource(\"PRIVATE_SUB_SENTINEL\")\n"
+		),
+		invalid_constructor_path: (
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"InvalidConstructorTitle\" type=\"Node\"]\n"
+			+ "metadata/private = Vector2(1, 2, PRIVATE_VECTOR_SENTINEL)\n"
+		),
+		invalid_packed_constructor_path: (
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"InvalidPackedTitle\" type=\"Node\"]\n"
+			+ "metadata/private = "
+			+ "PackedByteArray(\"PRIVATE_PACKED_SENTINEL\")\n"
 		),
 	}
 	var paths := PackedStringArray()

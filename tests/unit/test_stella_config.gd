@@ -19,6 +19,15 @@ const TEST_MALFORMED_TEXTURE_PATH = "user://test_malformed_texture.tres"
 const TEST_MULTILINE_RESOURCE_TITLE_PATH = (
 	"user://test_multiline_resource_title.tscn"
 )
+const TEST_UNDECLARED_EXT_TITLE_PATH = "user://test_undeclared_ext_title.tscn"
+const TEST_UNDECLARED_SUB_TITLE_PATH = "user://test_undeclared_sub_title.tscn"
+const TEST_INVALID_CONSTRUCTOR_TITLE_PATH = (
+	"user://test_invalid_constructor_title.tscn"
+)
+const TEST_INVALID_PACKED_CONSTRUCTOR_TITLE_PATH = (
+	"user://test_invalid_packed_constructor_title.tscn"
+)
+const TEST_DEGRADED_GAME_PATH = "user://test_degraded_game.tscn"
 const UID_DEPENDENCY_SCRIPT = (
 	"res://tests/fixtures/pck_smoke/export_probe_runner.gd"
 )
@@ -38,6 +47,11 @@ const TEST_CONFIG_PATHS = [
 	TEST_MALFORMED_TEXTURE_TITLE_PATH,
 	TEST_MALFORMED_TEXTURE_PATH,
 	TEST_MULTILINE_RESOURCE_TITLE_PATH,
+	TEST_UNDECLARED_EXT_TITLE_PATH,
+	TEST_UNDECLARED_SUB_TITLE_PATH,
+	TEST_INVALID_CONSTRUCTOR_TITLE_PATH,
+	TEST_INVALID_PACKED_CONSTRUCTOR_TITLE_PATH,
+	TEST_DEGRADED_GAME_PATH,
 	"user://test_stella.cfg",
 	"user://test_stella_partial.cfg",
 	"user://test_stella_has.cfg",
@@ -324,6 +338,104 @@ func test_title_resolver_accepts_inherited_scene_that_explicitly_clears_script()
 	assert_eq(resolved.resource_path, cleared_path)
 	assert_eq(_runtime.title_scene_path, cleared_path)
 	assert_engine_error_count(0)
+
+
+func test_title_resolver_accepts_effective_inherited_child_and_script_class_resource():
+	var inherited_path := (
+		"res://tests/fixtures/startup/inherited_child_override_title.tscn"
+	)
+	var custom_resource_path := (
+		"res://tests/fixtures/startup/custom_resource_title.tscn"
+	)
+	for valid_path: String in [inherited_path, custom_resource_path]:
+		_runtime.title_scene_path = valid_path
+		var resolved: PackedScene = _runtime.resolve_title_scene()
+		assert_not_null(resolved)
+		assert_eq(resolved.resource_path, valid_path)
+		var instance := resolved.instantiate()
+		assert_not_null(instance)
+		if instance != null and valid_path == inherited_path:
+			assert_eq(instance.get_node("Child").get_meta("probe"), "override")
+		if instance != null and valid_path == custom_resource_path:
+			var custom_resource: Variant = instance.get_meta("custom_resource")
+			assert_true(custom_resource is StellaStartupCustomResource)
+			if custom_resource is StellaStartupCustomResource:
+				assert_eq(custom_resource.value, "custom-resource-ok")
+		if instance != null:
+			instance.free()
+	assert_engine_error_count(0)
+
+
+func test_scene_preflight_rejects_undeclared_refs_and_invalid_constructor_safely():
+	_write_raw_project_config(
+		TEST_UNDECLARED_EXT_TITLE_PATH,
+		(
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"UndeclaredExtTitle\" type=\"Node\"]\n"
+			+ "metadata/private = ExtResource(\"PRIVATE_EXT_SENTINEL\")\n"
+		),
+	)
+	_write_raw_project_config(
+		TEST_UNDECLARED_SUB_TITLE_PATH,
+		(
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"UndeclaredSubTitle\" type=\"Node\"]\n"
+			+ "metadata/private = SubResource(\"PRIVATE_SUB_SENTINEL\")\n"
+		),
+	)
+	_write_raw_project_config(
+		TEST_INVALID_CONSTRUCTOR_TITLE_PATH,
+		(
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"InvalidConstructorTitle\" type=\"Node\"]\n"
+			+ "metadata/private = Vector2(1, 2, PRIVATE_VECTOR_SENTINEL)\n"
+		),
+	)
+	_write_raw_project_config(
+		TEST_INVALID_PACKED_CONSTRUCTOR_TITLE_PATH,
+		(
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"InvalidPackedTitle\" type=\"Node\"]\n"
+			+ "metadata/private = "
+			+ "PackedByteArray(\"PRIVATE_PACKED_SENTINEL\")\n"
+		),
+	)
+	var fallback := load(_runtime.DEFAULT_TITLE_SCENE) as PackedScene
+	for invalid_path: String in [
+		TEST_UNDECLARED_EXT_TITLE_PATH,
+		TEST_UNDECLARED_SUB_TITLE_PATH,
+		TEST_INVALID_CONSTRUCTOR_TITLE_PATH,
+		TEST_INVALID_PACKED_CONSTRUCTOR_TITLE_PATH,
+	]:
+		assert_false(
+			_runtime._read_text_resource_dependencies(invalid_path).get("ok", true)
+		)
+		_runtime.title_scene_path = invalid_path
+		assert_eq(_runtime.resolve_title_scene(fallback), fallback)
+		assert_push_error("falling back to the built-in title scene")
+	assert_engine_error_count(0,
+		"safe preflight must reject private tokens before Godot parses them")
+
+
+func test_navigation_scene_uses_the_same_deep_dependency_preflight():
+	_write_raw_project_config(
+		TEST_DEGRADED_GAME_PATH,
+		(
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"Script\" "
+			+ "path=\"user://PRIVATE_GAME_DEPENDENCY.gd\" id=\"1_missing\"]\n\n"
+			+ "[node name=\"DegradedGame\" type=\"Node\"]\n"
+			+ "script = ExtResource(\"1_missing\")\n"
+		),
+	)
+
+	assert_true(_runtime._load_navigation_scene(
+		TEST_DEGRADED_GAME_PATH,
+		"game",
+	).is_empty())
+	assert_push_error("game scene is not loadable")
+	assert_engine_error_count(0,
+		"navigation preflight must not expose a missing private dependency")
 
 
 func test_title_dependency_preflight_accepts_multiline_serialized_variants():

@@ -44,6 +44,55 @@ class MockProvider:
 		data = snapshot.duplicate()
 
 
+func _make_validation_scenario() -> ScenarioData:
+	var data := ScenarioData.new()
+	data.id = "save_validation"
+	var scene := SceneData.new()
+	scene.id = "start"
+	scene.commands = [CommandData.new(), CommandData.new()]
+	data.scenes = [scene]
+	return data
+
+
+func _make_valid_save_snapshot() -> Dictionary:
+	return {
+		"scenario_context": {
+			"scenario_id": "save_validation",
+			"scene_index": 0,
+			"command_index": 1,
+			"is_finished": false,
+			"return_stack": [{"scene_index": 0, "command_index": 2}],
+			"dialogue_mode": "nvl",
+			"nvl_page_epoch": 1,
+			"nvl_page_entries": [{
+				"command_uid": 1,
+				"scene_index": 0,
+				"command_index": 1,
+				"profile_name": "",
+				"character": "probe",
+				"segments": [{"text": "safe", "voice": ""}],
+			}],
+		},
+		"variable_store": {"scenario": {}, "global": {}},
+		"presentation_state": {
+			"bg": "",
+			"stage_layers": {},
+			"bgm": "",
+		},
+		"read_flags": {"save_validation:start:0": true},
+		"unlocks": {"cg": ["safe"]},
+		"flowchart_visited": {
+			"visited_chapters": {},
+			"visited_chapter_edges": {},
+		},
+		"flowchart_state": {
+			"current_path": [],
+			"chapter_snapshots": {},
+		},
+		"timestamp": 1.0,
+	}
+
+
 func test_register_provider():
 	var provider = MockProvider.new("test")
 	_manager.register_provider(provider)
@@ -161,6 +210,57 @@ func test_read_save_data_rejects_non_dictionary_provider_snapshot():
 	assert_null(_manager.read_save_data(1))
 	assert_false(_manager.load_save(1))
 	assert_eq(provider.data, {"preserved": true})
+
+
+func test_scenario_aware_read_rejects_semantically_invalid_position():
+	_manager._ensure_dir()
+	var invalid := _make_valid_save_snapshot()
+	invalid["scenario_context"]["scene_index"] = 999999
+	var file := FileAccess.open(_save_dir + "save_1.json", FileAccess.WRITE)
+	file.store_string(JSON.stringify(invalid))
+	file.close()
+
+	# A generic tool may still inspect a structurally valid snapshot, while the
+	# Runtime transaction always supplies the destination ScenarioData.
+	assert_not_null(_manager.read_save_data(1))
+	assert_null(_manager.read_save_data(1, _make_validation_scenario()))
+
+
+func test_save_validation_covers_builtin_provider_field_types_atomically():
+	var scenario := _make_validation_scenario()
+	var valid := _make_valid_save_snapshot()
+	assert_true(_manager.validate_data_for_scenario(valid, scenario))
+
+	var corruptions: Array[Dictionary] = []
+	var invalid_command := valid.duplicate(true)
+	invalid_command["scenario_context"]["command_index"] = 999999
+	corruptions.append(invalid_command)
+	var invalid_return_stack := valid.duplicate(true)
+	invalid_return_stack["scenario_context"]["return_stack"] = ["invalid"]
+	corruptions.append(invalid_return_stack)
+	var invalid_nvl := valid.duplicate(true)
+	invalid_nvl["scenario_context"]["nvl_page_entries"][0]["segments"] = [1]
+	corruptions.append(invalid_nvl)
+	var invalid_variables := valid.duplicate(true)
+	invalid_variables["variable_store"]["scenario"] = []
+	corruptions.append(invalid_variables)
+	var invalid_presentation := valid.duplicate(true)
+	invalid_presentation["presentation_state"]["stage_layers"] = {
+		"hero": {"position": [1.0]},
+	}
+	corruptions.append(invalid_presentation)
+	var invalid_unlocks := valid.duplicate(true)
+	invalid_unlocks["unlocks"]["cg"] = "invalid"
+	corruptions.append(invalid_unlocks)
+	var invalid_visited := valid.duplicate(true)
+	invalid_visited["flowchart_visited"]["visited_chapters"] = {"intro": 1}
+	corruptions.append(invalid_visited)
+	var invalid_flowchart := valid.duplicate(true)
+	invalid_flowchart["flowchart_state"]["current_path"] = [1]
+	corruptions.append(invalid_flowchart)
+
+	for invalid: Dictionary in corruptions:
+		assert_false(_manager.validate_data_for_scenario(invalid, scenario))
 
 
 func test_has_save():

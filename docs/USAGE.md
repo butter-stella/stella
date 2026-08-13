@@ -181,7 +181,7 @@ GODOT_BIN=godot tests/pck_smoke/run_export_smoke.sh
 
 参考 `examples/demo/` 的结构搭建自己的标题场景和游戏场景，然后在 `stella.cfg` 的 `[overrides]` 中指向它们。
 
-使用插件提供的默认 bootstrap 入口时，`[overrides].title_scene` 同时控制首次启动进入的标题场景和之后的返回标题行为；启动配置会在场景重定向和 Presenter 消费配置前完成解析与应用。标题候选的脚本、嵌套场景和其他外部依赖必须全部随构建存在，依赖声明类型必须与实际可加载资源兼容，且节点脚本的原生基类必须与节点类型兼容，否则首次启动和返回标题都会原子回退内置标题。`return_to_title()` 可以从场景根 `_ready()` 调用；它会延迟切换，并在实际 `scene_changed` 确认后才清理游戏状态。其他游戏导航同样会先校验场景、剧本和存档；失败调用不会销毁当前有效运行状态。配置场景路径可使用 Godot UID，Runtime 会在请求和确认前统一解析到当前 canonical resource path。
+使用插件提供的默认 bootstrap 入口时，`[overrides].title_scene` 同时控制首次启动进入的标题场景和之后的返回标题行为；启动配置会在场景重定向和 Presenter 消费配置前完成解析与应用。所有配置场景的脚本、嵌套场景和其他外部依赖必须全部随构建存在，依赖声明类型（包括 custom `script_class` Resource）必须与实际可加载资源兼容，且节点脚本的原生基类必须与节点类型兼容；title 失败会原子回退内置标题，game/overlay 失败则保持当前有效场景和状态。安全预检也会拒绝未声明的 ExtResource/SubResource ID 和非法序列化构造器，不把错误值交给可能回显原文的 Godot parser。`return_to_title()` 可以从场景根 `_ready()` 调用；它会延迟切换，并在实际 `scene_changed` 确认后才清理游戏状态。其他游戏导航同样会在取得导航所有权前校验场景、剧本，以及存档中的 scenario/scene/command 边界和各内置 provider 字段类型；失败调用不会销毁当前有效运行状态。配置场景路径可使用 Godot UID，Runtime 会在请求和确认前统一解析到当前 canonical resource path。
 
 游戏场景中使用插件的 Presenter 脚本（`BackgroundPresenter`、`StagePresenter` 等），通过 `StellaRuntime` 的 Facade API 控制游戏流程。`BackgroundPresenter` 独立管理 `@bg` 基础背景；人物、前景、事件图和其他可变换图片统一放在动态 `StageLayer` 中。StageLayer 按稳定 ID 创建任意数量的图片层，不预建位置槽。
 

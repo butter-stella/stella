@@ -17,6 +17,448 @@ const DEFAULT_BACKLOG_SCENE = "res://addons/stella/scenes/backlog.tscn"
 const DEFAULT_FLOWCHART_SCENE = "res://addons/stella/scenes/flowchart.tscn"
 const MAX_TITLE_TEXT_RESOURCE_BYTES = 8 * 1024 * 1024
 
+
+## Parse serialized Variant values without evaluating them or handing malformed
+## private source to Godot's resource parser. The grammar intentionally covers
+## the canonical primitives/containers/constructors emitted by Godot 4.x text
+## resources; an unsupported token makes the complete source fail preflight.
+class _ResourceValueParser:
+	var _text: String
+	var _index: int = 0
+	var _references: Array[Dictionary] = []
+
+
+	func _init(text: String) -> void:
+		_text = text
+
+
+	func parse() -> Dictionary:
+		_skip_ignored()
+		var value := _parse_value()
+		if not value.get("ok", false):
+			return {"ok": false, "references": []}
+		_skip_ignored()
+		if _index != _text.length():
+			return {"ok": false, "references": []}
+		return {
+			"ok": true,
+			"references": _references,
+		}
+
+
+	func _parse_value() -> Dictionary:
+		_skip_ignored()
+		if _index >= _text.length():
+			return {"ok": false}
+		var character := _text[_index]
+		if character == "\"":
+			return _parse_string(false)
+		if (
+			character in ["&", "^"]
+			and _index + 1 < _text.length()
+			and _text[_index + 1] == "\""
+		):
+			return _parse_string(true)
+		if character == "[":
+			return _parse_array()
+		if character == "{":
+			return _parse_dictionary()
+		if character == "+" or character == "-" or _is_digit(character):
+			return _parse_number()
+		if _is_identifier_start(character):
+			return _parse_identifier_or_constructor()
+		return {"ok": false}
+
+
+	func _parse_string(has_prefix: bool) -> Dictionary:
+		if has_prefix:
+			_index += 1
+		if _index >= _text.length() or _text[_index] != "\"":
+			return {"ok": false}
+		_index += 1
+		var value_parts := PackedStringArray()
+		while _index < _text.length():
+			var character := _text[_index]
+			_index += 1
+			if character == "\"":
+				return {
+					"ok": true,
+					"kind": "string",
+					"value": "".join(value_parts),
+				}
+			if character == "\\":
+				if _index >= _text.length():
+					return {"ok": false}
+				value_parts.append(_text[_index])
+				_index += 1
+				continue
+			value_parts.append(character)
+		return {"ok": false}
+
+
+	func _parse_array() -> Dictionary:
+		_index += 1
+		var values: Array[Dictionary] = []
+		_skip_ignored()
+		if _consume("]"):
+			return {"ok": true, "kind": "array", "values": values}
+		while true:
+			var value := _parse_value()
+			if not value.get("ok", false):
+				return {"ok": false}
+			values.append(value)
+			_skip_ignored()
+			if _consume("]"):
+				return {"ok": true, "kind": "array", "values": values}
+			if not _consume(","):
+				return {"ok": false}
+			_skip_ignored()
+			if _consume("]"):
+				return {"ok": true, "kind": "array", "values": values}
+		return {"ok": false}
+
+
+	func _parse_dictionary() -> Dictionary:
+		_index += 1
+		var entries: Array[Dictionary] = []
+		_skip_ignored()
+		if _consume("}"):
+			return {"ok": true, "kind": "dictionary", "entries": entries}
+		while true:
+			var key := _parse_value()
+			if not key.get("ok", false):
+				return {"ok": false}
+			_skip_ignored()
+			if not _consume(":"):
+				return {"ok": false}
+			var value := _parse_value()
+			if not value.get("ok", false):
+				return {"ok": false}
+			entries.append({"key": key, "value": value})
+			_skip_ignored()
+			if _consume("}"):
+				return {"ok": true, "kind": "dictionary", "entries": entries}
+			if not _consume(","):
+				return {"ok": false}
+			_skip_ignored()
+			if _consume("}"):
+				return {"ok": true, "kind": "dictionary", "entries": entries}
+		return {"ok": false}
+
+
+	func _parse_number() -> Dictionary:
+		var start := _index
+		if _text[_index] in ["+", "-"]:
+			_index += 1
+		if _consume_word("inf") or _consume_word("nan"):
+			return {"ok": true, "kind": "number"}
+		var saw_digit := false
+		if (
+			_index + 1 < _text.length()
+			and _text[_index] == "0"
+			and _text[_index + 1].to_lower() == "x"
+		):
+			_index += 2
+			var hex_start := _index
+			while _index < _text.length() and _is_hex_digit(_text[_index]):
+				_index += 1
+			if _index == hex_start:
+				return {"ok": false}
+			return {"ok": true, "kind": "number"}
+		while _index < _text.length() and _is_digit(_text[_index]):
+			saw_digit = true
+			_index += 1
+		if _index < _text.length() and _text[_index] == ".":
+			_index += 1
+			while _index < _text.length() and _is_digit(_text[_index]):
+				saw_digit = true
+				_index += 1
+		if not saw_digit:
+			_index = start
+			return {"ok": false}
+		if _index < _text.length() and _text[_index].to_lower() == "e":
+			_index += 1
+			if _index < _text.length() and _text[_index] in ["+", "-"]:
+				_index += 1
+			var exponent_start := _index
+			while _index < _text.length() and _is_digit(_text[_index]):
+				_index += 1
+			if _index == exponent_start:
+				return {"ok": false}
+		if (
+			_index < _text.length()
+			and _is_identifier_continue(_text[_index])
+		):
+			return {"ok": false}
+		return {"ok": true, "kind": "number"}
+
+
+	func _parse_identifier_or_constructor() -> Dictionary:
+		var name := _parse_identifier()
+		if name in ["true", "false"]:
+			return {"ok": true, "kind": "bool"}
+		if name == "null":
+			return {"ok": true, "kind": "null"}
+		if name in ["inf", "nan"]:
+			return {"ok": true, "kind": "number"}
+
+		_skip_horizontal_space()
+		var generic := ""
+		if _index < _text.length() and _text[_index] == "[":
+			generic = _parse_generic_type_list()
+			if generic.is_empty():
+				return {"ok": false}
+			_skip_horizontal_space()
+		if not _consume("("):
+			return {"ok": false}
+		var arguments: Array[Dictionary] = []
+		_skip_ignored()
+		if not _consume(")"):
+			while true:
+				var argument := _parse_value()
+				if not argument.get("ok", false):
+					return {"ok": false}
+				arguments.append(argument)
+				_skip_ignored()
+				if _consume(")"):
+					break
+				if not _consume(","):
+					return {"ok": false}
+				_skip_ignored()
+				if _consume(")"):
+					break
+		if not _constructor_arguments_are_valid(name, generic, arguments):
+			return {"ok": false}
+		if name in ["ExtResource", "SubResource"]:
+			_references.append({
+				"kind": name,
+				"id": arguments[0]["value"],
+			})
+		return {
+			"ok": true,
+			"kind": "constructor",
+			"name": name,
+			"arguments": arguments,
+		}
+
+
+	func _parse_generic_type_list() -> String:
+		var start := _index
+		var depth := 0
+		while _index < _text.length():
+			var character := _text[_index]
+			if character == "[":
+				depth += 1
+			elif character == "]":
+				depth -= 1
+				if depth == 0:
+					_index += 1
+					return _text.substr(start, _index - start)
+			elif not (
+				character in [" ", "\t", "\r", "\n", ",", ".", "_"]
+				or _is_digit(character)
+				or character >= "A" and character <= "Z"
+				or character >= "a" and character <= "z"
+			):
+				return ""
+			_index += 1
+		return ""
+
+
+	func _constructor_arguments_are_valid(
+		name: String,
+		generic: String,
+		arguments: Array[Dictionary],
+	) -> bool:
+		if not _constructor_is_known(name):
+			return false
+		if not generic.is_empty() and name not in ["Array", "Dictionary"]:
+			return false
+		if name in ["ExtResource", "SubResource"]:
+			return (
+				arguments.size() == 1
+				and arguments[0].get("kind", "") == "string"
+				and not String(arguments[0].get("value", "")).is_empty()
+			)
+		if name in ["NodePath", "String", "StringName"]:
+			return (
+				arguments.size() == 1
+				and arguments[0].get("kind", "") == "string"
+			)
+		if name in ["Callable", "Signal"]:
+			return arguments.is_empty()
+		if name == "RID":
+			return (
+				arguments.is_empty()
+				or _arguments_are_numbers(arguments, 1)
+			)
+		var exact_numeric_arity := {
+			"Vector2": 2, "Vector2i": 2,
+			"Vector3": 3, "Vector3i": 3,
+			"Vector4": 4, "Vector4i": 4,
+			"Rect2": 4, "Rect2i": 4,
+			"Transform2D": 6,
+			"Plane": 4,
+			"Quaternion": 4,
+			"AABB": 6,
+			"Basis": 9,
+			"Transform3D": 12,
+			"Projection": 16,
+		}
+		if exact_numeric_arity.has(name):
+			return _arguments_are_numbers(arguments, exact_numeric_arity[name])
+		if name == "Color":
+			return (
+				_arguments_are_numbers(arguments, 4)
+				or (
+					arguments.size() == 1
+					and arguments[0].get("kind", "") == "string"
+				)
+			)
+		if name == "Array":
+			return (
+				arguments.is_empty()
+				or (
+					arguments.size() == 1
+					and arguments[0].get("kind", "") == "array"
+				)
+			)
+		if name == "Dictionary":
+			return (
+				arguments.is_empty()
+				or (
+					arguments.size() == 1
+					and arguments[0].get("kind", "") == "dictionary"
+				)
+			)
+		if name in [
+			"PackedByteArray", "PackedInt32Array", "PackedInt64Array",
+			"PackedFloat32Array", "PackedFloat64Array",
+		]:
+			return _arguments_are_numbers(arguments, arguments.size())
+		if name == "PackedStringArray":
+			return _arguments_have_kind(arguments, "string")
+		var packed_numeric_width := {
+			"PackedVector2Array": 2,
+			"PackedVector3Array": 3,
+			"PackedVector4Array": 4,
+			"PackedColorArray": 4,
+		}
+		if packed_numeric_width.has(name):
+			var width: int = packed_numeric_width[name]
+			return (
+				arguments.size() % width == 0
+				and _arguments_are_numbers(arguments, arguments.size())
+			)
+		# Object()/EncodedObjectAsID() are not emitted for resource properties in
+		# supported Stella scenes, and safely validating their class/property
+		# semantics would require executing constructors. Reject them before the
+		# Godot parser can echo malformed private tokens.
+		return false
+
+
+	func _arguments_are_numbers(
+		arguments: Array[Dictionary],
+		expected_count: int,
+	) -> bool:
+		if arguments.size() != expected_count:
+			return false
+		for argument: Dictionary in arguments:
+			if argument.get("kind", "") != "number":
+				return false
+		return true
+
+
+	func _arguments_have_kind(
+		arguments: Array[Dictionary],
+		expected_kind: String,
+	) -> bool:
+		for argument: Dictionary in arguments:
+			if argument.get("kind", "") != expected_kind:
+				return false
+		return true
+
+
+	func _constructor_is_known(name: String) -> bool:
+		return name in [
+			"AABB", "Array", "Basis", "Callable", "Color", "Dictionary",
+			"EncodedObjectAsID", "ExtResource", "NodePath", "Object", "Plane",
+			"Projection", "Quaternion", "Rect2", "Rect2i", "RID", "Signal",
+			"String", "StringName", "SubResource", "Transform2D", "Transform3D",
+			"Vector2", "Vector2i", "Vector3", "Vector3i", "Vector4", "Vector4i",
+			"PackedByteArray", "PackedInt32Array", "PackedInt64Array",
+			"PackedFloat32Array", "PackedFloat64Array", "PackedStringArray",
+			"PackedVector2Array", "PackedVector3Array", "PackedVector4Array",
+			"PackedColorArray",
+		]
+
+
+	func _parse_identifier() -> String:
+		var start := _index
+		_index += 1
+		while (
+			_index < _text.length()
+			and _is_identifier_continue(_text[_index])
+		):
+			_index += 1
+		return _text.substr(start, _index - start)
+
+
+	func _skip_ignored() -> void:
+		while _index < _text.length():
+			var character := _text[_index]
+			if character in [" ", "\t", "\r", "\n"]:
+				_index += 1
+				continue
+			if character == ";":
+				while _index < _text.length() and _text[_index] != "\n":
+					_index += 1
+				continue
+			break
+
+
+	func _skip_horizontal_space() -> void:
+		while _index < _text.length() and _text[_index] in [" ", "\t"]:
+			_index += 1
+
+
+	func _consume(expected: String) -> bool:
+		if _index >= _text.length() or _text[_index] != expected:
+			return false
+		_index += 1
+		return true
+
+
+	func _consume_word(word: String) -> bool:
+		if _text.substr(_index, word.length()).to_lower() != word:
+			return false
+		var end := _index + word.length()
+		if end < _text.length() and _is_identifier_continue(_text[end]):
+			return false
+		_index = end
+		return true
+
+
+	func _is_digit(character: String) -> bool:
+		return character >= "0" and character <= "9"
+
+
+	func _is_hex_digit(character: String) -> bool:
+		var lower := character.to_lower()
+		return _is_digit(character) or lower >= "a" and lower <= "f"
+
+
+	func _is_identifier_start(character: String) -> bool:
+		return (
+			character == "_"
+			or character >= "A" and character <= "Z"
+			or character >= "a" and character <= "z"
+		)
+
+
+	func _is_identifier_continue(character: String) -> bool:
+		return _is_identifier_start(character) or _is_digit(character)
+
 var engine: ScenarioEngine
 var registry: CommandRegistry
 var config: StellaConfig
@@ -284,15 +726,15 @@ func start_game(scenario_path: String = "", game_scene_path: String = "") -> voi
 
 ## Load a saved game — switch to game scene, restore state, run.
 func load_game(slot_id: int, scenario_path: String = "", game_scene_path: String = "") -> bool:
-	var save_data: Variant = save_manager.read_save_data(slot_id)
-	if save_data == null:
-		return false
 	if scenario_path == "":
 		scenario_path = config.scenario_path
 	if game_scene_path == "":
 		game_scene_path = _get_game_scene_path()
 	var scenario_data := _parse_scenario(scenario_path)
 	if scenario_data == null:
+		return false
+	var save_data: Variant = save_manager.read_save_data(slot_id, scenario_data)
+	if save_data == null:
 		return false
 	var destination := _load_navigation_scene(game_scene_path, "game")
 	if destination.is_empty():
@@ -320,9 +762,6 @@ func load_game(slot_id: int, scenario_path: String = "", game_scene_path: String
 ## Continue from a manual save slot.
 ## Works from both title screen (switches to game scene) and in-game (reloads in place).
 func continue_from_save(slot_id: int) -> bool:
-	var save_data: Variant = save_manager.read_save_data(slot_id)
-	if save_data == null:
-		return false
 	var scenario_path = _last_scenario_path
 	if scenario_path == "":
 		scenario_path = config.scenario_path
@@ -330,6 +769,9 @@ func continue_from_save(slot_id: int) -> bool:
 		return false
 	var scenario_data := _parse_scenario(scenario_path)
 	if scenario_data == null:
+		return false
+	var save_data: Variant = save_manager.read_save_data(slot_id, scenario_data)
+	if save_data == null:
 		return false
 
 	# Determine if we're on the title screen (directly or via overlay opened from title)
@@ -428,8 +870,8 @@ func _load_navigation_scene(scene_path: String, description: String) -> Dictiona
 	):
 		push_error("StellaRuntime: %s scene is not available" % description)
 		return {}
-	var packed := ResourceLoader.load(canonical_path, "PackedScene") as PackedScene
-	if packed == null or not packed.can_instantiate():
+	var packed := _load_validated_scene(canonical_path)
+	if packed == null:
 		push_error("StellaRuntime: %s scene is not loadable" % description)
 		return {}
 	var resolved_path := packed.resource_path.simplify_path()
@@ -629,8 +1071,67 @@ func _title_node_native_type(
 	if native_type != &"":
 		return native_type
 	if nested_scene == null:
-		return &""
+		return _title_inherited_node_native_type(state, node_index, visited)
 	return _title_scene_root_native_type(nested_scene, visited)
+
+
+## Property-only entries in an inherited scene have neither a native type nor
+## their own PackedScene. Resolve their type from the inherited root's effective
+## node at the same path instead of treating a normal property override as a
+## vanished dependency.
+func _title_inherited_node_native_type(
+	state: SceneState,
+	node_index: int,
+	visited: Dictionary,
+) -> StringName:
+	if state.get_node_count() == 0:
+		return &""
+	var inherited_root := state.get_node_instance(0)
+	if inherited_root == null:
+		return &""
+	return _title_scene_node_native_type_at_path(
+		inherited_root,
+		state.get_node_path(node_index),
+		visited,
+	)
+
+
+func _title_scene_node_native_type_at_path(
+	scene: PackedScene,
+	node_path: NodePath,
+	visited: Dictionary,
+) -> StringName:
+	if scene == null or not scene.can_instantiate():
+		return &""
+	var identity := "%s:%s" % [scene.resource_path, node_path]
+	if scene.resource_path.is_empty():
+		identity = "%s:%s" % [scene.get_instance_id(), node_path]
+	if visited.has(identity):
+		return &""
+	visited[identity] = true
+
+	var state := scene.get_state()
+	for candidate_index in state.get_node_count():
+		if state.get_node_path(candidate_index) != node_path:
+			continue
+		return _title_node_native_type(
+			state,
+			candidate_index,
+			state.get_node_instance(candidate_index),
+			visited,
+		)
+
+	# The immediate base may itself be inherited and only serialize overrides.
+	# Follow that root chain with the same relative path.
+	if state.get_node_count() > 0:
+		var inherited_root := state.get_node_instance(0)
+		if inherited_root != null:
+			return _title_scene_node_native_type_at_path(
+				inherited_root,
+				node_path,
+				visited,
+			)
+	return &""
 
 
 func _title_scene_root_native_type(
@@ -689,6 +1190,13 @@ func _title_script_is_enterable(
 
 
 func _load_title_scene(path: String) -> PackedScene:
+	return _load_validated_scene(path)
+
+
+## One side-effect-free preflight for every configured scene destination.
+## Godot may return an instantiable degraded PackedScene after dropping a
+## missing Script/nested resource, so `can_instantiate()` alone is insufficient.
+func _load_validated_scene(path: String) -> PackedScene:
 	var canonical_path := _canonical_resource_path(path)
 	if (
 		canonical_path.is_empty()
@@ -696,7 +1204,10 @@ func _load_title_scene(path: String) -> PackedScene:
 		or not _title_scene_dependencies_are_available(canonical_path)
 	):
 		return null
-	return load(canonical_path) as PackedScene
+	var scene := ResourceLoader.load(canonical_path, "PackedScene") as PackedScene
+	if not _title_scene_is_enterable(scene):
+		return null
+	return scene
 
 
 ## Recursively verify that every external resource referenced by a candidate
@@ -772,14 +1283,25 @@ func _read_text_resource_dependencies(path: String) -> Dictionary:
 		return {"ok": false, "dependencies": []}
 
 	var dependencies: Array[Dictionary] = []
+	var ext_resource_ids: Dictionary = {}
+	var sub_resource_ids: Dictionary = {}
+	var resource_references: Array[Dictionary] = []
+	if not _append_resource_tag_references(header, resource_references):
+		return {"ok": false, "dependencies": []}
 	var saw_body_tag := false
 	var assignment_state: Dictionary = {}
 	for line_index in range(1, lines.size()):
 		var raw_line: String = lines[line_index]
 		if not assignment_state.is_empty():
+			assignment_state["value_parts"].append(raw_line)
 			if not _scan_resource_value_fragment(raw_line, assignment_state):
 				return {"ok": false, "dependencies": []}
 			if assignment_state.get("complete", false):
+				if not _append_resource_value_references(
+					"\n".join(assignment_state["value_parts"]),
+					resource_references,
+				):
+					return {"ok": false, "dependencies": []}
 				assignment_state = {}
 			continue
 
@@ -790,22 +1312,36 @@ func _read_text_resource_dependencies(path: String) -> Dictionary:
 			var tag := _parse_resource_tag(stripped)
 			if not tag.get("ok", false):
 				return {"ok": false, "dependencies": []}
+			if not _append_resource_tag_references(tag, resource_references):
+				return {"ok": false, "dependencies": []}
 			if tag["name"] == "ext_resource":
 				if saw_body_tag:
 					return {"ok": false, "dependencies": []}
 				var attributes: Dictionary = tag["attributes"]
 				var declared_type: String = attributes.get("type", "")
+				var resource_id: String = attributes.get("id", "")
 				var dependency_path := _resource_dependency_path_from_attributes(
 					attributes,
 				)
-				if declared_type.is_empty() or dependency_path.is_empty():
+				if (
+					declared_type.is_empty()
+					or resource_id.is_empty()
+					or ext_resource_ids.has(resource_id)
+					or dependency_path.is_empty()
+				):
 					return {"ok": false, "dependencies": []}
+				ext_resource_ids[resource_id] = true
 				dependencies.append({
 					"path": dependency_path,
 					"type": declared_type,
 				})
 			else:
 				saw_body_tag = true
+				if tag["name"] == "sub_resource":
+					var sub_id: String = tag["attributes"].get("id", "")
+					if sub_id.is_empty() or sub_resource_ids.has(sub_id):
+						return {"ok": false, "dependencies": []}
+					sub_resource_ids[sub_id] = true
 			continue
 		if not saw_body_tag:
 			return {"ok": false, "dependencies": []}
@@ -813,11 +1349,70 @@ func _read_text_resource_dependencies(path: String) -> Dictionary:
 		if not assignment_state.get("ok", false):
 			return {"ok": false, "dependencies": []}
 		if assignment_state.get("complete", false):
+			if not _append_resource_value_references(
+				"\n".join(assignment_state["value_parts"]),
+				resource_references,
+			):
+				return {"ok": false, "dependencies": []}
 			assignment_state = {}
+	if not _resource_references_are_declared(
+		resource_references,
+		ext_resource_ids,
+		sub_resource_ids,
+	):
+		return {"ok": false, "dependencies": []}
 	return {
 		"ok": saw_body_tag and assignment_state.is_empty(),
 		"dependencies": dependencies,
 	}
+
+
+func _append_resource_tag_references(
+	tag: Dictionary,
+	references: Array[Dictionary],
+) -> bool:
+	var attributes: Dictionary = tag.get("attributes", {})
+	var quoted_attributes: Dictionary = tag.get("quoted_attributes", {})
+	for key: String in attributes:
+		if quoted_attributes.get(key, false):
+			continue
+		if not _append_resource_value_references(
+			String(attributes[key]),
+			references,
+		):
+			return false
+	return true
+
+
+func _append_resource_value_references(
+	value: String,
+	references: Array[Dictionary],
+) -> bool:
+	var parsed := _ResourceValueParser.new(value).parse()
+	if not parsed.get("ok", false):
+		return false
+	for reference: Dictionary in parsed.get("references", []):
+		references.append(reference)
+	return true
+
+
+func _resource_references_are_declared(
+	references: Array[Dictionary],
+	ext_resource_ids: Dictionary,
+	sub_resource_ids: Dictionary,
+) -> bool:
+	for reference: Dictionary in references:
+		var resource_id: String = reference.get("id", "")
+		match reference.get("kind", ""):
+			"ExtResource":
+				if not ext_resource_ids.has(resource_id):
+					return false
+			"SubResource":
+				if not sub_resource_ids.has(resource_id):
+					return false
+			_:
+				return false
+	return true
 
 
 func _structured_resource_dependencies(path: String) -> Dictionary:
@@ -845,6 +1440,7 @@ func _parse_resource_tag(line: String) -> Dictionary:
 	if tag_name.is_empty():
 		return {"ok": false}
 	var attributes := {}
+	var quoted_attributes := {}
 	while index < content.length():
 		while index < content.length() and content[index] in [" ", "\t"]:
 			index += 1
@@ -867,6 +1463,7 @@ func _parse_resource_tag(line: String) -> Dictionary:
 		if index >= content.length():
 			return {"ok": false}
 		if content[index] == "\"":
+			quoted_attributes[key] = true
 			index += 1
 			var value := ""
 			var closed := false
@@ -889,6 +1486,7 @@ func _parse_resource_tag(line: String) -> Dictionary:
 				return {"ok": false}
 			attributes[key] = value
 		else:
+			quoted_attributes[key] = false
 			var value_start := index
 			index = _resource_tag_value_end(content, index)
 			if index < 0:
@@ -897,7 +1495,12 @@ func _parse_resource_tag(line: String) -> Dictionary:
 			if raw_value.is_empty():
 				return {"ok": false}
 			attributes[key] = raw_value
-	return {"ok": true, "name": tag_name, "attributes": attributes}
+	return {
+		"ok": true,
+		"name": tag_name,
+		"attributes": attributes,
+		"quoted_attributes": quoted_attributes,
+	}
 
 
 func _resource_tag_value_end(content: String, start: int) -> int:
@@ -971,6 +1574,7 @@ func _begin_resource_assignment(line: String) -> Dictionary:
 		"ok": true,
 		"complete": false,
 		"kind": "",
+		"value_parts": PackedStringArray([value]),
 		"stack": [],
 		"in_string": false,
 		"escaped": false,
@@ -1187,12 +1791,45 @@ func _text_resource_declares_type(path: String, declared_type: String) -> bool:
 		if not header.get("ok", false) or header.get("name", "") != "gd_resource":
 			return false
 		var actual_type: String = header["attributes"].get("type", "")
-		return (
+		if (
 			not actual_type.is_empty()
 			and ClassDB.is_parent_class(actual_type, declared_type)
+		):
+			return true
+		var script_class: String = header["attributes"].get(
+			"script_class",
+			"",
 		)
+		return _script_class_inherits(script_class, declared_type)
 	var loaded_resource := ResourceLoader.load(path, declared_type)
 	return loaded_resource != null and loaded_resource.is_class(declared_type)
+
+
+func _script_class_inherits(
+	actual_class: String,
+	declared_class: String,
+) -> bool:
+	if actual_class.is_empty() or declared_class.is_empty():
+		return false
+	var base_by_class: Dictionary = {}
+	for entry: Dictionary in ProjectSettings.get_global_class_list():
+		var global_name: String = entry.get("class", "")
+		if not global_name.is_empty():
+			base_by_class[global_name] = String(entry.get("base", ""))
+
+	var current := actual_class
+	var visited: Dictionary = {}
+	while not current.is_empty() and not visited.has(current):
+		if current == declared_class:
+			return true
+		visited[current] = true
+		if base_by_class.has(current):
+			current = base_by_class[current]
+			continue
+		if ClassDB.class_exists(current):
+			return ClassDB.is_parent_class(current, declared_class)
+		break
+	return false
 
 
 func _resource_dependency_path(raw_dependency: String) -> String:
@@ -1418,8 +2055,10 @@ func _load_preparsed_scenario_and_restore(
 
 func _load_scenario_and_restore(scenario_path: String, slot_id: int) -> bool:
 	var scenario_data := _parse_scenario(scenario_path)
-	var save_data: Variant = save_manager.read_save_data(slot_id)
-	if scenario_data == null or save_data == null:
+	if scenario_data == null:
+		return false
+	var save_data: Variant = save_manager.read_save_data(slot_id, scenario_data)
+	if save_data == null:
 		return false
 	_load_preparsed_scenario_and_restore(scenario_data, scenario_path, save_data)
 	return true
@@ -1602,9 +2241,6 @@ func quick_save() -> void:
 ## Quick load (separate from manual save slots).
 ## Works from both title screen (switches to game scene) and in-game (reloads in place).
 func quick_load() -> bool:
-	var save_data: Variant = save_manager.read_quick_save_data()
-	if save_data == null:
-		return false
 	var scenario_path = _last_scenario_path
 	if scenario_path == "":
 		scenario_path = config.scenario_path
@@ -1612,6 +2248,9 @@ func quick_load() -> bool:
 		return false
 	var scenario_data := _parse_scenario(scenario_path)
 	if scenario_data == null:
+		return false
+	var save_data: Variant = save_manager.read_quick_save_data(scenario_data)
+	if save_data == null:
 		return false
 
 	var needs_game_scene := (
@@ -1697,9 +2336,6 @@ func continue_game() -> bool:
 	var continue_type = save_manager.get_latest_continue_type()
 	if continue_type == "":
 		return false
-	var save_data: Variant = _read_continue_data(continue_type)
-	if save_data == null:
-		return false
 
 	var scenario_path = _last_scenario_path
 	if scenario_path == "":
@@ -1708,6 +2344,9 @@ func continue_game() -> bool:
 		return false
 	var scenario_data := _parse_scenario(scenario_path)
 	if scenario_data == null:
+		return false
+	var save_data: Variant = _read_continue_data(continue_type, scenario_data)
+	if save_data == null:
 		return false
 
 	var needs_game_scene := (
@@ -1764,11 +2403,14 @@ func _load_continue(continue_type: String) -> bool:
 	return false
 
 
-func _read_continue_data(continue_type: String) -> Variant:
+func _read_continue_data(
+	continue_type: String,
+	scenario_data: ScenarioData = null,
+) -> Variant:
 	if continue_type == "quick":
-		return save_manager.read_quick_save_data()
+		return save_manager.read_quick_save_data(scenario_data)
 	if continue_type == "auto":
-		return save_manager.read_auto_save_data()
+		return save_manager.read_auto_save_data(scenario_data)
 	return null
 
 

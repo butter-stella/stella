@@ -33,8 +33,8 @@ func save(slot_id: int) -> void:
 		file.store_string(JSON.stringify(data))
 
 
-func load_save(slot_id: int) -> bool:
-	var data: Variant = read_save_data(slot_id)
+func load_save(slot_id: int, scenario_data: ScenarioData = null) -> bool:
+	var data: Variant = read_save_data(slot_id, scenario_data)
 	if data == null:
 		return false
 	restore_data(data)
@@ -44,8 +44,11 @@ func load_save(slot_id: int) -> bool:
 ## Parse a manual save without mutating registered providers. Runtime scene
 ## navigation uses this to validate the complete transaction before replacing
 ## a live game or title scene.
-func read_save_data(slot_id: int) -> Variant:
-	return _read_data(save_dir + "save_%d.json" % slot_id)
+func read_save_data(
+	slot_id: int,
+	scenario_data: ScenarioData = null,
+) -> Variant:
+	return _read_data(save_dir + "save_%d.json" % slot_id, scenario_data)
 
 
 func has_save(slot_id: int) -> bool:
@@ -93,16 +96,16 @@ func quick_save() -> void:
 		file.store_string(JSON.stringify(data))
 
 
-func quick_load() -> bool:
-	var data: Variant = read_quick_save_data()
+func quick_load(scenario_data: ScenarioData = null) -> bool:
+	var data: Variant = read_quick_save_data(scenario_data)
 	if data == null:
 		return false
 	restore_data(data)
 	return true
 
 
-func read_quick_save_data() -> Variant:
-	return _read_data(save_dir + "quicksave.json")
+func read_quick_save_data(scenario_data: ScenarioData = null) -> Variant:
+	return _read_data(save_dir + "quicksave.json", scenario_data)
 
 
 func has_quick_save() -> bool:
@@ -135,16 +138,16 @@ func auto_save() -> void:
 		file.store_string(JSON.stringify(data))
 
 
-func auto_load() -> bool:
-	var data: Variant = read_auto_save_data()
+func auto_load(scenario_data: ScenarioData = null) -> bool:
+	var data: Variant = read_auto_save_data(scenario_data)
 	if data == null:
 		return false
 	restore_data(data)
 	return true
 
 
-func read_auto_save_data() -> Variant:
-	return _read_data(save_dir + "autosave.json")
+func read_auto_save_data(scenario_data: ScenarioData = null) -> Variant:
+	return _read_data(save_dir + "autosave.json", scenario_data)
 
 
 func has_auto_save() -> bool:
@@ -216,7 +219,7 @@ func restore_data(data: Dictionary) -> void:
 			provider.restore_snapshot(data[id])
 
 
-func _read_data(path: String) -> Variant:
+func _read_data(path: String, scenario_data: ScenarioData = null) -> Variant:
 	if not FileAccess.file_exists(path):
 		return null
 	var file := FileAccess.open(path, FileAccess.READ)
@@ -236,7 +239,326 @@ func _read_data(path: String) -> Variant:
 	for key: Variant in data:
 		if key != "timestamp" and not data[key] is Dictionary:
 			return null
+	if scenario_data != null and not validate_data_for_scenario(data, scenario_data):
+		return null
 	return data
+
+
+## Validate every built-in provider snapshot against the scenario that will
+## receive it. This is deliberately side-effect free: Runtime calls the read
+## API with a parsed ScenarioData before acquiring navigation ownership or
+## replacing the current scene/context.
+func validate_data_for_scenario(
+	raw_data: Variant,
+	scenario_data: ScenarioData,
+) -> bool:
+	if not raw_data is Dictionary or scenario_data == null:
+		return false
+	var data: Dictionary = raw_data
+	if not data.has("scenario_context"):
+		return false
+	if not _scenario_snapshot_is_valid(data["scenario_context"], scenario_data):
+		return false
+	if data.has("timestamp") and not _non_negative_number_is_valid(data["timestamp"]):
+		return false
+	if (
+		data.has("variable_store")
+		and not _variable_store_snapshot_is_valid(data["variable_store"])
+	):
+		return false
+	if (
+		data.has("presentation_state")
+		and not _presentation_snapshot_is_valid(data["presentation_state"])
+	):
+		return false
+	if data.has("read_flags") and not _bool_map_is_valid(data["read_flags"]):
+		return false
+	if data.has("unlocks") and not _unlocks_snapshot_is_valid(data["unlocks"]):
+		return false
+	if (
+		data.has("flowchart_visited")
+		and not _flowchart_visited_snapshot_is_valid(data["flowchart_visited"])
+	):
+		return false
+	if (
+		data.has("flowchart_state")
+		and not _flowchart_snapshot_is_valid(data["flowchart_state"], scenario_data)
+	):
+		return false
+	return true
+
+
+func _scenario_snapshot_is_valid(
+	raw_snapshot: Variant,
+	scenario_data: ScenarioData,
+) -> bool:
+	if not raw_snapshot is Dictionary or scenario_data.scenes.is_empty():
+		return false
+	var snapshot: Dictionary = raw_snapshot
+	if not snapshot.has("scene_index") or not snapshot.has("command_index"):
+		return false
+	if snapshot.has("scenario_id"):
+		if not snapshot["scenario_id"] is String:
+			return false
+		var saved_scenario_id: String = snapshot["scenario_id"]
+		if (
+			not saved_scenario_id.is_empty()
+			and saved_scenario_id != scenario_data.id
+		):
+			return false
+	if not _scenario_position_is_valid(snapshot, scenario_data):
+		return false
+	if snapshot.has("is_finished") and not snapshot["is_finished"] is bool:
+		return false
+	if snapshot.has("return_stack"):
+		if not snapshot["return_stack"] is Array:
+			return false
+		for raw_entry: Variant in snapshot["return_stack"]:
+			if (
+				not raw_entry is Dictionary
+				or not _scenario_position_is_valid(raw_entry, scenario_data)
+			):
+				return false
+	if snapshot.has("dialogue_mode"):
+		if (
+			not snapshot["dialogue_mode"] is String
+			or snapshot["dialogue_mode"] not in ["adv", "nvl", "overlay"]
+		):
+			return false
+	if (
+		snapshot.has("nvl_page_epoch")
+		and (
+			not _integer_is_valid(snapshot["nvl_page_epoch"])
+			or int(snapshot["nvl_page_epoch"]) < 0
+		)
+	):
+		return false
+	if snapshot.has("nvl_page_entries"):
+		if not snapshot["nvl_page_entries"] is Array:
+			return false
+		for raw_entry: Variant in snapshot["nvl_page_entries"]:
+			if not _nvl_entry_is_valid(raw_entry, scenario_data):
+				return false
+	for key: String in ["dialogue_profile_name", "adv_dialogue_profile_name"]:
+		if snapshot.has(key) and not snapshot[key] is String:
+			return false
+	for key: String in [
+		"dialogue_declarative_presentation",
+		"adv_dialogue_declarative_presentation",
+	]:
+		if snapshot.has(key) and not snapshot[key] is bool:
+			return false
+	return true
+
+
+func _scenario_position_is_valid(
+	raw_position: Variant,
+	scenario_data: ScenarioData,
+) -> bool:
+	if not raw_position is Dictionary:
+		return false
+	var position: Dictionary = raw_position
+	if (
+		not position.has("scene_index")
+		or not position.has("command_index")
+		or not _integer_is_valid(position["scene_index"])
+		or not _integer_is_valid(position["command_index"])
+	):
+		return false
+	var scene_index := int(position["scene_index"])
+	var command_index := int(position["command_index"])
+	if scene_index < 0 or scene_index >= scenario_data.scenes.size():
+		return false
+	var scene: SceneData = scenario_data.scenes[scene_index]
+	return command_index >= 0 and command_index <= scene.commands.size()
+
+
+func _nvl_entry_is_valid(
+	raw_entry: Variant,
+	scenario_data: ScenarioData,
+) -> bool:
+	if not raw_entry is Dictionary:
+		return false
+	var entry: Dictionary = raw_entry
+	for key: String in ["command_uid", "scene_index", "command_index"]:
+		if not entry.has(key) or not _integer_is_valid(entry[key]):
+			return false
+	if not _scenario_position_is_valid(entry, scenario_data):
+		return false
+	for key: String in ["profile_name", "character"]:
+		if entry.has(key) and not entry[key] is String:
+			return false
+	if not entry.has("segments") or not entry["segments"] is Array:
+		return false
+	for raw_segment: Variant in entry["segments"]:
+		if not raw_segment is Dictionary:
+			return false
+		for key: String in ["text", "voice"]:
+			if raw_segment.has(key) and not raw_segment[key] is String:
+				return false
+	return true
+
+
+func _variable_store_snapshot_is_valid(raw_snapshot: Variant) -> bool:
+	if not raw_snapshot is Dictionary:
+		return false
+	var snapshot: Dictionary = raw_snapshot
+	for key: String in ["scenario", "global"]:
+		if snapshot.has(key) and not snapshot[key] is Dictionary:
+			return false
+	return true
+
+
+func _presentation_snapshot_is_valid(raw_snapshot: Variant) -> bool:
+	if not raw_snapshot is Dictionary:
+		return false
+	var snapshot: Dictionary = raw_snapshot
+	for key: String in ["bg", "bgm"]:
+		if snapshot.has(key) and not snapshot[key] is String:
+			return false
+	if snapshot.has("stage_layers"):
+		if not snapshot["stage_layers"] is Dictionary:
+			return false
+		for raw_layer_id: Variant in snapshot["stage_layers"]:
+			if (
+				not raw_layer_id is String
+				or String(raw_layer_id).strip_edges().is_empty()
+				or not StageLayerState.validate_snapshot_state(
+					snapshot["stage_layers"][raw_layer_id],
+					false,
+				)
+			):
+				return false
+	return true
+
+
+func _bool_map_is_valid(raw_map: Variant) -> bool:
+	if not raw_map is Dictionary:
+		return false
+	for key: Variant in raw_map:
+		if not key is String or not raw_map[key] is bool:
+			return false
+	return true
+
+
+func _unlocks_snapshot_is_valid(raw_snapshot: Variant) -> bool:
+	if not raw_snapshot is Dictionary:
+		return false
+	for category: Variant in raw_snapshot:
+		if (
+			not category is String
+			or not _string_array_is_valid(raw_snapshot[category])
+		):
+			return false
+	return true
+
+
+func _flowchart_visited_snapshot_is_valid(raw_snapshot: Variant) -> bool:
+	if not raw_snapshot is Dictionary:
+		return false
+	var snapshot: Dictionary = raw_snapshot
+	for key: String in ["visited_chapters", "visited_chapter_edges"]:
+		if snapshot.has(key) and not _bool_map_is_valid(snapshot[key]):
+			return false
+	return true
+
+
+func _flowchart_snapshot_is_valid(
+	raw_snapshot: Variant,
+	scenario_data: ScenarioData,
+) -> bool:
+	if not raw_snapshot is Dictionary:
+		return false
+	var snapshot: Dictionary = raw_snapshot
+	if snapshot.has("current_path"):
+		if not _string_array_is_valid(snapshot["current_path"]):
+			return false
+		for chapter_id: String in snapshot["current_path"]:
+			if (
+				not scenario_data.chapters.is_empty()
+				and scenario_data.get_chapter(chapter_id) == null
+			):
+				return false
+	if snapshot.has("chapter_snapshots"):
+		if not snapshot["chapter_snapshots"] is Dictionary:
+			return false
+		for raw_chapter_id: Variant in snapshot["chapter_snapshots"]:
+			if not raw_chapter_id is String:
+				return false
+			var chapter_id: String = raw_chapter_id
+			if (
+				(not scenario_data.chapters.is_empty()
+				and scenario_data.get_chapter(chapter_id) == null)
+				or not _rollback_snapshot_is_valid(
+					snapshot["chapter_snapshots"][raw_chapter_id],
+					scenario_data,
+				)
+			):
+				return false
+	return true
+
+
+func _rollback_snapshot_is_valid(
+	raw_snapshot: Variant,
+	scenario_data: ScenarioData,
+) -> bool:
+	if not raw_snapshot is Dictionary:
+		return false
+	var snapshot: Dictionary = raw_snapshot
+	if (
+		snapshot.has("scenario_context")
+		and not _scenario_snapshot_is_valid(
+			snapshot["scenario_context"],
+			scenario_data,
+		)
+	):
+		return false
+	if snapshot.has("variable_store") and not snapshot["variable_store"] is Dictionary:
+		return false
+	if (
+		snapshot.has("presentation_state")
+		and not _presentation_snapshot_is_valid(snapshot["presentation_state"])
+	):
+		return false
+	if snapshot.has("chapter_id"):
+		if not snapshot["chapter_id"] is String:
+			return false
+		var chapter_id: String = snapshot["chapter_id"]
+		if (
+			not chapter_id.is_empty()
+			and not scenario_data.chapters.is_empty()
+			and scenario_data.get_chapter(chapter_id) == null
+		):
+			return false
+	return true
+
+
+func _string_array_is_valid(raw_array: Variant) -> bool:
+	if not raw_array is Array:
+		return false
+	for value: Variant in raw_array:
+		if not value is String:
+			return false
+	return true
+
+
+func _integer_is_valid(value: Variant) -> bool:
+	return (
+		value is int
+		or (
+			value is float
+			and is_finite(value)
+			and value == floor(value)
+		)
+	)
+
+
+func _non_negative_number_is_valid(value: Variant) -> bool:
+	return (
+		(value is int or value is float)
+		and is_finite(float(value))
+		and float(value) >= 0.0
+	)
 
 
 func _ensure_dir() -> void:

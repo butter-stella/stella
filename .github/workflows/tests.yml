@@ -85,7 +85,8 @@ jobs:
             'backlog = false' \
             'save_slots = 3' \
             '[system_se]' \
-            'cancel = "se_cancel"' \
+            'select = "se_cancel"' \
+            'cancel = "se_select"' \
             '[overrides]' \
             'title_scene = "res://tests/fixtures/startup/custom_title.tscn"' \
             'game_scene = "res://tests/fixtures/startup/game.tscn"' \

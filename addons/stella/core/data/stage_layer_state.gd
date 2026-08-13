@@ -205,6 +205,26 @@ static func validate_operation(
 	return true
 
 
+## Validate a persisted layer snapshot without normalizing or partially
+## applying it. Save-load preflight uses this before replacing a live scene.
+static func validate_snapshot_state(
+	raw_state: Variant,
+	report_warnings: bool = true,
+) -> bool:
+	if not raw_state is Dictionary:
+		_warn("snapshot state is not a Dictionary", report_warnings)
+		return false
+	var state: Dictionary = raw_state
+	for raw_key in state:
+		if not _KNOWN_PROPERTY_KEYS.has(str(raw_key)):
+			_warn(
+				"unknown layer property '%s'" % str(raw_key),
+				report_warnings,
+			)
+			return false
+	return _validate_property_values(state, report_warnings)
+
+
 ## Apply authored operations to a complete layer dictionary and return a new
 ## dictionary. The input is never mutated.
 static func reduce(
