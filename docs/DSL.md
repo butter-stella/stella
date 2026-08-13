@@ -88,7 +88,7 @@ sakura「那个人就是..{wait:500}{speed:30}你吗？」
 - 自动等待玩家点击后推进
 - 如有语音，自动播放
 
-方括号标记（如 `[expr:surprised]`）只更新对话框头像，不会修改舞台图片。人物立绘、身体和脸部差分都由 `@stage` 显式管理；需要让舞台表情与某段语音同步时，在 `@combine` 中把对应 `@stage ... update` 写在该段对话之前。头像标签必须使用显式的 `expr:` 前缀；其他方括号内容按普通文字显示，正文不解析 BBCode，字体与布局由 Dialogue Profile 或 Theme 配置。
+方括号标记（如 `[expr:surprised]`）只更新对话框头像，不会修改舞台图片。人物立绘、身体和脸部差分都由 `@stage` 显式管理；需要让舞台表情与某段语音同步时，在 `@combine` 中把对应 `@stage ... update` 写在该段对话之前。头像标签必须使用显式的 `expr:` 前缀；没有该前缀的未知标签仍按普通文字显示。若项目为正文 `RichTextLabel` 开启 BBCode，Godot 内置标签和已注册的 `RichTextEffect` 仍按引擎语义渲染，但不会被当作 Stella 头像标记；字体与布局由 Dialogue Profile 或 Theme 配置。
 
 `{wait:...}` 与 `{speed:...}` 都使用毫秒：`{wait:500}` 暂停 500ms，
 `{speed:30}` 把后续每字间隔设为 30ms。未知标签、非数字或负数会产生
@@ -105,6 +105,8 @@ warning，并按普通文本显示。
 @dialogue_profile novel background_visible=true background_modulate=#ffffff00
 @dialogue_profile novel show=quick_menu hide=adv_chrome
 @dialogue_profile novel entry_prefix="・" entry_separator=""
+@dialogue_profile novel advance_indicator_texture="res://ui/dialogue/wait.svg"
+@dialogue_profile novel advance_indicator_offset=8,-2 advance_indicator_animation=bob
 
 // ADV 也可以选择命名 Profile；未写 @adv 时使用场景原始 ADV。
 @dialogue_profile message panel_anchors=0,0.72,1,1
@@ -123,9 +125,9 @@ warning，并按普通文本显示。
 @overlay off
 ```
 
-`@adv` / `@nvl` / `@overlay` 作为模式开关，之后的所有对话都使用该模式，直到 `off` 或切换。不需要每句都写 `mode`。不带 `profile` 时使用内置模式表现；`profile=<name>` 从当前 STLA 文件的 `@dialogue_profile` 声明中选择一套表现。Profile 是编译期数据，可以写在引用之后，但建议统一放在文件顶部。若先用 `@adv profile=message` 配置 ADV，`@nvl off` / `@overlay off` 会恢复 `message`；否则恢复场景编排的 ADV 基线。
+`@adv` / `@nvl` / `@overlay` 作为模式开关，之后的所有对话都使用该模式，直到 `off` 或切换。不需要每句都写 `mode`。不带 `profile` 时使用内置兼容表现；`profile=<name>` 从当前 STLA 文件的 `@dialogue_profile` 声明中选择一套表现。Profile 声明会在编译时进入当前 scenario 的 registry，因此可以写在引用之后，但建议统一放在文件顶部。若先用 `@adv profile=message` 配置 ADV，`@nvl off` / `@overlay off` 会沿实际运行路径恢复 `message`；否则恢复场景编排的 ADV 基线。
 
-模式开关按实际运行路径生效：经过 `@nvl off` 或切到其他模式后，再通过顺序执行、`@jump`、`@call` 或条件分支进入 `@nvl`，都会开始新的 NVL 页面；没有离开 NVL 时重复写 `@nvl` 则继续当前页面。条件分支若改变模式，应在各分支汇合前选择相同模式，或在汇合后显式重新选择，避免后续对话的编译期 Profile 含义不明确。
+模式开关按实际运行路径生效：经过 `@nvl off` 或切到其他模式后，再通过顺序执行、`@jump`、`@call` 或条件分支进入 `@nvl`，都会开始新的 NVL 页面；没有离开 NVL 时重复写 `@nvl` 则继续当前页面。不同条件分支可以选择不同 mode/Profile；汇合后的对话会继承玩家真正走过的分支。只有在作者希望所有路径从汇合点开始使用同一布局时，才需要在汇合后显式重新选择。
 
 同一个 Profile 可以拆成多行声明，后写属性覆盖同名旧属性。每个属性都独立生效；未写的属性保留场景编排值，不会因为只修改行距而顺带重置对齐、区域或滚动策略：
 
@@ -147,14 +149,24 @@ warning，并按普通文本显示。
 | `show` / `hide` | 逗号分隔的分组名 | 显示或隐藏附属 UI 分组 |
 | `entry_prefix` | 引号纯文本字符串 | 每条 NVL 记录的前缀；默认 `""` |
 | `entry_separator` | 引号纯文本字符串 | 相邻 NVL 记录之间的分隔符；默认 `"\n"` |
+| `advance_indicator_texture` | 引号 `res://` / `uid://` 路径 | 文本完成后显示的 `Texture2D` 等待标记 |
+| `advance_indicator_scene` | 引号 `res://` / `uid://` 路径 | 文本完成后实例化的 `PackedScene` 等待标记 |
+| `advance_indicator_offset` | `x,y` | 标记相对最终文字端点的像素偏移；默认 `0,0` |
+| `advance_indicator_animation` | `none/pulse/bob` | 标记的内置循环动画；默认 `none` |
 
-`entry_prefix` 和 `entry_separator` 只影响 NVL 的屏幕累积文本。每条记录按“前缀 → 角色名（若有）→ 正文”的顺序显示，分隔符只插入相邻记录之间；例如 `entry_prefix="・" entry_separator=""` 会把两句旁白显示为 `・第一句。・第二句。`。显式的空字符串表示不插入内容，与省略属性时采用默认值不同。`@combine` 块在 NVL 中仍是一条记录，因此只添加一次前缀，Backlog 中保存的也仍是原始对话文本，不会混入屏幕排版用的前缀或分隔符。
+`entry_prefix` 和 `entry_separator` 只影响 NVL 的屏幕累积文本。每条记录按“前缀 → 角色名（若有）→ 正文”的顺序显示，分隔符只插入相邻记录之间；例如 `entry_prefix="・" entry_separator=""` 会把两句旁白显示为 `・第一句。・第二句。`。显式的空字符串表示不插入内容，与省略属性时采用兼容默认值不同。`@combine` 块在 NVL 中仍是一条记录，因此只添加一次前缀。Backlog 不混入这些屏幕装饰；它保存正文的玩家可见纯文本，剥离 BBCode 格式、expression marker 与 typewriter effect marker，并把段落和列表转换成普通文本布局。
 
 这两个属性支持带引号的纯文本字符串及常用转义：`\\`、`\"`、`\n`、`\r`、`\t`。例如 `entry_separator="\n\n"` 会在记录间留出一个空行。这里不支持 BBCode 标签，方括号会产生解析诊断；样式仍应通过 Profile 的文字属性或场景 theme 配置。未配置时前缀为空、记录之间换行。
 
+Advance indicator 是可选的、按 Profile 独立配置的表现节点。`advance_indicator_texture` 和 `advance_indicator_scene` 二选一：前者适合普通箭头、菱形等图片，后者适合项目自带粒子或状态脚本的复杂标记；同时配置会让整个 Profile 声明原子失败，不会采用隐式优先级或部分视觉降级。场景根节点必须是 `CanvasItem`；`Control` 根必须使用左上角锚点（四个 anchor 都为 `0`），并用 offset 或 minimum size 明确尺寸，`Node2D` 根则会被归一化为非 top-level。根节点原点会放在最终渲染行的文字端点；若实现 `set_advance_ready(ready: bool)`，Presenter 会在显示/隐藏时同步通知状态。`advance_indicator_offset` 中正 x 向右、正 y 向下，`pulse` 改变透明度，`bob` 做轻微上下浮动；自定义场景也可以选择 `none` 并自行表现。Indicator 只通过 `.stla` Profile 创作；高级 `DialoguePresentationProfile` Resource 继续兼容既有布局字段，但不会形成第二套 indicator schema。
+
+内置端点定位复用一个透明、隔离的 `RichTextLabel` 排版镜像，并从 Godot 实际绘制的 glyph transform 读取逻辑末端。因此控件级/BBCode 段落对齐、`[indent]`、`[ul]` / `[ol]` 列表、混合 LTR/RTL 与滚动条占宽都使用与正文相同的引擎排版结果，不要求项目提供自定义 Presenter；镜像不会改写正文标签的 text、可见字符、选择或滚动状态。
+
+标记只在当前对话完整显示、可以推进时出现。新记录开始打字、推进、快进、`hide_dialogue`、对话式 overlay 结束、场景或剧本生命周期切换时会立即隐藏；右键临时隐藏以及打开 Backlog/设置等系统 overlay 会保留同一句的 ready 状态。ADV、overlay 和累积 NVL 都按 `RichTextLabel` 实际换行后的最新端点重新定位，最后一个段落的 left/center/right/fill 对齐也会计入；若最终行被滚动或裁剪到可见区域外，标记保持隐藏，并在滚动到端点后重新出现。标记是独立节点，不会追加到 `RichTextLabel.text`、正文、Backlog 或存档数据。完全不配置 source 时不会创建节点，旧项目视觉保持不变。
+
 内置场景已提供 `quick_menu` 分组，并将默认文字布局根作为可定位区域，所以常见 NVL/overlay 版式只需要写 STLA。只有项目新增了特殊 frame、logo 或其他自定义 UI 时，才需要在 Godot 场景里给这些节点分组，例如 `adv_chrome`。
 
-无效数字、越界/倒置 anchors、负 margin、非法枚举、未知属性、不完整的引号字符串、非法字符串转义、entry format 中的 BBCode 方括号或不存在的 Profile 都会生成包含 STLA 行号的解析诊断。编译后的每条对话命令都持有已解析 Profile 的独立副本，因此存档、回滚和跳转不依赖隐藏的全局样式状态；`off` 会恢复进入声明式模式前的 ADV 场景基线。
+无效数字、越界/倒置 anchors、负 margin、非法枚举、未知属性、不完整的引号字符串、非法字符串转义、entry format 中的 BBCode 方括号、不存在/类型不符的 indicator 资源、同时配置 texture 与 scene，或不存在的 Profile，都会生成包含 STLA 行号的解析诊断，并让对应 Profile 声明整体失效。无法实例化、根节点不是 `CanvasItem`，或 `Control` 根使用非左上角锚点的 indicator scene，会在运行时给出一次性警告并仅禁用标记。该 warning 会列出准确的 Profile 名、`.stla` 来源路径、当前 indicator 字段及资源路径、该字段的声明行和可执行修复动作；多个 Profile 即使使用同一模式和同一错误场景也会分别报告。编译器把 Profile 与 provenance 分开保存在当前 `ScenarioData`，运行时 sidecar 只携带 mode、Profile 名和 ADV 恢复动作；存档保存当前/ADV 的 Profile 名与声明式状态，并为当前 NVL 页的每条 authored entry 单独保存当时的 Profile 名。恢复时从当前 scenario registry 逐条解析，因此一页中途换 Profile、分支、存读档、Backlog 回退、`@jump` 与 `@call` 都遵循实际执行路径；resolved Profile、provenance 和渲染字符串不进入存档。`off` 会恢复该路径配置的 ADV 场景基线。
 
 ### 3.4 背景
 

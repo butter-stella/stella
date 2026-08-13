@@ -407,11 +407,6 @@ func test_continue_from_save_overlay_not_closed_before_scene_change():
 	# tree_changed to fire from overlay removal, not scene change.
 	# Verify: calling continue_from_save does NOT synchronously close the overlay.
 	# The overlay must survive until after the first await (scene change).
-	#
-	# Note: We call continue_from_save WITHOUT await. It runs synchronously up to
-	# `await tree_changed`, then suspends. This also triggers a deferred
-	# change_scene_to_file which loads the game scene into the tree. We must
-	# await it to settle before the next test runs.
 	var runtime = get_tree().root.get_node("StellaRuntime")
 	var orig_path = runtime._last_scenario_path
 	runtime._last_scenario_path = runtime.config.scenario_path
@@ -424,6 +419,15 @@ func test_continue_from_save_overlay_not_closed_before_scene_change():
 	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
 	runtime.show_save_load("load")
 	assert_not_null(runtime._current_overlay, "overlay should exist before continue_from_save")
+	var context_before_continue: ScenarioContext = runtime.engine.context
+	var loaded_contexts: Array[ScenarioContext] = []
+	var scenario_ended_ids: Array[String] = []
+	var dialogue_started := func(_character: String, _segments: Array, _mode: String) -> void:
+		loaded_contexts.append(runtime.engine.context)
+	var scenario_ended := func(id: String) -> void:
+		scenario_ended_ids.append(id)
+	SignalBus.show_dialogue.connect(dialogue_started, CONNECT_ONE_SHOT)
+	runtime.engine.scenario_ended.connect(scenario_ended)
 
 	# Call continue_from_save WITHOUT await — it runs synchronously up to the
 	# first await (change_scene_to_file + tree_changed). At that suspend point,
@@ -436,27 +440,75 @@ func test_continue_from_save_overlay_not_closed_before_scene_change():
 		"overlay must survive until after scene change — closing it before "
 		+ "change_scene_to_file causes tree_changed to fire prematurely")
 
-	# Clean up: abort pending engine, close overlay, restore state.
-	runtime.engine.stop()
+	# Synchronize with the first blocking command from the newly loaded context.
+	# Merely waiting a fixed number of frames is not sufficient: the deferred
+	# continue coroutine can create and start its context after that wait, leaving
+	# a live engine loop that a later test's advance signal can accidentally
+	# resume. wait_until yields until after show_dialogue dispatch has returned,
+	# so DialogueHandler has installed its abort waiter before cleanup begins.
+	var reached_loaded_dialogue: bool = await wait_until(
+		func() -> bool: return not loaded_contexts.is_empty(),
+		2.0,
+		"continue_from_save starts the newly loaded scenario",
+	)
+	assert_true(reached_loaded_dialogue)
+	var loaded_context: ScenarioContext = (
+		loaded_contexts[0] if reached_loaded_dialogue else runtime.engine.context
+	)
+	assert_not_null(loaded_context,
+		"continue_from_save must install a scenario context")
+	assert_not_same(loaded_context, context_before_continue,
+		"continue_from_save must replace the previous scenario context")
+	assert_same(runtime.engine.context, loaded_context,
+		"the observed dialogue must belong to the active engine context")
+	assert_null(runtime._current_overlay,
+		"the overlay should close only after the game scene is ready")
+
+	# Detach before aborting. ScenarioEngine uses context identity as its
+	# generation guard; stopping a still-attached context lets run() fall through
+	# to scenario_ended and StellaRuntime.return_to_title().
+	runtime.engine.context = null
+	if loaded_context != null:
+		loaded_context.is_finished = true
+	SignalBus.engine_abort_requested.emit()
+	await get_tree().process_frame
+	assert_eq(scenario_ended_ids, [],
+		"test cleanup must not report an aborted scenario as completed")
+	assert_eq(runtime.game_state.current_state, GameStateMachine.State.PLAYING,
+		"test cleanup must not leak a return_to_title transition")
+	if runtime.engine.scenario_ended.is_connected(scenario_ended):
+		runtime.engine.scenario_ended.disconnect(scenario_ended)
+	if SignalBus.show_dialogue.is_connected(dialogue_started):
+		SignalBus.show_dialogue.disconnect(dialogue_started)
+
+	# Clean up the scene presenters and restore facade state for later tests.
+	SignalBus.hide_dialogue.emit()
 	runtime._close_current_overlay()
 	runtime.presentation_state.clear()
 	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
 	runtime._last_scenario_path = orig_path
 	runtime.delete_save(60)
-	# Let the deferred scene change settle — the game scene will load, which
-	# adds presenters that connect to SignalBus. Disconnect them to avoid
-	# contaminating later signal-based tests.
-	await get_tree().process_frame
-	await get_tree().process_frame
 	_disconnect_game_presenters()
 
 
 ## Helper: disconnect game scene presenters from SignalBus to prevent test contamination.
 func _disconnect_game_presenters():
-	for sig_name in ["bg_changed", "bgm_play", "bgm_stop", "se_play", "se_stop",
-			"voice_play", "system_se_play",
+	var global_audio_presenter := StellaRuntime.get_node_or_null("AudioPresenter")
+	for sig_name in ["bg_changed", "stage_operations_requested",
+			"stage_operation_request_finished", "stage_visuals_reset_requested",
+			"stage_state_apply_requested", "stage_transition_started",
+			"stage_transitions_finish_requested",
+			"bgm_play", "bgm_stop", "se_play", "se_stop",
+			"dialogue_requested", "dialogue_backlog_effects_resolved",
+			"voice_play", "voice_playback_requested", "voice_playback_event",
+			"dialogue_voice_replay_requested",
+			"dialogue_voice_started", "dialogue_voice_progress",
+			"dialogue_voice_finished",
+			"system_se_play", "advance_dispatch_started",
 			"show_dialogue", "hide_dialogue", "choice_show", "choice_selected",
 			"fade_requested", "effect_requested",
+			"scenario_started_event", "scene_changed_event",
+			"engine_abort_requested",
 			"scenario_ended_event"]:
 		var sig = SignalBus.get(sig_name)
 		if sig is Signal:
@@ -464,12 +516,46 @@ func _disconnect_game_presenters():
 				var callable = conn["callable"]
 				if not callable.is_valid():
 					continue
-				var obj = callable.get_object()
+				# Godot 4.6 rejects Callable.get_object() when the target method is
+				# async. Resolve the owner by id so async Presenter callbacks can be
+				# inspected without invoking that compatibility path.
+				var callable_owner_id: int = callable.get_object_id()
+				var obj = (
+					instance_from_id(callable_owner_id)
+					if callable_owner_id != 0 else null
+				)
 				if obj != null and not obj is GutTest and obj != StellaRuntime \
-						and obj != StellaRuntime.presentation_state:
+						and obj != StellaRuntime.presentation_state \
+						and obj != global_audio_presenter \
+						and obj != SignalBus:
 					sig.disconnect(callable)
-
-
+	assert_true(SignalBus.show_dialogue.is_connected(
+		SignalBus._on_show_dialogue_dispatch_started),
+		"game presenter cleanup must preserve SignalBus dispatch hooks")
+	if global_audio_presenter != null:
+		assert_true(SignalBus.voice_playback_requested.is_connected(
+			global_audio_presenter._on_voice_playback_requested),
+			"game presenter cleanup must preserve the global AudioPresenter")
+	# DialoguePresenter also observes the controller objects directly rather than
+	# through SignalBus. The deferred scene loaded by this test remains alive for
+	# the rest of the GUT process, so disconnect those scene-owned callbacks too.
+	for controller_signal in [
+		StellaRuntime.game_state.state_changed,
+		StellaRuntime.auto_play.active_changed,
+		StellaRuntime.skip_controller.active_changed,
+	]:
+		for connection in controller_signal.get_connections():
+			var callback: Callable = connection["callable"]
+			if not callback.is_valid():
+				continue
+			var callback_owner_id: int = callback.get_object_id()
+			var callback_owner = (
+				instance_from_id(callback_owner_id)
+				if callback_owner_id != 0 else null
+			)
+			if callback_owner != null and callback_owner != StellaRuntime \
+					and not callback_owner is GutTest:
+				controller_signal.disconnect(callback)
 ## --- Overlay Config ---
 
 func test_config_has_overlay_scene_overrides():

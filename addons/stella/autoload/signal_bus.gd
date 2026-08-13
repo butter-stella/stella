@@ -3,6 +3,14 @@
 extends Node
 
 # Dialogue
+## Canonical internal request. Core and built-in presenters consume this typed,
+## self-contained payload; show_dialogue below remains the extension adapter.
+signal dialogue_requested(request: DialogueRequest)
+## Presentation may enrich the current typed request with the names of active
+## custom RichTextEffects. Runtime already stored the canonical entry directly;
+## this value-only event lets it recompute that same entry without retaining a
+## callback or depending on a concrete Presenter node.
+signal dialogue_backlog_effects_resolved(request: DialogueRequest, effect_names: Array)
 ## Unified dialogue signal — both normal and @combine dialogues flow through here.
 ## segments: Array of {text: String, voice: String, stage_ops: Array}
 ## A normal single-line dialogue has segments.size() == 1. A @combine block has
@@ -12,12 +20,43 @@ extends Node
 signal show_dialogue(character: String, segments: Array, mode: String)
 signal hide_dialogue()
 signal advance_requested()
+## Emitted before advance_requested listeners run, including when extensions
+## invoke the public signal's emit() method directly.
+signal advance_dispatch_started(serial: int)
 
-# Stack-scoped metadata keeps the dialogue payload focused while
-# DialogueHandler synchronously attaches an STLA presentation profile and the
-# current runtime NVL page activation.
-# DialoguePresenter copies the current value before its first await.
+# Stack-scoped metadata exists only for the legacy three-argument signal
+# adapter. Canonical DialogueRequest delivery above is self-contained and does
+# not depend on this mutable payload identity.
 var _dialogue_presentation_stack: Array[Dictionary] = []
+var _show_dialogue_dispatch_serial: int = 0
+var _dialogue_request_serial: int = 0
+var _last_raw_show_dispatch_serial: int = -1
+var _last_raw_show_segments: Variant = null
+var _advance_dispatch_serial: int = 0
+# DialoguePresenter-owned events keep normal Godot Signal delivery semantics.
+# Stateful built-in consumers consult this synchronous frame so a nested SHOW
+# cannot let the retired signal tail overwrite the replacement state. Direct
+# raw emits have no matching frame and remain legacy-compatible.
+var _owned_dialogue_event_stack: Array[Dictionary] = []
+var _voice_playback_token_serial: int = 0
+var _voice_completion_states: Dictionary = {}
+var _voice_request_responses: Dictionary = {}
+var _compatibility_voice_play_echo_pending: int = 0
+var _compatibility_voice_lifecycle_echo_pending: int = 0
+
+
+func _init() -> void:
+	# Connect at construction time so this hook always precedes runtime waiters
+	# and scene-owned presenters, independent of their later connection order.
+	show_dialogue.connect(_on_show_dialogue_dispatch_started)
+	advance_requested.connect(_on_advance_requested_dispatch_started)
+	voice_play.connect(_on_voice_play_dispatch_started)
+	voice_started.connect(_on_voice_started_dispatch_started)
+	voice_progress.connect(_on_voice_progress_dispatch_started)
+	voice_finished.connect(_on_voice_finished_dispatch_started)
+	dialogue_voice_started.connect(_on_dialogue_voice_started_dispatch_started)
+	dialogue_voice_progress.connect(_on_dialogue_voice_progress_dispatch_started)
+	dialogue_voice_finished.connect(_on_dialogue_voice_finished_dispatch_started)
 
 
 func emit_show_dialogue(
@@ -27,32 +66,476 @@ func emit_show_dialogue(
 	presentation_profile: Dictionary = {},
 	declarative_presentation: bool = false,
 	nvl_page_key: String = "",
+	presentation_provenance: Dictionary = {},
+	nvl_page_entries: Array = [],
 ) -> void:
+	emit_dialogue_request(DialogueRequest.new(
+		character,
+		segments,
+		mode,
+		presentation_profile,
+		declarative_presentation,
+		nvl_page_key,
+		presentation_provenance,
+		nvl_page_entries,
+	))
+
+
+func emit_dialogue_request(request: DialogueRequest) -> void:
+	if request == null or request.get_segments().is_empty():
+		return
+	_dialogue_request_serial += 1
+	var request_entry_id := request.get_entry_id()
+	if request_entry_id.is_empty():
+		request_entry_id = "signal-bus:%d" % _dialogue_request_serial
+	var canonical := DialogueRequest.new(
+		request.get_character(),
+		request.get_segments(),
+		request.get_mode(),
+		request.get_presentation_profile(),
+		request.uses_declarative_presentation(),
+		request.get_nvl_page_key(),
+		request.get_presentation_provenance(),
+		request.get_nvl_page_entries(),
+		request_entry_id,
+		request.get_command_uid(),
+	)
+	# Built-in state observes an immutable snapshot before the mutable public
+	# compatibility signal is delivered to extensions.
+	dialogue_requested.emit(canonical)
+	var compatibility_segments := canonical.get_segments()
 	_dialogue_presentation_stack.append({
-		"profile": presentation_profile.duplicate(true),
-		"declarative": declarative_presentation,
-		"nvl_page_key": nvl_page_key,
+		"dispatch_serial": _show_dialogue_dispatch_serial + 1,
+		# Keep the live synchronous payload reference for reentrant dispatch lookup.
+		# Public listeners are allowed to filter the mutable segments Array before
+		# Presenter runs; retaining this reference keeps the sidecar attached to that
+		# same dispatch after an in-place edit. Godot typed signals preserve the Array
+		# identity throughout synchronous delivery on every supported engine version.
+		"segments": compatibility_segments,
+		"profile": canonical.get_presentation_profile(),
+		"declarative": canonical.uses_declarative_presentation(),
+		"nvl_page_key": canonical.get_nvl_page_key(),
+		"nvl_page_entries": canonical.get_nvl_page_entries(),
+		"provenance": canonical.get_presentation_provenance(),
 	})
-	show_dialogue.emit(character, segments, mode)
+	show_dialogue.emit(
+		canonical.get_character(), compatibility_segments, canonical.get_mode())
 	_dialogue_presentation_stack.pop_back()
 
 
-func current_dialogue_presentation_profile() -> Dictionary:
+## Convenience emitter. Direct advance_requested.emit() remains fully
+## compatible because the bus-level pre-dispatch hook observes both paths.
+func emit_advance_requested() -> void:
+	advance_requested.emit()
+
+
+func current_advance_dispatch_serial() -> int:
+	return _advance_dispatch_serial
+
+
+## Canonical typed request. Built-in AudioPresenter consumes this signal;
+## voice_play is emitted afterwards as a read-only compatibility notification.
+func request_voice_playback(
+	asset: String,
+	character: String,
+	owner_validator: Callable = Callable(),
+	emit_compatibility_signal: bool = true,
+) -> VoicePlaybackResponse:
+	var request := VoicePlaybackRequest.new(asset, character, owner_validator)
+	var response := VoicePlaybackResponse.new()
+	if not request.is_current():
+		response._resolve(false)
+		return response
+	_voice_request_responses[request.get_instance_id()] = response
+	voice_playback_requested.emit(request)
+	if emit_compatibility_signal:
+		# The construction-time prehook consumes exactly this echo. A raw emit
+		# nested by a later compatibility listener is a new request and must not
+		# inherit a broad call-stack suppression flag.
+		_compatibility_voice_play_echo_pending += 1
+		voice_play.emit(asset, character)
+	_voice_request_responses.erase(request.get_instance_id())
+	return response
+
+
+func resolve_voice_playback_request(
+	request: VoicePlaybackRequest,
+	accepted: bool,
+) -> int:
+	if request == null:
+		return -1
+	var response: VoicePlaybackResponse = _voice_request_responses.get(
+		request.get_instance_id())
+	if response == null or response.was_handled():
+		return response.get_playback_token() if response != null else -1
+	if not accepted:
+		response._resolve(false)
+		return -1
+	_voice_playback_token_serial += 1
+	var completion := VoicePlaybackCompletion.new()
+	response._resolve(true, _voice_playback_token_serial, completion)
+	_voice_completion_states[_voice_playback_token_serial] = completion
+	return _voice_playback_token_serial
+
+
+func voice_playback_request_is_pending(request: VoicePlaybackRequest) -> bool:
+	if request == null:
+		return false
+	var response: VoicePlaybackResponse = _voice_request_responses.get(
+		request.get_instance_id())
+	return response != null and not response.was_handled()
+
+
+func emit_voice_playback_event(event: VoicePlaybackEvent) -> bool:
+	if event == null or not event.is_current():
+		return false
+	var kind := event.get_kind()
+	var playback_token := event.get_playback_token()
+	if kind == VoicePlaybackEvent.Kind.FINISHED \
+		and playback_token >= 0 \
+		and _voice_completion_states.has(playback_token):
+		var completion: VoicePlaybackCompletion = _voice_completion_states[playback_token]
+		completion._mark_finished()
+		_voice_completion_states.erase(playback_token)
+	voice_playback_event.emit(event)
+	if not event.is_current():
+		return false
+	_compatibility_voice_lifecycle_echo_pending += 1
+	match kind:
+		VoicePlaybackEvent.Kind.STARTED:
+			voice_started.emit(event.get_character(), event.get_asset())
+		VoicePlaybackEvent.Kind.PROGRESS:
+			voice_progress.emit(event.get_position(), event.get_duration())
+		VoicePlaybackEvent.Kind.FINISHED:
+			voice_finished.emit()
+	return event.is_current()
+
+
+func emit_owned_dialogue_voice_started(
+	total_duration: float,
+	owner_validator: Callable,
+) -> bool:
+	return emit_dialogue_voice_playback_event(
+		DialogueVoicePlaybackEvent.started(total_duration, owner_validator))
+
+
+func emit_owned_dialogue_voice_progress(
+	position: float,
+	total_duration: float,
+	owner_validator: Callable,
+) -> bool:
+	return emit_dialogue_voice_playback_event(
+		DialogueVoicePlaybackEvent.progress(
+			position, total_duration, owner_validator))
+
+
+func emit_owned_dialogue_voice_finished(owner_validator: Callable) -> bool:
+	return emit_dialogue_voice_playback_event(
+		DialogueVoicePlaybackEvent.finished(owner_validator))
+
+
+func emit_dialogue_voice_playback_event(
+	event: DialogueVoicePlaybackEvent,
+) -> bool:
+	if event == null or not event.is_current():
+		return false
+	dialogue_voice_playback_event.emit(event)
+	if not event.is_current():
+		return false
+	match event.get_kind():
+		DialogueVoicePlaybackEvent.Kind.STARTED:
+			_emit_owned_dialogue_event(
+				&"dialogue_voice_started", [event.get_total_duration()],
+				event.is_current)
+		DialogueVoicePlaybackEvent.Kind.PROGRESS:
+			_emit_owned_dialogue_event(
+				&"dialogue_voice_progress",
+				[event.get_position(), event.get_total_duration()],
+				event.is_current)
+		DialogueVoicePlaybackEvent.Kind.FINISHED:
+			_emit_owned_dialogue_event(
+				&"dialogue_voice_finished", [], event.is_current)
+	return event.is_current()
+
+
+func dialogue_voice_started_event_is_current(
+	total_duration: float,
+	consumer_id: int = 0,
+) -> bool:
+	var frame := _owned_dialogue_event_frame(
+		&"dialogue_voice_started", [total_duration])
+	return _dialogue_event_frame_is_current(frame, consumer_id)
+
+
+func dialogue_voice_finished_event_is_current(consumer_id: int = 0) -> bool:
+	var frame := _owned_dialogue_event_frame(&"dialogue_voice_finished", [])
+	return _dialogue_event_frame_is_current(frame, consumer_id)
+
+
+func dialogue_voice_progress_event_is_current(
+	position: float,
+	total_duration: float,
+	consumer_id: int = 0,
+) -> bool:
+	var frame := _owned_dialogue_event_frame(
+		&"dialogue_voice_progress", [position, total_duration])
+	return _dialogue_event_frame_is_current(frame, consumer_id)
+
+
+func _emit_owned_dialogue_event(
+	signal_name: StringName,
+	arguments: Array,
+	owner_validator: Callable,
+) -> bool:
+	if not _owned_event_validator_is_current(owner_validator):
+		return false
+	_owned_dialogue_event_stack.append({
+		"signal": signal_name,
+		"arguments": arguments.duplicate(true),
+		"owner_validator": owner_validator,
+		"dispatch_started": false,
+		"nested_raw_dispatch_count": 0,
+		"dispatch_consumers": {},
+	})
+	match signal_name:
+		&"dialogue_voice_started":
+			dialogue_voice_started.emit(arguments[0])
+		&"dialogue_voice_progress":
+			dialogue_voice_progress.emit(arguments[0], arguments[1])
+		&"dialogue_voice_finished":
+			dialogue_voice_finished.emit()
+	_owned_dialogue_event_stack.pop_back()
+	return _owned_event_validator_is_current(owner_validator)
+
+
+func _owned_dialogue_event_frame(
+	signal_name: StringName,
+	arguments: Array,
+) -> Dictionary:
+	if _owned_dialogue_event_stack.is_empty():
+		return {}
+	var frame: Dictionary = _owned_dialogue_event_stack[-1]
+	if frame.get("signal") != signal_name \
+		or frame.get("arguments") != arguments:
+		return {}
+	return frame
+
+
+func _owned_event_validator_is_current(owner_validator: Callable) -> bool:
+	return owner_validator.is_valid() and bool(owner_validator.call())
+
+
+func _dialogue_event_frame_is_current(
+	frame: Dictionary,
+	consumer_id: int,
+) -> bool:
+	if frame.is_empty() or _frame_dispatch_is_nested_raw(frame, consumer_id):
+		return true
+	return _owned_event_validator_is_current(
+		frame.get("owner_validator", Callable()))
+
+
+## Same-payload raw re-emits happen synchronously before the suspended outer
+## owned callback resumes. Each consumer therefore consumes one raw-dispatch
+## count per nested callback, then sees the outer owned frame again. Callers
+## that coexist with other helper users should pass a stable consumer_id (node
+## instance IDs are suitable); the default preserves the single-consumer API.
+func _frame_dispatch_is_nested_raw(
+	frame: Dictionary,
+	consumer_id: int,
+) -> bool:
+	var nested_count := int(frame.get("nested_raw_dispatch_count", 0))
+	var consumers: Dictionary = frame.get("dispatch_consumers", {})
+	var consumed_count := int(consumers.get(consumer_id, 0))
+	if consumed_count >= nested_count:
+		return false
+	consumers[consumer_id] = consumed_count + 1
+	return true
+
+
+func _mark_owned_dialogue_event_dispatch(
+	signal_name: StringName,
+	arguments: Array,
+) -> Dictionary:
+	var frame := _owned_dialogue_event_frame(signal_name, arguments)
+	if frame.is_empty():
+		return {}
+	if not bool(frame.get("dispatch_started", false)):
+		frame["dispatch_started"] = true
+		return frame
+	frame["nested_raw_dispatch_count"] = int(
+		frame.get("nested_raw_dispatch_count", 0)) + 1
+	return {}
+
+
+func _on_voice_play_dispatch_started(
+	asset: String,
+	character: String,
+) -> void:
+	if _compatibility_voice_play_echo_pending > 0:
+		_compatibility_voice_play_echo_pending -= 1
+		return
+	request_voice_playback(asset, character, Callable(), false)
+
+
+func _on_voice_started_dispatch_started(
+	character: String,
+	asset: String,
+) -> void:
+	if _compatibility_voice_lifecycle_echo_pending > 0:
+		_compatibility_voice_lifecycle_echo_pending -= 1
+		return
+	voice_playback_event.emit(VoicePlaybackEvent.started(
+		character, asset, -1, Callable(), true))
+
+
+func _on_voice_progress_dispatch_started(
+	position: float,
+	duration: float,
+) -> void:
+	if _compatibility_voice_lifecycle_echo_pending > 0:
+		_compatibility_voice_lifecycle_echo_pending -= 1
+		return
+	voice_playback_event.emit(VoicePlaybackEvent.progress(
+		position, duration, -1, Callable(), true))
+
+
+func _on_voice_finished_dispatch_started() -> void:
+	if _compatibility_voice_lifecycle_echo_pending > 0:
+		_compatibility_voice_lifecycle_echo_pending -= 1
+		return
+	voice_playback_event.emit(VoicePlaybackEvent.finished(
+		-1, Callable(), true))
+
+
+func _on_dialogue_voice_started_dispatch_started(
+	total_duration: float,
+) -> void:
+	var owned_frame := _mark_owned_dialogue_event_dispatch(
+		&"dialogue_voice_started", [total_duration])
+	if owned_frame.is_empty():
+		dialogue_voice_playback_event.emit(
+			DialogueVoicePlaybackEvent.started(
+				total_duration, Callable(), true))
+
+
+func _on_dialogue_voice_progress_dispatch_started(
+	position: float,
+	total_duration: float,
+) -> void:
+	var owned_frame := _mark_owned_dialogue_event_dispatch(
+		&"dialogue_voice_progress", [position, total_duration])
+	if owned_frame.is_empty():
+		dialogue_voice_playback_event.emit(
+			DialogueVoicePlaybackEvent.progress(
+				position, total_duration, Callable(), true))
+
+
+func _on_dialogue_voice_finished_dispatch_started() -> void:
+	var owned_frame := _mark_owned_dialogue_event_dispatch(
+		&"dialogue_voice_finished", [])
+	if owned_frame.is_empty():
+		dialogue_voice_playback_event.emit(
+			DialogueVoicePlaybackEvent.finished(Callable(), true))
+
+
+func _on_show_dialogue_dispatch_started(
+	character: String,
+	segments: Array,
+	mode: String,
+) -> void:
+	_show_dialogue_dispatch_serial += 1
+	var expected_wrapper := false
+	if not _dialogue_presentation_stack.is_empty():
+		var frame: Dictionary = _dialogue_presentation_stack[-1]
+		expected_wrapper = (
+			int(frame.get("dispatch_serial", -1)) == _show_dialogue_dispatch_serial
+			and is_same(frame.get("segments"), segments)
+		)
+	if not expected_wrapper:
+		_last_raw_show_dispatch_serial = _show_dialogue_dispatch_serial
+		_last_raw_show_segments = segments
+		# A direct legacy emit is translated once at the boundary. It carries no
+		# sidecar profile/provenance and cannot mutate an in-flight canonical request.
+		# It still needs a dispatch identity so Backlog enrichment and consecutive
+		# programmatic dialogues never collapse into the same command:-1 row.
+		_dialogue_request_serial += 1
+		dialogue_requested.emit(DialogueRequest.new(
+			character,
+			segments,
+			mode,
+			{},
+			false,
+			"",
+			{},
+			[],
+			"signal-bus:%d" % _dialogue_request_serial,
+			-1,
+		))
+
+
+func _on_advance_requested_dispatch_started() -> void:
+	_advance_dispatch_serial += 1
+	advance_dispatch_started.emit(_advance_dispatch_serial)
+
+
+## Returns the presentation metadata belonging to `segments`. Passing the
+## callback payload makes nested raw `show_dialogue.emit()` calls unambiguous:
+## they have no wrapper frame and therefore receive legacy empty metadata.
+## The no-argument form is retained for extensions and is deliberately
+## conservative after a nested raw dispatch rather than returning stale data.
+func current_dialogue_metadata(segments: Variant = null) -> Dictionary:
+	var frame := _current_dialogue_presentation_frame(segments)
+	if frame.is_empty():
+		return {}
+	return {
+		"profile": frame["profile"].duplicate(true),
+		"declarative": bool(frame["declarative"]),
+		"nvl_page_key": String(frame["nvl_page_key"]),
+		"nvl_page_entries": frame["nvl_page_entries"].duplicate(true),
+		"provenance": frame["provenance"].duplicate(true),
+	}
+
+
+func current_dialogue_presentation_profile(segments: Variant = null) -> Dictionary:
+	var metadata := current_dialogue_metadata(segments)
+	return metadata.get("profile", {})
+
+
+func current_dialogue_uses_declarative_presentation(segments: Variant = null) -> bool:
+	return bool(current_dialogue_metadata(segments).get("declarative", false))
+
+
+func current_dialogue_nvl_page_key(segments: Variant = null) -> String:
+	return String(current_dialogue_metadata(segments).get("nvl_page_key", ""))
+
+
+## Runtime-only authoring location for the active STLA Profile. Like the
+## profile itself, this is available only during synchronous show dispatch.
+func current_dialogue_presentation_provenance(segments: Variant = null) -> Dictionary:
+	return current_dialogue_metadata(segments).get("provenance", {})
+
+
+func _current_dialogue_presentation_frame(segments: Variant) -> Dictionary:
 	if _dialogue_presentation_stack.is_empty():
 		return {}
-	return _dialogue_presentation_stack[-1]["profile"].duplicate(true)
-
-
-func current_dialogue_uses_declarative_presentation() -> bool:
-	if _dialogue_presentation_stack.is_empty():
-		return false
-	return _dialogue_presentation_stack[-1]["declarative"]
-
-
-func current_dialogue_nvl_page_key() -> String:
-	if _dialogue_presentation_stack.is_empty():
-		return ""
-	return _dialogue_presentation_stack[-1]["nvl_page_key"]
+	if segments != null:
+		# A raw nested emit can deliberately reuse the outer payload verbatim. It
+		# is indistinguishable by value, so prefer empty legacy metadata over
+		# attributing an authoring warning to the wrong dispatch. Outer listeners
+		# after such an emit are likewise conservative and receive no sidecar.
+		if _last_raw_show_dispatch_serial == _show_dialogue_dispatch_serial \
+			and is_same(_last_raw_show_segments, segments):
+			return {}
+		for index in range(_dialogue_presentation_stack.size() - 1, -1, -1):
+			var frame: Dictionary = _dialogue_presentation_stack[index]
+			if is_same(frame.get("segments"), segments):
+				return frame
+		return {}
+	var latest: Dictionary = _dialogue_presentation_stack[-1]
+	if int(latest.get("dispatch_serial", -1)) != _show_dialogue_dispatch_serial:
+		return {}
+	return latest
 
 # Background
 signal bg_changed(asset: String, transition: String, duration: float)
@@ -209,6 +692,9 @@ signal bgm_stop(fade_duration: float)
 signal se_play(asset: String, loop: bool)
 signal se_stop(asset: String)
 signal voice_play(asset: String, character: String)
+signal voice_playback_requested(request: VoicePlaybackRequest)
+signal voice_playback_event(event: VoicePlaybackEvent)
+signal dialogue_voice_playback_event(event: DialogueVoicePlaybackEvent)
 signal system_se_play(asset: String)
 signal voice_started(character: String, asset: String)
 signal voice_finished()

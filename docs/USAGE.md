@@ -218,6 +218,8 @@ Game
 @dialogue_profile novel background_visible=true background_modulate=#ffffff00
 @dialogue_profile novel show=quick_menu
 @dialogue_profile novel entry_prefix="・" entry_separator=""
+@dialogue_profile novel advance_indicator_texture="res://ui/dialogue/wait.svg"
+@dialogue_profile novel advance_indicator_offset=8,-2 advance_indicator_animation=bob
 @dialogue_profile message panel_anchors=0,0.72,1,1
 
 @chapter prologue "序章"
@@ -230,13 +232,15 @@ Game
 「这里已经恢复 ADV。」
 ```
 
-上例的两条 NVL 记录会累积显示为 `・第一行。・第二行。`。`entry_prefix` 放在角色名和正文之前，`entry_separator` 只放在相邻记录之间；两者只影响 NVL 的屏幕排版，不会改写 Backlog 的原始对话文本。省略它们时使用空前缀和换行分隔。`@combine` 块始终算一条记录，只添加一次前缀。字符串可使用 `\\`、`\"`、`\n`、`\r`、`\t` 转义，例如 `entry_separator="\n\n"` 可留出空行；它们仅支持纯文本，BBCode 方括号会产生诊断。
+上例的两条 NVL 记录会累积显示为 `・第一行。・第二行。`。`entry_prefix` 放在角色名和正文之前，`entry_separator` 只放在相邻记录之间；两者只影响 NVL 的屏幕排版，不会进入 Backlog。Backlog 保存正文的玩家可见纯文本：BBCode 格式与 expression/effect marker 会被剥离，段落和列表转换为普通换行、项目符号或序号，所以默认 Backlog 场景的普通 Button 不会露出 `[b]` / `[ul]` 等标签。省略 entry format 时使用内置兼容默认值：空前缀和换行分隔。`@combine` 块始终算一条记录，只添加一次前缀。字符串可使用 `\\`、`\"`、`\n`、`\r`、`\t` 转义，例如 `entry_separator="\n\n"` 可留出空行；它们仅支持纯文本，BBCode 方括号会产生诊断。
+
+示例中的 wait 图片会在一条对话完整显示后跟随实际换行后的文字端点，并在下一条开始打字或玩家推进时隐藏。也可以用 `advance_indicator_scene="res://ui/dialogue/wait_indicator.tscn"` 提供根节点为 `CanvasItem` 的自定义场景；其中 `Control` 根需使用左上角锚点并明确尺寸。texture 与 scene 二选一。`advance_indicator_offset=x,y` 调整像素位置，`advance_indicator_animation` 支持 `none`、`pulse`、`bob`。这套能力同样适用于 ADV 和 overlay；NVL 每累积一条记录都会移到最新端点。标记不会进入文字、Backlog 或存档，未配置时不会创建任何标记节点。内置定位直接读取 Godot 的实际 glyph 排版，因此支持段落对齐、`[indent]`、`[ul]` / `[ol]`、混合 RTL 和滚动条占宽，无需项目自定义定位；用于探测的透明排版镜像不会改变正文的选择、打字进度或滚动位置。纯文本 NVL 会在同一个镜像中只追加新条目，避免每条记录重新解析整页；含 BBCode、自定义效果或布局变化时则重新建立引擎排版，保证语义正确。`[wave]`、`[shake]` 与自定义时间相关 `RichTextEffect` 的端点采用 ready 时的稳定快照，不会让 marker 每帧抖动；下一次文本、尺寸、主题或滚动触发的定位会重新采样当时的最终 glyph transform。
 
 完整属性表和诊断规则见 [DSL.md](DSL.md#33-对话框模式切换)。内置场景已经提供可定位文字区域、`DialogueBg` 和 `quick_menu` 分组，常规 ADV、透明 NVL、书信、独白等版式都能只用 STLA 完成。Presenter 在就绪时保存 ADV 基线；配置过 `@adv profile=name` 时，`@nvl off` / `@overlay off` 恢复该 ADV Profile，否则恢复场景原始 ADV，并精确还原 panel、文字区域、文字样式、背景和分组 UI。
 
 只有项目加入自定义 frame、logo 等专属 UI 时，才需要在 Godot 的 Node > Groups 中给节点增加语义分组，并在 STLA 的 `show` / `hide` 中引用。极少数需要程序动态注入样式的项目仍可在 Inspector 中使用 `DialoguePresentationProfile` / `DialogueModeProfile` Resource，或调用 `DialoguePresenter.set_presentation_profile()`；这是高级兜底接口，不是常规创作流程。
 
-完全不写 `@dialogue_profile` 时，`@nvl` / `@overlay` 使用内置布局。离开 NVL 后，下一次进入会开始新的累积文本；这一规则也适用于 `@jump` 循环、重复 `@call` 和条件分支的实际执行路径。未离开 NVL 时重复 `@nvl` 不会另起一页。
+完全不写 `@dialogue_profile` 时，`@nvl` / `@overlay` 使用内置兼容布局，旧项目不需要迁移。离开 NVL 后，下一次进入会开始新的累积文本；这一规则也适用于 `@jump` 循环、重复 `@call` 和条件分支的实际执行路径。不同分支可以保留不同 Profile 到共同 continuation；若希望汇合后统一布局，再显式写一次模式选择。未离开 NVL 时重复 `@nvl` 不会另起一页。存档记录当前与 ADV 的 Profile 名称、声明式选择状态，以及当前 NVL 页每条记录的 Profile 名、原始角色/segment 输入；读档或 Backlog 回退后从当前剧本的 Profile registry 逐条重建页面，所以同一页中途换 Profile 不会改写更早记录的 prefix/separator。存档不保存已解析 Profile、诊断 provenance 或渲染后的 `RichTextLabel.text`。
 
 ### Step 5 — 运行
 

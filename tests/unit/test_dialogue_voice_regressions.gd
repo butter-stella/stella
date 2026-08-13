@@ -14,6 +14,140 @@ func _get_stage_presenter() -> StagePresenter:
 	return _game_scene.get_node("StageLayer") as StagePresenter
 
 
+func _open_logical_voice_session(dialogue: Control) -> void:
+	dialogue._playback_owner_dialogue_gen = dialogue._dialogue_gen
+	dialogue._playback_total_duration = 1.0
+	dialogue._playback_is_dialogue = true
+	dialogue._playback_dialogue_finished_emitted = false
+	dialogue._playback_aborted = false
+	dialogue._playback_queue_active = true
+
+
+func test_voice_handler_enters_the_typed_request_path() -> void:
+	var typed_requests: Array[VoicePlaybackRequest] = []
+	var compatibility_events: Array = []
+	var on_typed: Callable = func(request: VoicePlaybackRequest):
+		typed_requests.append(request)
+	var on_raw: Callable = func(asset: String, character: String):
+		compatibility_events.append([asset, character])
+	SignalBus.voice_playback_requested.connect(on_typed)
+	SignalBus.voice_play.connect(on_raw)
+	var command := CommandData.new()
+	command.params = {"asset": "missing_typed_fixture"}
+
+	await VoiceHandler.new().execute(command, null)
+
+	assert_eq(typed_requests.size(), 1)
+	assert_eq(typed_requests[0].get_asset(), "missing_typed_fixture")
+	assert_eq(compatibility_events, [["missing_typed_fixture", ""]],
+		"the old signal remains an outbound compatibility notification")
+	SignalBus.voice_playback_requested.disconnect(on_typed)
+	SignalBus.voice_play.disconnect(on_raw)
+
+
+func test_logical_voice_finishes_once_on_advance_show_and_hide() -> void:
+	var dialogue := _game_scene.get_node("UILayer/DialoguePanel")
+	var finished := [0]
+	var on_finished: Callable = func(): finished[0] += 1
+	SignalBus.dialogue_voice_finished.connect(on_finished)
+
+	_open_logical_voice_session(dialogue)
+	SignalBus.emit_advance_requested()
+	assert_eq(finished[0], 1, "advance closes the current logical voice")
+
+	_open_logical_voice_session(dialogue)
+	SignalBus.show_dialogue.emit("", [{"text": "replacement", "voice": ""}], "adv")
+	assert_eq(finished[0], 2, "direct SHOW closes the replaced logical voice")
+
+	_open_logical_voice_session(dialogue)
+	SignalBus.hide_dialogue.emit()
+	assert_eq(finished[0], 3, "hard hide closes the current logical voice")
+	SignalBus.hide_dialogue.emit()
+	assert_eq(finished[0], 3, "repeated hide cannot emit duplicate FINISH")
+	SignalBus.dialogue_voice_finished.disconnect(on_finished)
+
+
+func test_toolbar_and_backlog_replay_logical_event_order() -> void:
+	var dialogue := _game_scene.get_node("UILayer/DialoguePanel")
+	var events: Array[String] = []
+	var on_started: Callable = func(_duration: float): events.append("start")
+	var on_finished: Callable = func(): events.append("finish")
+	SignalBus.dialogue_voice_started.connect(on_started)
+	SignalBus.dialogue_voice_finished.connect(on_finished)
+	dialogue._dialogue_segments = [{"text": "", "voice": "narration_001"}]
+	dialogue._dialogue_voice_character = ""
+
+	_open_logical_voice_session(dialogue)
+	dialogue._on_voice_replay_pressed()
+	assert_eq(events, ["finish", "start"],
+		"toolbar replay closes the old logical session before its new START")
+
+	events.clear()
+	_open_logical_voice_session(dialogue)
+	SignalBus.dialogue_voice_replay_requested.emit(["narration_001"], "")
+	assert_eq(events, ["finish"],
+		"backlog replay closes the old session but owns no dialogue lifecycle")
+	SignalBus.dialogue_voice_started.disconnect(on_started)
+	SignalBus.dialogue_voice_finished.disconnect(on_finished)
+
+
+func test_backlog_replay_from_voice_started_does_not_strand_show() -> void:
+	var original_voice_path := StellaRuntime.voice_path
+	StellaRuntime.voice_path = "res://examples/demo/audio/voice/"
+	var dialogue := _game_scene.get_node("UILayer/DialoguePanel")
+	dialogue._char_interval = 0.0
+	var original_stream := load(
+		"res://examples/demo/audio/voice/narration_001.wav") as AudioStream
+	var replay_stream := load(
+		"res://examples/demo/audio/voice/narration_002.wav") as AudioStream
+	assert_not_null(original_stream)
+	assert_not_null(replay_stream)
+	assert_ne(original_stream.get_length(), replay_stream.get_length(),
+		"fixture voices must distinguish SHOW duration from replay duration")
+
+	var started_count := [0]
+	var on_started: Callable = func(_duration: float):
+		started_count[0] += 1
+		if started_count[0] == 1:
+			SignalBus.dialogue_voice_replay_requested.emit(
+				["narration_002"], "backlog")
+	SignalBus.dialogue_voice_started.connect(on_started)
+	var expected_dialogue_gen: int = dialogue._dialogue_gen + 1
+	SignalBus.show_dialogue.emit("", [{
+		"text": "Original SHOW remains live",
+		"voice": "narration_001",
+	}], "adv")
+	SignalBus.dialogue_voice_started.disconnect(on_started)
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+	assert_eq(started_count[0], 1,
+		"backlog replay must not open another high-level dialogue voice session")
+	assert_eq(dialogue._dialogue_gen, expected_dialogue_gen,
+		"audio-only replay must stay within the SHOW's dialogue generation")
+	assert_false(dialogue._is_typing,
+		"synchronous replay must not strand the SHOW before its typewriter starts")
+	assert_eq(dialogue.text_label.visible_characters, -1,
+		"the original SHOW must continue through its typewriter pipeline")
+	assert_almost_eq(
+		dialogue._dialogue_total_duration,
+		original_stream.get_length(),
+		0.001,
+		"toolbar duration belongs to the original SHOW, not backlog replay",
+	)
+	assert_not_null(dialogue._voice_replay_btn)
+	if dialogue._voice_replay_btn != null:
+		assert_true(dialogue._voice_replay_btn.visible,
+			"the original voiced SHOW must retain toolbar replay visibility")
+
+	SignalBus.hide_dialogue.emit()
+	var audio_presenter := StellaRuntime.get_node_or_null("AudioPresenter")
+	if audio_presenter != null:
+		audio_presenter._voice_player.stop()
+		audio_presenter._on_voice_playback_finished()
+	StellaRuntime.voice_path = original_voice_path
+
+
 func test_combine_voice_replay_restarts_from_first_segment():
 	# Setup: play a combined dialogue, let the queue run, then click replay
 	var segments = [
@@ -134,10 +268,12 @@ func test_dialogue_voice_finished_waits_for_last_segment():
 	# Bug: dialogue_voice_finished fired the moment the last segment STARTED
 	# playing (loop exited after kicking it off). The progress bar would
 	# disappear at the start of the final segment instead of at its end.
+	var original_voice_path := StellaRuntime.voice_path
+	StellaRuntime.voice_path = "res://examples/demo/audio/voice/"
 	var segments = [
-		{"text": "一", "voice": "v1"},
-		{"text": "二", "voice": "v2"},
-		{"text": "三", "voice": "v3"},
+		{"text": "一", "voice": "narration_001", "expression": ""},
+		{"text": "二", "voice": "narration_002", "expression": ""},
+		{"text": "三", "voice": "narration_003", "expression": ""},
 	]
 
 	var finished_count := [0]
@@ -152,30 +288,43 @@ func test_dialogue_voice_finished_waits_for_last_segment():
 	dialogue._playback_played_duration = 0.0
 	dialogue._playback_segment_durations = [1.0, 1.0, 1.0]
 	dialogue._playback_aborted = false
+	dialogue._playback_queue_gen += 1
+	dialogue._playback_owner_dialogue_gen = dialogue._dialogue_gen
+	var queue_gen: int = dialogue._playback_queue_gen
 
-	dialogue._run_voice_queue("sakura", segments, dialogue._dialogue_gen)
+	dialogue._run_voice_queue(
+		"sakura", segments, dialogue._dialogue_gen, queue_gen)
 	await get_tree().process_frame
+	var audio_presenter := StellaRuntime.get_node_or_null("AudioPresenter")
+	assert_not_null(audio_presenter)
+	if audio_presenter == null:
+		StellaRuntime.voice_path = original_voice_path
+		return
 
 	# After kickoff: seg[0]'s voice is "playing"; queue is awaiting voice_finished.
 	# dialogue_voice_finished must NOT have fired yet.
 	assert_eq(finished_count[0], 0, "must not finish before any segment ends")
 
 	# Simulate seg[0] ending → queue advances to seg[1]
-	SignalBus.voice_finished.emit()
+	audio_presenter._voice_player.stop()
+	audio_presenter._on_voice_playback_finished()
 	await get_tree().process_frame
 	assert_eq(finished_count[0], 0, "must not finish after seg[0] ends")
 
 	# seg[1] ends → queue advances to seg[2]
-	SignalBus.voice_finished.emit()
+	audio_presenter._voice_player.stop()
+	audio_presenter._on_voice_playback_finished()
 	await get_tree().process_frame
 	assert_eq(finished_count[0], 0,
 		"must not finish when LAST segment merely STARTS — wait for its end")
 
 	# seg[2] (last) ends → queue should now emit dialogue_voice_finished
-	SignalBus.voice_finished.emit()
+	audio_presenter._voice_player.stop()
+	audio_presenter._on_voice_playback_finished()
 	await get_tree().process_frame
 	assert_eq(finished_count[0], 1,
 		"dialogue_voice_finished must fire only after the last segment ends")
+	StellaRuntime.voice_path = original_voice_path
 
 
 func test_reset_presentation_clears_backlog():

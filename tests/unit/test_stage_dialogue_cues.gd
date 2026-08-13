@@ -67,10 +67,332 @@ func _records_for_presenter(records: Array, presenter: StagePresenter) -> Array:
 	)
 
 
+func _open_synthetic_dialogue_voice_session() -> void:
+	_dialogue._playback_owner_dialogue_gen = _dialogue._dialogue_gen
+	_dialogue._playback_aborted = false
+	_dialogue._playback_queue_active = true
+	_dialogue._playback_dialogue_finished_emitted = false
+	_dialogue._playback_is_dialogue = true
+	_dialogue._playback_total_duration = 1.0
+
+
+func test_owned_stage_reentrant_show_retires_old_lifecycle_and_transition() -> void:
+	var presenter := _game_scene.get_node("StageLayer") as StagePresenter
+	SignalBus.show_dialogue.emit("", [{
+		"text": "old", "voice": "", "stage_ops": [],
+	}], "adv")
+	_open_synthetic_dialogue_voice_session()
+	SignalBus.emit_stage_operations([
+		_stage_op("show", "owned", {"asset": "stage:bg_cafe"}),
+	], true)
+
+	var presenter_callback := Callable(presenter, "_on_stage_operations_requested")
+	SignalBus.stage_operations_requested.disconnect(presenter_callback)
+	var replacement_requested := [false]
+	var early_show: Callable = func(operations: Array, force_cut: bool):
+		if force_cut or operations.is_empty() or replacement_requested[0]:
+			return
+		if String(operations[0].get("id", "")) != "owned":
+			return
+		replacement_requested[0] = true
+		SignalBus.show_dialogue.emit("", [{
+			"text": "winner", "voice": "", "stage_ops": [],
+		}], "adv")
+	var logical_finish_count := [0]
+	var on_logical_finish: Callable = func():
+		logical_finish_count[0] += 1
+	var transition_finish_batches: Array = []
+	var on_transition_finish: Callable = func(records: Array):
+		transition_finish_batches.append(records.duplicate(true))
+	SignalBus.stage_operations_requested.connect(early_show)
+	SignalBus.stage_operations_requested.connect(presenter_callback)
+	SignalBus.dialogue_voice_finished.connect(on_logical_finish)
+	SignalBus.stage_transitions_finish_requested.connect(on_transition_finish)
+
+	_dialogue._apply_segment_presentation({
+		"stage_ops": [_stage_op(
+			"update", "owned", {"opacity": 0.25}, "fade", 10.0
+		)],
+	}, false, 0, 1, _dialogue._playback_queue_gen)
+
+	assert_true(replacement_requested[0])
+	assert_eq(logical_finish_count[0], 1,
+		"the replaced dialogue must publish logical FINISH exactly once")
+	assert_eq(_dialogue.text_label.text, "winner")
+	assert_eq(transition_finish_batches.size(), 1,
+		"the replacement must finish the exact acknowledged old transition")
+	if transition_finish_batches.size() == 1:
+		var records := _records_for_presenter(
+			transition_finish_batches[0], presenter)
+		assert_eq(records.size(), 1)
+		if records.size() == 1:
+			assert_eq(records[0]["layer_id"], "owned")
+	assert_false(presenter._layer_tweens.has("owned"))
+	assert_eq(_dialogue._presentation_dispatch_depth, 0)
+	assert_true(_dialogue._presentation_dispatch_generations.is_empty())
+	assert_true(_dialogue._stage_operation_request_owners.is_empty())
+	assert_true(_dialogue._queued_dialogue_requests.is_empty())
+	SignalBus.stage_operations_requested.disconnect(early_show)
+	SignalBus.dialogue_voice_finished.disconnect(on_logical_finish)
+	SignalBus.stage_transitions_finish_requested.disconnect(on_transition_finish)
+
+
+func test_owned_stage_reentrant_hide_unwinds_before_following_show() -> void:
+	var presenter := _game_scene.get_node("StageLayer") as StagePresenter
+	var presenter_callback := Callable(presenter, "_on_stage_operations_requested")
+	SignalBus.stage_operations_requested.disconnect(presenter_callback)
+	var hide_requested := [false]
+	var early_hide: Callable = func(operations: Array, force_cut: bool):
+		if force_cut or operations.is_empty() or hide_requested[0]:
+			return
+		if String(operations[0].get("id", "")) != "hide_owned":
+			return
+		hide_requested[0] = true
+		SignalBus.hide_dialogue.emit()
+	SignalBus.stage_operations_requested.connect(early_hide)
+	SignalBus.stage_operations_requested.connect(presenter_callback)
+	SignalBus.show_dialogue.emit("", [{
+		"text": "old", "voice": "", "stage_ops": [],
+	}], "adv")
+
+	_dialogue._apply_segment_presentation({
+		"stage_ops": [_stage_op(
+			"show",
+			"hide_owned",
+			{"asset": "stage:bg_cafe"},
+			"fade",
+			10.0,
+		)],
+	}, false, 0, 1, _dialogue._playback_queue_gen)
+
+	assert_true(hide_requested[0])
+	assert_false(_dialogue.visible)
+	assert_eq(_dialogue._presentation_dispatch_depth, 0)
+	assert_true(_dialogue._presentation_dispatch_generations.is_empty())
+	assert_true(_dialogue._stage_operation_request_owners.is_empty())
+	SignalBus.show_dialogue.emit("", [{
+		"text": "after hide", "voice": "", "stage_ops": [],
+	}], "adv")
+	assert_true(_dialogue.visible)
+	assert_eq(_dialogue.text_label.text, "after hide")
+	assert_true(_dialogue._queued_dialogue_requests.is_empty())
+	SignalBus.stage_operations_requested.disconnect(early_hide)
+
+
+func test_finalization_queued_show_beats_finished_listener_backlog_replay() -> void:
+	SignalBus.show_dialogue.emit("", [{
+		"text": "old", "voice": "", "stage_ops": [],
+	}], "adv")
+	_open_synthetic_dialogue_voice_session()
+	_dialogue._dialogue_segments = [{
+		"text": "old",
+		"voice": "",
+		"stage_ops": [_stage_op(
+			"show",
+			"final_owned",
+			{"asset": "stage:bg_cafe"},
+			"fade",
+			10.0,
+		)],
+	}]
+	_dialogue._next_stage_segment_index = 0
+	_dialogue._segment_presentation_complete = false
+
+	var show_requested := [false]
+	var on_final_stage: Callable = func(operations: Array, force_cut: bool):
+		if not force_cut or operations.is_empty() or show_requested[0]:
+			return
+		if String(operations[0].get("id", "")) != "final_owned":
+			return
+		show_requested[0] = true
+		SignalBus.show_dialogue.emit("", [{
+			"text": "winner", "voice": "", "stage_ops": [],
+		}], "adv")
+	var finish_count := [0]
+	var on_logical_finish: Callable = func():
+		finish_count[0] += 1
+		SignalBus.dialogue_voice_replay_requested.emit(
+			["narration_002"], "")
+	var replayed_assets: Array[String] = []
+	var on_voice_play: Callable = func(asset: String, _character: String):
+		replayed_assets.append(asset)
+	SignalBus.stage_operations_requested.connect(on_final_stage)
+	SignalBus.dialogue_voice_finished.connect(on_logical_finish)
+	SignalBus.voice_play.connect(on_voice_play)
+
+	_dialogue.finalize_current_dialogue_for_advance()
+
+	assert_true(show_requested[0])
+	assert_eq(finish_count[0], 1)
+	assert_eq(_dialogue.text_label.text, "winner")
+	assert_false(replayed_assets.has("narration_002"),
+		"the queued replacement SHOW must discard the stale backlog replay")
+	assert_true(_dialogue._queued_voice_replay_request.is_empty())
+	assert_true(_dialogue._queued_dialogue_requests.is_empty())
+	SignalBus.stage_operations_requested.disconnect(on_final_stage)
+	SignalBus.dialogue_voice_finished.disconnect(on_logical_finish)
+	SignalBus.voice_play.disconnect(on_voice_play)
+
+
+func test_exit_during_final_stage_dispatch_retires_deferred_lifecycle() -> void:
+	SignalBus.show_dialogue.emit("", [{
+		"text": "detached during finalization",
+		"voice": "",
+		"stage_ops": [],
+	}], "adv")
+	_open_synthetic_dialogue_voice_session()
+	_dialogue._dialogue_segments = [{
+		"text": "detached during finalization",
+		"voice": "",
+		"stage_ops": [_stage_op(
+			"show",
+			"exit_owned",
+			{"asset": "stage:bg_cafe"},
+			"fade",
+			10.0,
+		)],
+	}]
+	_dialogue._next_stage_segment_index = 0
+	_dialogue._segment_presentation_complete = false
+	_dialogue._indicator_candidate_dialogue_gen = _dialogue._dialogue_gen
+	_dialogue._dialogue_ready = true
+	var indicator_token_before: int = _dialogue._indicator_token
+	var queue_gen_before: int = _dialogue._playback_queue_gen
+
+	# Run before StagePresenter so tree exit happens while this owned raw stage
+	# dispatch still has later consumers and therefore must be deferred.
+	var stage_presenter := _game_scene.get_node("StageLayer") as StagePresenter
+	var presenter_callback := Callable(
+		stage_presenter, "_on_stage_operations_requested")
+	SignalBus.stage_operations_requested.disconnect(presenter_callback)
+	var retained_dialogue := _dialogue
+	var removed := [false]
+	var remove_during_final_stage: Callable = func(
+		operations: Array, force_cut: bool,
+	):
+		if not force_cut or operations.is_empty() or removed[0]:
+			return
+		if String(operations[0].get("id", "")) != "exit_owned":
+			return
+		removed[0] = true
+		retained_dialogue.get_parent().remove_child(retained_dialogue)
+	SignalBus.stage_operations_requested.connect(remove_during_final_stage)
+	SignalBus.stage_operations_requested.connect(presenter_callback)
+	var logical_finish_count := [0]
+	var on_logical_finish: Callable = func():
+		logical_finish_count[0] += 1
+	SignalBus.dialogue_voice_finished.connect(on_logical_finish)
+
+	retained_dialogue.finalize_current_dialogue_for_advance()
+
+	assert_true(removed[0])
+	assert_false(retained_dialogue.is_inside_tree())
+	assert_true(retained_dialogue._deferred_lifecycle_boundary.is_empty(),
+		"the deferred exit must drain after final stage delivery unwinds")
+	assert_eq(retained_dialogue._presentation_dispatch_depth, 0)
+	assert_true(
+		retained_dialogue._presentation_dispatch_generations.is_empty())
+	assert_true(retained_dialogue._stage_operation_request_owners.is_empty())
+	assert_eq(retained_dialogue._boundary_operation_depth, 0)
+	assert_false(retained_dialogue._playback_queue_active)
+	assert_eq(retained_dialogue._playback_owner_dialogue_gen, -1)
+	assert_true(retained_dialogue._playback_aborted)
+	assert_gt(retained_dialogue._playback_queue_gen, queue_gen_before)
+	assert_eq(logical_finish_count[0], 1,
+		"tree exit must close the logical voice exactly once while detached")
+	assert_gt(retained_dialogue._indicator_token, indicator_token_before)
+	assert_eq(retained_dialogue._indicator_candidate_dialogue_gen, -1)
+	assert_false(retained_dialogue._dialogue_ready)
+
+	SignalBus.stage_operations_requested.disconnect(remove_during_final_stage)
+	SignalBus.dialogue_voice_finished.disconnect(on_logical_finish)
+	# The scene no longer owns this retained node; transfer it to the test so GUT
+	# can release it normally after after_each has restored global state.
+	add_child_autoqfree(retained_dialogue)
+
+
+func test_empty_stage_segment_advances_presentation_cursor() -> void:
+	_dialogue._next_stage_segment_index = 0
+	_dialogue._segment_presentation_complete = false
+	var request_id: int = _dialogue._apply_segment_presentation(
+		{"stage_ops": []}, false, 0, 1, _dialogue._playback_queue_gen)
+	assert_eq(request_id, 0)
+	assert_eq(_dialogue._next_stage_segment_index, 1)
+	assert_true(_dialogue._segment_presentation_complete)
+
+
+func test_replay_does_not_dispatch_remaining_stage_until_advance() -> void:
+	var received_ids: Array[String] = []
+	var on_stage: Callable = func(operations: Array, _force_cut: bool):
+		for operation in operations:
+			received_ids.append(String(operation.get("id", "")))
+	SignalBus.stage_operations_requested.connect(on_stage)
+	_dialogue._dialogue_segments = [
+		{"text": "one", "voice": "narration_001", "stage_ops": []},
+		{"text": "two", "voice": "", "stage_ops": [
+			_stage_op("show", "remaining", {"asset": "stage:bg_cafe"}),
+		]},
+	]
+	_dialogue._dialogue_voice_character = ""
+	_dialogue._next_stage_segment_index = 1
+	_dialogue._segment_presentation_complete = false
+	_dialogue._playback_owner_dialogue_gen = _dialogue._dialogue_gen
+	_dialogue._playback_aborted = false
+	_dialogue._playback_queue_active = true
+	_dialogue._playback_is_dialogue = false
+
+	SignalBus.dialogue_voice_replay_requested.emit(["narration_001"], "")
+	assert_false(received_ids.has("remaining"),
+		"audio replay must not redispatch or finalize remaining stage cues")
+	SignalBus.emit_advance_requested()
+	assert_true(received_ids.has("remaining"),
+		"normal advance owns the forced-cut reduction of remaining cues")
+	SignalBus.stage_operations_requested.disconnect(on_stage)
+
+
+func test_stage_dispatch_defers_replay_and_queued_show_wins() -> void:
+	var replayed := [false]
+	var requested := [false]
+	var on_voice: Callable = func(asset: String, _character: String):
+		if asset == "narration_001":
+			replayed[0] = true
+	var on_stage: Callable = func(operations: Array, _force_cut: bool):
+		if requested[0] or operations.is_empty():
+			return
+		if String(operations[0].get("id", "")) != "dispatching":
+			return
+		requested[0] = true
+		SignalBus.dialogue_voice_replay_requested.emit(["narration_001"], "")
+		assert_false(_dialogue._queued_voice_replay_request.is_empty())
+		SignalBus.show_dialogue.emit("", [{
+			"text": "winner", "voice": "", "stage_ops": [],
+		}], "adv")
+	SignalBus.voice_play.connect(on_voice)
+	SignalBus.stage_operations_requested.connect(on_stage)
+	SignalBus.show_dialogue.emit("", [{
+		"text": "old", "voice": "", "stage_ops": [
+			_stage_op("show", "dispatching", {"asset": "stage:bg_cafe"}),
+		],
+	}], "adv")
+
+	assert_true(requested[0])
+	assert_eq(_dialogue.text_label.text, "winner")
+	assert_false(replayed[0], "queued SHOW discards the deferred replay")
+	assert_true(_dialogue._queued_voice_replay_request.is_empty())
+	SignalBus.voice_play.disconnect(on_voice)
+	SignalBus.stage_operations_requested.disconnect(on_stage)
+
+
 func test_segment_stage_batch_is_emitted_before_voice():
-	var events: Array = []
-	var stage_callback = func(_operations, _force_cut): events.append("stage")
-	var voice_callback = func(asset, _character): events.append("voice:%s" % asset)
+	var target_stage_seen := [false]
+	var voice_after_target_stage := [false]
+	var stage_callback = func(_operations, _force_cut):
+		var request_id := SignalBus.current_stage_operation_request_id()
+		if _dialogue._stage_operation_request_owners.has(request_id):
+			target_stage_seen[0] = true
+	var voice_callback = func(asset, _character):
+		if asset == "sakura_013" and target_stage_seen[0]:
+			voice_after_target_stage[0] = true
 	SignalBus.stage_operations_requested.connect(stage_callback)
 	SignalBus.voice_play.connect(voice_callback)
 	var segments := [{
@@ -79,9 +401,10 @@ func test_segment_stage_batch_is_emitted_before_voice():
 		"stage_ops": [_stage_op("show", "hero", {"asset": "stage:hero"})],
 	}]
 
-	_dialogue._start_voice_playback("sakura", segments, false, true)
+	SignalBus.show_dialogue.emit("sakura", segments, "adv")
 
-	assert_eq(events, ["stage", "voice:sakura_013"])
+	assert_true(target_stage_seen[0])
+	assert_true(voice_after_target_stage[0])
 	SignalBus.advance_requested.emit()
 	SignalBus.stage_operations_requested.disconnect(stage_callback)
 	SignalBus.voice_play.disconnect(voice_callback)
@@ -103,7 +426,8 @@ func test_missing_or_muted_voice_cannot_block_later_stage_cues():
 	]
 	StellaRuntime.set_setting("character_voice_enabled", {"sakura": false})
 
-	_dialogue._start_voice_playback("sakura", segments, false, true)
+	_dialogue._start_voice_playback(
+		"sakura", segments, _dialogue._dialogue_gen, false, true)
 
 	assert_eq(received_ids, ["first", "second"])
 	assert_false(_dialogue._playback_queue_active)
@@ -200,7 +524,8 @@ func test_synchronous_completion_cannot_replay_the_current_segment():
 			_dialogue.finalize_current_dialogue_for_advance()
 	)
 
-	_dialogue._start_voice_playback("", segments, false, true)
+	_dialogue._start_voice_playback(
+		"", segments, _dialogue._dialogue_gen, false, true)
 
 	assert_eq(
 		StellaRuntime.presentation_state.stage_layers["newcomer"]["opacity"],
@@ -229,13 +554,116 @@ func test_early_stage_listener_defers_finalize_until_presenter_consumes_batch():
 	}]
 	_dialogue._dialogue_segments = segments.duplicate(true)
 
-	_dialogue._start_voice_playback("", segments, false, true)
+	_dialogue._start_voice_playback(
+		"", segments, _dialogue._dialogue_gen, false, true)
 
 	assert_eq(reentry_count[0], 1)
 	assert_true(_dialogue._segment_presentation_complete)
 	assert_false(presenter._layer_tweens.has("hero"))
 	assert_eq(presenter.get_layer_node("hero").position, Vector2.ZERO)
 	SignalBus.stage_operations_requested.disconnect(early_callback)
+
+
+func test_complete_typewriter_during_stage_dispatch_finishes_late_tween() -> void:
+	var presenter := _game_scene.get_node("StageLayer") as StagePresenter
+	var presenter_callback := Callable(presenter, "_on_stage_operations_requested")
+	SignalBus.stage_operations_requested.disconnect(presenter_callback)
+	var completed := [false]
+	var early_callback = func(operations: Array, force_cut: bool):
+		if force_cut or operations.is_empty() or completed[0]:
+			return
+		if String(operations[0].get("id", "")) != "completion_owned":
+			return
+		completed[0] = true
+		assert_true(_dialogue.complete_typewriter())
+	SignalBus.stage_operations_requested.connect(early_callback)
+	SignalBus.stage_operations_requested.connect(presenter_callback)
+	SignalBus.show_dialogue.emit("", [{
+		"text": "typing",
+		"voice": "",
+		"stage_ops": [_stage_op(
+			"show",
+			"completion_owned",
+			{"asset": "stage:bg_cafe"},
+			"fade",
+			10.0,
+		)],
+	}], "adv")
+
+	assert_true(completed[0])
+	assert_true(_dialogue._segment_presentation_complete)
+	assert_false(presenter._layer_tweens.has("completion_owned"))
+	assert_false(_dialogue._finalization_pending)
+	assert_true(_dialogue._stage_transition_records.is_empty())
+	assert_eq(_dialogue._presentation_dispatch_depth, 0)
+	SignalBus.stage_operations_requested.disconnect(early_callback)
+
+
+func test_raw_advance_finalizes_retiring_stage_before_queued_show() -> void:
+	var presenter := _game_scene.get_node("StageLayer") as StagePresenter
+	var presenter_callback := Callable(presenter, "_on_stage_operations_requested")
+	SignalBus.stage_operations_requested.disconnect(presenter_callback)
+	var advanced := [false]
+	var early_stage_callback = func(operations: Array, force_cut: bool):
+		if force_cut or operations.is_empty() or advanced[0]:
+			return
+		if String(operations[0].get("id", "")) != "retiring_stage":
+			return
+		advanced[0] = true
+		SignalBus.advance_requested.emit()
+	SignalBus.stage_operations_requested.connect(early_stage_callback)
+	SignalBus.stage_operations_requested.connect(presenter_callback)
+	var showed_replacement := [false]
+	var advance_callback = func():
+		if showed_replacement[0]:
+			return
+		showed_replacement[0] = true
+		SignalBus.show_dialogue.emit("", [{
+			"text": "replacement",
+			"voice": "",
+			"stage_ops": [],
+		}], "adv")
+	SignalBus.advance_requested.connect(advance_callback)
+
+	SignalBus.show_dialogue.emit("", [
+		{
+			"text": "retiring",
+			"voice": "",
+			"stage_ops": [_stage_op(
+				"show",
+				"retiring_stage",
+				{"asset": "stage:bg_cafe"},
+				"fade",
+				10.0,
+			)],
+		},
+		{
+			"text": "tail",
+			"voice": "",
+			"stage_ops": [_stage_op(
+				"show",
+				"retiring_tail",
+				{"asset": "stage:bg_cafe"},
+				"fade",
+				10.0,
+			)],
+		},
+	], "adv")
+
+	assert_true(advanced[0])
+	assert_true(showed_replacement[0])
+	assert_eq(_dialogue.text_label.text, "replacement")
+	assert_true(StellaRuntime.presentation_state.stage_layers.has("retiring_tail"))
+	assert_false(presenter._layer_tweens.has("retiring_stage"))
+	assert_false(presenter._layer_tweens.has("retiring_tail"))
+	assert_eq(_dialogue._presentation_dispatch_depth, 0)
+	assert_true(_dialogue._presentation_dispatch_generations.is_empty())
+	assert_true(_dialogue._queued_dialogue_requests.is_empty())
+	assert_false(_dialogue._finalization_pending)
+	assert_false(_dialogue._finalization_in_progress)
+	assert_true(_dialogue._stage_operation_request_owners.is_empty())
+	SignalBus.advance_requested.disconnect(advance_callback)
+	SignalBus.stage_operations_requested.disconnect(early_stage_callback)
 
 
 func test_queued_batch_keeps_dispatch_guard_until_late_presenter_finishes() -> void:
@@ -309,7 +737,7 @@ func test_reset_cancellation_stops_queued_dialogue_stage_and_voice() -> void:
 				"fade",
 				10.0,
 			)],
-		}], false, true)
+		}], _dialogue._dialogue_gen, false, true)
 		SignalBus.reset_stage_visuals()
 	SignalBus.stage_operations_requested.connect(outer_callback)
 
@@ -369,7 +797,8 @@ func test_animated_clear_tracks_and_finishes_a_pending_remove_visual():
 	}]
 	_dialogue._dialogue_segments = segments.duplicate(true)
 
-	_dialogue._start_voice_playback("", segments, false, true)
+	_dialogue._start_voice_playback(
+		"", segments, _dialogue._dialogue_gen, false, true)
 	var current_records := _records_for_presenter(
 		_dialogue._stage_transition_records.values(),
 		presenter,

@@ -30,6 +30,7 @@ func _input(event: InputEvent) -> void:
 			if dialogue:
 				dialogue._ctrl_held = false
 				dialogue._update_toggle_buttons()
+				dialogue.cancel_pending_skip()
 			get_viewport().set_input_as_handled()
 			return
 
@@ -43,25 +44,19 @@ func _input(event: InputEvent) -> void:
 			StellaRuntime.auto_play.stop()
 			if dialogue:
 				dialogue._update_toggle_buttons()
-			if dialogue and dialogue._is_typing:
-				dialogue.complete_current_dialogue()
+			if dialogue and dialogue.complete_typewriter():
 				get_viewport().set_input_as_handled()
 				return
-			if dialogue:
-				dialogue.finalize_current_dialogue_for_advance()
-			SignalBus.advance_requested.emit()
+			SignalBus.emit_advance_requested()
 			get_viewport().set_input_as_handled()
 			return
 
 		# Normal mode
-		if dialogue and dialogue._is_typing:
-			dialogue.complete_current_dialogue()
+		if dialogue and dialogue.complete_typewriter():
 			get_viewport().set_input_as_handled()
 			return
 
-		if dialogue:
-			dialogue.finalize_current_dialogue_for_advance()
-		SignalBus.advance_requested.emit()
+		SignalBus.emit_advance_requested()
 
 	elif event.button_index == MOUSE_BUTTON_RIGHT:
 		if not StellaRuntime.game_state.is_playing():
@@ -79,20 +74,38 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not event is InputEventKey:
 		return
 	var dialogue = _get_dialogue()
-	# Keyboard restore mirrors the hidden-state left click: the restoring key is
-	# consumed and must never also advance the scenario or start Ctrl skipping.
-	if (event.pressed and not event.echo
-		and event.keycode in [KEY_SPACE, KEY_ENTER, KEY_CTRL]
-		and _restore_soft_hidden_dialogue(dialogue)):
-		return
-	# Ctrl tracks press AND release — must not be blocked by pressed/echo guard
+	# Ctrl release is cleanup and remains unconditional. Ctrl press, however,
+	# must not reach the dialogue beneath a system overlay.
 	if event.keycode == KEY_CTRL:
+		if not event.pressed:
+			if dialogue:
+				dialogue._ctrl_held = false
+				if not StellaRuntime.skip_controller.is_active:
+					dialogue.cancel_pending_skip()
+			return
+		if not StellaRuntime.game_state.is_playing():
+			# Do not preserve a stale held flag if an overlay opened while Ctrl
+			# was already down; the underlying typewriter must remain untouched.
+			if dialogue:
+				dialogue._ctrl_held = false
+				if not StellaRuntime.skip_controller.is_active:
+					dialogue.cancel_pending_skip()
+			return
+		if event.echo:
+			return
+		if _restore_soft_hidden_dialogue(dialogue):
+			return
 		if dialogue:
-			dialogue._ctrl_held = event.pressed
+			dialogue._ctrl_held = true
 			# Ctrl pressed while text fully shown: advance immediately to start skipping
-			if event.pressed and not dialogue._is_typing:
-				dialogue.finalize_current_dialogue_for_advance()
-				SignalBus.advance_requested.emit()
+			if not dialogue._is_typing:
+				SignalBus.emit_advance_requested()
+		return
+	# Keyboard restore mirrors the hidden-state left click: the restoring key is
+	# consumed and must never also advance the scenario.
+	if (event.pressed and not event.echo
+		and event.keycode in [KEY_SPACE, KEY_ENTER]
+		and _restore_soft_hidden_dialogue(dialogue)):
 		return
 	if not event.pressed or event.echo:
 		return
@@ -104,12 +117,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not StellaRuntime.game_state.is_playing():
 		return
 	if event.keycode == KEY_SPACE or event.keycode == KEY_ENTER:
-		if dialogue and dialogue._is_typing:
-			dialogue.complete_current_dialogue()
+		if dialogue and dialogue.complete_typewriter():
+			pass
 		else:
-			if dialogue:
-				dialogue.finalize_current_dialogue_for_advance()
-			SignalBus.advance_requested.emit()
+			SignalBus.emit_advance_requested()
 
 
 func _get_dialogue():
@@ -117,7 +128,11 @@ func _get_dialogue():
 
 
 func _restore_soft_hidden_dialogue(dialogue) -> bool:
-	if dialogue == null or not dialogue._ui_hidden:
+	if (
+		dialogue == null
+		or not dialogue._ui_hidden
+		or not StellaRuntime.game_state.is_playing()
+	):
 		return false
 	dialogue._ui_hidden = false
 	dialogue.visible = true

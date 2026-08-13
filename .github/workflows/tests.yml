@@ -223,7 +223,7 @@ jobs:
         timeout-minutes: 5
 
   rendering:
-    name: Stage Rendering Tests
+    name: Rendering Pixel Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -266,7 +266,7 @@ jobs:
             'title = "CI_LOCAL_CONFIG_POISON"' \
             > stella.local.cfg
 
-      - name: Run stage pixel tests with Mesa Lavapipe
+      - name: Run pixel tests with Mesa Lavapipe
         env:
           STELLA_DISABLE_LOCAL_CONFIG: "1"
           STELLA_EXPECT_RENDERING_METHOD: mobile

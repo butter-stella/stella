@@ -8,11 +8,28 @@ var scenes: Array = []  # Array[SceneData]
 ## scenes. Populated by DslParser; empty for scenarios constructed manually
 ## (e.g. in tests that bypass the parser).
 var chapters: Array = []  # Array[ChapterData]
+## Runtime dialogue profiles compiled from @dialogue_profile declarations.
+## Commands refer to these by name through ScenarioContext so the selected
+## control-flow path, rather than parser source order, owns presentation state.
+## Provenance is kept separately because it is diagnostic metadata and must not
+## enter save snapshots.
+var dialogue_profiles: Dictionary = {}
+var dialogue_profile_provenance: Dictionary = {}
 ## Parser diagnostics — used for testable error/warning reporting.
 ## Each entry is {level: "error"|"warning", message: String, line: int}.
 ## StellaRuntime surfaces these messages through push_error / push_warning after
 ## parsing; the parser itself remains silent so tests can assert against this list.
 var diagnostics: Array = []
+
+
+func get_dialogue_profile(profile_name: String) -> Dictionary:
+	var profile: Dictionary = dialogue_profiles.get(profile_name, {})
+	return profile.duplicate(true)
+
+
+func get_dialogue_profile_provenance(profile_name: String) -> Dictionary:
+	var provenance: Dictionary = dialogue_profile_provenance.get(profile_name, {})
+	return provenance.duplicate(true)
 
 
 func get_scene(scene_id: String) -> SceneData:

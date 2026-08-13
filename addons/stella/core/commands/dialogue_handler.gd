@@ -10,6 +10,8 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 	var character = data.get_string("character", "")
 	var mode = data.get_string("mode", "adv")
 	var segments: Array = data.params.get("segments", [])
+	var presentation_from_context := data.get_bool(
+		"presentation_from_context", false)
 
 	# Normalize: a non-combine dialogue has no segments field — wrap it as a
 	# single-segment array so downstream consumers always see the same shape.
@@ -21,23 +23,49 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 		}]
 
 	var presentation_profile: Dictionary = data.params.get("presentation_profile", {})
+	var presentation_provenance: Dictionary = data.params.get(
+		"presentation_profile_provenance", {})
+	var declarative_presentation := data.get_bool(
+		"declarative_presentation", false)
 	var nvl_page_key := ""
+	var nvl_page_entries: Array = []
+	var entry_id := "command:%d:object:%d" % [data.uid, data.get_instance_id()]
 	if context != null:
-		# Defensive synchronization supports programmatically constructed commands,
-		# old compiled data, and snapshots that resume in the middle of a block.
-		context.apply_dialogue_mode(mode)
+		entry_id = context.next_dialogue_entry_id(data.uid)
+		if presentation_from_context:
+			mode = context.current_dialogue_mode
+			presentation_profile = context.resolve_current_dialogue_profile()
+			presentation_provenance = (
+				context.resolve_current_dialogue_profile_provenance()
+			)
+			declarative_presentation = (
+				context.current_dialogue_uses_declarative_presentation
+			)
+		elif mode != "monologue":
+			# Static fallback for programmatic commands and older compiled data.
+			# A monologue is a one-command display style, not a persistent mode.
+			context.apply_static_dialogue_presentation(mode)
 		if mode == "nvl" and context.scenario_data != null:
 			nvl_page_key = "%d:%d" % [
 				context.get_instance_id(),
 				context.nvl_page_epoch,
 			]
-	SignalBus.emit_show_dialogue(
+			nvl_page_entries = context.record_nvl_page_entry(
+				data.uid, character, segments)
+			if not nvl_page_entries.is_empty():
+				nvl_page_entries = context.materialize_nvl_page_entries(
+					nvl_page_entries)
+	SignalBus.emit_dialogue_request(DialogueRequest.new(
 		character,
 		segments,
 		mode,
 		presentation_profile,
-		data.get_bool("declarative_presentation", false),
+		declarative_presentation,
 		nvl_page_key,
-	)
+		presentation_provenance,
+		nvl_page_entries,
+		entry_id,
+		data.uid,
+	))
 	# Race against engine_abort_requested so backlog jump can interrupt us.
 	await CommandHandler.await_with_abort(SignalBus.advance_requested)

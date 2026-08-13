@@ -400,10 +400,13 @@ func test_combine_stage_cues_keep_compiled_dialogue_profile():
 「一」
 @end""")
 	var command: CommandData = data.scenes[0].commands[0]
-	assert_eq(command.get_string("mode"), "nvl")
-	assert_eq(command.get_string("presentation_profile_name"), "novel")
-	assert_true(command.get_bool("declarative_presentation"))
-	assert_eq(command.params["presentation_profile"]["line_spacing"], 8)
+	assert_true(command.get_bool("presentation_from_context"))
+	assert_eq(command.dialogue_mode_events_before, [{
+		"action": "select_mode",
+		"mode": "nvl",
+		"profile_name": "novel",
+	}])
+	assert_eq(data.dialogue_profiles["novel"]["line_spacing"], 8)
 	assert_eq(command.params["segments"][0]["stage_ops"].size(), 1)
 
 

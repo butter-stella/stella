@@ -156,12 +156,12 @@ func test_inline_effects_and_avatar_markers_share_visible_text_positions() -> vo
 	)
 	assert_eq(parsed["clean_text"], "abc")
 	assert_eq(parsed["effects"], [
-		{"type": "wait", "value": 500.0, "pos": 1},
-		{"type": "speed", "value": 30.0, "pos": 2},
+		{"type": "wait", "value": 500.0, "pos": 1, "source_offset": 1},
+		{"type": "speed", "value": 30.0, "pos": 2, "source_offset": 2},
 	])
 	assert_eq(parsed["markers"], [
-		{"expression": "sad", "at_char": 1},
-		{"expression": "surprised", "at_char": 2},
+		{"expression": "sad", "at_char": 1, "source_offset": 1},
+		{"expression": "surprised", "at_char": 2, "source_offset": 2},
 	])
 
 
@@ -220,10 +220,53 @@ func test_nvl_accumulation_counts_literal_bracket_text_exactly() -> void:
 		[{"text": "B", "voice": ""}],
 		"nvl",
 	)
-	# Stella dialogue text is plain RichTextLabel content; only [expr:name] is
-	# removed. Eight literal characters plus the default newline are visible.
-	assert_eq(presenter.text_label.visible_characters, 9)
+	# The default label enables BBCode, so only A plus the NVL newline are part
+	# of the accumulated parsed-character history when the second entry starts.
+	assert_eq(presenter.text_label.visible_characters, 2)
 	presenter.complete_current_dialogue()
+
+
+func test_plain_nvl_growth_uses_incremental_label_and_offset_paths() -> void:
+	var presenter = _get_presenter()
+	presenter._char_interval = 0.0
+	var started := Time.get_ticks_msec()
+	var first_half_elapsed := 0
+	for index in range(80):
+		SignalBus.show_dialogue.emit(
+			"",
+			[{"text": "entry-%03d %s" % [index, "plain text ".repeat(4)],
+				"voice": ""}],
+			"nvl",
+		)
+		await get_tree().process_frame
+		assert_true(await wait_until(
+			func(): return not presenter._is_typing,
+			0.5,
+			"plain NVL entry %d finishes" % index,
+		))
+		if index == 39:
+			first_half_elapsed = Time.get_ticks_msec() - started
+	var elapsed_msec := Time.get_ticks_msec() - started
+	var second_half_elapsed := elapsed_msec - first_half_elapsed
+
+	assert_eq(presenter._nvl_incremental_append_count, 79)
+	assert_eq(presenter._nvl_full_text_rebuild_count, 1,
+		"only the first entry assigns the full RichTextLabel document")
+	assert_eq(presenter._parsed_character_full_parse_count, 0,
+		"plain NVL boundaries never create temporary full-page parsers")
+	var parsed_document: String = presenter.text_label.get_parsed_text()
+	assert_true(parsed_document.contains("entry-000"))
+	assert_true(parsed_document.contains("entry-079"),
+		"incremental append keeps the complete growing document rendered")
+	assert_eq(
+		presenter.text_label.get_total_character_count(),
+		presenter._nvl_render_source.length(),
+		"plain authored offsets remain in the label's parsed-character domain",
+	)
+	assert_lt(elapsed_msec, 3000,
+		"80 Presenter-level NVL appends stay within a bounded CPU budget")
+	assert_lt(second_half_elapsed, first_half_elapsed * 3 + 100,
+		"doubling a growing page must not restore a quadratic full-reparse curve")
 
 
 func test_repeated_characters_do_not_recreate_unchanged_avatar_texture() -> void:
