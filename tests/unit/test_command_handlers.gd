@@ -5,6 +5,7 @@ extends GutTest
 var _registry: CommandRegistry
 var _context: ScenarioContext
 var _bus: Node
+var _read_flags: ReadFlagManager
 
 
 func before_each():
@@ -16,6 +17,7 @@ func before_each():
 	scene.id = "start"
 	scenario.scenes.append(scene)
 	_context = ScenarioContext.new(scenario)
+	_read_flags = ReadFlagManager.new()
 	# Get the autoloaded SignalBus
 	_bus = get_tree().root.get_node("SignalBus")
 
@@ -30,7 +32,7 @@ func _build_cmd(type: String, params: Dictionary = {}) -> CommandData:
 # --- DialogueHandler ---
 
 func test_dialogue_handler_emits_signal():
-	var handler = DialogueHandler.new()
+	var handler = DialogueHandler.new(_read_flags)
 	var received: Array = []
 	_bus.show_dialogue.connect(func(c, segs, m):
 		received.append({"character": c, "segments": segs, "mode": m})
@@ -52,10 +54,56 @@ func test_dialogue_handler_emits_signal():
 	assert_eq(received[0]["segments"].size(), 1)
 	assert_eq(received[0]["segments"][0]["text"], "Hello!")
 	assert_eq(received[0]["segments"][0]["voice"], "voice_001")
+	assert_true(_read_flags.is_read("test", "start", 0),
+		"normal dialogue completion records the current command")
+
+
+func test_dialogue_handler_abort_does_not_mark_read() -> void:
+	var handler := DialogueHandler.new(_read_flags)
+	var cmd := _build_cmd("dialogue", {"text": "Interrupted"})
+
+	_bus.engine_abort_requested.emit.call_deferred()
+	await handler.execute(cmd, _context)
+
+	assert_false(_read_flags.is_read("test", "start", 0),
+		"an aborted dialogue has not advanced and must stay unread")
+
+
+func test_dialogue_handler_marks_the_position_captured_before_await() -> void:
+	var handler := DialogueHandler.new(_read_flags)
+	var cmd := _build_cmd("dialogue", {"text": "Original"})
+	var second_scene := SceneData.new()
+	second_scene.id = "later"
+	_context.scenario_data.scenes.append(second_scene)
+	var move_then_advance := func() -> void:
+		_context.current_scene_index = 1
+		_context.current_command_index = 7
+		_bus.advance_requested.emit()
+	move_then_advance.call_deferred()
+
+	await handler.execute(cmd, _context)
+
+	assert_true(_read_flags.is_read("test", "start", 0),
+		"the accepted command identity is stable across an awaited signal")
+	assert_false(_read_flags.is_read("test", "later", 7))
+
+
+func test_dialogue_handler_ignores_advance_after_context_was_abandoned() -> void:
+	var handler := DialogueHandler.new(_read_flags)
+	var cmd := _build_cmd("dialogue", {"text": "Abandoned"})
+	var abandon_then_advance := func() -> void:
+		_context.is_finished = true
+		_bus.advance_requested.emit()
+	abandon_then_advance.call_deferred()
+
+	await handler.execute(cmd, _context)
+
+	assert_false(_read_flags.is_read("test", "start", 0),
+		"a later scenario's advance cannot complete an abandoned context")
 
 
 func test_dialogue_handler_defaults():
-	var handler = DialogueHandler.new()
+	var handler = DialogueHandler.new(_read_flags)
 	var received: Array = []
 	_bus.show_dialogue.connect(func(_c, segs, m):
 		received.append({
@@ -75,7 +123,7 @@ func test_dialogue_handler_defaults():
 
 
 func test_dialogue_handler_wraps_single_dialogue_stage_operations():
-	var handler = DialogueHandler.new()
+	var handler = DialogueHandler.new(_read_flags)
 	var received: Array = []
 	_bus.show_dialogue.connect(func(_c, segments, _m): received.append(segments))
 	var stage_ops := [{
@@ -99,7 +147,7 @@ func test_dialogue_handler_wraps_single_dialogue_stage_operations():
 
 
 func test_dialogue_handler_passes_segments_through():
-	var handler = DialogueHandler.new()
+	var handler = DialogueHandler.new(_read_flags)
 	var received: Array = []
 	_bus.show_dialogue.connect(func(_c, segs, _m): received.append(segs))
 
@@ -125,7 +173,7 @@ func test_dialogue_handler_passes_segments_through():
 
 
 func test_dialogue_handler_scopes_compiled_presentation_without_changing_signal_shape():
-	var handler = DialogueHandler.new()
+	var handler = DialogueHandler.new(_read_flags)
 	var received: Array = []
 	_bus.show_dialogue.connect(func(_c, _segments, mode):
 			received.append({
@@ -172,7 +220,7 @@ func test_dialogue_handler_scopes_compiled_presentation_without_changing_signal_
 
 
 func test_dialogue_handler_keys_nvl_pages_by_runtime_activation() -> void:
-	var handler := DialogueHandler.new()
+	var handler := DialogueHandler.new(_read_flags)
 	var page_keys: Array[String] = []
 	_bus.show_dialogue.connect(func(_c, _segments, mode):
 		if mode == "nvl":

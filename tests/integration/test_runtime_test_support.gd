@@ -36,6 +36,9 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 	var old_settings_manager: SettingsManager = _runtime.settings_manager
 	var old_presentation_state: PresentationState = _runtime.presentation_state
 	var old_read_flags: ReadFlagManager = _runtime.read_flags
+	var old_dialogue_handler := (
+		_runtime.registry.get_handler("dialogue") as DialogueHandler
+	)
 	var old_unlock_manager: UnlockManager = _runtime.unlock_manager
 	var old_flowchart_visited: FlowchartVisitedState = _runtime.flowchart_visited
 	var audio_presenter: Node = _runtime.get_node("AudioPresenter")
@@ -121,6 +124,17 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 
 	assert_not_same(_runtime.read_flags, old_read_flags)
 	assert_false(_runtime.read_flags.is_read("dirty", "start", 0))
+	assert_false(old_read_flags.is_read("runtime_reset_test", "start", 0),
+		"the aborted handler must not complete into its original read history")
+	assert_false(_runtime.read_flags.is_read("runtime_reset_test", "start", 0),
+		"the aborted handler must not complete into replacement read history")
+	var dialogue_handler := (
+		_runtime.registry.get_handler("dialogue") as DialogueHandler
+	)
+	assert_not_same(dialogue_handler, old_dialogue_handler,
+		"reset must replace the handler instead of rebinding an in-flight instance")
+	assert_same(dialogue_handler._read_flags, _runtime.read_flags,
+		"reset must rebind the handler to the replacement read history")
 	assert_not_same(_runtime.unlock_manager, old_unlock_manager)
 	assert_false(_runtime.unlock_manager.is_unlocked("cg", "dirty_cg"))
 	assert_not_same(_runtime.flowchart_visited, old_flowchart_visited)
@@ -255,15 +269,16 @@ func test_reset_for_test_invalidates_a_real_dialogue_typewriter() -> void:
 	assert_eq(dialogue._current_command_index, 0)
 
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
-	var fresh_read_flags: ReadFlagManager = _runtime.read_flags
 
 	assert_gt(dialogue._dialogue_gen, active_generation)
 	assert_false(dialogue._is_typing,
 		"hide_dialogue must not let the pre-typewriter frame resume stale work")
 	assert_eq(dialogue._current_command_index, -1)
 	await get_tree().create_timer(0.03).timeout
-	assert_false(fresh_read_flags.is_read("runtime_reset_test", "start", 0),
-		"the old typewriter must not mark its line in the replacement manager")
+	assert_false(dialogue._is_typing,
+		"the retired typewriter must not resume after its old delay")
+	assert_false(dialogue._dialogue_ready)
+	assert_eq(dialogue._current_command_index, -1)
 
 
 func test_reset_for_test_cancels_a_delayed_skip_advance() -> void:

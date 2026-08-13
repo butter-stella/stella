@@ -65,4 +65,4 @@ Presenter 同时观察 `AutoPlayController` / `SkipController` 的状态变化�
 
 AVG 标准行为：打字未完成时点击 = 完成打字（不推进），打字完成后点击 = 推进。
 
-实现：`_input` 调用 Presenter 的 `complete_typewriter()`，由 Presenter 同步取消旧的字符/等待协程、应用最终头像状态，并把当前对话剩余的 `@combine` 舞台操作按声明顺序归约后以 cut 投影。成功后输入层再用 `set_input_as_handled()` 消费事件，因此既不会同时推进，也不会留下跨到下一句的 Tween。已完成的对话直接通过 `SignalBus.emit_advance_requested()` 广播原有无参数 `advance_requested` 信号；SignalBus 的 pre-dispatch hook 在同一次原子推进内先收束该行所属的舞台与语音状态，再把信号交给剧情引擎。这个 hook 同样覆盖扩展代码直接调用 `advance_requested.emit()` 的兼容路径，并避免收束回调同步展示的新台词又被输入层随后发出的 `advance_requested` 误清。
+实现：`_input` 调用 Presenter 的 `complete_typewriter()`，由 Presenter 同步取消旧的字符/等待协程、应用最终头像状态，并把当前对话剩余的 `@combine` 舞台操作按声明顺序归约后以 cut 投影。成功后输入层再用 `set_input_as_handled()` 消费事件，因此既不会同时推进，也不会留下跨到下一句的 Tween。仅完成打字不会把该行标为已读；`DialogueHandler` 在剧情命令收到正常推进后写入已读记录，中止则保持未读，因此无界面执行也遵守相同语义。已完成的对话直接通过 `SignalBus.emit_advance_requested()` 广播原有无参数 `advance_requested` 信号；SignalBus 的 pre-dispatch hook 在同一次原子推进内先收束该行所属的舞台与语音状态，再把信号交给剧情引擎。这个 hook 同样覆盖扩展代码直接调用 `advance_requested.emit()` 的兼容路径，并避免收束回调同步展示的新台词又被输入层随后发出的 `advance_requested` 误清。

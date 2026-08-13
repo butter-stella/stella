@@ -718,17 +718,6 @@ func test_toolbar_skip_read_line_allowed():
 	StellaRuntime.skip_controller.is_active = false
 
 
-func test_mark_current_line_read_writes_to_read_flags():
-	var dialogue = get_tree().root.find_child("DialoguePanel", true, false)
-	if dialogue == null:
-		pending("DialoguePanel not available in test scene")
-		return
-	_fresh_position(dialogue, 1004)
-	assert_false(StellaRuntime.read_flags.is_read("test_scn", "test_scene", 1004))
-	dialogue._mark_current_line_read()
-	assert_true(StellaRuntime.read_flags.is_read("test_scn", "test_scene", 1004))
-
-
 func test_skip_only_read_setting_default_true():
 	var val = StellaRuntime.get_setting("skip_only_read")
 	assert_true(val, "skip_only_read should default to true")

@@ -1,12 +1,31 @@
 ## Emits show_dialogue signal and waits for advance_requested.
 class_name DialogueHandler extends CommandHandler
 
+var _read_flags: ReadFlagManager
+
+
+func _init(read_flags: ReadFlagManager) -> void:
+	assert(read_flags != null, "DialogueHandler requires a ReadFlagManager")
+	_read_flags = read_flags
+
 
 func get_command_type() -> String:
 	return "dialogue"
 
 
 func execute(data: CommandData, context: ScenarioContext) -> void:
+	# Snapshot the semantic command identity before awaiting input. The context is
+	# mutable and can be jumped/replaced while a dialogue is blocked.
+	var scenario_id := ""
+	var scene_id := ""
+	var command_index := -1
+	if context != null and context.scenario_data != null:
+		var current_scene := context.current_scene()
+		if current_scene != null:
+			scenario_id = context.scenario_data.id
+			scene_id = current_scene.id
+			command_index = context.current_command_index
+
 	var character = data.get_string("character", "")
 	var mode = data.get_string("mode", "adv")
 	var segments: Array = data.params.get("segments", [])
@@ -68,4 +87,23 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 		data.uid,
 	))
 	# Race against engine_abort_requested so backlog jump can interrupt us.
-	await CommandHandler.await_with_abort(SignalBus.advance_requested)
+	if not await CommandHandler.await_with_abort(SignalBus.advance_requested):
+		return
+	# Loading/replacing a scenario stops its old context without necessarily
+	# emitting the abort signal. A later run's advance must not complete that
+	# abandoned command.
+	if context == null or context.is_finished:
+		return
+
+	# Read state belongs to command completion, not to presentation. Aborted lines
+	# return above and remain unread.
+	if command_index < 0:
+		push_warning(
+			"DialogueHandler: cannot mark a completed dialogue without a valid position"
+		)
+		return
+	_read_flags.mark_read(
+		scenario_id,
+		scene_id,
+		command_index,
+	)

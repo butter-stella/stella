@@ -419,7 +419,7 @@ class_name GameSettings extends Resource
 
 - **AutoPlayController**：文本显示完后按设定延迟自动推进，语音播放中暂缓
 - **SkipController**：快进模式，可配置仅跳已读
-- **ReadFlagManager**：记录已读对话（基于 `scenario_id + scene_id + command_index`），持久化到 global 变量
+- **ReadFlagManager**：记录已读对话（基于 `scenario_id + scene_id + command_index`），持久化到 global 变量。`DialogueHandler` 仅在 `advance_requested` 正常完成后写入，因此无界面运行与 UI 运行语义一致；由 `engine_abort_requested` 中止的命令保持未读
 - **BacklogManager**：记录对话历史，支持语音重播
 
 ### 3.7 游戏状态机

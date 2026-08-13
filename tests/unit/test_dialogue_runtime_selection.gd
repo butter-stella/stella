@@ -3,10 +3,12 @@ extends GutTest
 
 var _bus: Node
 var _connections: Array[Callable] = []
+var _read_flags: ReadFlagManager
 
 
 func before_each() -> void:
 	_bus = get_tree().root.get_node("SignalBus")
+	_read_flags = ReadFlagManager.new()
 
 
 func after_each() -> void:
@@ -35,8 +37,16 @@ func _command(params: Dictionary) -> CommandData:
 	return command
 
 
-func test_dialogue_handler_resolves_runtime_profile_and_provenance_by_name() -> void:
+func _scenario() -> ScenarioData:
 	var scenario := ScenarioData.new()
+	var scene := SceneData.new()
+	scene.id = "start"
+	scenario.scenes.append(scene)
+	return scenario
+
+
+func test_dialogue_handler_resolves_runtime_profile_and_provenance_by_name() -> void:
+	var scenario := _scenario()
 	scenario.dialogue_profiles["novel"] = {"line_spacing": 6}
 	scenario.dialogue_profile_provenance["novel"] = {
 		"kind": "stla",
@@ -54,7 +64,7 @@ func test_dialogue_handler_resolves_runtime_profile_and_provenance_by_name() -> 
 	_capture_dialogue(received)
 
 	_bus.advance_requested.emit.call_deferred()
-	await DialogueHandler.new().execute(_command({
+	await DialogueHandler.new(_read_flags).execute(_command({
 		"text": "runtime",
 		"presentation_from_context": true,
 	}), context)
@@ -69,7 +79,7 @@ func test_dialogue_handler_resolves_runtime_profile_and_provenance_by_name() -> 
 
 
 func test_monologue_is_static_without_inheriting_or_mutating_runtime_profile() -> void:
-	var scenario := ScenarioData.new()
+	var scenario := _scenario()
 	scenario.dialogue_profiles["novel"] = {"line_spacing": 6}
 	var context := ScenarioContext.new(scenario)
 	context.apply_dialogue_mode_events([{
@@ -81,7 +91,7 @@ func test_monologue_is_static_without_inheriting_or_mutating_runtime_profile() -
 	_capture_dialogue(received)
 
 	_bus.advance_requested.emit.call_deferred()
-	await DialogueHandler.new().execute(_command({
+	await DialogueHandler.new(_read_flags).execute(_command({
 		"text": "thought",
 		"mode": "monologue",
 	}), context)
@@ -95,7 +105,7 @@ func test_monologue_is_static_without_inheriting_or_mutating_runtime_profile() -
 	assert_eq(context.current_dialogue_profile_name, "novel")
 
 	_bus.advance_requested.emit.call_deferred()
-	await DialogueHandler.new().execute(_command({
+	await DialogueHandler.new(_read_flags).execute(_command({
 		"text": "after",
 		"presentation_from_context": true,
 	}), context)
@@ -105,7 +115,7 @@ func test_monologue_is_static_without_inheriting_or_mutating_runtime_profile() -
 
 
 func test_static_command_clears_stale_runtime_profile_before_context_resumes() -> void:
-	var scenario := ScenarioData.new()
+	var scenario := _scenario()
 	scenario.dialogue_profiles["novel"] = {"line_spacing": 6}
 	var context := ScenarioContext.new(scenario)
 	context.apply_dialogue_mode_events([{
@@ -117,7 +127,7 @@ func test_static_command_clears_stale_runtime_profile_before_context_resumes() -
 	_capture_dialogue(received)
 
 	_bus.advance_requested.emit.call_deferred()
-	await DialogueHandler.new().execute(_command({
+	await DialogueHandler.new(_read_flags).execute(_command({
 		"text": "static",
 		"mode": "overlay",
 		"presentation_profile": {"line_spacing": 9},
@@ -129,7 +139,7 @@ func test_static_command_clears_stale_runtime_profile_before_context_resumes() -
 	assert_false(context.current_dialogue_uses_declarative_presentation)
 
 	_bus.advance_requested.emit.call_deferred()
-	await DialogueHandler.new().execute(_command({
+	await DialogueHandler.new(_read_flags).execute(_command({
 		"text": "runtime after static",
 		"presentation_from_context": true,
 	}), context)
@@ -140,7 +150,7 @@ func test_static_command_clears_stale_runtime_profile_before_context_resumes() -
 
 
 func test_legacy_string_mode_sidecar_clears_named_runtime_selection() -> void:
-	var scenario := ScenarioData.new()
+	var scenario := _scenario()
 	scenario.dialogue_profiles["message"] = {"line_spacing": 4}
 	var context := ScenarioContext.new(scenario)
 	context.apply_dialogue_mode_events([{
@@ -157,7 +167,7 @@ func test_legacy_string_mode_sidecar_clears_named_runtime_selection() -> void:
 
 
 func test_mode_only_dictionary_sidecar_clears_named_runtime_selection() -> void:
-	var scenario := ScenarioData.new()
+	var scenario := _scenario()
 	scenario.dialogue_profiles["message"] = {"line_spacing": 4}
 	var context := ScenarioContext.new(scenario)
 	context.apply_dialogue_mode_events([{

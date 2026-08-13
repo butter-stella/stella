@@ -42,9 +42,9 @@ var _ui_hidden: bool = false
 var _ctrl_held: bool = false  # Ctrl key skip
 # Cached position of the currently displayed line — filled from engine.context
 # on _on_show_dialogue, consulted by _should_skip_current() for read-aware
-# toolbar skip, written by _mark_current_line_read() when the user has seen
-# the line. Read flags intentionally are NOT reverted by rollback (backlog /
-# flowchart / choice rewind) — once seen, always seen. See stella_runtime.gd:436.
+# toolbar skip. Read flags are written by DialogueHandler after normal command
+# completion and intentionally are NOT reverted by rollback (backlog / flowchart
+# / choice rewind) — once advanced, always read. See stella_runtime.gd:436.
 var _current_scenario_id: String = ""
 var _current_scene_id: String = ""
 var _current_command_index: int = -1
@@ -686,10 +686,9 @@ func _on_skip_active_changed(active: bool) -> void:
 		# Preserve the public controller state while an overlay owns input. The
 		# PLAYING transition below re-applies it to the still-ready dialogue.
 		return
-	# The unread gate must run before any completion path can mark the line read.
-	# Otherwise a toolbar press during typing finalizes first, then observes its
-	# own newly-written read flag and incorrectly schedules an advance.
-	if (_is_typing or _dialogue_ready) and not _should_skip_current():
+	# Apply the unread gate before finalizing the typewriter. A toolbar press on
+	# an unread line must stop skip without scheduling a command advance.
+	if _is_typing and not _should_skip_current():
 		_apply_unread_skip_gate()
 		return
 	# Skip just activated. If the typewriter is mid-flight, snap the text to
@@ -931,13 +930,6 @@ func _is_current_line_read() -> bool:
 		_current_scenario_id, _current_scene_id, _current_command_index)
 
 
-func _mark_current_line_read() -> void:
-	if _current_command_index < 0:
-		return
-	StellaRuntime.read_flags.mark_read(
-		_current_scenario_id, _current_scene_id, _current_command_index)
-
-
 ## Unified dialogue handler.
 ## Both normal single-line dialogue and @combine multi-segment dialogue flow
 ## through here. A normal dialogue is just segments.size() == 1.
@@ -1102,8 +1094,7 @@ func _show_dialogue_now(
 		visible = true
 
 	# Cache (scenario_id, scene_id, command_index) of the line we are about to
-	# display — consulted by _should_skip_current() / _apply_unread_skip_gate()
-	# and written by _mark_current_line_read() once the user has seen the line.
+	# display — consulted by _should_skip_current() / _apply_unread_skip_gate().
 	_capture_current_position()
 
 	# Snapshot dialogue state. _start_voice_playback later writes _playback_*
@@ -1416,7 +1407,7 @@ func _show_dialogue_now(
 
 	# Public playback facades can activate skip during the final character's
 	# timer, after the loop's last leading check. Observe that transition before
-	# natural completion marks this unread line as read.
+	# natural completion makes this unread line ready.
 	if _is_typing and _should_skip_current():
 		_invalidate_advance_indicator()
 		if gen != _dialogue_gen:
@@ -1441,7 +1432,6 @@ func _show_dialogue_now(
 	text_label.visible_characters = -1
 	_is_typing = false
 	_apply_final_inline_avatar_expression(character, segments)
-	_mark_current_line_read()
 	_mark_dialogue_ready_for_indicator(gen)
 
 	# Auto-play: wait for the voice queue to drain all segments, then advance.
@@ -2266,7 +2256,6 @@ func _finalize_dialogue(character: String, segments: Array, gen: int) -> void:
 	var voice_session_validator := _voice_session_event_owner_is_current.bind(
 		gen, _playback_queue_gen)
 	_playback_aborted = true
-	_mark_current_line_read()
 	# Keep the retiring line atomic until every finalization-owned public signal
 	# has returned. In particular, a queued SHOW must not be drained by the stage
 	# fold before the old logical voice session and avatar state are retired.
@@ -2941,7 +2930,7 @@ func _on_hide_dialogue():
 func _apply_hide_dialogue_boundary(revision: int) -> void:
 	# Invalidate every async branch of the current dialogue before clearing the
 	# visible state. Without this, an old typewriter can finish after a runtime
-	# reset and mark its line in the replacement ReadFlagManager.
+	# reset and mutate the replacement dialogue presentation.
 	var retiring_gen := _dialogue_gen
 	var retiring_queue_gen := _playback_queue_gen
 	if not _retire_dialogue_lifecycle(false):

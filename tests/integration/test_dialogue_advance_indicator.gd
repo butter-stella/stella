@@ -436,9 +436,9 @@ func test_input_immediately_after_show_completes_without_advancing() -> void:
 		"a zero-frame completion click must not skip the accepted line")
 	assert_false(_presenter._is_typing)
 	assert_eq(_text_label(_presenter).visible_characters, -1)
-	assert_true(StellaRuntime.read_flags.is_read(
+	assert_false(StellaRuntime.read_flags.is_read(
 		"issue_154_input", "start", 15401),
-		"zero-frame completion still marks the accepted line as read")
+		"typewriter completion alone must not mark an unadvanced command as read")
 	assert_eq(voice_finished_count[0], 1,
 		"zero-frame completion still closes dialogue voice presentation")
 
@@ -664,6 +664,12 @@ func test_activating_toolbar_skip_from_ready_hides_synchronously() -> void:
 		_presenter, "Ready before toolbar skip", "adv", _texture_profile())
 	if indicator == null:
 		return
+	_presenter._current_scenario_id = "ready_skip"
+	_presenter._current_scene_id = "start"
+	_presenter._current_command_index = 15403
+	assert_false(StellaRuntime.read_flags.is_read(
+		"ready_skip", "start", 15403),
+		"the explicit ready-line action must be tested while the line is unread")
 	var advance_count := [0]
 	var on_advance := func(): advance_count[0] += 1
 	SignalBus.advance_requested.connect(on_advance)
@@ -802,7 +808,7 @@ func test_toolbar_skip_checks_unread_gate_before_finalizing_typewriter() -> void
 	assert_ne(_text_label(_presenter).visible_characters, -1)
 	assert_false(StellaRuntime.read_flags.is_read(
 		"issue_154_skip_gate", "start", 15402),
-		"the unread gate must run before finalize marks the line read")
+		"a blocked unread skip must not complete the command")
 	await get_tree().create_timer(0.05).timeout
 	assert_eq(advance_count[0], 0,
 		"a blocked unread toolbar skip must not leave an advance timer")
@@ -1446,7 +1452,7 @@ func test_stla_scene_diagnostics_distinguish_profile_path_and_declaration_line()
 		var expected_line := index + 1
 		context.apply_dialogue_mode_events(command.dialogue_mode_events_before)
 		SignalBus.advance_requested.emit.call_deferred()
-		await DialogueHandler.new().execute(command, context)
+		await DialogueHandler.new(ReadFlagManager.new()).execute(command, context)
 		assert_push_warning((
 			"DialoguePresenter advance indicator [STLA profile '%s'; "
 			+ "STLA source '%s'; advance_indicator_scene declared at line %d; "

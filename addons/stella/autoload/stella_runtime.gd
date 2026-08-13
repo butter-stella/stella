@@ -140,7 +140,7 @@ func _apply_config() -> void:
 
 
 func _register_handlers():
-	registry.register(DialogueHandler.new())
+	_register_dialogue_handler()
 	registry.register(BgHandler.new())
 	registry.register(StageLayerHandler.new())
 	registry.register(JumpHandler.new())
@@ -157,6 +157,11 @@ func _register_handlers():
 	var parallel_handler = ParallelHandler.new()
 	parallel_handler.set_registry(registry)
 	registry.register(parallel_handler)
+
+
+## Register a fresh handler when the composition root replaces read history.
+func _register_dialogue_handler() -> void:
+	registry.register(DialogueHandler.new(read_flags))
 
 
 ## Resolve the game scene path — config override or built-in default.
