@@ -49,6 +49,21 @@ class ModeTrackingHandler extends CommandHandler:
 			context.is_finished = true
 
 
+class PresentationTrackingHandler extends CommandHandler:
+	var states: Array = []
+
+	func get_command_type() -> String:
+		return "dialogue"
+
+	func execute(data: CommandData, context: ScenarioContext) -> void:
+		states.append({
+			"text": data.get_string("text"),
+			"mode": context.current_dialogue_mode,
+			"profile_name": context.get("current_dialogue_profile_name"),
+			"declarative": context.get("current_dialogue_uses_declarative_presentation"),
+		})
+
+
 func _build_cmd(type: String, params: Dictionary = {}) -> CommandData:
 	var cmd = CommandData.new()
 	cmd.type = type
@@ -188,6 +203,123 @@ func test_engine_applies_mode_only_else_edge_before_the_continuation():
 
 	assert_eq(handler.states, [{"mode": "nvl", "epoch": 2}],
 		"the selected false edge must run before its continuation command")
+
+
+func test_branch_profile_selection_follows_only_the_executed_path_through_join():
+	var scenario := DslParser.parse(DslLexer.tokenize("""@dialogue_profile message line_spacing=1
+@dialogue_profile novel line_spacing=2
+@dialogue_profile aside line_spacing=3
+@chapter test
+@scene start
+@adv profile=message
+@if route == 1
+@nvl profile=novel
+「then」
+@elif route == 2
+@overlay profile=aside
+「elif」
+@else
+「else」
+@end
+「join」"""), "branch_profiles")
+	assert_eq(scenario.diagnostics, [])
+
+	for case in [
+		{"route": 1, "mode": "nvl", "profile_name": "novel", "branch": "then"},
+		{"route": 2, "mode": "overlay", "profile_name": "aside", "branch": "elif"},
+		{"route": 3, "mode": "adv", "profile_name": "message", "branch": "else"},
+	]:
+		var registry := CommandRegistry.new()
+		var engine := ScenarioEngine.new()
+		var handler := PresentationTrackingHandler.new()
+		registry.register(handler)
+		registry.register(ConditionHandler.new())
+		registry.register(JumpTestHandler.new())
+		engine.registry = registry
+		engine.load_scenario(scenario)
+		engine.context.variable_store.set_var("route", case["route"])
+
+		await engine.run()
+
+		assert_eq(handler.states, [
+			{
+				"text": case["branch"],
+				"mode": case["mode"],
+				"profile_name": case["profile_name"],
+				"declarative": true,
+			},
+			{
+				"text": "join",
+				"mode": case["mode"],
+				"profile_name": case["profile_name"],
+				"declarative": true,
+			},
+		], "unexecuted branches must not contaminate dialogue state")
+
+
+func test_call_restores_adv_profile_after_callee_exit_sidecar():
+	var scenario := DslParser.parse(DslLexer.tokenize("""@dialogue_profile message line_spacing=1
+@dialogue_profile novel line_spacing=2
+@chapter test
+@scene main
+@adv profile=message
+「before」
+@call callee
+「after」
+@jump finish
+@scene callee
+@nvl profile=novel
+「inside」
+@nvl off
+@scene finish
+「finish」"""), "call_profiles")
+	assert_eq(scenario.diagnostics, [])
+	var registry := CommandRegistry.new()
+	var engine := ScenarioEngine.new()
+	var handler := PresentationTrackingHandler.new()
+	registry.register(handler)
+	registry.register(CallHandler.new())
+	registry.register(JumpTestHandler.new())
+	engine.registry = registry
+	engine.load_scenario(scenario)
+
+	await engine.run()
+
+	assert_eq(handler.states, [
+		{"text": "before", "mode": "adv", "profile_name": "message", "declarative": true},
+		{"text": "inside", "mode": "nvl", "profile_name": "novel", "declarative": true},
+		{"text": "after", "mode": "adv", "profile_name": "message", "declarative": true},
+		{"text": "finish", "mode": "adv", "profile_name": "message", "declarative": true},
+	])
+
+
+func test_jump_target_replays_its_profile_selection_sidecar():
+	var scenario := DslParser.parse(DslLexer.tokenize("""@dialogue_profile message line_spacing=1
+@dialogue_profile aside line_spacing=3
+@chapter test
+@scene start
+@adv profile=message
+@jump target
+@scene target
+@overlay profile=aside
+「target」"""), "jump_profiles")
+	assert_eq(scenario.diagnostics, [])
+	var registry := CommandRegistry.new()
+	var engine := ScenarioEngine.new()
+	var handler := PresentationTrackingHandler.new()
+	registry.register(handler)
+	registry.register(JumpTestHandler.new())
+	engine.registry = registry
+	engine.load_scenario(scenario)
+
+	await engine.run()
+
+	assert_eq(handler.states, [{
+		"text": "target",
+		"mode": "overlay",
+		"profile_name": "aside",
+		"declarative": true,
+	}])
 
 
 func test_engine_repeated_nvl_event_keeps_the_current_runtime_page():

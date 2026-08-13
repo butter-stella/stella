@@ -4,7 +4,14 @@
 ## function, with no risk of a shadow copy drifting from the user setting.
 class_name SkipController extends RefCounted
 
-var is_active: bool = false
+signal active_changed(active: bool)
+
+var is_active: bool = false:
+	set(value):
+		if is_active == value:
+			return
+		is_active = value
+		active_changed.emit(is_active)
 
 
 func toggle() -> void:

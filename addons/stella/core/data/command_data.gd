@@ -16,17 +16,17 @@ var uid: int = -1
 ## fixtures or synthesized condition commands from @if expansion).
 ## Used by ScenarioGraphBuilder for click-to-source on graph edges (#97).
 var declared_line: int = 0
-## Runtime-only dialogue mode transitions that execute immediately before or
-## after this addressable command. DslParser lowers source mode directives into
-## these sidecars so @nvl boundaries retain execution order without inserting
-## extra scene commands that would shift save/read-flag command indices.
-var dialogue_mode_events_before: Array[String] = []
-var dialogue_mode_events_after: Array[String] = []
+## Runtime-only dialogue presentation transitions that execute immediately
+## before or after this addressable command. Each parser event carries mode plus
+## Profile selection/ADV-restore semantics. The historical property name stays
+## compact while these sidecars avoid shifting save/read-flag command indices.
+var dialogue_mode_events_before: Array = []
+var dialogue_mode_events_after: Array = []
 ## Condition-only sidecars applied on the selected edge before its jump. These
-## keep mode-only branches non-addressable instead of synthesizing a scene just
-## to carry a runtime transition.
-var dialogue_mode_events_on_true_branch: Array[String] = []
-var dialogue_mode_events_on_false_branch: Array[String] = []
+## keep presentation-only branches non-addressable instead of synthesizing a
+## scene just to carry a runtime transition.
+var dialogue_mode_events_on_true_branch: Array = []
+var dialogue_mode_events_on_false_branch: Array = []
 
 
 func get_string(key: String, default: String = "") -> String:

@@ -127,18 +127,72 @@ func test_ctrl_press_sets_held():
 	scene.queue_free()
 
 
-func test_ctrl_release_clears_held():
+func test_ctrl_press_ready_dialogue_is_blocked_outside_playing():
+	var scene = _make_scene_with_dialogue()
+	var handler = scene.get_node("InputHandler")
+	var dialogue = scene.get_node("%DialoguePanel")
+	dialogue._is_typing = false
+	dialogue._ctrl_held = false
+	StellaRuntime.game_state.current_state = GameStateMachine.State.SAVE_LOAD
+	var received := []
+	var cb = func(): received.append(true)
+	SignalBus.advance_requested.connect(cb)
+
+	var press = InputEventKey.new()
+	press.keycode = KEY_CTRL
+	press.pressed = true
+	handler._unhandled_input(press)
+	assert_false(dialogue._ctrl_held,
+		"Ctrl press in a system overlay must not enable dialogue skipping")
+	assert_eq(received.size(), 0,
+		"Ctrl press in a system overlay must not advance a ready dialogue")
+
+	SignalBus.advance_requested.disconnect(cb)
+	scene.queue_free()
+
+
+func test_ctrl_press_typing_dialogue_is_blocked_outside_playing():
+	var scene = _make_scene_with_dialogue()
+	var handler = scene.get_node("InputHandler")
+	var dialogue = scene.get_node("%DialoguePanel")
+	dialogue._is_typing = true
+	# Model an overlay opening while Ctrl was already down. A repeated press in
+	# the overlay must clear, not preserve, the underlying fast-forward state.
+	dialogue._ctrl_held = true
+	dialogue.text_label.visible_characters = 2
+	StellaRuntime.game_state.current_state = GameStateMachine.State.SETTINGS
+	var received := []
+	var cb = func(): received.append(true)
+	SignalBus.advance_requested.connect(cb)
+
+	var press = InputEventKey.new()
+	press.keycode = KEY_CTRL
+	press.pressed = true
+	press.echo = true
+	handler._unhandled_input(press)
+	assert_false(dialogue._ctrl_held,
+		"Ctrl press in a system overlay must not fast-forward a typewriter")
+	assert_true(dialogue._is_typing)
+	assert_eq(dialogue.text_label.visible_characters, 2)
+	assert_eq(received.size(), 0)
+
+	SignalBus.advance_requested.disconnect(cb)
+	scene.queue_free()
+
+
+func test_ctrl_release_clears_held_outside_playing():
 	var scene = _make_scene_with_dialogue()
 	var handler = scene.get_node("InputHandler")
 	var dialogue = scene.get_node("%DialoguePanel")
 	dialogue._ctrl_held = true
-	StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	StellaRuntime.game_state.current_state = GameStateMachine.State.BACKLOG
 
 	var release = InputEventKey.new()
 	release.keycode = KEY_CTRL
 	release.pressed = false
 	handler._unhandled_input(release)
-	assert_false(dialogue._ctrl_held, "Ctrl release should clear _ctrl_held")
+	assert_false(dialogue._ctrl_held,
+		"Ctrl release must clear _ctrl_held even outside PLAYING")
 
 	scene.queue_free()
 

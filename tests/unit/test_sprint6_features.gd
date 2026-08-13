@@ -51,9 +51,12 @@ sakura「普通对话。」"""
 	var tokens = DslLexer.tokenize(source)
 	var data = DslParser.parse(tokens, "test")
 
-	assert_eq(data.scenes[0].commands[0].get_string("mode"), "nvl")
-	assert_eq(data.scenes[0].commands[1].get_string("mode"), "nvl")
-	assert_eq(data.scenes[0].commands[2].get_string("mode"), "adv")
+	var context := ScenarioContext.new(data)
+	var modes: Array[String] = []
+	for command in data.scenes[0].commands:
+		context.apply_dialogue_mode_events(command.dialogue_mode_events_before)
+		modes.append(context.current_dialogue_mode)
+	assert_eq(modes, ["nvl", "nvl", "adv"])
 
 
 func test_overlay_mode_sets_dialogue_mode():
@@ -64,7 +67,10 @@ func test_overlay_mode_sets_dialogue_mode():
 	var tokens = DslLexer.tokenize(source)
 	var data = DslParser.parse(tokens, "test")
 
-	assert_eq(data.scenes[0].commands[0].get_string("mode"), "overlay")
+	var context := ScenarioContext.new(data)
+	context.apply_dialogue_mode_events(
+		data.scenes[0].commands[0].dialogue_mode_events_before)
+	assert_eq(context.current_dialogue_mode, "overlay")
 
 
 # --- DSL Parser for @effect ---

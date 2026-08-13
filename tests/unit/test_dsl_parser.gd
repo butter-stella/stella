@@ -1,10 +1,21 @@
 extends GutTest
 ## Tests for DslParser — converting tokens into ScenarioData.
 
+const ADVANCE_INDICATOR_TEXTURE_PATH := \
+	"res://examples/demo/art/backgrounds/bg_black.png"
+const ADVANCE_INDICATOR_SCENE_PATH := "res://addons/stella/scenes/game.tscn"
+
 
 func _parse(source: String, id: String = "test") -> ScenarioData:
 	var tokens = DslLexer.tokenize(source)
 	return DslParser.parse(tokens, id)
+
+
+func _event_modes(events: Array) -> Array[String]:
+	var modes: Array[String] = []
+	for event in events:
+		modes.append(str(event.get("mode", "adv")) if event is Dictionary else str(event))
+	return modes
 
 
 func test_empty_tokens():
@@ -36,7 +47,9 @@ sakura「你好。」""")
 	assert_eq(cmd.type, "dialogue")
 	assert_eq(cmd.get_string("character"), "sakura")
 	assert_eq(cmd.get_string("text"), "你好。")
-	assert_eq(cmd.get_string("mode"), "adv")
+	assert_true(cmd.get_bool("presentation_from_context"))
+	assert_false(cmd.has_param("mode"),
+		"parser-produced dialogue presentation comes from the runtime path")
 
 
 func test_dialogue_with_voice():
@@ -81,18 +94,18 @@ func test_dialogue_profile_parses_nvl_entry_affixes_as_strings():
 「lines」""")
 	assert_eq(data.diagnostics, [])
 
-	var compact_profile: Dictionary = data.scenes[0].commands[0].params["presentation_profile"]
+	var compact_profile := data.get_dialogue_profile("compact")
 	assert_eq(compact_profile.get("entry_prefix"), "・")
 	assert_true(compact_profile.has("entry_separator"),
 		"an explicitly empty separator must remain distinguishable from an omitted property")
 	assert_eq(compact_profile.get("entry_separator"), "")
 
-	var spaced_profile: Dictionary = data.scenes[0].commands[1].params["presentation_profile"]
+	var spaced_profile := data.get_dialogue_profile("spaced")
 	assert_false(spaced_profile.has("entry_prefix"),
 		"entry prefix and separator are independent profile properties")
 	assert_eq(spaced_profile.get("entry_separator"), " ")
 
-	var lines_profile: Dictionary = data.scenes[0].commands[2].params["presentation_profile"]
+	var lines_profile := data.get_dialogue_profile("lines")
 	assert_true(lines_profile.has("entry_prefix"))
 	assert_eq(lines_profile.get("entry_prefix"), "")
 	assert_eq(lines_profile.get("entry_separator"), "\n")
@@ -104,10 +117,10 @@ func test_dialogue_profile_rejects_invalid_nvl_entry_escape_with_source_line():
 @scene start
 @nvl profile=broken
 「line」""")
-	assert_eq(data.diagnostics.size(), 1)
+	assert_eq(data.diagnostics.size(), 2)
 	assert_eq(data.diagnostics[0]["line"], 1)
 	assert_string_contains(str(data.diagnostics[0]["message"]).to_lower(), "escape")
-	var profile: Dictionary = data.scenes[0].commands[0].params["presentation_profile"]
+	var profile := data.get_dialogue_profile("broken")
 	assert_false(profile.has("entry_prefix"),
 		"an invalid string must not be compiled into presentation data")
 
@@ -118,10 +131,10 @@ func test_dialogue_profile_rejects_unterminated_nvl_entry_string_with_source_lin
 @scene start
 @nvl profile=broken
 「line」""")
-	assert_eq(data.diagnostics.size(), 1)
+	assert_eq(data.diagnostics.size(), 2)
 	assert_eq(data.diagnostics[0]["line"], 1)
 	assert_string_contains(str(data.diagnostics[0]["message"]).to_lower(), "unterminated")
-	var profile: Dictionary = data.scenes[0].commands[0].params["presentation_profile"]
+	var profile := data.get_dialogue_profile("broken")
 	assert_false(profile.has("entry_separator"),
 		"an unterminated string must not be compiled into presentation data")
 
@@ -132,12 +145,188 @@ func test_dialogue_profile_rejects_bbcode_in_nvl_entry_format():
 @scene start
 @nvl profile=broken
 「line」""")
-	assert_eq(data.diagnostics.size(), 1)
+	assert_eq(data.diagnostics.size(), 2)
 	assert_eq(data.diagnostics[0]["line"], 1)
 	assert_string_contains(str(data.diagnostics[0]["message"]), "BBCode")
-	var profile: Dictionary = data.scenes[0].commands[0].params["presentation_profile"]
+	var profile := data.get_dialogue_profile("broken")
 	assert_false(profile.has("entry_prefix"),
 		"markup would make raw typewriter offsets diverge from visible characters")
+
+
+func test_dialogue_profile_parses_advance_indicator_fields():
+	var data = _parse(("""@dialogue_profile wait \
+advance_indicator_texture=\"%s\" advance_indicator_offset=4.5,-2 \
+advance_indicator_animation=pulse
+@chapter test
+@scene start
+@adv profile=wait
+「line」""") % ADVANCE_INDICATOR_TEXTURE_PATH)
+	assert_eq(data.diagnostics, [])
+	var profile := data.get_dialogue_profile("wait")
+	assert_eq(profile.get("advance_indicator_texture"), ADVANCE_INDICATOR_TEXTURE_PATH)
+	assert_eq(profile.get("advance_indicator_offset"), Vector2(4.5, -2.0))
+	assert_eq(profile.get("advance_indicator_animation"), "pulse")
+	assert_false(profile.has("advance_indicator_scene"))
+
+	var runtime_profile := DialogueModeProfile.from_dictionary(profile)
+	assert_true(runtime_profile.has_advance_indicator())
+	assert_not_null(runtime_profile.resolve_advance_indicator_texture())
+	assert_null(runtime_profile.resolve_advance_indicator_scene())
+	assert_true(runtime_profile.advance_indicator_validation_errors().is_empty())
+
+
+func test_dialogue_profile_keeps_indicator_provenance_out_of_profile_data():
+	var source := ("""@dialogue_profile named advance_indicator_scene=\"%s\"
+@chapter test
+@scene start
+@adv profile=named
+「line」""") % ADVANCE_INDICATOR_SCENE_PATH
+	var data := DslParser.parse(
+		DslLexer.tokenize(source),
+		"indicator_provenance",
+		"res://story/indicator_provenance.stla",
+	)
+	assert_eq(data.diagnostics, [])
+	var profile := data.get_dialogue_profile("named")
+	var provenance := data.get_dialogue_profile_provenance("named")
+	assert_false(profile.has(DialogueProfileParser.RUNTIME_PROVENANCE_KEY),
+		"authoring metadata must remain a runtime sidecar")
+	assert_eq(provenance.get("kind"), "stla")
+	assert_eq(provenance.get("profile_name"), "named")
+	assert_eq(provenance.get("source_path"),
+		"res://story/indicator_provenance.stla")
+	assert_eq(provenance.get("field_lines", {}).get(
+		"advance_indicator_scene"), 1)
+
+	var runtime_profile := DialogueModeProfile.from_dictionary(profile, provenance)
+	var diagnostic := runtime_profile.advance_indicator_diagnostic_provenance()
+	assert_eq(diagnostic.get("profile_name"), "named")
+	assert_eq(diagnostic.get("declaration_line"), 1)
+	assert_eq(diagnostic.get("indicator_source"), ADVANCE_INDICATOR_SCENE_PATH)
+
+
+func test_dialogue_profile_unknown_source_is_not_mislabeled_as_scenario_id():
+	var source := ("""@dialogue_profile named advance_indicator_scene=\"%s\"
+@chapter test
+@scene start
+@adv profile=named
+「line」""") % ADVANCE_INDICATOR_SCENE_PATH
+	var data := DslParser.parse(DslLexer.tokenize(source), "scenario_id_only")
+	var runtime_profile := DialogueModeProfile.from_dictionary(
+		data.get_dialogue_profile("named"),
+		data.get_dialogue_profile_provenance("named"),
+	)
+	var diagnostic := runtime_profile.advance_indicator_diagnostic_provenance()
+	assert_eq(diagnostic.get("profile_source"), "<unknown STLA>")
+
+
+func test_dialogue_profile_scene_source_resolves_from_stla_path():
+	var data = _parse(("""@dialogue_profile wait \
+advance_indicator_scene=\"%s\" advance_indicator_animation=bob
+@chapter test
+@scene start
+@overlay profile=wait
+「line」""") % ADVANCE_INDICATOR_SCENE_PATH)
+	assert_eq(data.diagnostics, [])
+	var profile := data.get_dialogue_profile("wait")
+	assert_eq(profile.get("advance_indicator_scene"), ADVANCE_INDICATOR_SCENE_PATH)
+	assert_eq(profile.get("advance_indicator_animation"), "bob")
+
+	var runtime_profile := DialogueModeProfile.from_dictionary(profile)
+	assert_true(runtime_profile.has_advance_indicator())
+	assert_not_null(runtime_profile.resolve_advance_indicator_scene())
+	assert_null(runtime_profile.resolve_advance_indicator_texture())
+	assert_true(runtime_profile.advance_indicator_validation_errors().is_empty())
+
+
+func test_dialogue_profile_rejects_mutually_exclusive_indicator_sources_atomically():
+	var data = _parse(("""@dialogue_profile texture_first \
+advance_indicator_texture=\"%s\" advance_indicator_scene=\"%s\"
+@dialogue_profile scene_first advance_indicator_scene=\"%s\"
+@dialogue_profile scene_first advance_indicator_texture=\"%s\"
+@chapter test
+@scene start
+@adv profile=texture_first
+「first」
+@adv profile=scene_first
+「second」""") % [
+		ADVANCE_INDICATOR_TEXTURE_PATH,
+		ADVANCE_INDICATOR_SCENE_PATH,
+		ADVANCE_INDICATOR_SCENE_PATH,
+		ADVANCE_INDICATOR_TEXTURE_PATH,
+	])
+	assert_true(_has_diagnostic(data, "error", "mutually exclusive"))
+	for profile_name in ["texture_first", "scene_first"]:
+		assert_true(data.get_dialogue_profile(profile_name).is_empty(),
+			"a source conflict rejects the whole Profile independent of order")
+
+
+func test_dialogue_profile_bad_indicator_source_rejects_profile_atomically():
+	var data = _parse(("""@dialogue_profile missing horizontal_alignment=center \
+advance_indicator_texture=\"res://missing/indicator.png\"
+@dialogue_profile wrong_type line_spacing=7 \
+advance_indicator_scene=\"%s\"
+@chapter test
+@scene start
+@adv profile=missing
+「missing」
+@adv profile=wrong_type
+「wrong type」""") % ADVANCE_INDICATOR_TEXTURE_PATH)
+	assert_true(_has_diagnostic(data, "error", "does not exist"))
+	assert_true(_has_diagnostic(data, "error", "PackedScene"))
+	assert_true(data.get_dialogue_profile("missing").is_empty())
+	assert_true(data.get_dialogue_profile("wrong_type").is_empty())
+	assert_true(_has_diagnostic(data, "error", "unknown dialogue profile 'missing'"))
+	assert_true(_has_diagnostic(data, "error", "unknown dialogue profile 'wrong_type'"))
+
+
+func test_dialogue_profile_rejects_invalid_indicator_fields_atomically():
+	var data = _parse(("""@dialogue_profile broken line_spacing=5 \
+advance_indicator_texture=\"%s\" advance_indicator_offset=1 \
+advance_indicator_animation=spin
+@chapter test
+@scene start
+@adv profile=broken
+「line」""") % ADVANCE_INDICATOR_TEXTURE_PATH)
+	assert_eq(data.diagnostics.size(), 3)
+	assert_true(_has_diagnostic(data, "error", "two comma-separated numbers"))
+	assert_true(_has_diagnostic(data, "error", "advance_indicator_animation"))
+	assert_true(data.get_dialogue_profile("broken").is_empty())
+	assert_true(_has_diagnostic(data, "error", "unknown dialogue profile 'broken'"))
+
+
+func test_dialogue_profile_rejects_non_project_indicator_paths():
+	var data = _parse("""@dialogue_profile relative advance_indicator_texture=\"ui/next.png\"
+@dialogue_profile writable advance_indicator_scene=\"user://next.tscn\"
+@chapter test
+@scene start
+@adv profile=relative
+「one」
+@adv profile=writable
+「two」""")
+	assert_eq(data.diagnostics.size(), 4)
+	assert_eq(data.diagnostics.filter(func(diagnostic):
+		return "res:// or uid://" in String(diagnostic.get("message", ""))).size(), 2)
+	assert_true(_has_diagnostic(data, "error", "unknown dialogue profile 'relative'"))
+	assert_true(_has_diagnostic(data, "error", "unknown dialogue profile 'writable'"))
+
+
+func test_dialogue_mode_profile_indicator_is_created_only_from_stla_data():
+	var profile := DialogueModeProfile.new()
+	assert_false(profile.has_advance_indicator())
+	assert_eq(profile.get_advance_indicator_offset(), Vector2.ZERO)
+	assert_eq(profile.get_advance_indicator_animation(), "none")
+	assert_true(profile.advance_indicator_validation_errors().is_empty())
+
+	profile = DialogueModeProfile.from_dictionary({
+		"advance_indicator_texture": ADVANCE_INDICATOR_TEXTURE_PATH,
+		"advance_indicator_offset": Vector2(3.0, -1.0),
+		"advance_indicator_animation": "pulse",
+	})
+	assert_true(profile.has_advance_indicator())
+	assert_not_null(profile.resolve_advance_indicator_texture())
+	assert_eq(profile.get_advance_indicator_offset(), Vector2(3.0, -1.0))
+	assert_eq(profile.get_advance_indicator_animation(), "pulse")
 
 
 func test_bg_full_params():
@@ -579,11 +768,13 @@ func test_combine_rejects_dialogue_mode_switch_without_mutating_mode():
 	)
 	assert_eq(data.scenes[0].commands.size(), 2)
 	var combine_command: CommandData = data.scenes[0].commands[0]
-	assert_eq(combine_command.get_string("mode"), "adv")
+	assert_true(combine_command.get_bool("presentation_from_context"))
+	assert_false(combine_command.has_param("mode"))
 	assert_false(combine_command.has_param("presentation_profile_name"))
 	assert_eq(combine_command.params.get("segments", []).size(), 2)
 	var following_command: CommandData = data.scenes[0].commands[1]
-	assert_eq(following_command.get_string("mode"), "adv")
+	assert_true(following_command.get_bool("presentation_from_context"))
+	assert_false(following_command.has_param("mode"))
 	assert_false(following_command.has_param("presentation_profile_name"))
 
 
@@ -599,9 +790,9 @@ func test_nvl_mode_events_preserve_repeated_directives_for_runtime_state():
 	var commands: Array = data.scenes[0].commands
 	assert_eq(commands.size(), 3,
 		"mode events must not become position-addressable scenario commands")
-	assert_eq(commands[0].dialogue_mode_events_before, ["nvl"])
+	assert_eq(_event_modes(commands[0].dialogue_mode_events_before), ["nvl"])
 	assert_eq(commands[1].dialogue_mode_events_before, [])
-	assert_eq(commands[2].dialogue_mode_events_before, ["nvl"],
+	assert_eq(_event_modes(commands[2].dialogue_mode_events_before), ["nvl"],
 		"a repeated @nvl remains an event so runtime state decides whether it resets")
 	for command in commands:
 		assert_false(command.has_param("nvl_block_id"),
@@ -619,8 +810,8 @@ func test_nvl_off_then_on_events_keep_source_order_on_next_real_command():
 	assert_eq(data.diagnostics, [])
 	var commands: Array = data.scenes[0].commands
 	assert_eq(commands.size(), 2)
-	assert_eq(commands[0].dialogue_mode_events_before, ["nvl"])
-	assert_eq(commands[1].dialogue_mode_events_before, ["adv", "nvl"],
+	assert_eq(_event_modes(commands[0].dialogue_mode_events_before), ["nvl"])
+	assert_eq(_event_modes(commands[1].dialogue_mode_events_before), ["adv", "nvl"],
 		"off -> on must replay as two ordered runtime transitions")
 	assert_eq(commands[0].dialogue_mode_events_after, [])
 	assert_eq(commands[1].dialogue_mode_events_after, [])
@@ -638,10 +829,10 @@ func test_nvl_jump_loop_keeps_replayable_events_on_target_and_jump():
 	assert_eq(commands.size(), 2,
 		"runtime boundaries must not shift the loop's saved command positions")
 	assert_eq(commands[0].type, "dialogue")
-	assert_eq(commands[0].dialogue_mode_events_before, ["nvl"],
+	assert_eq(_event_modes(commands[0].dialogue_mode_events_before), ["nvl"],
 		"every visit to the target command must replay its NVL entry event")
 	assert_eq(commands[1].type, "jump")
-	assert_eq(commands[1].dialogue_mode_events_before, ["adv"],
+	assert_eq(_event_modes(commands[1].dialogue_mode_events_before), ["adv"],
 		"@nvl off must execute before the jump on every loop iteration")
 	assert_eq(data.scenes[0].dialogue_mode_events_on_exit, [])
 
@@ -680,10 +871,10 @@ func test_nvl_mode_events_are_branch_local_across_if_elif_else_join():
 		or else_entry == null or continuation == null):
 		return
 
-	assert_eq(old_entry.dialogue_mode_events_before, ["nvl"])
-	assert_eq(then_entry.dialogue_mode_events_before, ["adv", "nvl"])
-	assert_eq(elif_entry.dialogue_mode_events_before, ["adv", "nvl"])
-	assert_eq(else_entry.dialogue_mode_events_before, ["adv", "nvl"])
+	assert_eq(_event_modes(old_entry.dialogue_mode_events_before), ["nvl"])
+	assert_eq(_event_modes(then_entry.dialogue_mode_events_before), ["adv", "nvl"])
+	assert_eq(_event_modes(elif_entry.dialogue_mode_events_before), ["adv", "nvl"])
+	assert_eq(_event_modes(else_entry.dialogue_mode_events_before), ["adv", "nvl"])
 	assert_eq(continuation.dialogue_mode_events_before, [],
 		"the join must continue whichever runtime branch executed without a static reset")
 	for command in [old_entry, then_entry, elif_entry, else_entry, continuation]:
@@ -734,7 +925,7 @@ func test_mode_only_else_uses_false_edge_without_shifting_scenes_or_uids():
 	var condition: CommandData = with_events.scenes[0].commands[0]
 	assert_eq(condition.type, "condition")
 	assert_eq(condition.dialogue_mode_events_on_true_branch, [])
-	assert_eq(condition.dialogue_mode_events_on_false_branch, ["adv", "nvl"])
+	assert_eq(_event_modes(condition.dialogue_mode_events_on_false_branch), ["adv", "nvl"])
 	assert_eq(condition.get_string("else_jump"), "__if_start_3_cont")
 
 	with_events.assign_command_uids()
@@ -771,7 +962,7 @@ func test_mode_only_final_else_in_elif_chain_uses_false_edge_sidecar():
 	assert_not_null(elif_condition)
 	if elif_condition == null:
 		return
-	assert_eq(elif_condition.dialogue_mode_events_on_false_branch, ["adv", "nvl"])
+	assert_eq(_event_modes(elif_condition.dialogue_mode_events_on_false_branch), ["adv", "nvl"])
 	assert_eq(elif_condition.get_string("else_jump"), "__if_start_3_cont")
 
 
@@ -784,9 +975,9 @@ func test_nvl_mode_event_at_scene_tail_runs_on_exit_without_a_real_command():
 	assert_eq(data.diagnostics, [])
 	var scene: SceneData = data.scenes[0]
 	assert_eq(scene.commands.size(), 1)
-	assert_eq(scene.commands[0].dialogue_mode_events_before, ["nvl"])
+	assert_eq(_event_modes(scene.commands[0].dialogue_mode_events_before), ["nvl"])
 	assert_eq(scene.commands[0].dialogue_mode_events_after, [])
-	assert_eq(scene.dialogue_mode_events_on_exit, ["adv"],
+	assert_eq(_event_modes(scene.dialogue_mode_events_on_exit), ["adv"],
 		"a called scene must leave NVL before ScenarioEngine returns to its caller")
 
 
@@ -804,7 +995,7 @@ func test_nvl_mode_event_decorates_one_combined_command_without_changing_indices
 	assert_eq(commands.size(), 2,
 		"a mode event and @combine must still produce exactly two real dialogues")
 	assert_eq(commands[0].params.get("segments", []).size(), 2)
-	assert_eq(commands[0].dialogue_mode_events_before, ["nvl"])
+	assert_eq(_event_modes(commands[0].dialogue_mode_events_before), ["nvl"])
 	assert_eq(commands[1].dialogue_mode_events_before, [])
 	assert_false(commands[0].has_param("nvl_block_id"))
 	assert_false(commands[1].has_param("nvl_block_id"))
@@ -824,7 +1015,7 @@ func test_parallel_tail_mode_event_runs_after_the_parallel_wrapper():
 	assert_eq(commands[0].type, "parallel")
 	assert_eq(commands[0].params.get("commands", []).size(), 1)
 	assert_eq(commands[0].dialogue_mode_events_before, [])
-	assert_eq(commands[0].dialogue_mode_events_after, ["nvl"],
+	assert_eq(_event_modes(commands[0].dialogue_mode_events_after), ["nvl"],
 		"a mode event at the nested list tail must run after its parallel work")
 	assert_eq(commands[1].type, "dialogue")
 	assert_eq(commands[1].dialogue_mode_events_before, [])

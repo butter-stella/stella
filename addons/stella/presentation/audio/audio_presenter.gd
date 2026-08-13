@@ -9,6 +9,10 @@ var _max_se_channels: int = 4
 var _voice_player: AudioStreamPlayer
 var _system_se_player: AudioStreamPlayer
 var _current_voice_character: String = ""
+var _voice_started_advance_serial: int = -1
+var _voice_playback_token: int = -1
+var _voice_lifecycle_revision: int = 0
+var _voice_playback_revision: int = -1
 var _bgm_tween: Tween
 var _bgm_tween_purpose: int = BgmTweenPurpose.NONE
 
@@ -42,7 +46,7 @@ func _ready():
 	SignalBus.bgm_stop.connect(_on_bgm_stop)
 	SignalBus.se_play.connect(_on_se_play)
 	SignalBus.se_stop.connect(_on_se_stop)
-	SignalBus.voice_play.connect(_on_voice_play)
+	SignalBus.voice_playback_requested.connect(_on_voice_playback_requested)
 	SignalBus.advance_requested.connect(_on_advance_requested)
 	SignalBus.settings_changed.connect(_on_settings_changed)
 	SignalBus.system_se_play.connect(_on_system_se_play)
@@ -55,7 +59,11 @@ func _process(_delta: float) -> void:
 	if _voice_player.playing and _voice_player.stream:
 		var pos = _voice_player.get_playback_position()
 		var dur = _voice_player.stream.get_length()
-		SignalBus.voice_progress.emit(pos, dur)
+		SignalBus.emit_voice_playback_event(VoicePlaybackEvent.progress(
+			pos, dur, _voice_playback_token,
+			_voice_playback_event_is_current.bind(
+				_voice_playback_revision, _voice_playback_token),
+		))
 
 
 # ─── Volume ───
@@ -228,43 +236,127 @@ func _on_se_stop(asset: String):
 
 # ─── Voice ───
 
-func _on_voice_play(asset: String, character: String = ""):
-	_current_voice_character = character
+func _on_voice_playback_requested(request: VoicePlaybackRequest) -> void:
+	if not SignalBus.voice_playback_request_is_pending(request):
+		return
+	var asset := request.get_asset()
+	var character := request.get_character()
+	if not request.is_current():
+		SignalBus.resolve_voice_playback_request(request, false)
+		return
+	# Physical lifecycle ownership is AudioPresenter-local. Dialogue ownership
+	# decides whether this request may start, but later advance/hide transitions
+	# must not make its legitimate physical FINISH look stale to low-level users.
+	_voice_lifecycle_revision += 1
+	var request_revision := _voice_lifecycle_revision
 
-	# Stop any currently playing voice
+	# Retire the current token before publishing FINISHED. A listener may start a
+	# replacement synchronously, and this outer request must not clear its state.
 	if _voice_player.playing:
+		var replaced_token := _voice_playback_token
 		_voice_player.stop()
+		_voice_playback_token = -1
+		_voice_playback_revision = -1
+		_voice_started_advance_serial = -1
+		SignalBus.emit_voice_playback_event(VoicePlaybackEvent.finished(
+			replaced_token,
+			_voice_finished_event_is_current.bind(request_revision),
+		))
+
+	# Stopping the previous clip is a public reentrancy boundary. If it SHOWed a
+	# replacement, reject this retired request without touching replacement audio.
+	if request_revision != _voice_lifecycle_revision \
+		or not request.is_current():
+		SignalBus.resolve_voice_playback_request(request, false)
+		return
 
 	var stream = _load_audio(StellaRuntime.voice_path, asset, ["ogg", "wav"])
 	if stream == null:
 		push_warning("AudioPresenter: Voice not found: %s" % asset)
+		SignalBus.resolve_voice_playback_request(request, false)
 		return
 
 	# Do not start a voice that is muted for this character. Live mute changes
 	# keep playback position and use -80 dB so a later reset can unmute it.
 	var char_enabled = StellaRuntime.get_setting("character_voice_enabled")
-	if char_enabled is Dictionary and not bool(char_enabled.get(_current_voice_character, true)):
+	if char_enabled is Dictionary and not bool(char_enabled.get(character, true)):
+		SignalBus.resolve_voice_playback_request(request, false)
 		return
 
+	var playback_token := SignalBus.resolve_voice_playback_request(request, true)
+	if playback_token < 0:
+		return
+	_current_voice_character = character
+	_voice_playback_token = playback_token
+	_voice_playback_revision = request_revision
 	_voice_player.volume_db = _get_voice_target_db()
 	_voice_player.stream = stream
+	_voice_started_advance_serial = SignalBus.current_advance_dispatch_serial()
 	_voice_player.play()
-	SignalBus.voice_started.emit(_current_voice_character, asset)
+	SignalBus.emit_voice_playback_event(VoicePlaybackEvent.started(
+		_current_voice_character, asset,
+		_voice_playback_token,
+		_voice_playback_event_is_current.bind(
+			_voice_playback_revision, _voice_playback_token),
+	))
 
 
 func _on_voice_playback_finished():
-	SignalBus.voice_finished.emit()
+	var finished_token := _voice_playback_token
+	var finished_revision := _voice_lifecycle_revision
+	_voice_playback_token = -1
+	_voice_playback_revision = -1
+	_voice_started_advance_serial = -1
+	SignalBus.emit_voice_playback_event(VoicePlaybackEvent.finished(
+		finished_token,
+		_voice_finished_event_is_current.bind(finished_revision),
+	))
 
 
 func _on_advance_requested():
 	if _voice_player.playing:
 		var continue_on_advance = StellaRuntime.get_setting("voice_continue_on_advance")
-		if not continue_on_advance:
+		# The advance pre-dispatch hook can finalize a typing line, whose public
+		# FINISHED listener synchronously SHOWs and starts the replacement voice.
+		# That replacement belongs to this dispatch serial and must survive the old
+		# advance signal's ordinary listener tail.
+		if (not continue_on_advance
+			and _voice_started_advance_serial
+				< SignalBus.current_advance_dispatch_serial()):
+			var finished_token := _voice_playback_token
+			var finished_revision := _voice_lifecycle_revision
 			_voice_player.stop()
+			_voice_playback_token = -1
+			_voice_playback_revision = -1
+			_voice_started_advance_serial = -1
 			# AudioStreamPlayer.stop() does NOT emit finished signal.
 			# Manually emit voice_finished so _voice_playing flag gets cleared
 			# and auto-play doesn't hang on await voice_finished.
-			SignalBus.voice_finished.emit()
+			SignalBus.emit_voice_playback_event(VoicePlaybackEvent.finished(
+				finished_token,
+				_voice_finished_event_is_current.bind(finished_revision),
+			))
+
+
+func _voice_playback_event_is_current(
+	revision: int,
+	playback_token: int,
+) -> bool:
+	return (
+		is_inside_tree()
+		and not is_queued_for_deletion()
+		and revision == _voice_lifecycle_revision
+		and revision == _voice_playback_revision
+		and playback_token == _voice_playback_token
+	)
+
+
+func _voice_finished_event_is_current(revision: int) -> bool:
+	return (
+		is_inside_tree()
+		and not is_queued_for_deletion()
+		and revision == _voice_lifecycle_revision
+	)
 
 
 # ─── System SE ───

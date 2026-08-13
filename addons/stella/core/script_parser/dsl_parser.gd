@@ -23,22 +23,21 @@ const _STAGE_BOOL_KEYS := ["visible", "flip_x", "flip_y"]
 const _STAGE_STRING_KEYS := ["kind", "asset", "body", "face"]
 
 
-static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioData:
+static func parse(
+	tokens: Array,
+	scenario_id: String = "unnamed",
+	source_path: String = "",
+) -> ScenarioData:
 	var data = ScenarioData.new()
 	data.id = scenario_id
-	var profile_collection := DialogueProfileParser.collect(tokens)
+	var profile_collection := DialogueProfileParser.collect(tokens, source_path)
 	var dialogue_profiles: Dictionary = profile_collection["profiles"]
+	_register_dialogue_profiles(data, dialogue_profiles)
 	data.diagnostics.append_array(profile_collection["diagnostics"])
 
 	var current_scene: SceneData = null
 	var pending_options: Array = []
 	var choice_cmd: CommandData = null
-	var current_mode: String = "adv"  # adv / nvl / overlay
-	var current_dialogue_profile_name: String = ""
-	var current_dialogue_profile: Dictionary = {}
-	var current_declarative_presentation: bool = false
-	var adv_dialogue_profile_name: String = ""
-	var adv_dialogue_profile: Dictionary = {}
 	# Mode directives that appear before the first scene are lowered onto that
 	# scene's first addressable command once parsing is complete.
 	var pending_root_mode_events: Array[CommandData] = []
@@ -259,10 +258,6 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 						var combine_cmd = _build_combine_command(
 							combine_character,
 							combine_segments,
-							current_mode,
-							current_dialogue_profile_name,
-							current_dialogue_profile,
-							current_declarative_presentation,
 						)
 						combine_segments = []
 						combine_character = ""
@@ -303,35 +298,9 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 						token.raw_text, cmd_name, dialogue_profiles, token.line
 					)
 					data.diagnostics.append_array(selection["diagnostics"])
-					if cmd_name == "adv":
-						current_mode = "adv"
-						adv_dialogue_profile_name = selection["profile_name"]
-						adv_dialogue_profile = selection["profile"]
-						current_dialogue_profile_name = adv_dialogue_profile_name
-						current_dialogue_profile = adv_dialogue_profile
-						# Explicit @adv opts into authored-baseline restoration even
-						# without a named profile.
-						current_declarative_presentation = true
-					elif selection["mode"] == "adv":
-						# @nvl off / @overlay off returns to the configured ADV
-						# profile, or to the exact authored baseline after a named
-						# non-ADV profile was active.
-						current_mode = "adv"
-						current_dialogue_profile_name = adv_dialogue_profile_name
-						current_dialogue_profile = adv_dialogue_profile
-						current_declarative_presentation = (
-							current_declarative_presentation
-							or not adv_dialogue_profile_name.is_empty()
-						)
-					else:
-						current_mode = selection["mode"]
-						current_dialogue_profile_name = selection["profile_name"]
-						current_dialogue_profile = selection["profile"]
-						current_declarative_presentation = (
-							not current_dialogue_profile_name.is_empty()
-						)
 					var mode_event := _make_cmd(
-						INTERNAL_DIALOGUE_MODE_EVENT, {"mode": current_mode}
+						INTERNAL_DIALOGUE_MODE_EVENT,
+						_build_dialogue_presentation_event(cmd_name, selection),
 					)
 					mode_event.declared_line = token.line
 					if current_scene == null:
@@ -375,13 +344,7 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 				choice_cmd = null
 				pending_options = []
-				var cmd = _parse_dialogue(
-					token,
-					current_mode,
-					current_dialogue_profile_name,
-					current_dialogue_profile,
-					current_declarative_presentation,
-				)
+				var cmd = _parse_dialogue(token)
 				if cmd and current_scene:
 					if in_combine:
 						var char_name = cmd.get_string("character", "")
@@ -405,13 +368,7 @@ static func parse(tokens: Array, scenario_id: String = "unnamed") -> ScenarioDat
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 				choice_cmd = null
 				pending_options = []
-				var cmd = _parse_narration(
-					token,
-					current_mode,
-					current_dialogue_profile_name,
-					current_dialogue_profile,
-					current_declarative_presentation,
-				)
+				var cmd = _parse_narration(token)
 				if cmd and current_scene:
 					if in_combine:
 						if not combine_character_set:
@@ -518,7 +475,7 @@ static func _add_command(cmd: CommandData, scene: SceneData, if_stack: Array) ->
 		scene.commands.append(cmd)
 
 
-## Source dialogue-mode directives participate in control flow but must not
+## Source dialogue-presentation directives participate in control flow but must not
 ## become addressable commands: inserting them into SceneData.commands would
 ## shift persisted command indices, read flags, @call return points, and UIDs.
 ## Parse with temporary sentinels, expand conditions, then lower each sentinel
@@ -530,13 +487,13 @@ static func _lower_dialogue_mode_events(data: ScenarioData) -> void:
 		scene.dialogue_mode_events_on_exit.append_array(trailing_events)
 
 
-static func _lower_dialogue_mode_events_in_list(commands: Array) -> Array[String]:
+static func _lower_dialogue_mode_events_in_list(commands: Array) -> Array:
 	var lowered_commands: Array = []
-	var pending_events: Array[String] = []
+	var pending_events: Array = []
 	for command_value in commands:
 		var command: CommandData = command_value
 		if command.type == INTERNAL_DIALOGUE_MODE_EVENT:
-			pending_events.append(command.get_string("mode", "adv"))
+			pending_events.append(command.params.duplicate(true))
 			continue
 
 		if command.type == "parallel":
@@ -554,12 +511,12 @@ static func _lower_dialogue_mode_events_in_list(commands: Array) -> Array[String
 	return pending_events
 
 
-## A branch containing only mode sentinels has runtime meaning but no
+## A branch containing only presentation-selection sentinels has runtime meaning but no
 ## addressable commands. Move those transitions onto the condition edge before
 ## synthetic-scene construction decides whether the branch needs its own scene.
 ## Mixed branches remain untouched and are lowered normally after expansion.
-static func _extract_mode_only_branch_events(commands: Array) -> Array[String]:
-	var events: Array[String] = []
+static func _extract_mode_only_branch_events(commands: Array) -> Array:
+	var events: Array = []
 	if commands.is_empty():
 		return events
 	for command_value in commands:
@@ -568,7 +525,7 @@ static func _extract_mode_only_branch_events(commands: Array) -> Array[String]:
 		var command: CommandData = command_value
 		if command.type != INTERNAL_DIALOGUE_MODE_EVENT:
 			return []
-		events.append(command.get_string("mode", "adv"))
+		events.append(command.params.duplicate(true))
 	commands.clear()
 	return events
 
@@ -1518,13 +1475,7 @@ static func _parse_set_expression(expr: String) -> Dictionary:
 
 # --- Dialogue ---
 
-static func _parse_dialogue(
-	token: DslToken,
-	mode: String = "adv",
-	profile_name: String = "",
-	profile: Dictionary = {},
-	declarative_presentation: bool = false,
-) -> CommandData:
+static func _parse_dialogue(token: DslToken) -> CommandData:
 	var raw = token.raw_text
 	var bracket_start = raw.find("\u300c")  # 「
 	var bracket_end = raw.rfind("\u300d")    # 」
@@ -1541,19 +1492,12 @@ static func _parse_dialogue(
 		"character": character,
 		"text": text,
 		"voice": voice,
-		"mode": mode,
+		"presentation_from_context": true,
 	}
-	_attach_dialogue_profile(params, profile_name, profile, declarative_presentation)
 	return _make_cmd("dialogue", params)
 
 
-static func _parse_narration(
-	token: DslToken,
-	mode: String = "adv",
-	profile_name: String = "",
-	profile: Dictionary = {},
-	declarative_presentation: bool = false,
-) -> CommandData:
+static func _parse_narration(token: DslToken) -> CommandData:
 	var raw = token.raw_text
 	var bracket_start = raw.find("\u300c")
 	var bracket_end = raw.rfind("\u300d")
@@ -1568,9 +1512,8 @@ static func _parse_narration(
 		"character": "",
 		"text": text,
 		"voice": voice,
-		"mode": mode,
+		"presentation_from_context": true,
 	}
-	_attach_dialogue_profile(params, profile_name, profile, declarative_presentation)
 	return _make_cmd("dialogue", params)
 
 
@@ -1732,10 +1675,6 @@ static func _compile_condition_sequence(
 static func _build_combine_command(
 	character: String,
 	segments: Array,
-	mode: String,
-	profile_name: String = "",
-	profile: Dictionary = {},
-	declarative_presentation: bool = false,
 ) -> CommandData:
 	if segments.size() == 0:
 		return null
@@ -1749,25 +1688,49 @@ static func _build_combine_command(
 		"character": character,
 		"text": full_text,
 		"voice": primary_voice,
-		"mode": mode,
 		"segments": segments.duplicate(true),
+		"presentation_from_context": true,
 	}
-	_attach_dialogue_profile(params, profile_name, profile, declarative_presentation)
 	return _make_cmd("dialogue", params)
 
 
-static func _attach_dialogue_profile(
-	params: Dictionary,
-	profile_name: String,
-	profile: Dictionary,
-	declarative_presentation: bool,
+static func _register_dialogue_profiles(
+	data: ScenarioData,
+	compiled_profiles: Dictionary,
 ) -> void:
-	if declarative_presentation:
-		params["declarative_presentation"] = true
-	if profile_name.is_empty():
-		return
-	params["presentation_profile_name"] = profile_name
-	params["presentation_profile"] = profile.duplicate(true)
+	for profile_name_value in compiled_profiles:
+		var profile_name := str(profile_name_value)
+		var runtime_profile: Dictionary = (
+			compiled_profiles[profile_name_value] as Dictionary
+		).duplicate(true)
+		var provenance: Dictionary = runtime_profile.get(
+			DialogueProfileParser.RUNTIME_PROVENANCE_KEY, {}).duplicate(true)
+		runtime_profile.erase(DialogueProfileParser.RUNTIME_PROVENANCE_KEY)
+		data.dialogue_profiles[profile_name] = runtime_profile
+		if not provenance.is_empty():
+			data.dialogue_profile_provenance[profile_name] = provenance
+
+
+static func _build_dialogue_presentation_event(
+	command_name: String,
+	selection: Dictionary,
+) -> Dictionary:
+	if command_name == "adv":
+		return {
+			"action": "select_adv",
+			"mode": "adv",
+			"profile_name": str(selection.get("profile_name", "")),
+		}
+	if str(selection.get("mode", command_name)) == "adv":
+		return {
+			"action": "restore_adv",
+			"mode": "adv",
+		}
+	return {
+		"action": "select_mode",
+		"mode": str(selection.get("mode", command_name)),
+		"profile_name": str(selection.get("profile_name", "")),
+	}
 
 
 static func _make_cmd(type: String, params: Dictionary) -> CommandData:
