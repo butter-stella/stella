@@ -237,10 +237,10 @@ func _on_se_stop(asset: String):
 # ─── Voice ───
 
 func _on_voice_playback_requested(request: VoicePlaybackRequest) -> void:
-	if request == null or request.handled:
+	if not SignalBus.voice_playback_request_is_pending(request):
 		return
-	var asset := request.asset
-	var character := request.character
+	var asset := request.get_asset()
+	var character := request.get_character()
 	if not request.is_current():
 		SignalBus.resolve_voice_playback_request(request, false)
 		return

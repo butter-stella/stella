@@ -1,5 +1,5 @@
-## Example voice progress bar — listens to the high-level dialogue_voice_*
-## signals so a @combine multi-segment dialogue shows as ONE continuous bar
+## Example voice progress bar — listens to the typed logical voice lifecycle
+## so a @combine multi-segment dialogue shows as ONE continuous bar
 ## spanning the total combined duration, instead of resetting per segment.
 ## Attach to any ProgressBar node.
 extends ProgressBar
@@ -10,29 +10,19 @@ func _ready():
 	min_value = 0.0
 	max_value = 1.0
 	step = 0.001
-	SignalBus.dialogue_voice_started.connect(_on_dialogue_voice_started)
-	SignalBus.dialogue_voice_progress.connect(_on_dialogue_voice_progress)
-	SignalBus.dialogue_voice_finished.connect(_on_dialogue_voice_finished)
+	SignalBus.dialogue_voice_playback_event.connect(_on_dialogue_voice_event)
 	SignalBus.hide_dialogue.connect(func(): visible = false)
 
 
-func _on_dialogue_voice_started(total_duration: float):
-	if not SignalBus.dialogue_voice_started_event_is_current(
-		total_duration, get_instance_id()):
+func _on_dialogue_voice_event(event: DialogueVoicePlaybackEvent) -> void:
+	if event == null or not event.is_current():
 		return
-	value = 0.0
-	visible = true
-
-
-func _on_dialogue_voice_finished():
-	if not SignalBus.dialogue_voice_finished_event_is_current(get_instance_id()):
-		return
-	visible = false
-
-
-func _on_dialogue_voice_progress(position: float, total_duration: float):
-	if not SignalBus.dialogue_voice_progress_event_is_current(
-		position, total_duration, get_instance_id()):
-		return
-	if total_duration > 0:
-		value = position / total_duration
+	match event.get_kind():
+		DialogueVoicePlaybackEvent.Kind.STARTED:
+			value = 0.0
+			visible = true
+		DialogueVoicePlaybackEvent.Kind.PROGRESS:
+			if event.get_total_duration() > 0.0:
+				value = event.get_position() / event.get_total_duration()
+		DialogueVoicePlaybackEvent.Kind.FINISHED:
+			visible = false

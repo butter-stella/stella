@@ -24,6 +24,7 @@ var current_dialogue_profile_name: String = ""
 var current_dialogue_uses_declarative_presentation: bool = false
 var adv_dialogue_profile_name: String = ""
 var adv_dialogue_uses_declarative_presentation: bool = false
+var _dialogue_request_serial: int = 0
 
 
 func _init(data: ScenarioData = null):
@@ -128,6 +129,7 @@ func record_nvl_page_entry(
 		"command_uid": command_uid,
 		"scene_index": current_scene_index,
 		"command_index": current_command_index,
+		"profile_name": current_dialogue_profile_name,
 		"character": character,
 		"segments": segments,
 	})
@@ -147,6 +149,35 @@ func record_nvl_page_entry(
 	return []
 
 
+## Build the runtime-only NVL restoration payload. Snapshots retain only the
+## profile name; the current ScenarioData registry supplies the resolved values
+## so a script edit cannot leave serialized Resource/Dictionary state behind.
+func materialize_nvl_page_entries(entries: Array) -> Array:
+	var materialized: Array = []
+	for raw_entry in entries:
+		if not raw_entry is Dictionary:
+			continue
+		var entry: Dictionary = raw_entry.duplicate(true)
+		var profile_name := String(entry.get("profile_name", ""))
+		entry["presentation_profile"] = (
+			scenario_data.get_dialogue_profile(profile_name)
+			if scenario_data != null and not profile_name.is_empty()
+			else {}
+		)
+		materialized.append(entry)
+	return materialized
+
+
+## Every emitted dialogue owns a stable identity independent of the mutable
+## ScenarioContext cursor. The id is session-local and intentionally excluded
+## from save data; Backlog uses it only to enrich the exact captured entry.
+func next_dialogue_entry_id(command_uid: int) -> String:
+	_dialogue_request_serial += 1
+	return "%d:%d:%d" % [
+		get_instance_id(), command_uid, _dialogue_request_serial,
+	]
+
+
 func _sanitize_nvl_page_entry(raw_entry: Dictionary) -> Dictionary:
 	var clean_segments: Array = []
 	for raw_segment in raw_entry.get("segments", []):
@@ -159,6 +190,7 @@ func _sanitize_nvl_page_entry(raw_entry: Dictionary) -> Dictionary:
 		"command_uid": int(raw_entry.get("command_uid", -1)),
 		"scene_index": int(raw_entry.get("scene_index", -1)),
 		"command_index": int(raw_entry.get("command_index", -1)),
+		"profile_name": String(raw_entry.get("profile_name", "")),
 		"character": String(raw_entry.get("character", "")),
 		"segments": clean_segments,
 	}

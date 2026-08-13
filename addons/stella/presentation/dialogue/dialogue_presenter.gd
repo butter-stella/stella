@@ -27,9 +27,16 @@ var _avatar_container: Control
 var _char_interval: float = 0.03  # seconds per character
 var _is_typing: bool = false
 var _nvl_text: String = ""  # current NVL page, including the active entry
+var _nvl_render_source: String = ""
 var _nvl_has_entries: bool = false
+var _nvl_incremental_document_valid: bool = false
 var _nvl_visible_characters: int = 0
 var _active_nvl_page_key: String = ""
+## Test-observable counters keep the plain NVL hot path honest without relying
+## on machine-specific microbenchmarks alone.
+var _nvl_full_text_rebuild_count: int = 0
+var _nvl_incremental_append_count: int = 0
+var _parsed_character_full_parse_count: int = 0
 var _current_mode: String = "adv"
 var _ui_hidden: bool = false
 var _ctrl_held: bool = false  # Ctrl key skip
@@ -940,7 +947,7 @@ func _mark_current_line_read() -> void:
 ##   are merged into global timelines with offset adjustment
 ## - Click-to-finish: snap text and the local avatar to their final authored state
 func _on_dialogue_requested(dialogue_request: DialogueRequest) -> void:
-	if dialogue_request == null or dialogue_request.segments.is_empty():
+	if dialogue_request == null or dialogue_request.get_segments().is_empty():
 		return
 	if not is_inside_tree() or is_queued_for_deletion():
 		return
@@ -949,14 +956,14 @@ func _on_dialogue_requested(dialogue_request: DialogueRequest) -> void:
 	SignalBus.dialogue_backlog_effects_resolved.emit(dialogue_request, effect_names)
 	var revision := _next_boundary_revision()
 	var request := {
-		"character": dialogue_request.character,
-		"segments": dialogue_request.segments.duplicate(true),
-		"mode": dialogue_request.mode,
-		"nvl_page_key": dialogue_request.nvl_page_key,
-		"nvl_page_entries": dialogue_request.nvl_page_entries.duplicate(true),
-		"presentation_profile": dialogue_request.presentation_profile.duplicate(true),
-		"presentation_provenance": dialogue_request.presentation_provenance.duplicate(true),
-		"declarative_presentation": dialogue_request.declarative_presentation,
+		"character": dialogue_request.get_character(),
+		"segments": dialogue_request.get_segments(),
+		"mode": dialogue_request.get_mode(),
+		"nvl_page_key": dialogue_request.get_nvl_page_key(),
+		"nvl_page_entries": dialogue_request.get_nvl_page_entries(),
+		"presentation_profile": dialogue_request.get_presentation_profile(),
+		"presentation_provenance": dialogue_request.get_presentation_provenance(),
+		"declarative_presentation": dialogue_request.uses_declarative_presentation(),
 		"custom_effect_registry": custom_effect_registry.duplicate(true),
 		"boundary_revision": revision,
 	}
@@ -1171,6 +1178,7 @@ func _show_dialogue_now(
 		name_label.visible = false
 		var entry_format := _resolve_nvl_entry_format()
 		var entry_prefix: String = entry_format["prefix"]
+		var entry_separator: String = entry_format["separator"]
 		var speaker_prefix := "%s：" % character if not character.is_empty() else ""
 		new_line_text = entry_prefix + speaker_prefix + full_text
 		var previously_visible := ""
@@ -1179,24 +1187,44 @@ func _show_dialogue_now(
 				nvl_page_entries, entry_format, custom_effect_registry)
 			previously_visible = history
 			if nvl_page_entries.size() > 1:
-				previously_visible += String(entry_format["separator"])
+				previously_visible += entry_separator
 		else:
-			var separator: String = (
-				entry_format["separator"] if _nvl_has_entries else "")
-			previously_visible = _nvl_text + separator
+			var applied_separator := entry_separator if _nvl_has_entries else ""
+			previously_visible = _nvl_text + applied_separator
 		var combined := previously_visible + new_line_text
 		authored_source_start = (
 			previously_visible.length()
 			+ entry_prefix.length()
 			+ speaker_prefix.length()
 		)
-		text_label.text = combined
-		# List close tags can synthesize a newline and then consume the first
-		# separator newline. Map the actual source boundary instead of adding raw
-		# separator length to the previous parsed count.
-		text_label.visible_characters = _parsed_character_offset(
-			combined, previously_visible.length())
+		var can_append_plain: bool = (
+			nvl_page_entries.is_empty()
+			and _nvl_has_entries
+			and _nvl_incremental_document_valid
+			and not _nvl_text.contains("[")
+			and not entry_separator.contains("[")
+			and not new_line_text.contains("[")
+		)
+		if can_append_plain:
+			# RichTextLabel keeps its shaped document and parses only the suffix.
+			# Prefix/separator fields reject BBCode at authoring time, so this path
+			# is exact for the ordinary growing NVL page.
+			var history_character_count := text_label.get_total_character_count()
+			text_label.append_text(entry_separator + new_line_text)
+			text_label.visible_characters = (
+				history_character_count + entry_separator.length())
+			_nvl_incremental_append_count += 1
+		else:
+			text_label.text = combined
+			# List close tags can synthesize a newline and then consume the first
+			# separator newline. Map the actual source boundary instead of adding raw
+			# separator length to the previous parsed count.
+			text_label.visible_characters = _parsed_character_offset(
+				combined, previously_visible.length())
+			_nvl_full_text_rebuild_count += 1
+			_nvl_incremental_document_valid = not combined.contains("[")
 		_nvl_text = combined
+		_nvl_render_source = combined
 		_nvl_has_entries = true
 	elif mode == "overlay":
 		_reset_nvl_accumulator()
@@ -1222,15 +1250,16 @@ func _show_dialogue_now(
 	# and a consumed separator all share the exact domain used by
 	# visible_characters. Positions remain relative to the authored dialogue so
 	# the existing typewriter timeline semantics stay unchanged.
+	var rendered_source := _nvl_render_source if mode == "nvl" else text_label.text
 	var authored_parsed_start := _parsed_character_offset(
-		text_label.text, authored_source_start)
+		rendered_source, authored_source_start)
 	var authored_text_offset := maxi(
 		0, authored_parsed_start - text_label.visible_characters)
 	for marker_index in range(all_markers.size()):
 		var marker: Dictionary = all_markers[marker_index]
 		marker["at_char"] = (
 			_parsed_character_offset(
-				text_label.text,
+				rendered_source,
 				authored_source_start + int(marker["source_offset"]),
 			)
 			- authored_parsed_start
@@ -1241,7 +1270,7 @@ func _show_dialogue_now(
 		var effect: Dictionary = all_effects[effect_index]
 		effect["pos"] = (
 			_parsed_character_offset(
-				text_label.text,
+				rendered_source,
 				authored_source_start + int(effect["source_offset"]),
 			)
 			- authored_parsed_start
@@ -1484,9 +1513,9 @@ func _wait_for_active_voice_finished(gen: int, attempt: int) -> bool:
 		):
 			return false
 		if (
-			event.kind == VoicePlaybackEvent.Kind.FINISHED
-			and event.playback_token >= 0
-			and event.playback_token == expected_token
+			event.get_kind() == VoicePlaybackEvent.Kind.FINISHED
+			and event.get_playback_token() >= 0
+			and event.get_playback_token() == expected_token
 			and event.is_current()
 		):
 			return true
@@ -1622,7 +1651,11 @@ func _mark_dialogue_ready_for_indicator(gen: int) -> void:
 func _show_advance_indicator_after_layout(gen: int, token: int) -> void:
 	# The transparent renderer probe uses the same text/theme/layout inputs while
 	# leaving the live label's tag stack, selection and scroll state untouched.
-	_advance_indicator.prepare_layout_probe(text_label, _current_mode == "nvl")
+	_advance_indicator.prepare_layout_probe(
+		text_label,
+		_current_mode == "nvl",
+		_nvl_render_source if _current_mode == "nvl" else "",
+	)
 	# Containers, fit_content and RichTextLabel wrapping settle on this boundary.
 	await get_tree().process_frame
 	if not _indicator_request_is_current(gen, token):
@@ -1804,7 +1837,7 @@ func _run_voice_queue(
 	var owner_validator := _voice_queue_event_owner_is_current.bind(
 		owner_gen, queue_gen)
 	var previous_voice_token := -1
-	var previous_completion_state: Dictionary = {}
+	var previous_completion_state: VoicePlaybackCompletion
 	for i in range(segments.size()):
 		if not _voice_queue_is_current(owner_gen, queue_gen):
 			_retire_voice_queue_if_current(queue_gen)
@@ -1855,21 +1888,18 @@ func _run_voice_queue(
 		var should_request_voice := (
 			voice != "" and not _should_skip_current())
 		previous_voice_token = -1
-		previous_completion_state = {}
+		previous_completion_state = null
 		_playback_voice_token = -1
 		if should_request_voice:
 			_current_voice = voice
-			var voice_request := SignalBus.request_voice_playback(
+			var voice_response := SignalBus.request_voice_playback(
 				voice, character, owner_validator)
-			if not voice_request.is_current():
-				_retire_voice_queue_if_current(queue_gen)
-				return
 			if not _voice_queue_is_current(owner_gen, queue_gen):
 				_retire_voice_queue_if_current(queue_gen)
 				return
-			if voice_request.accepted:
-				previous_voice_token = voice_request.playback_token
-				previous_completion_state = voice_request.completion_state
+			if voice_response.was_accepted():
+				previous_voice_token = voice_response.get_playback_token()
+				previous_completion_state = voice_response.get_completion()
 				_playback_voice_token = previous_voice_token
 
 	# Wait for the LAST segment's voice to actually finish before declaring the
@@ -2184,20 +2214,20 @@ func _abort_final_segment_presentation() -> void:
 
 func _wait_for_voice_playback_finished(
 	expected_token: int,
-	completion_state: Dictionary,
+	completion_state: VoicePlaybackCompletion,
 	owner_gen: int,
 	queue_gen: int,
 ) -> bool:
 	while _voice_queue_is_current(owner_gen, queue_gen):
-		if bool(completion_state.get("finished", false)):
+		if completion_state != null and completion_state.is_finished():
 			return true
 		var event: VoicePlaybackEvent = await SignalBus.voice_playback_event
 		if not _voice_queue_is_current(owner_gen, queue_gen):
 			return false
 		if (
-			event.kind == VoicePlaybackEvent.Kind.FINISHED
-			and event.playback_token == expected_token
-			and event.playback_token >= 0
+			event.get_kind() == VoicePlaybackEvent.Kind.FINISHED
+			and event.get_playback_token() == expected_token
+			and event.get_playback_token() >= 0
 			and event.is_current()
 		):
 			return true
@@ -2277,19 +2307,19 @@ func _finalize_dialogue(character: String, segments: Array, gen: int) -> void:
 func _on_voice_playback_event(event: VoicePlaybackEvent) -> void:
 	if event == null or not event.is_current():
 		return
-	match event.kind:
+	match event.get_kind():
 		VoicePlaybackEvent.Kind.STARTED:
-			if event.playback_token < 0 and _active_voice_token >= 0:
+			if event.get_playback_token() < 0 and _active_voice_token >= 0:
 				return
-			_active_voice_token = event.playback_token
+			_active_voice_token = event.get_playback_token()
 			_voice_playing = true
 		VoicePlaybackEvent.Kind.PROGRESS:
-			if event.playback_token < 0 and _playback_voice_token >= 0:
+			if event.get_playback_token() < 0 and _playback_voice_token >= 0:
 				return
 			_relay_voice_progress(
-				event.position, event.duration, event.playback_token)
+				event.get_position(), event.get_duration(), event.get_playback_token())
 		VoicePlaybackEvent.Kind.FINISHED:
-			_on_voice_playback_finished(event.playback_token)
+			_on_voice_playback_finished(event.get_playback_token())
 
 
 func _on_voice_playback_finished(playback_token: int) -> void:
@@ -2465,9 +2495,15 @@ func _apply_dialogue_mode_presentation(
 
 
 func _resolve_nvl_entry_format() -> Dictionary:
+	return _resolve_nvl_entry_format_for_profile(_active_stla_mode_profile)
+
+
+func _resolve_nvl_entry_format_for_profile(
+	stla_mode_profile: DialogueModeProfile,
+) -> Dictionary:
 	var prefix := DEFAULT_NVL_ENTRY_PREFIX
 	var separator := DEFAULT_NVL_ENTRY_SEPARATOR
-	var mode_profile := _active_stla_mode_profile
+	var mode_profile := stla_mode_profile
 	if mode_profile == null and presentation_profile != null:
 		mode_profile = presentation_profile.get_mode("nvl")
 	# Invalid profiles use the same all-or-nothing legacy fallback as layout.
@@ -2838,8 +2874,9 @@ func _apply_adv_layout():
 ## end-of-input path. Subtracting that sentinel leaves the exact prefix count.
 func _parsed_character_offset(source_text: String, source_offset: int) -> int:
 	var clamped_offset := clampi(source_offset, 0, source_text.length())
-	if not text_label.bbcode_enabled:
+	if not text_label.bbcode_enabled or not source_text.contains("["):
 		return clamped_offset
+	_parsed_character_full_parse_count += 1
 	var parser := RichTextLabel.new()
 	parser.bbcode_enabled = true
 	parser.threaded = false
@@ -2853,22 +2890,31 @@ func _parsed_character_offset(source_text: String, source_offset: int) -> int:
 
 func _reset_nvl_accumulator() -> void:
 	_nvl_text = ""
+	_nvl_render_source = ""
 	_nvl_has_entries = false
+	_nvl_incremental_document_valid = false
 	_nvl_visible_characters = 0
 	_active_nvl_page_key = ""
 
 
 func _build_nvl_authored_history(
 	entries: Array,
-	entry_format: Dictionary,
+	_default_entry_format: Dictionary,
 	custom_effect_registry: Dictionary,
 ) -> String:
-	var rendered_entries: Array[String] = []
+	var rendered_history := ""
 	# The final entry is the current command and is processed by the normal
 	# timeline below. Earlier entries are rebuilt from authored source only; their
 	# effects are stripped without replaying waits, speed changes, or expressions.
 	for entry_index in range(maxi(0, entries.size() - 1)):
 		var entry: Dictionary = entries[entry_index]
+		var profile_data: Dictionary = entry.get("presentation_profile", {})
+		var entry_profile: DialogueModeProfile = (
+			DialogueModeProfile.from_dictionary(profile_data)
+			if not profile_data.is_empty()
+			else null
+		)
+		var entry_format := _resolve_nvl_entry_format_for_profile(entry_profile)
 		var authored_text := ""
 		for raw_segment in entry.get("segments", []):
 			if raw_segment is Dictionary:
@@ -2878,12 +2924,14 @@ func _build_nvl_authored_history(
 		var entry_character := String(entry.get("character", ""))
 		var speaker_prefix := (
 			"%s：" % entry_character if not entry_character.is_empty() else "")
-		rendered_entries.append(
+		if entry_index > 0:
+			rendered_history += String(entry_format.get("separator", ""))
+		rendered_history += (
 			String(entry_format.get("prefix", ""))
 			+ speaker_prefix
 			+ authored_text
 		)
-	return String(entry_format.get("separator", "")).join(rendered_entries)
+	return rendered_history
 
 
 func _on_hide_dialogue():

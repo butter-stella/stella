@@ -29,7 +29,9 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 		"declarative_presentation", false)
 	var nvl_page_key := ""
 	var nvl_page_entries: Array = []
+	var entry_id := "command:%d:object:%d" % [data.uid, data.get_instance_id()]
 	if context != null:
+		entry_id = context.next_dialogue_entry_id(data.uid)
 		if presentation_from_context:
 			mode = context.current_dialogue_mode
 			presentation_profile = context.resolve_current_dialogue_profile()
@@ -50,6 +52,9 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 			]
 			nvl_page_entries = context.record_nvl_page_entry(
 				data.uid, character, segments)
+			if not nvl_page_entries.is_empty():
+				nvl_page_entries = context.materialize_nvl_page_entries(
+					nvl_page_entries)
 	SignalBus.emit_dialogue_request(DialogueRequest.new(
 		character,
 		segments,
@@ -59,6 +64,8 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 		nvl_page_key,
 		presentation_provenance,
 		nvl_page_entries,
+		entry_id,
+		data.uid,
 	))
 	# Race against engine_abort_requested so backlog jump can interrupt us.
 	await CommandHandler.await_with_abort(SignalBus.advance_requested)

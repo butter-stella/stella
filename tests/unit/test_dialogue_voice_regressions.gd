@@ -23,6 +23,28 @@ func _open_logical_voice_session(dialogue: Control) -> void:
 	dialogue._playback_queue_active = true
 
 
+func test_voice_handler_enters_the_typed_request_path() -> void:
+	var typed_requests: Array[VoicePlaybackRequest] = []
+	var compatibility_events: Array = []
+	var on_typed: Callable = func(request: VoicePlaybackRequest):
+		typed_requests.append(request)
+	var on_raw: Callable = func(asset: String, character: String):
+		compatibility_events.append([asset, character])
+	SignalBus.voice_playback_requested.connect(on_typed)
+	SignalBus.voice_play.connect(on_raw)
+	var command := CommandData.new()
+	command.params = {"asset": "missing_typed_fixture"}
+
+	await VoiceHandler.new().execute(command, null)
+
+	assert_eq(typed_requests.size(), 1)
+	assert_eq(typed_requests[0].get_asset(), "missing_typed_fixture")
+	assert_eq(compatibility_events, [["missing_typed_fixture", ""]],
+		"the old signal remains an outbound compatibility notification")
+	SignalBus.voice_playback_requested.disconnect(on_typed)
+	SignalBus.voice_play.disconnect(on_raw)
+
+
 func test_logical_voice_finishes_once_on_advance_show_and_hide() -> void:
 	var dialogue := _game_scene.get_node("UILayer/DialoguePanel")
 	var finished := [0]

@@ -52,17 +52,23 @@ func test_scenario_context_snapshot_protocol():
 func test_scenario_context_snapshot_round_trips_authored_nvl_page_entries():
 	var scenario := ScenarioData.new()
 	scenario.id = "chapter1"
+	scenario.dialogue_profiles = {
+		"first": {"entry_prefix": "A", "entry_separator": "|"},
+		"second": {"entry_prefix": "B", "entry_separator": "~"},
+	}
 	var ctx := ScenarioContext.new(scenario)
 	ctx.current_dialogue_mode = "nvl"
 	ctx.nvl_page_epoch = 3
 	ctx.current_scene_index = 1
 	ctx.current_command_index = 4
+	ctx.current_dialogue_profile_name = "first"
 	ctx.record_nvl_page_entry(10, "alice", [{
 		"text": "[b]First[/b]",
 		"voice": "voice_1",
 		"stage_ops": [{"type": "show", "position": Vector2(3, 4)}],
 	}])
 	ctx.current_command_index = 5
+	ctx.current_dialogue_profile_name = "second"
 	ctx.record_nvl_page_entry(11, "bob", [{
 		"text": "Second",
 		"voice": "voice_2",
@@ -77,21 +83,33 @@ func test_scenario_context_snapshot_round_trips_authored_nvl_page_entries():
 		"command_uid": 10,
 		"scene_index": 1,
 		"command_index": 4,
+		"profile_name": "first",
 		"character": "alice",
 		"segments": [{"text": "[b]First[/b]", "voice": "voice_1"}],
 	}, {
 		"command_uid": 11,
 		"scene_index": 1,
 		"command_index": 5,
+		"profile_name": "second",
 		"character": "bob",
 		"segments": [{"text": "Second", "voice": "voice_2"}],
 	}])
+	assert_false(restored.nvl_page_entries[0].has("presentation_profile"),
+		"save data stores only the stable profile name")
+	var materialized := restored.materialize_nvl_page_entries(
+		restored.nvl_page_entries)
+	assert_eq(materialized[0].get("presentation_profile"),
+		{"entry_prefix": "A", "entry_separator": "|"})
+	assert_eq(materialized[1].get("presentation_profile"),
+		{"entry_prefix": "B", "entry_separator": "~"})
+	restored.current_dialogue_profile_name = "second"
 	var replayed := restored.record_nvl_page_entry(11, "bob", [{
 		"text": "Second",
 		"voice": "voice_2",
 	}])
 	assert_eq(replayed.size(), 2,
 		"the current command re-executed by restore must not duplicate the page tail")
+	restored.current_dialogue_profile_name = "third"
 	var live_append := restored.record_nvl_page_entry(12, "carol", [{
 		"text": "Third",
 		"voice": "voice_3",
@@ -99,6 +117,7 @@ func test_scenario_context_snapshot_round_trips_authored_nvl_page_entries():
 	assert_true(live_append.is_empty(),
 		"ordinary NVL playback stays on the incremental hot path")
 	assert_eq(restored.nvl_page_entries.size(), 3)
+	assert_eq(restored.nvl_page_entries[2].get("profile_name"), "third")
 
 
 func test_scenario_context_snapshot_round_trips_runtime_profile_names_only():

@@ -381,12 +381,13 @@ func _clear_source_for_revision(revision: int) -> bool:
 func prepare_layout_probe(
 	label: RichTextLabel,
 	allow_incremental_append: bool = false,
+	source_override: String = "",
 ) -> void:
 	_endpoint_probe.reset()
 	if label == null or not is_instance_valid(label) or not is_instance_valid(_content):
 		_clear_layout_probe()
 		return
-	var source := label.text
+	var source := source_override if not source_override.is_empty() else label.text
 	var signature := _layout_probe_signature(label)
 	if (
 		allow_incremental_append

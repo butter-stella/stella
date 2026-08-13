@@ -29,6 +29,7 @@ signal advance_dispatch_started(serial: int)
 # not depend on this mutable payload identity.
 var _dialogue_presentation_stack: Array[Dictionary] = []
 var _show_dialogue_dispatch_serial: int = 0
+var _dialogue_request_serial: int = 0
 var _last_raw_show_dispatch_serial: int = -1
 var _last_raw_show_segments: Variant = null
 var _advance_dispatch_serial: int = 0
@@ -39,6 +40,7 @@ var _advance_dispatch_serial: int = 0
 var _owned_dialogue_event_stack: Array[Dictionary] = []
 var _voice_playback_token_serial: int = 0
 var _voice_completion_states: Dictionary = {}
+var _voice_request_responses: Dictionary = {}
 var _compatibility_voice_play_echo_pending: int = 0
 var _compatibility_voice_lifecycle_echo_pending: int = 0
 
@@ -80,13 +82,28 @@ func emit_show_dialogue(
 
 
 func emit_dialogue_request(request: DialogueRequest) -> void:
-	if request == null or request.segments.is_empty():
+	if request == null or request.get_segments().is_empty():
 		return
-	var canonical := request.duplicate_request()
+	_dialogue_request_serial += 1
+	var request_entry_id := request.get_entry_id()
+	if request_entry_id.is_empty():
+		request_entry_id = "signal-bus:%d" % _dialogue_request_serial
+	var canonical := DialogueRequest.new(
+		request.get_character(),
+		request.get_segments(),
+		request.get_mode(),
+		request.get_presentation_profile(),
+		request.uses_declarative_presentation(),
+		request.get_nvl_page_key(),
+		request.get_presentation_provenance(),
+		request.get_nvl_page_entries(),
+		request_entry_id,
+		request.get_command_uid(),
+	)
 	# Built-in state observes an immutable snapshot before the mutable public
 	# compatibility signal is delivered to extensions.
 	dialogue_requested.emit(canonical)
-	var compatibility_segments := canonical.segments.duplicate(true)
+	var compatibility_segments := canonical.get_segments()
 	_dialogue_presentation_stack.append({
 		"dispatch_serial": _show_dialogue_dispatch_serial + 1,
 		# Keep the live synchronous payload reference for reentrant dispatch lookup.
@@ -95,13 +112,14 @@ func emit_dialogue_request(request: DialogueRequest) -> void:
 		# same dispatch after an in-place edit. Godot typed signals preserve the Array
 		# identity throughout synchronous delivery on every supported engine version.
 		"segments": compatibility_segments,
-		"profile": canonical.presentation_profile.duplicate(true),
-		"declarative": canonical.declarative_presentation,
-		"nvl_page_key": canonical.nvl_page_key,
-		"nvl_page_entries": canonical.nvl_page_entries.duplicate(true),
-		"provenance": canonical.presentation_provenance.duplicate(true),
+		"profile": canonical.get_presentation_profile(),
+		"declarative": canonical.uses_declarative_presentation(),
+		"nvl_page_key": canonical.get_nvl_page_key(),
+		"nvl_page_entries": canonical.get_nvl_page_entries(),
+		"provenance": canonical.get_presentation_provenance(),
 	})
-	show_dialogue.emit(canonical.character, compatibility_segments, canonical.mode)
+	show_dialogue.emit(
+		canonical.get_character(), compatibility_segments, canonical.get_mode())
 	_dialogue_presentation_stack.pop_back()
 
 
@@ -122,10 +140,13 @@ func request_voice_playback(
 	character: String,
 	owner_validator: Callable = Callable(),
 	emit_compatibility_signal: bool = true,
-) -> VoicePlaybackRequest:
+) -> VoicePlaybackResponse:
 	var request := VoicePlaybackRequest.new(asset, character, owner_validator)
+	var response := VoicePlaybackResponse.new()
 	if not request.is_current():
-		return request
+		response._resolve(false)
+		return response
+	_voice_request_responses[request.get_instance_id()] = response
 	voice_playback_requested.emit(request)
 	if emit_compatibility_signal:
 		# The construction-time prehook consumes exactly this echo. A raw emit
@@ -133,44 +154,58 @@ func request_voice_playback(
 		# inherit a broad call-stack suppression flag.
 		_compatibility_voice_play_echo_pending += 1
 		voice_play.emit(asset, character)
-	return request
+	_voice_request_responses.erase(request.get_instance_id())
+	return response
 
 
 func resolve_voice_playback_request(
 	request: VoicePlaybackRequest,
 	accepted: bool,
 ) -> int:
-	if request == null or request.handled:
-		return request.playback_token if request != null else -1
-	request.handled = true
-	request.accepted = accepted
+	if request == null:
+		return -1
+	var response: VoicePlaybackResponse = _voice_request_responses.get(
+		request.get_instance_id())
+	if response == null or response.was_handled():
+		return response.get_playback_token() if response != null else -1
 	if not accepted:
+		response._resolve(false)
 		return -1
 	_voice_playback_token_serial += 1
-	request.playback_token = _voice_playback_token_serial
-	request.completion_state = {"finished": false}
-	_voice_completion_states[request.playback_token] = request.completion_state
-	return request.playback_token
+	var completion := VoicePlaybackCompletion.new()
+	response._resolve(true, _voice_playback_token_serial, completion)
+	_voice_completion_states[_voice_playback_token_serial] = completion
+	return _voice_playback_token_serial
+
+
+func voice_playback_request_is_pending(request: VoicePlaybackRequest) -> bool:
+	if request == null:
+		return false
+	var response: VoicePlaybackResponse = _voice_request_responses.get(
+		request.get_instance_id())
+	return response != null and not response.was_handled()
 
 
 func emit_voice_playback_event(event: VoicePlaybackEvent) -> bool:
 	if event == null or not event.is_current():
 		return false
-	if event.kind == VoicePlaybackEvent.Kind.FINISHED \
-		and event.playback_token >= 0 \
-		and _voice_completion_states.has(event.playback_token):
-		var completion: Dictionary = _voice_completion_states[event.playback_token]
-		completion["finished"] = true
-		_voice_completion_states.erase(event.playback_token)
+	var kind := event.get_kind()
+	var playback_token := event.get_playback_token()
+	if kind == VoicePlaybackEvent.Kind.FINISHED \
+		and playback_token >= 0 \
+		and _voice_completion_states.has(playback_token):
+		var completion: VoicePlaybackCompletion = _voice_completion_states[playback_token]
+		completion._mark_finished()
+		_voice_completion_states.erase(playback_token)
 	voice_playback_event.emit(event)
 	if not event.is_current():
 		return false
 	_compatibility_voice_lifecycle_echo_pending += 1
-	match event.kind:
+	match kind:
 		VoicePlaybackEvent.Kind.STARTED:
-			voice_started.emit(event.character, event.asset)
+			voice_started.emit(event.get_character(), event.get_asset())
 		VoicePlaybackEvent.Kind.PROGRESS:
-			voice_progress.emit(event.position, event.duration)
+			voice_progress.emit(event.get_position(), event.get_duration())
 		VoicePlaybackEvent.Kind.FINISHED:
 			voice_finished.emit()
 	return event.is_current()
@@ -180,8 +215,8 @@ func emit_owned_dialogue_voice_started(
 	total_duration: float,
 	owner_validator: Callable,
 ) -> bool:
-	return _emit_owned_dialogue_event(
-		&"dialogue_voice_started", [total_duration], owner_validator)
+	return emit_dialogue_voice_playback_event(
+		DialogueVoicePlaybackEvent.started(total_duration, owner_validator))
 
 
 func emit_owned_dialogue_voice_progress(
@@ -189,13 +224,38 @@ func emit_owned_dialogue_voice_progress(
 	total_duration: float,
 	owner_validator: Callable,
 ) -> bool:
-	return _emit_owned_dialogue_event(
-		&"dialogue_voice_progress", [position, total_duration], owner_validator)
+	return emit_dialogue_voice_playback_event(
+		DialogueVoicePlaybackEvent.progress(
+			position, total_duration, owner_validator))
 
 
 func emit_owned_dialogue_voice_finished(owner_validator: Callable) -> bool:
-	return _emit_owned_dialogue_event(
-		&"dialogue_voice_finished", [], owner_validator)
+	return emit_dialogue_voice_playback_event(
+		DialogueVoicePlaybackEvent.finished(owner_validator))
+
+
+func emit_dialogue_voice_playback_event(
+	event: DialogueVoicePlaybackEvent,
+) -> bool:
+	if event == null or not event.is_current():
+		return false
+	dialogue_voice_playback_event.emit(event)
+	if not event.is_current():
+		return false
+	match event.get_kind():
+		DialogueVoicePlaybackEvent.Kind.STARTED:
+			_emit_owned_dialogue_event(
+				&"dialogue_voice_started", [event.get_total_duration()],
+				event.is_current)
+		DialogueVoicePlaybackEvent.Kind.PROGRESS:
+			_emit_owned_dialogue_event(
+				&"dialogue_voice_progress",
+				[event.get_position(), event.get_total_duration()],
+				event.is_current)
+		DialogueVoicePlaybackEvent.Kind.FINISHED:
+			_emit_owned_dialogue_event(
+				&"dialogue_voice_finished", [], event.is_current)
+	return event.is_current()
 
 
 func dialogue_voice_started_event_is_current(
@@ -351,20 +411,32 @@ func _on_voice_finished_dispatch_started() -> void:
 func _on_dialogue_voice_started_dispatch_started(
 	total_duration: float,
 ) -> void:
-	_mark_owned_dialogue_event_dispatch(
+	var owned_frame := _mark_owned_dialogue_event_dispatch(
 		&"dialogue_voice_started", [total_duration])
+	if owned_frame.is_empty():
+		dialogue_voice_playback_event.emit(
+			DialogueVoicePlaybackEvent.started(
+				total_duration, Callable(), true))
 
 
 func _on_dialogue_voice_progress_dispatch_started(
 	position: float,
 	total_duration: float,
 ) -> void:
-	_mark_owned_dialogue_event_dispatch(
+	var owned_frame := _mark_owned_dialogue_event_dispatch(
 		&"dialogue_voice_progress", [position, total_duration])
+	if owned_frame.is_empty():
+		dialogue_voice_playback_event.emit(
+			DialogueVoicePlaybackEvent.progress(
+				position, total_duration, Callable(), true))
 
 
 func _on_dialogue_voice_finished_dispatch_started() -> void:
-	_mark_owned_dialogue_event_dispatch(&"dialogue_voice_finished", [])
+	var owned_frame := _mark_owned_dialogue_event_dispatch(
+		&"dialogue_voice_finished", [])
+	if owned_frame.is_empty():
+		dialogue_voice_playback_event.emit(
+			DialogueVoicePlaybackEvent.finished(Callable(), true))
 
 
 func _on_show_dialogue_dispatch_started(
@@ -385,7 +457,21 @@ func _on_show_dialogue_dispatch_started(
 		_last_raw_show_segments = segments
 		# A direct legacy emit is translated once at the boundary. It carries no
 		# sidecar profile/provenance and cannot mutate an in-flight canonical request.
-		dialogue_requested.emit(DialogueRequest.new(character, segments, mode))
+		# It still needs a dispatch identity so Backlog enrichment and consecutive
+		# programmatic dialogues never collapse into the same command:-1 row.
+		_dialogue_request_serial += 1
+		dialogue_requested.emit(DialogueRequest.new(
+			character,
+			segments,
+			mode,
+			{},
+			false,
+			"",
+			{},
+			[],
+			"signal-bus:%d" % _dialogue_request_serial,
+			-1,
+		))
 
 
 func _on_advance_requested_dispatch_started() -> void:
@@ -608,6 +694,7 @@ signal se_stop(asset: String)
 signal voice_play(asset: String, character: String)
 signal voice_playback_requested(request: VoicePlaybackRequest)
 signal voice_playback_event(event: VoicePlaybackEvent)
+signal dialogue_voice_playback_event(event: DialogueVoicePlaybackEvent)
 signal system_se_play(asset: String)
 signal voice_started(character: String, asset: String)
 signal voice_finished()

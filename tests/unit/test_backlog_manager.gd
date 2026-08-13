@@ -31,6 +31,34 @@ func test_add_entry_stores_basic_fields():
 	assert_eq(entries[0]["character"], "sakura")
 	assert_eq(entries[0]["text"], "hello")
 	assert_eq(entries[0]["command_uid"], 0)
+	assert_eq(entries[0]["entry_id"], "command:0")
+
+
+func test_enrichment_updates_only_the_stable_entry_id():
+	_mgr.add_entry("a", _segs("first"), 10, func(): return {})
+	_mgr.add_entry("b", _segs("second"), 11, func(): return {})
+
+	var updated := _mgr.enrich_entry(
+		"command:10", _segs("[custom amp=2]first[/custom]"), ["custom"])
+
+	assert_true(updated)
+	assert_eq(_mgr.get_entries()[0]["text"], "first")
+	assert_eq(_mgr.get_entries()[1]["text"], "second",
+		"a delayed enrichment for A cannot rewrite the current B entry")
+
+
+func test_enrichment_can_arrive_before_canonical_entry_capture() -> void:
+	var updated := _mgr.enrich_entry(
+		"entry:early", _segs("[custom amp=2]visible[/custom]"), ["custom"])
+	assert_false(updated)
+
+	_mgr.add_entry(
+		"a", _segs("[custom amp=2]visible[/custom]"), 12,
+		func(): return {}, [], "entry:early")
+
+	assert_eq(_mgr.get_entries().size(), 1)
+	assert_eq(_mgr.get_entries()[0]["text"], "visible",
+		"subscriber order cannot turn enrichment into a duplicate backlog row")
 
 
 func test_add_entry_strips_inline_effect_markers():

@@ -355,7 +355,7 @@ func test_accumulated_nvl_moves_one_indicator_to_the_newest_endpoint() -> void:
 	)
 	_assert_indicator_at_last_line(label, second, INDICATOR_OFFSET)
 	assert_eq(
-		label.text,
+		_presenter._nvl_render_source,
 		"First NVL entry\nSecond NVL entry",
 	)
 
@@ -1804,7 +1804,7 @@ func test_typed_voice_progress_rejects_a_replaced_playback_owner() -> void:
 	StellaRuntime.voice_path = "res://examples/demo/audio/voice/"
 	var did_replace := [false]
 	var on_progress_early := func(event: VoicePlaybackEvent):
-		if event.kind != VoicePlaybackEvent.Kind.PROGRESS:
+		if event.get_kind() != VoicePlaybackEvent.Kind.PROGRESS:
 			return
 		if did_replace[0]:
 			return
@@ -1832,8 +1832,9 @@ func test_typed_voice_progress_rejects_a_replaced_playback_owner() -> void:
 	var accepted_low_progress: Array = []
 	var accepted_dialogue_progress: Array = []
 	var on_progress_late := func(event: VoicePlaybackEvent):
-		if event.kind == VoicePlaybackEvent.Kind.PROGRESS and event.is_current():
-			accepted_low_progress.append([event.position, event.duration])
+		if event.get_kind() == VoicePlaybackEvent.Kind.PROGRESS and event.is_current():
+			accepted_low_progress.append([
+				event.get_position(), event.get_duration()])
 	var on_dialogue_progress := func(position: float, duration: float):
 		accepted_dialogue_progress.append([position, duration])
 	SignalBus.voice_playback_event.connect(on_progress_late)
@@ -2419,7 +2420,7 @@ func test_nested_same_payload_raw_voice_is_a_distinct_typed_request() -> void:
 	var reentered := [false]
 	var ownership: Array[bool] = []
 	bus.voice_playback_requested.connect(func(request: VoicePlaybackRequest):
-		ownership.append(request.owner_validator.is_valid()))
+		ownership.append(request.has_owner_validator()))
 	bus.voice_play.connect(func(asset: String, character: String):
 		if reentered[0]:
 			return

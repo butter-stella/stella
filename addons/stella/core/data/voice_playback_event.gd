@@ -3,18 +3,46 @@ class_name VoicePlaybackEvent extends RefCounted
 
 enum Kind { STARTED, PROGRESS, FINISHED }
 
-var kind: int = Kind.STARTED
-var playback_token: int = -1
-var character: String = ""
-var asset: String = ""
-var position: float = 0.0
-var duration: float = 0.0
-var owner_validator: Callable
-var legacy_raw: bool = false
+var _kind: int = Kind.STARTED
+var _playback_token: int = -1
+var _character: String = ""
+var _asset: String = ""
+var _position: float = 0.0
+var _duration: float = 0.0
+var _owner_validator: Callable
+var _legacy_raw: bool = false
+
+
+func get_kind() -> int:
+	return _kind
+
+
+func get_playback_token() -> int:
+	return _playback_token
+
+
+func get_character() -> String:
+	return _character
+
+
+func get_asset() -> String:
+	return _asset
+
+
+func get_position() -> float:
+	return _position
+
+
+func get_duration() -> float:
+	return _duration
+
+
+func is_legacy_raw() -> bool:
+	return _legacy_raw
 
 
 func is_current() -> bool:
-	return not owner_validator.is_valid() or bool(owner_validator.call())
+	return not _owner_validator.is_valid() or bool(_owner_validator.call())
 
 
 static func started(
@@ -25,12 +53,12 @@ static func started(
 	p_legacy_raw: bool = false,
 ) -> VoicePlaybackEvent:
 	var event := VoicePlaybackEvent.new()
-	event.kind = Kind.STARTED
-	event.character = p_character
-	event.asset = p_asset
-	event.playback_token = p_token
-	event.owner_validator = p_owner
-	event.legacy_raw = p_legacy_raw
+	event._kind = Kind.STARTED
+	event._character = p_character
+	event._asset = p_asset
+	event._playback_token = p_token
+	event._owner_validator = p_owner
+	event._legacy_raw = p_legacy_raw
 	return event
 
 
@@ -42,12 +70,12 @@ static func progress(
 	p_legacy_raw: bool = false,
 ) -> VoicePlaybackEvent:
 	var event := VoicePlaybackEvent.new()
-	event.kind = Kind.PROGRESS
-	event.position = p_position
-	event.duration = p_duration
-	event.playback_token = p_token
-	event.owner_validator = p_owner
-	event.legacy_raw = p_legacy_raw
+	event._kind = Kind.PROGRESS
+	event._position = p_position
+	event._duration = p_duration
+	event._playback_token = p_token
+	event._owner_validator = p_owner
+	event._legacy_raw = p_legacy_raw
 	return event
 
 
@@ -57,8 +85,8 @@ static func finished(
 	p_legacy_raw: bool = false,
 ) -> VoicePlaybackEvent:
 	var event := VoicePlaybackEvent.new()
-	event.kind = Kind.FINISHED
-	event.playback_token = p_token
-	event.owner_validator = p_owner
-	event.legacy_raw = p_legacy_raw
+	event._kind = Kind.FINISHED
+	event._playback_token = p_token
+	event._owner_validator = p_owner
+	event._legacy_raw = p_legacy_raw
 	return event

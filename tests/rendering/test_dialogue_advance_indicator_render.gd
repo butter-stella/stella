@@ -41,6 +41,8 @@ func test_indicator_pixels_follow_the_final_rendered_glyph() -> void:
 	label.scroll_active = false
 	label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	label.add_theme_font_size_override(&"normal_font_size", 20)
+	label.add_theme_color_override(&"default_color", Color(0.0, 1.0, 0.0, 1.0))
+	label.add_theme_color_override(&"font_color", Color(0.0, 1.0, 0.0, 1.0))
 	label.text = "PIXEL"
 	label.visible_characters = -1
 	host.add_child(label)
@@ -64,16 +66,22 @@ func test_indicator_pixels_follow_the_final_rendered_glyph() -> void:
 	await RenderingServer.frame_post_draw
 	var image := viewport.get_texture().get_image()
 	var pink_pixels: Array[Vector2i] = []
+	var glyph_pixels: Array[Vector2i] = []
 	for y in range(image.get_height()):
 		for x in range(image.get_width()):
 			var pixel := image.get_pixel(x, y)
 			if pixel.r > 0.75 and pixel.b > 0.35 \
 				and pixel.g < 0.5 and pixel.a > 0.25:
 				pink_pixels.append(Vector2i(x, y))
+			if pixel.g > 0.75 and pixel.r < 0.3 \
+				and pixel.b < 0.3 and pixel.a > 0.25:
+				glyph_pixels.append(Vector2i(x, y))
 
 	assert_gte(pink_pixels.size(), 4,
 		"the framebuffer must contain the configured pink marker")
-	if pink_pixels.is_empty():
+	assert_gte(glyph_pixels.size(), 8,
+		"the framebuffer must independently contain the green dialogue glyphs")
+	if pink_pixels.is_empty() or glyph_pixels.is_empty():
 		return
 	var min_x := pink_pixels[0].x
 	var max_x := pink_pixels[0].x
@@ -84,13 +92,21 @@ func test_indicator_pixels_follow_the_final_rendered_glyph() -> void:
 		max_x = maxi(max_x, point.x)
 		min_y = mini(min_y, point.y)
 		max_y = maxi(max_y, point.y)
-	var expected := Vector2i(roundi(indicator.position.x), roundi(indicator.position.y))
-	assert_almost_eq(float(min_x), float(expected.x), 1.0,
-		"marker pixels start at the renderer-owned endpoint")
-	assert_almost_eq(float(min_y), float(expected.y - 2), 1.0,
-		"the texture is vertically centered on the final line")
 	assert_lte(max_x - min_x, 4)
 	assert_lte(max_y - min_y, 4)
-	var visible_end := label.position.x + label.get_visible_content_rect().end.x
-	assert_gte(float(min_x), visible_end - 1.5,
-		"the marker pixels must follow, rather than overlap, the final glyph")
+	var glyph_max_x := glyph_pixels[0].x
+	var glyph_min_y := glyph_pixels[0].y
+	var glyph_max_y := glyph_pixels[0].y
+	for point in glyph_pixels:
+		glyph_max_x = maxi(glyph_max_x, point.x)
+		glyph_min_y = mini(glyph_min_y, point.y)
+		glyph_max_y = maxi(glyph_max_y, point.y)
+	var horizontal_gap := min_x - glyph_max_x
+	assert_gte(horizontal_gap, 0,
+		"marker framebuffer pixels must not overlap the final glyph")
+	assert_lte(horizontal_gap, 4,
+		"marker framebuffer pixels must stay adjacent to the final glyph")
+	var glyph_mid_y := (glyph_min_y + glyph_max_y) / 2.0
+	var marker_mid_y := (min_y + max_y) / 2.0
+	assert_almost_eq(marker_mid_y, glyph_mid_y, 3.0,
+		"marker pixels are vertically centered against independently drawn glyphs")

@@ -418,16 +418,13 @@ func _on_dialogue_for_backlog(
 ) -> void:
 	if engine == null or engine.context == null:
 		return
-	var cmd = engine.context.current_command()
-	var uid: int = -1
-	if cmd != null:
-		uid = cmd.uid
 	backlog_manager.add_entry(
-		request.character,
-		request.segments,
-		uid,
+		request.get_character(),
+		request.get_segments(),
+		request.get_command_uid(),
 		_capture_rollback_snapshot,
 		effect_names,
+		request.get_entry_id(),
 	)
 
 
@@ -437,7 +434,8 @@ func _on_dialogue_backlog_effects_resolved(
 ) -> void:
 	if effect_names.is_empty():
 		return
-	_on_dialogue_for_backlog(request, effect_names)
+	backlog_manager.enrich_entry(
+		request.get_entry_id(), request.get_segments(), effect_names)
 
 
 ## Capture a rollback snapshot every time ChoiceHandler surfaces a menu.
