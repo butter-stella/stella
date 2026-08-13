@@ -7,9 +7,9 @@ var title: String = ""
 ## scenarios keep their full resource path so equal basenames in different
 ## directories never share read history.
 var source_path: String = ""
-## Semantic-token fingerprint for fail-closed read history. Command UIDs are
-## deterministic only within one parsed source version; changing authored
-## content must therefore produce a different persistent scenario identity.
+## Normalized semantic-IR fingerprint for fail-closed read history. Command
+## UIDs are deterministic only within one parsed behavior version; comments and
+## equivalent spelling retain history while authored behavior changes do not.
 var content_fingerprint: String = ""
 var scenes: Array = []  # Array[SceneData]
 ## Chapters in declaration order (issue #97). Each chapter owns one or more

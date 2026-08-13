@@ -187,7 +187,7 @@ func _on_dialogue_requested(request: DialogueRequest) -> void:
 	# 若该次显示被关闭/取消，则改用 request.abort()
 ```
 
-`advance()` / `abort()` 只有第一次调用成功，迟到的另一结果返回 `false`，也不能影响替换后的 request。正常 `advance()` 会先由 Core 验证 owner 并提交已读，再广播兼容通知；`abort()` 会取消当前 scenario context，不会跳过当前行继续执行下一条。`show_dialogue(character, segments, mode)` 与 `advance_requested()` 仍会作为扩展兼容通知发出，但不拥有 DialogueHandler 的命令完成权；没有 pending 对话时，内置输入会用旧 advance 通知解除 `@wait click`。
+`advance()` / `abort()` 只有第一次调用成功，迟到的另一结果返回 `false`，也不能影响替换后的 request。正常 `advance()` 会先由 Core 验证 owner 并提交已读，再广播兼容通知；`abort()` 会取消当前 scenario context，不会跳过当前行继续执行下一条。自定义 Presenter 只能保留一个可见 owner；若 typed request 被另一条 typed/raw SHOW 替换，或 hard hide/场景退出令它不可达，必须在丢失引用前调用旧 request 的 `abort()`。`show_dialogue(character, segments, mode)` 与 `advance_requested()` 仍会作为扩展兼容通知发出，但不拥有 DialogueHandler 的命令完成权；没有 pending 对话时，内置输入会用旧 advance 通知解除 `@wait click`。
 
 直接组装 `CommandRegistry` 的扩展需把同一个已读管理器注入 handler：
 

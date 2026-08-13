@@ -1628,6 +1628,74 @@ func test_newest_queued_request_aborts_displaced_activation() -> void:
 	latest.abort()
 
 
+func test_typed_replacement_aborts_visible_handler_owner() -> void:
+	var read_flags := ReadFlagManager.new()
+	var handler := DialogueHandler.new(read_flags)
+	var first_data := _single_dialogue_scenario("first_owner", "First owner")
+	var second_data := _single_dialogue_scenario("second_owner", "Second owner")
+	var first_context := ScenarioContext.new(first_data)
+	var second_context := ScenarioContext.new(second_data)
+	var first_command: CommandData = first_data.scenes[0].commands[0]
+	var second_command: CommandData = second_data.scenes[0].commands[0]
+
+	handler.execute(first_command, first_context)
+	var first_activation: DialogueActivation = (
+		_presenter._current_dialogue_activation)
+	assert_not_null(first_activation)
+	assert_true(first_activation.is_pending())
+
+	handler.execute(second_command, second_context)
+	var second_activation: DialogueActivation = (
+		_presenter._current_dialogue_activation)
+
+	assert_eq(first_activation.get_outcome(), DialogueActivation.Outcome.ABORTED,
+		"replacing visible typed UI must release its original Handler")
+	assert_true(first_context.is_finished,
+		"the displaced command is cancelled instead of left suspended")
+	assert_not_null(second_activation)
+	assert_true(second_activation.is_pending())
+	assert_false(read_flags.is_dialogue_read(
+		first_data.get_read_identity(), "start", "start", first_command.uid, 0))
+	second_activation.abort()
+
+
+func test_raw_replacement_aborts_visible_typed_owner() -> void:
+	var read_flags := ReadFlagManager.new()
+	var data := _single_dialogue_scenario("raw_replacement", "Typed")
+	var context := ScenarioContext.new(data)
+	var handler := DialogueHandler.new(read_flags)
+	handler.execute(data.scenes[0].commands[0], context)
+	var activation: DialogueActivation = _presenter._current_dialogue_activation
+	assert_same(_presenter._current_dialogue_activation, activation)
+
+	SignalBus.show_dialogue.emit("", [_segment("Raw replacement")], "adv")
+
+	assert_eq(activation.get_outcome(), DialogueActivation.Outcome.ABORTED)
+	assert_true(context.is_finished,
+		"the raw replacement must release the displaced Core waiter")
+	assert_null(_presenter._current_dialogue_activation,
+		"a raw compatibility SHOW has no Core owner to inherit")
+	assert_eq(_text_label(_presenter).text, "Raw replacement")
+
+
+func test_hide_aborts_visible_typed_owner() -> void:
+	var read_flags := ReadFlagManager.new()
+	var data := _single_dialogue_scenario("hide_owner", "Owned before hide")
+	var context := ScenarioContext.new(data)
+	var handler := DialogueHandler.new(read_flags)
+	handler.execute(data.scenes[0].commands[0], context)
+	var activation: DialogueActivation = _presenter._current_dialogue_activation
+	assert_same(_presenter._current_dialogue_activation, activation)
+
+	SignalBus.hide_dialogue.emit()
+
+	assert_eq(activation.get_outcome(), DialogueActivation.Outcome.ABORTED)
+	assert_true(context.is_finished,
+		"hard hide must release the current Core waiter")
+	assert_null(_presenter._current_dialogue_activation)
+	assert_false(_presenter.visible)
+
+
 func test_finalize_signal_cannot_retire_a_synchronously_shown_replacement() -> void:
 	_presenter._char_interval = 0.05
 	SignalBus.emit_show_dialogue(
@@ -2558,6 +2626,20 @@ func _scene_profile(animation: String = "none") -> Dictionary:
 
 func _segment(text: String) -> Dictionary:
 	return {"text": text, "voice": "", "expression": ""}
+
+
+func _single_dialogue_scenario(scenario_id: String, text: String) -> ScenarioData:
+	var data := ScenarioData.new()
+	data.id = scenario_id
+	var scene := SceneData.new()
+	scene.id = "start"
+	var command := CommandData.new()
+	command.type = "dialogue"
+	command.params = {"text": text}
+	scene.commands = [command]
+	data.scenes = [scene]
+	data.assign_command_uids()
+	return data
 
 
 func _show_and_wait_for_indicator(

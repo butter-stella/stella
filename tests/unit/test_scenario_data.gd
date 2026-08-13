@@ -206,6 +206,48 @@ func test_content_change_invalidates_position_based_read_identity() -> void:
 	), "an inserted command must fail closed instead of inheriting B's old flag")
 
 
+func test_semantic_fingerprint_ignores_comment_whitespace_and_spelling() -> void:
+	var original := DslParser.parse(DslLexer.tokenize("""@chapter route \"Route\"
+@scene start
+@if flag
+@bg room cut 0 # first note
+@end"""), "main", "res://story/main.stla")
+	var equivalent := DslParser.parse(DslLexer.tokenize("""// shifted comment
+
+@chapter   route “Route”
+@scene   start
+@if flag
+@bg   room   cut   0.0   # revised note
+@end"""), "main", "res://story/main.stla")
+
+	assert_eq(original.diagnostics, [])
+	assert_eq(equivalent.diagnostics, [])
+	assert_eq(original.get_read_identity(), equivalent.get_read_identity(),
+		"non-semantic edits must retain read history even when @if lines move")
+
+
+func test_semantic_fingerprint_ignores_documented_inline_comments() -> void:
+	var original := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@bg room cut 0 // first note"""), "main", "res://story/main.stla")
+	var equivalent := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@bg room cut 0 // revised note"""), "main", "res://story/main.stla")
+
+	assert_eq(original.get_read_identity(), equivalent.get_read_identity())
+
+
+func test_semantic_fingerprint_changes_for_authored_behavior() -> void:
+	var original := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@bg room cut 0"""), "main", "res://story/main.stla")
+	var changed := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@bg hallway cut 0"""), "main", "res://story/main.stla")
+
+	assert_ne(original.get_read_identity(), changed.get_read_identity())
+
+
 # ─── ChapterData (issue #97) ───
 
 func test_chapter_data_default_fields():

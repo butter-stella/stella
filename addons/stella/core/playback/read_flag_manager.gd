@@ -3,6 +3,12 @@
 class_name ReadFlagManager extends RefCounted
 
 const SNAPSHOT_VERSION := 2
+## JSON numbers above 2^53 - 1 cannot round-trip every adjacent integer through
+## the float representation used by Godot's save parser. Command UIDs are
+## non-negative ordinals, so persisted values outside this exact domain are
+## corrupt even when float(value) happens to have no fractional component.
+const MAX_JSON_SAFE_INTEGER := 9007199254740991
+const FIRST_UNSAFE_JSON_INTEGER_FLOAT := 9007199254740992.0
 
 ## JSON-encoded [scenario_identity, scene_id, command_uid] -> structured record.
 ## Encoding the tuple avoids the delimiter collisions in the legacy
@@ -138,10 +144,20 @@ func _validate_v2(records: Array, legacy_records: Array) -> bool:
 
 
 func _is_json_integer(value: Variant) -> bool:
-	if not (value is int or value is float):
+	if value is int:
+		return value >= 0 and value <= MAX_JSON_SAFE_INTEGER
+	if not value is float:
 		return false
-	var numeric := float(value)
-	return is_finite(numeric) and numeric == floor(numeric)
+	var numeric: float = value
+	if (
+		not is_finite(numeric)
+		or numeric < 0.0
+		or numeric >= FIRST_UNSAFE_JSON_INTEGER_FLOAT
+		or numeric != floor(numeric)
+	):
+		return false
+	var narrowed := int(numeric)
+	return float(narrowed) == numeric
 
 
 func _restore_legacy(snapshot: Dictionary) -> void:

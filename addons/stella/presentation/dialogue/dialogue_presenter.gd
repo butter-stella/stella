@@ -422,6 +422,9 @@ func _retire_dialogue_lifecycle(
 ) -> bool:
 	var owner_gen := _dialogue_gen
 	var queue_gen := _playback_queue_gen
+	_abort_current_dialogue_activation()
+	if owner_gen != _dialogue_gen or queue_gen != _playback_queue_gen:
+		return false
 	if not _retire_logical_voice_session_internal(
 		owner_gen, queue_gen, allow_detached
 	):
@@ -1034,6 +1037,17 @@ func _abort_dialogue_request(request: Dictionary) -> void:
 		activation.abort()
 
 
+## The Presenter owns at most one visible typed request. Any boundary that
+## replaces or hides that presentation must resolve the old Core waiter before
+## dropping its reference. Clear first so an abort callback may synchronously
+## publish a replacement without this retirement path cancelling the newcomer.
+func _abort_current_dialogue_activation() -> void:
+	var activation := _current_dialogue_activation
+	_current_dialogue_activation = null
+	if activation != null:
+		activation.abort()
+
+
 ## Compatibility for tests/extensions that called the old presenter callback
 ## directly. Runtime delivery always enters through dialogue_requested.
 func _on_show_dialogue(character: String, segments: Array, mode: String) -> void:
@@ -1068,6 +1082,9 @@ func _accept_dialogue_request(request: Dictionary) -> void:
 func _retire_dialogue_for_replacement() -> bool:
 	var owner_gen := _dialogue_gen
 	var queue_gen := _playback_queue_gen
+	_abort_current_dialogue_activation()
+	if owner_gen != _dialogue_gen or queue_gen != _playback_queue_gen:
+		return false
 	# A newer SHOW wins immediately: revoke undispatched cues and stop only exact
 	# transitions already acknowledged for the retiring line. Never fold its
 	# remaining authored cues into the replacement's stage state.

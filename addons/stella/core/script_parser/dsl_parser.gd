@@ -32,7 +32,6 @@ static func parse(
 	var data = ScenarioData.new()
 	data.id = scenario_id
 	data.source_path = source_path
-	data.content_fingerprint = _fingerprint_tokens(tokens)
 	var profile_collection := DialogueProfileParser.collect(tokens, source_path)
 	var dialogue_profiles: Dictionary = profile_collection["profiles"]
 	_register_dialogue_profiles(data, dialogue_profiles)
@@ -503,20 +502,137 @@ static func parse(
 	# from the in-line scan are already line-ordered, but post-parse errors
 	# (empty chapter) get appended at the end and need reordering.
 	data.diagnostics.sort_custom(func(a, b): return int(a.get("line", 0)) < int(b.get("line", 0)))
+	data.content_fingerprint = _fingerprint_scenario(data)
 
 	return data
 
 
-## Hash semantic token order instead of line numbers. Blank/comment-only source
-## edits that cannot shift command UIDs keep history, while inserting, moving,
-## deleting, or changing an authored command invalidates it fail-closed.
-static func _fingerprint_tokens(tokens: Array) -> String:
-	var fingerprint_input: Array = []
-	for value in tokens:
-		if value is DslToken:
-			var token: DslToken = value
-			fingerprint_input.append([token.type, token.raw_text])
-	return JSON.stringify(fingerprint_input).sha256_text()
+## Hash normalized validated IR, not source spelling. Comments, line numbers,
+## equivalent whitespace/quotes/numbers, and parser-generated condition scene
+## names cannot change runtime behavior and therefore keep read history. Any
+## change to the resulting commands, profiles, chapters, or scene topology
+## changes the identity and fails closed.
+static func _fingerprint_scenario(data: ScenarioData) -> String:
+	var synthetic_scene_ids: Dictionary = {}
+	var synthetic_index := 0
+	for scene_value in data.scenes:
+		var scene: SceneData = scene_value
+		if (
+			scene.declared_line == 0
+			and (
+				scene.id.begins_with("__if_")
+				or scene.id.begins_with("__elif_")
+			)
+		):
+			synthetic_scene_ids[scene.id] = "@synthetic:%d" % synthetic_index
+			synthetic_index += 1
+
+	var chapters: Array = []
+	for chapter_value in data.chapters:
+		var chapter: ChapterData = chapter_value
+		chapters.append([
+			chapter.id,
+			chapter.display_name,
+			_semantic_value(chapter.scene_ids, synthetic_scene_ids),
+		])
+
+	var scenes: Array = []
+	for scene_value in data.scenes:
+		var scene: SceneData = scene_value
+		var commands: Array = []
+		for command_value in scene.commands:
+			if command_value is CommandData:
+				commands.append(_semantic_command(
+					command_value, synthetic_scene_ids))
+		scenes.append([
+			_normalize_scene_reference(scene.id, synthetic_scene_ids),
+			scene.chapter_id,
+			commands,
+			_semantic_value(
+				scene.dialogue_mode_events_on_exit, synthetic_scene_ids),
+		])
+
+	var semantic_ir := [
+		["chapters", chapters],
+		["dialogue_profiles", _semantic_value(
+			data.dialogue_profiles, synthetic_scene_ids)],
+		["scenes", scenes],
+	]
+	return JSON.stringify(semantic_ir).sha256_text()
+
+
+static func _semantic_command(
+	command: CommandData,
+	synthetic_scene_ids: Dictionary,
+) -> Array:
+	return [
+		command.type,
+		_semantic_value(command.params, synthetic_scene_ids),
+		_semantic_value(
+			command.dialogue_mode_events_before, synthetic_scene_ids),
+		_semantic_value(
+			command.dialogue_mode_events_after, synthetic_scene_ids),
+		_semantic_value(
+			command.dialogue_mode_events_on_true_branch, synthetic_scene_ids),
+		_semantic_value(
+			command.dialogue_mode_events_on_false_branch, synthetic_scene_ids),
+	]
+
+
+static func _semantic_value(
+	value: Variant,
+	synthetic_scene_ids: Dictionary,
+	key_hint: String = "",
+) -> Variant:
+	match typeof(value):
+		TYPE_NIL, TYPE_BOOL, TYPE_INT:
+			return value
+		TYPE_FLOAT:
+			var numeric: float = value
+			return 0.0 if numeric == 0.0 else numeric
+		TYPE_STRING, TYPE_STRING_NAME:
+			var text := String(value)
+			if key_hint in ["target", "then_jump", "else_jump", "jump"]:
+				return _normalize_scene_reference(text, synthetic_scene_ids)
+			return text
+		TYPE_VECTOR2:
+			var vector: Vector2 = value
+			return ["Vector2", vector.x, vector.y]
+		TYPE_VECTOR4:
+			var vector: Vector4 = value
+			return ["Vector4", vector.x, vector.y, vector.z, vector.w]
+		TYPE_COLOR:
+			var color: Color = value
+			return ["Color", color.r, color.g, color.b, color.a]
+		TYPE_ARRAY:
+			var items: Array = []
+			for item in value:
+				items.append(_semantic_value(item, synthetic_scene_ids))
+			return items
+		TYPE_DICTIONARY:
+			var dictionary: Dictionary = value
+			var keys := dictionary.keys()
+			keys.sort_custom(func(a, b): return String(a) < String(b))
+			var entries: Array = []
+			for key_value in keys:
+				var key := String(key_value)
+				entries.append([
+					key,
+					_semantic_value(
+						dictionary[key_value], synthetic_scene_ids, key),
+				])
+			return entries
+		TYPE_OBJECT:
+			if value is CommandData:
+				return _semantic_command(value, synthetic_scene_ids)
+	return ["unsupported", type_string(typeof(value))]
+
+
+static func _normalize_scene_reference(
+	scene_id: String,
+	synthetic_scene_ids: Dictionary,
+) -> String:
+	return String(synthetic_scene_ids.get(scene_id, scene_id))
 
 
 static func _record_parallel_blocking_diagnostic(

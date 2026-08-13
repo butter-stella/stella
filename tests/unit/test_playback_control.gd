@@ -109,6 +109,58 @@ func test_malformed_v2_is_rejected_atomically() -> void:
 		"a malformed snapshot cannot be partially applied")
 
 
+func test_v2_rejects_out_of_range_json_uids_atomically() -> void:
+	for invalid_uid in [
+		-1,
+		-1e100,
+		1e100,
+		9007199254740992,
+		9007199254740992.0,
+	]:
+		var rfm := ReadFlagManager.new()
+		rfm.restore_snapshot({
+			"version": 2,
+			"flags": [
+				{"scenario": "valid", "scene": "start", "command_uid": 1},
+				{
+					"scenario": "invalid",
+					"scene": "start",
+					"command_uid": invalid_uid,
+				},
+			],
+		})
+
+		assert_push_error("ReadFlagManager: malformed v2 snapshot record")
+		assert_false(rfm.is_read("valid", "start", 1),
+			"one invalid UID must reject the whole snapshot")
+
+
+func test_v2_accepts_exact_json_integer_boundaries() -> void:
+	var rfm := ReadFlagManager.new()
+	var encoded := JSON.stringify({
+		"version": 2,
+		"flags": [
+			{"scenario": "zero", "scene": "start", "command_uid": 0.0},
+			{
+				"scenario": "large-float",
+				"scene": "start",
+				"command_uid": 9007199254740990.0,
+			},
+			{
+				"scenario": "max-int",
+				"scene": "start",
+				"command_uid": 9007199254740991,
+			},
+		],
+	})
+	var decoded: Dictionary = JSON.parse_string(encoded)
+	rfm.restore_snapshot(decoded)
+
+	assert_true(rfm.is_read("zero", "start", 0))
+	assert_true(rfm.is_read("large-float", "start", 9007199254740990))
+	assert_true(rfm.is_read("max-int", "start", 9007199254740991))
+
+
 func test_equal_basenames_keep_distinct_canonical_read_history() -> void:
 	var rfm := ReadFlagManager.new()
 	rfm.mark_dialogue_read("path:res://route_a/main.stla", "start", 7)
