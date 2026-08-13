@@ -16,6 +16,11 @@ const NAVIGATION_TITLE_SCENE = (
 	"res://tests/fixtures/startup/cleared_inherited_script_title.tscn"
 )
 const NAVIGATION_GAME_SCENE = "res://tests/fixtures/startup/game.tscn"
+const UID_GAME_SCENE = "uid://dhvclqgbx6gpb"
+const UID_GAME_SCENE_PATH = "res://addons/stella/scenes/game.tscn"
+const UID_TITLE_SCENE = "uid://cfdiw46c5l2k"
+const UID_OVERLAY_SCENE = "uid://cnltnlv0oq0m0"
+const UID_OVERLAY_SCENE_PATH = "res://tests/fixtures/startup/overlay.tscn"
 const NAVIGATION_SCENARIO = (
 	"res://tests/fixtures/scenarios/dialogue/presentation_profile.stla"
 )
@@ -212,6 +217,14 @@ func _probe_navigation_interleaving() -> void:
 	StellaRuntime.quick_save()
 	StellaRuntime._cancel_active_gameplay()
 
+	await _probe_failed_navigation_preserves_owner(failures)
+	if failures.is_empty():
+		await _probe_uid_navigation(failures)
+	if failures.is_empty():
+		await _probe_scenario_signal_reentrancy(failures)
+	if failures.is_empty():
+		await _probe_start_scenario_ownership(failures)
+
 	var later_gameplay_facades: Array[Dictionary] = [
 		{"name": "start_game", "call": _invoke_navigation_start_game},
 		{"name": "load_game", "call": _invoke_navigation_load_game},
@@ -273,6 +286,215 @@ func _probe_navigation_interleaving() -> void:
 	_finish("navigation-interleaving-ok", failures)
 
 
+func _probe_failed_navigation_preserves_owner(
+	failures: PackedStringArray,
+) -> void:
+	StellaRuntime._prepare_scenario(NAVIGATION_SCENARIO)
+	StellaRuntime._last_scenario_path = NAVIGATION_SCENARIO
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	var active_context: ScenarioContext = StellaRuntime.engine.context
+	if active_context == null:
+		failures.append("could not establish the active context for failure probes")
+		return
+	var active_scene := get_tree().current_scene
+	var active_scene_path := (
+		active_scene.scene_file_path if active_scene != null else ""
+	)
+	StellaRuntime.start_game(
+		NAVIGATION_SCENARIO,
+		"res://tests/fixtures/startup/missing_game_target.tscn",
+	)
+	await get_tree().process_frame
+	if StellaRuntime.engine.context != active_context or active_context.is_finished:
+		failures.append("missing game target destroyed the active context")
+	if get_tree().current_scene.scene_file_path != active_scene_path:
+		failures.append("missing game target replaced the active scene")
+	if StellaRuntime.game_state.current_state != GameStateMachine.State.PLAYING:
+		failures.append("missing game target changed active game state")
+	if StellaRuntime._last_scenario_path != NAVIGATION_SCENARIO:
+		failures.append("missing game target changed the active scenario path")
+
+	StellaRuntime.start_game(
+		"res://tests/fixtures/scenarios/missing_navigation_scenario.stla",
+		NAVIGATION_GAME_SCENE,
+	)
+	await get_tree().process_frame
+	if StellaRuntime.engine.context != active_context or active_context.is_finished:
+		failures.append("missing scenario destroyed the active context")
+
+	var invalid_save_slot := NAVIGATION_SAVE_SLOT + 1
+	var invalid_save_path := (
+		StellaRuntime.save_manager.save_dir
+		+ "save_%d.json" % invalid_save_slot
+	)
+	var invalid_save := FileAccess.open(invalid_save_path, FileAccess.WRITE)
+	if invalid_save == null:
+		failures.append("could not create the invalid save fixture")
+	else:
+		invalid_save.store_string('{"scenario_context":"invalid","timestamp":1}')
+		invalid_save.close()
+		var invalid_load_result: Variant = await StellaRuntime.load_game(
+			invalid_save_slot,
+			NAVIGATION_SCENARIO,
+			NAVIGATION_GAME_SCENE,
+		)
+		if invalid_load_result != false:
+			failures.append("invalid save was accepted by load_game")
+		await get_tree().process_frame
+		if StellaRuntime.engine.context != active_context or active_context.is_finished:
+			failures.append("invalid save destroyed the active context")
+		StellaRuntime.delete_save(invalid_save_slot)
+
+	StellaRuntime._cancel_active_gameplay()
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.TITLE)
+	var title_scene := get_tree().current_scene
+	var title_scene_path := title_scene.scene_file_path if title_scene != null else ""
+	StellaRuntime.start_game(
+		NAVIGATION_SCENARIO,
+		"res://tests/fixtures/startup/missing_title_side_game.tscn",
+	)
+	await get_tree().process_frame
+	if StellaRuntime.engine.context != null:
+		failures.append("failed title-side start created a context")
+	if get_tree().current_scene.scene_file_path != title_scene_path:
+		failures.append("failed title-side start replaced the title scene")
+	if StellaRuntime.game_state.current_state != GameStateMachine.State.TITLE:
+		failures.append("failed title-side start left TITLE state")
+	if not StellaRuntime._navigation_kind.is_empty():
+		failures.append("failed preflight acquired navigation ownership")
+
+
+func _probe_uid_navigation(failures: PackedStringArray) -> void:
+	if StellaRuntime._canonical_resource_path(UID_GAME_SCENE) != UID_GAME_SCENE_PATH:
+		failures.append("game UID did not resolve to its canonical scene")
+		return
+	if StellaRuntime._canonical_resource_path(UID_TITLE_SCENE) != NAVIGATION_TITLE_SCENE:
+		failures.append("title UID did not resolve to its canonical scene")
+		return
+	if StellaRuntime._canonical_resource_path(UID_OVERLAY_SCENE) != UID_OVERLAY_SCENE_PATH:
+		failures.append("overlay UID did not resolve to its canonical scene")
+		return
+
+	# Supersede a UID game request before its scene_changed continuation runs.
+	# The pending slot must compare canonical paths and release for the title.
+	StellaRuntime.title_scene_path = UID_TITLE_SCENE
+	StellaRuntime.start_game(NAVIGATION_SCENARIO, UID_GAME_SCENE)
+	StellaRuntime.return_to_title()
+	if not await _wait_for_navigation_destination(
+		NAVIGATION_TITLE_SCENE,
+		GameStateMachine.State.TITLE,
+		false,
+	):
+		failures.append("title could not supersede a pending UID game request")
+		return
+
+	await StellaRuntime.start_game(NAVIGATION_SCENARIO, UID_GAME_SCENE)
+	if not await _wait_for_navigation_destination(
+		UID_GAME_SCENE_PATH,
+		GameStateMachine.State.PLAYING,
+		true,
+	):
+		failures.append("UID game destination did not start a scenario")
+		return
+
+	StellaRuntime.title_scene_path = UID_TITLE_SCENE
+	StellaRuntime.return_to_title()
+	if not await _wait_for_navigation_destination(
+		NAVIGATION_TITLE_SCENE,
+		GameStateMachine.State.TITLE,
+		false,
+	):
+		failures.append("UID title destination did not complete")
+		return
+
+	var original_settings_scene: String = StellaRuntime.config.settings_scene
+	StellaRuntime.config.settings_scene = UID_OVERLAY_SCENE
+	StellaRuntime.show_settings()
+	var overlay := StellaRuntime._current_overlay
+	if overlay == null or overlay.scene_file_path != UID_OVERLAY_SCENE_PATH:
+		failures.append("UID overlay destination did not instantiate canonically")
+	if StellaRuntime.game_state.current_state != GameStateMachine.State.SETTINGS:
+		failures.append("UID overlay did not commit SETTINGS state")
+	StellaRuntime.close_overlay()
+	StellaRuntime.config.settings_scene = original_settings_scene
+	await get_tree().process_frame
+
+
+func _probe_scenario_signal_reentrancy(
+	failures: PackedStringArray,
+) -> void:
+	var old_scenario_path := "user://stella_reentrant_old.stla"
+	var file := FileAccess.open(old_scenario_path, FileAccess.WRITE)
+	if file == null:
+		failures.append("could not create the reentrant scenario fixture")
+		return
+	file.store_string("@chapter reentrant\n@scene old_reentrant\n@bg stale\n")
+	file.close()
+
+	var old_ended: Array[String] = []
+	var old_scene_events: Array[String] = []
+	var ended_listener := func(id: String) -> void:
+		if id == "stella_reentrant_old":
+			old_ended.append(id)
+	var scene_listener := func(id: String) -> void:
+		if id == "old_reentrant":
+			old_scene_events.append(id)
+	var started_listener := func(id: String) -> void:
+		if id == "stella_reentrant_old":
+			StellaRuntime.start_game(NAVIGATION_SCENARIO, NAVIGATION_GAME_SCENE)
+	StellaRuntime.engine.scenario_ended.connect(ended_listener)
+	StellaRuntime.engine.scene_changed.connect(scene_listener)
+	SignalBus.scenario_started_event.connect(started_listener, CONNECT_ONE_SHOT)
+
+	StellaRuntime.start_scenario(old_scenario_path)
+	if not await _wait_for_navigation_destination(
+		NAVIGATION_GAME_SCENE,
+		GameStateMachine.State.PLAYING,
+		true,
+	):
+		failures.append("reentrant scenario_started navigation did not win")
+	if not old_ended.is_empty():
+		failures.append("cancelled run emitted scenario_ended")
+	if not old_scene_events.is_empty():
+		failures.append("cancelled run emitted scene_changed after reentrancy")
+	if (
+		StellaRuntime.engine.context == null
+		or StellaRuntime.engine.context.scenario_data.id
+			!= NAVIGATION_SCENARIO.get_file().get_basename()
+	):
+		failures.append("stale lifecycle event replaced the newer context")
+
+	if StellaRuntime.engine.scenario_ended.is_connected(ended_listener):
+		StellaRuntime.engine.scenario_ended.disconnect(ended_listener)
+	if StellaRuntime.engine.scene_changed.is_connected(scene_listener):
+		StellaRuntime.engine.scene_changed.disconnect(scene_listener)
+	if SignalBus.scenario_started_event.is_connected(started_listener):
+		SignalBus.scenario_started_event.disconnect(started_listener)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(old_scenario_path))
+
+
+func _probe_start_scenario_ownership(failures: PackedStringArray) -> void:
+	var current_scene := get_tree().current_scene
+	var current_path := current_scene.scene_file_path if current_scene != null else ""
+	StellaRuntime.title_scene_path = NAVIGATION_TITLE_SCENE
+	StellaRuntime.return_to_title()
+	StellaRuntime.start_scenario(NAVIGATION_SCENARIO)
+	for _frame_index in range(120):
+		if StellaRuntime._navigation_kind.is_empty():
+			break
+		await get_tree().process_frame
+	if StellaRuntime.engine.context == null:
+		failures.append("start_scenario lost to an older return transaction")
+	elif StellaRuntime.engine.context.scenario_data.id != (
+		NAVIGATION_SCENARIO.get_file().get_basename()
+	):
+		failures.append("start_scenario installed the wrong context")
+	if get_tree().current_scene.scene_file_path != current_path:
+		failures.append("stale return replaced start_scenario's current scene")
+	if StellaRuntime.game_state.current_state != GameStateMachine.State.PLAYING:
+		failures.append("start_scenario did not retain PLAYING state")
+
+
 func _invoke_navigation_start_game() -> void:
 	await StellaRuntime.start_game(NAVIGATION_SCENARIO, NAVIGATION_GAME_SCENE)
 
@@ -326,6 +548,14 @@ func _write_degraded_title_fixtures() -> PackedStringArray:
 	var missing_script_path := "user://stella_probe_missing_script_title.tscn"
 	var missing_nested_path := "user://stella_probe_missing_nested_title.tscn"
 	var wrong_base_path := "user://stella_probe_wrong_script_base_title.tscn"
+	var wrong_texture_path := "user://stella_probe_wrong_texture.tres"
+	var wrong_texture_title_path := (
+		"user://stella_probe_wrong_texture_title.tscn"
+	)
+	var malformed_texture_path := "user://stella_probe_malformed_texture.tres"
+	var malformed_texture_title_path := (
+		"user://stella_probe_malformed_texture_title.tscn"
+	)
 	var sources := {
 		missing_script_path: (
 			"[gd_scene load_steps=2 format=3]\n\n"
@@ -351,6 +581,29 @@ func _write_degraded_title_fixtures() -> PackedStringArray:
 			+ "dialogue_mode_profile.gd\" id=\"1_resource\"]\n\n"
 			+ "[node name=\"WrongScriptBaseTitle\" type=\"Node\"]\n"
 			+ "script = ExtResource(\"1_resource\")\n"
+		),
+		wrong_texture_path: (
+			"[gd_resource type=\"Resource\" format=3]\n\n[resource]\n"
+		),
+		wrong_texture_title_path: (
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"Texture2D\" "
+			+ "path=\"%s\" id=\"1_texture\"]\n\n" % wrong_texture_path
+			+ "[node name=\"WrongTextureTitle\" type=\"Sprite2D\"]\n"
+			+ "texture = ExtResource(\"1_texture\")\n"
+		),
+		malformed_texture_path: (
+			"[gd_resource type=\"Texture2D\" format=3]\n\n"
+			+ "[resource]\n"
+			+ "private_value = PRIVATE_DEGRADED_TITLE_DEPENDENCY_VALUE\n"
+		),
+		malformed_texture_title_path: (
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"Texture2D\" "
+			+ "path=\"%s\" id=\"1_texture\"]\n\n"
+			% malformed_texture_path
+			+ "[node name=\"MalformedTextureTitle\" type=\"Sprite2D\"]\n"
+			+ "texture = ExtResource(\"1_texture\")\n"
 		),
 	}
 	var paths := PackedStringArray()

@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS_SCENE = "res://addons/stella/scenes/settings.tscn"
 const DEFAULT_SAVE_LOAD_SCENE = "res://addons/stella/scenes/save_load.tscn"
 const DEFAULT_BACKLOG_SCENE = "res://addons/stella/scenes/backlog.tscn"
 const DEFAULT_FLOWCHART_SCENE = "res://addons/stella/scenes/flowchart.tscn"
+const MAX_TITLE_TEXT_RESOURCE_BYTES = 8 * 1024 * 1024
 
 var engine: ScenarioEngine
 var registry: CommandRegistry
@@ -256,14 +257,16 @@ func start_game(scenario_path: String = "", game_scene_path: String = "") -> voi
 		scenario_path = config.scenario_path
 	if game_scene_path == "":
 		game_scene_path = _get_game_scene_path()
+	var scenario_data := _parse_scenario(scenario_path)
+	if scenario_data == null:
+		return
+	var destination := _load_navigation_scene(game_scene_path, "game")
+	if destination.is_empty():
+		return
 
 	var navigation := _begin_navigation("start_game")
-	_cancel_active_gameplay()
-	_close_current_overlay()
-	_last_scenario_path = scenario_path
-	game_state.transition_to(GameStateMachine.State.PLAYING)
-	if not await _enter_scene_file_and_confirm(
-		game_scene_path,
+	if not await _enter_scene_and_confirm(
+		destination,
 		navigation,
 		"game",
 	):
@@ -271,26 +274,33 @@ func start_game(scenario_path: String = "", game_scene_path: String = "") -> voi
 		return
 	if not _owns_navigation(navigation):
 		return
-	_start_scenario_internal(scenario_path)
+	_cancel_active_gameplay()
+	_close_current_overlay()
+	_last_scenario_path = scenario_path
+	game_state.transition_to(GameStateMachine.State.PLAYING)
+	_start_preparsed_scenario(scenario_data, scenario_path)
 	_finish_navigation(navigation)
 
 
 ## Load a saved game — switch to game scene, restore state, run.
 func load_game(slot_id: int, scenario_path: String = "", game_scene_path: String = "") -> bool:
-	if not save_manager.has_save(slot_id):
+	var save_data: Variant = save_manager.read_save_data(slot_id)
+	if save_data == null:
 		return false
 	if scenario_path == "":
 		scenario_path = config.scenario_path
 	if game_scene_path == "":
 		game_scene_path = _get_game_scene_path()
+	var scenario_data := _parse_scenario(scenario_path)
+	if scenario_data == null:
+		return false
+	var destination := _load_navigation_scene(game_scene_path, "game")
+	if destination.is_empty():
+		return false
 
 	var navigation := _begin_navigation("load_game")
-	_cancel_active_gameplay()
-	_close_current_overlay()
-	_last_scenario_path = scenario_path
-	game_state.transition_to(GameStateMachine.State.PLAYING)
-	if not await _enter_scene_file_and_confirm(
-		game_scene_path,
+	if not await _enter_scene_and_confirm(
+		destination,
 		navigation,
 		"game",
 	):
@@ -298,7 +308,11 @@ func load_game(slot_id: int, scenario_path: String = "", game_scene_path: String
 		return false
 	if not _owns_navigation(navigation):
 		return false
-	_load_scenario_and_restore(scenario_path, slot_id)
+	_cancel_active_gameplay()
+	_close_current_overlay()
+	_last_scenario_path = scenario_path
+	game_state.transition_to(GameStateMachine.State.PLAYING)
+	_load_preparsed_scenario_and_restore(scenario_data, scenario_path, save_data)
 	_finish_navigation(navigation)
 	return true
 
@@ -306,12 +320,16 @@ func load_game(slot_id: int, scenario_path: String = "", game_scene_path: String
 ## Continue from a manual save slot.
 ## Works from both title screen (switches to game scene) and in-game (reloads in place).
 func continue_from_save(slot_id: int) -> bool:
-	if not save_manager.has_save(slot_id):
+	var save_data: Variant = save_manager.read_save_data(slot_id)
+	if save_data == null:
 		return false
 	var scenario_path = _last_scenario_path
 	if scenario_path == "":
 		scenario_path = config.scenario_path
 	if scenario_path == "":
+		return false
+	var scenario_data := _parse_scenario(scenario_path)
+	if scenario_data == null:
 		return false
 
 	# Determine if we're on the title screen (directly or via overlay opened from title)
@@ -320,17 +338,19 @@ func continue_from_save(slot_id: int) -> bool:
 		or _navigation_scene_request_pending
 		or _return_to_title_pending
 	)
+	var destination: Dictionary = {}
+	if needs_game_scene:
+		destination = _load_navigation_scene(_get_game_scene_path(), "game")
+		if destination.is_empty():
+			return false
 	var navigation := _begin_navigation("continue_from_save")
-	_cancel_active_gameplay()
-	_last_scenario_path = scenario_path
 
 	if needs_game_scene:
 		# From title screen: switch to game scene first.
 		# Close overlay after the confirmed scene change so its UI remains alive
 		# while an invoked load transaction is pending.
-		game_state.transition_to(GameStateMachine.State.PLAYING)
-		if not await _enter_scene_file_and_confirm(
-			_get_game_scene_path(),
+		if not await _enter_scene_and_confirm(
+			destination,
 			navigation,
 			"game",
 		):
@@ -338,16 +358,25 @@ func continue_from_save(slot_id: int) -> bool:
 			return false
 		if not _owns_navigation(navigation):
 			return false
+		_cancel_active_gameplay()
 		_close_current_overlay()
-		_load_scenario_and_restore(scenario_path, slot_id)
+		_last_scenario_path = scenario_path
+		game_state.transition_to(GameStateMachine.State.PLAYING)
+		_load_preparsed_scenario_and_restore(
+			scenario_data,
+			scenario_path,
+			save_data,
+		)
 		_finish_navigation(navigation)
 		return true
 
 	# In-game: reload in place
+	_cancel_active_gameplay()
 	_close_current_overlay()
 	_reset_presentation()
+	_last_scenario_path = scenario_path
 	game_state.transition_to(GameStateMachine.State.PLAYING)
-	_load_scenario_and_restore(scenario_path, slot_id)
+	_load_preparsed_scenario_and_restore(scenario_data, scenario_path, save_data)
 	_finish_navigation(navigation)
 	return true
 
@@ -358,6 +387,8 @@ func continue_from_save(slot_id: int) -> bool:
 func _begin_navigation(kind: String) -> int:
 	_navigation_generation += 1
 	_navigation_kind = kind
+	if engine != null and engine.context != null:
+		engine.invalidate_current_run()
 	if kind != "return_to_title":
 		_return_to_title_pending = false
 	return _navigation_generation
@@ -381,23 +412,56 @@ func _finish_navigation(generation: int) -> void:
 func _cancel_active_gameplay() -> void:
 	if engine == null or engine.context == null:
 		return
-	var old_context: ScenarioContext = engine.context
-	engine.context = null
-	old_context.is_finished = true
+	engine.cancel_current_run()
 	SignalBus.engine_abort_requested.emit()
 
 
-func _enter_scene_file_and_confirm(
-	scene_path: String,
+## Resolve UID destinations to their canonical resource path and load the
+## PackedScene before a navigation generation supersedes any valid owner.
+## A missing/unloadable destination therefore has no scene, state, overlay, or
+## ScenarioEngine side effects.
+func _load_navigation_scene(scene_path: String, description: String) -> Dictionary:
+	var canonical_path := _canonical_resource_path(scene_path)
+	if (
+		canonical_path.is_empty()
+		or not ResourceLoader.exists(canonical_path, "PackedScene")
+	):
+		push_error("StellaRuntime: %s scene is not available" % description)
+		return {}
+	var packed := ResourceLoader.load(canonical_path, "PackedScene") as PackedScene
+	if packed == null or not packed.can_instantiate():
+		push_error("StellaRuntime: %s scene is not loadable" % description)
+		return {}
+	var resolved_path := packed.resource_path.simplify_path()
+	if resolved_path.is_empty():
+		resolved_path = canonical_path
+	return {"scene": packed, "path": resolved_path}
+
+
+func _canonical_resource_path(path: String) -> String:
+	var normalized := path.simplify_path()
+	if not normalized.begins_with("uid://"):
+		return normalized
+	var resource_uid := ResourceUID.text_to_id(normalized)
+	if resource_uid == ResourceUID.INVALID_ID or not ResourceUID.has_id(resource_uid):
+		return ""
+	return ResourceUID.get_id_path(resource_uid).simplify_path()
+
+
+func _enter_scene_and_confirm(
+	destination: Dictionary,
 	navigation: int,
 	description: String,
 ) -> bool:
 	if not await _await_navigation_scene_slot(navigation):
 		return false
-	var expected_path := scene_path.simplify_path()
+	var scene: PackedScene = destination.get("scene")
+	var expected_path: String = destination.get("path", "")
+	if scene == null or expected_path.is_empty():
+		return false
 	_navigation_scene_request_pending = true
 	_navigation_pending_scene_path = expected_path
-	var scene_error := get_tree().change_scene_to_file(scene_path)
+	var scene_error := get_tree().change_scene_to_packed(scene)
 	if scene_error != OK:
 		if _owns_navigation(navigation):
 			_navigation_scene_request_pending = false
@@ -484,15 +548,21 @@ func _title_scene_is_enterable(scene: PackedScene) -> bool:
 		and not _title_scene_dependencies_are_available(scene.resource_path)
 	):
 		return false
-	var pending: Array[PackedScene] = [scene]
+	var pending: Array[Dictionary] = [{
+		"scene": scene,
+		"skip_root_script": false,
+	}]
 	var visited: Dictionary = {}
 	while not pending.is_empty():
-		var current: PackedScene = pending.pop_back()
+		var entry: Dictionary = pending.pop_back()
+		var current: PackedScene = entry["scene"]
+		var skip_root_script: bool = entry["skip_root_script"]
 		if not current.can_instantiate():
 			return false
 		var identity := current.resource_path
 		if identity == "":
 			identity = str(current.get_instance_id())
+		identity += ":skip_root=%s" % skip_root_script
 		if visited.has(identity):
 			continue
 		visited[identity] = true
@@ -511,9 +581,17 @@ func _title_scene_is_enterable(scene: PackedScene) -> bool:
 			if node_native_type == &"":
 				return false
 			if nested_scene != null:
-				pending.append(nested_scene)
+				pending.append({
+					"scene": nested_scene,
+					"skip_root_script": (
+						(skip_root_script and node_index == 0)
+						or _title_node_has_script_property(state, node_index)
+					),
+				})
 			for property_index in state.get_node_property_count(node_index):
 				if state.get_node_property_name(node_index, property_index) != &"script":
+					continue
+				if skip_root_script and node_index == 0:
 					continue
 				var script_value: Variant = state.get_node_property_value(
 					node_index,
@@ -532,6 +610,13 @@ func _title_scene_is_enterable(scene: PackedScene) -> bool:
 				):
 					return false
 	return true
+
+
+func _title_node_has_script_property(state: SceneState, node_index: int) -> bool:
+	for property_index in state.get_node_property_count(node_index):
+		if state.get_node_property_name(node_index, property_index) == &"script":
+			return true
+	return false
 
 
 func _title_node_native_type(
@@ -604,13 +689,14 @@ func _title_script_is_enterable(
 
 
 func _load_title_scene(path: String) -> PackedScene:
+	var canonical_path := _canonical_resource_path(path)
 	if (
-		path == ""
-		or not ResourceLoader.exists(path, "PackedScene")
-		or not _title_scene_dependencies_are_available(path)
+		canonical_path.is_empty()
+		or not ResourceLoader.exists(canonical_path, "PackedScene")
+		or not _title_scene_dependencies_are_available(canonical_path)
 	):
 		return null
-	return load(path) as PackedScene
+	return load(canonical_path) as PackedScene
 
 
 ## Recursively verify that every external resource referenced by a candidate
@@ -626,12 +712,487 @@ func _title_scene_dependencies_are_available(path: String) -> bool:
 		visited[current_path] = true
 		if not ResourceLoader.exists(current_path):
 			return false
-		for raw_dependency: String in ResourceLoader.get_dependencies(current_path):
-			var dependency_path := _resource_dependency_path(raw_dependency)
-			if dependency_path.is_empty() or not ResourceLoader.exists(dependency_path):
+		var dependency_result := _read_text_resource_dependencies(current_path)
+		if not dependency_result.get("ok", false):
+			return false
+		for dependency: Dictionary in dependency_result["dependencies"]:
+			var dependency_path: String = dependency["path"]
+			var declared_type: String = dependency["type"]
+			if (
+				dependency_path.is_empty()
+				or not ResourceLoader.exists(dependency_path)
+				or (
+					not declared_type.is_empty()
+					and not _text_resource_declares_type(
+					dependency_path,
+					declared_type,
+				)
+				)
+			):
 				return false
 			pending.append(dependency_path)
 	return true
+
+
+## Read the header and ext_resource declarations without invoking Godot's text
+## resource parser. ResourceLoader.get_dependencies()/load() echo malformed
+## source tokens and private paths to stderr; this strict metadata preflight
+## rejects unsupported/unloadable text before those APIs can see it.
+func _read_text_resource_dependencies(path: String) -> Dictionary:
+	var extension := path.get_extension().to_lower()
+	if extension not in ["tscn", "tres"]:
+		return _structured_resource_dependencies(path)
+	var file := FileAccess.open(path, FileAccess.READ)
+	# Export remaps source-looking paths to binary resources that are loadable
+	# through ResourceLoader but intentionally unavailable through FileAccess.
+	if file == null:
+		return _structured_resource_dependencies(path)
+	if file.get_length() > MAX_TITLE_TEXT_RESOURCE_BYTES:
+		return {"ok": false, "dependencies": []}
+	var bytes := file.get_buffer(file.get_length())
+	var read_error := file.get_error()
+	file.close()
+	if read_error not in [OK, ERR_FILE_EOF]:
+		return {"ok": false, "dependencies": []}
+	if bytes.is_empty():
+		return {"ok": false, "dependencies": []}
+	if bytes[0] != 0x5B: # '['; exported binary-token resources use RSCC/RSRC.
+		return _structured_resource_dependencies(path)
+	if bytes.has(0):
+		return {"ok": false, "dependencies": []}
+	var text := bytes.get_string_from_utf8()
+	if text.to_utf8_buffer() != bytes:
+		return {"ok": false, "dependencies": []}
+	var lines := text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+	if lines.is_empty():
+		return {"ok": false, "dependencies": []}
+	var expected_header := "gd_scene" if extension == "tscn" else "gd_resource"
+	var header := _parse_resource_tag(lines[0])
+	if not header.get("ok", false) or header.get("name", "") != expected_header:
+		return {"ok": false, "dependencies": []}
+
+	var dependencies: Array[Dictionary] = []
+	var saw_body_tag := false
+	var assignment_state: Dictionary = {}
+	for line_index in range(1, lines.size()):
+		var raw_line: String = lines[line_index]
+		if not assignment_state.is_empty():
+			if not _scan_resource_value_fragment(raw_line, assignment_state):
+				return {"ok": false, "dependencies": []}
+			if assignment_state.get("complete", false):
+				assignment_state = {}
+			continue
+
+		var stripped := _strip_resource_comment(raw_line).strip_edges()
+		if stripped.is_empty():
+			continue
+		if stripped.begins_with("["):
+			var tag := _parse_resource_tag(stripped)
+			if not tag.get("ok", false):
+				return {"ok": false, "dependencies": []}
+			if tag["name"] == "ext_resource":
+				if saw_body_tag:
+					return {"ok": false, "dependencies": []}
+				var attributes: Dictionary = tag["attributes"]
+				var declared_type: String = attributes.get("type", "")
+				var dependency_path := _resource_dependency_path_from_attributes(
+					attributes,
+				)
+				if declared_type.is_empty() or dependency_path.is_empty():
+					return {"ok": false, "dependencies": []}
+				dependencies.append({
+					"path": dependency_path,
+					"type": declared_type,
+				})
+			else:
+				saw_body_tag = true
+			continue
+		if not saw_body_tag:
+			return {"ok": false, "dependencies": []}
+		assignment_state = _begin_resource_assignment(stripped)
+		if not assignment_state.get("ok", false):
+			return {"ok": false, "dependencies": []}
+		if assignment_state.get("complete", false):
+			assignment_state = {}
+	return {
+		"ok": saw_body_tag and assignment_state.is_empty(),
+		"dependencies": dependencies,
+	}
+
+
+func _structured_resource_dependencies(path: String) -> Dictionary:
+	var dependencies: Array[Dictionary] = []
+	for raw_dependency: String in ResourceLoader.get_dependencies(path):
+		var dependency_path := _resource_dependency_path(raw_dependency)
+		var declared_type := _resource_dependency_type(raw_dependency)
+		if dependency_path.is_empty():
+			return {"ok": false, "dependencies": []}
+		dependencies.append({
+			"path": dependency_path,
+			"type": declared_type,
+		})
+	return {"ok": true, "dependencies": dependencies}
+
+
+func _parse_resource_tag(line: String) -> Dictionary:
+	if not line.begins_with("[") or not line.ends_with("]"):
+		return {"ok": false}
+	var content := line.substr(1, line.length() - 2)
+	var index := 0
+	while index < content.length() and content[index] not in [" ", "\t"]:
+		index += 1
+	var tag_name := content.substr(0, index)
+	if tag_name.is_empty():
+		return {"ok": false}
+	var attributes := {}
+	while index < content.length():
+		while index < content.length() and content[index] in [" ", "\t"]:
+			index += 1
+		if index >= content.length():
+			break
+		var key_start := index
+		while (
+			index < content.length()
+			and content[index] not in [" ", "\t", "="]
+		):
+			index += 1
+		var key := content.substr(key_start, index - key_start)
+		while index < content.length() and content[index] in [" ", "\t"]:
+			index += 1
+		if key.is_empty() or index >= content.length() or content[index] != "=":
+			return {"ok": false}
+		index += 1
+		while index < content.length() and content[index] in [" ", "\t"]:
+			index += 1
+		if index >= content.length():
+			return {"ok": false}
+		if content[index] == "\"":
+			index += 1
+			var value := ""
+			var closed := false
+			while index < content.length():
+				var character := content[index]
+				if character == "\\":
+					index += 1
+					if index >= content.length():
+						return {"ok": false}
+					value += content[index]
+					index += 1
+					continue
+				if character == "\"":
+					index += 1
+					closed = true
+					break
+				value += character
+				index += 1
+			if not closed:
+				return {"ok": false}
+			attributes[key] = value
+		else:
+			var value_start := index
+			index = _resource_tag_value_end(content, index)
+			if index < 0:
+				return {"ok": false}
+			var raw_value := content.substr(value_start, index - value_start)
+			if raw_value.is_empty():
+				return {"ok": false}
+			attributes[key] = raw_value
+	return {"ok": true, "name": tag_name, "attributes": attributes}
+
+
+func _resource_tag_value_end(content: String, start: int) -> int:
+	var stack: Array[String] = []
+	var in_string := false
+	var escaped := false
+	var index := start
+	while index < content.length():
+		var character := content[index]
+		if in_string:
+			if escaped:
+				escaped = false
+			elif character == "\\":
+				escaped = true
+			elif character == "\"":
+				in_string = false
+			index += 1
+			continue
+		if character == "\"":
+			in_string = true
+		elif character in ["(", "[", "{"]:
+			stack.append(character)
+		elif character in [")", "]", "}"]:
+			if stack.is_empty() or not _resource_delimiters_match(
+				stack.back(),
+				character,
+			):
+				return -1
+			stack.pop_back()
+		elif character in [" ", "\t"] and stack.is_empty():
+			break
+		index += 1
+	if in_string or not stack.is_empty():
+		return -1
+	return index
+
+
+func _strip_resource_comment(line: String) -> String:
+	var in_string := false
+	var escaped := false
+	for index in line.length():
+		var character := line[index]
+		if in_string:
+			if escaped:
+				escaped = false
+			elif character == "\\":
+				escaped = true
+			elif character == "\"":
+				in_string = false
+			continue
+		if character == "\"":
+			in_string = true
+		elif character == ";":
+			return line.substr(0, index)
+	return line
+
+
+## Validate serialized Variant structure without evaluating it or passing raw
+## private source to Godot's parser. Values may span lines (typed arrays,
+## dictionaries, and literal strings), so keep a small delimiter/string state
+## until the complete assignment has closed.
+func _begin_resource_assignment(line: String) -> Dictionary:
+	var equals_index := line.find("=")
+	if equals_index <= 0 or line.substr(0, equals_index).strip_edges().is_empty():
+		return {"ok": false}
+	var value := line.substr(equals_index + 1).strip_edges()
+	if value.is_empty():
+		return {"ok": false}
+
+	var state := {
+		"ok": true,
+		"complete": false,
+		"kind": "",
+		"stack": [],
+		"in_string": false,
+		"escaped": false,
+	}
+	if value.begins_with("\""):
+		state["kind"] = "string"
+		state["in_string"] = true
+		if not _scan_resource_value_fragment(value.substr(1), state):
+			return {"ok": false}
+		return state
+	if value.begins_with("&\"") or value.begins_with("^\""):
+		state["kind"] = "string"
+		state["in_string"] = true
+		if not _scan_resource_value_fragment(value.substr(2), state):
+			return {"ok": false}
+		return state
+
+	var container_start := _resource_container_start(value)
+	if container_start >= 0:
+		state["kind"] = "container"
+		if not _scan_resource_value_fragment(
+			value.substr(container_start),
+			state,
+		):
+			return {"ok": false}
+		return state
+
+	if _resource_scalar_is_valid(value):
+		state["kind"] = "scalar"
+		state["complete"] = true
+		return state
+	# A bare unknown identifier is a common malformed-resource failure, and
+	# Godot includes that identifier verbatim in its parser error. Reject it here.
+	return {"ok": false}
+
+
+func _resource_container_start(value: String) -> int:
+	if value[0] in ["[", "{", "("]:
+		return 0
+	var open_index := value.find("(")
+	if open_index <= 0:
+		return -1
+	var prefix := value.substr(0, open_index).strip_edges()
+	var base_name := prefix.get_slice("[", 0).strip_edges()
+	if not _resource_constructor_is_known(base_name):
+		return -1
+	var generic_depth := 0
+	for character in prefix:
+		if character == "[":
+			generic_depth += 1
+		elif character == "]":
+			generic_depth -= 1
+			if generic_depth < 0:
+				return -1
+		elif not (
+			character == "_"
+			or character == ","
+			or character == "."
+			or character == " "
+			or character == "\t"
+			or character >= "0" and character <= "9"
+			or character >= "A" and character <= "Z"
+			or character >= "a" and character <= "z"
+		):
+			return -1
+	if generic_depth != 0:
+		return -1
+	return open_index
+
+
+func _resource_constructor_is_known(name: String) -> bool:
+	return (
+		name in [
+			"AABB", "Array", "Basis", "Callable", "Color", "Dictionary",
+			"EncodedObjectAsID", "ExtResource", "NodePath", "Object", "Plane",
+			"Projection", "Quaternion", "Rect2", "Rect2i", "RID", "Signal",
+			"String", "StringName", "SubResource", "Transform2D", "Transform3D",
+		]
+		or name.begins_with("Packed")
+		or name.begins_with("Vector")
+	)
+
+
+func _resource_scalar_is_valid(value: String) -> bool:
+	if value in ["true", "false", "null", "inf", "+inf", "-inf", "nan"]:
+		return true
+	return value.is_valid_int() or value.is_valid_float()
+
+
+func _scan_resource_value_fragment(
+	fragment: String,
+	state: Dictionary,
+) -> bool:
+	var kind: String = state["kind"]
+	var stack: Array = state["stack"]
+	var in_string: bool = state["in_string"]
+	var escaped: bool = state["escaped"]
+	for index in fragment.length():
+		var character := fragment[index]
+		if in_string:
+			if escaped:
+				escaped = false
+				continue
+			if character == "\\":
+				escaped = true
+				continue
+			if character != "\"":
+				continue
+			in_string = false
+			if kind == "string":
+				if not _resource_value_tail_is_empty(fragment, index + 1):
+					return false
+				state["complete"] = true
+				state["in_string"] = false
+				state["escaped"] = false
+				return true
+			continue
+
+		if character == ";":
+			break
+		if character == "\"":
+			in_string = true
+			continue
+		if character in ["(", "[", "{"]:
+			stack.append(character)
+			continue
+		if character in [")", "]", "}"]:
+			if stack.is_empty() or not _resource_delimiters_match(
+				stack.back(),
+				character,
+			):
+				return false
+			stack.pop_back()
+			if stack.is_empty():
+				if not _resource_value_tail_is_empty(fragment, index + 1):
+					return false
+				state["complete"] = true
+				state["stack"] = stack
+				state["in_string"] = false
+				state["escaped"] = false
+				return true
+
+	# A physical newline consumes a trailing escape inside a literal multiline
+	# string; the first character on the next line is not escaped by that slash.
+	if in_string and escaped:
+		escaped = false
+	state["stack"] = stack
+	state["in_string"] = in_string
+	state["escaped"] = escaped
+	return true
+
+
+func _resource_value_tail_is_empty(fragment: String, start: int) -> bool:
+	for index in range(start, fragment.length()):
+		var character := fragment[index]
+		if character in [" ", "\t"]:
+			continue
+		return character == ";"
+	return true
+
+
+func _resource_delimiters_match(opening: String, closing: String) -> bool:
+	return (
+		opening == "(" and closing == ")"
+		or opening == "[" and closing == "]"
+		or opening == "{" and closing == "}"
+	)
+
+
+func _resource_dependency_path_from_attributes(attributes: Dictionary) -> String:
+	var uid_text: String = attributes.get("uid", "")
+	if uid_text.begins_with("uid://"):
+		var dependency_uid := ResourceUID.text_to_id(uid_text)
+		if dependency_uid != ResourceUID.INVALID_ID and ResourceUID.has_id(dependency_uid):
+			return ResourceUID.get_id_path(dependency_uid).simplify_path()
+	return String(attributes.get("path", "")).simplify_path()
+
+
+func _resource_dependency_type(raw_dependency: String) -> String:
+	var fields := raw_dependency.split("::", true)
+	if fields.size() >= 2:
+		return fields[1]
+	return ""
+
+
+func _text_resource_declares_type(path: String, declared_type: String) -> bool:
+	if declared_type.is_empty():
+		return false
+	var extension := path.get_extension().to_lower()
+	if extension == "tscn":
+		return ClassDB.is_parent_class("PackedScene", declared_type)
+	if extension == "tres":
+		var file := FileAccess.open(path, FileAccess.READ)
+		if file == null:
+			var remapped_resource := ResourceLoader.load(path, declared_type)
+			return (
+				remapped_resource != null
+				and remapped_resource.is_class(declared_type)
+			)
+		if file.get_length() > MAX_TITLE_TEXT_RESOURCE_BYTES:
+			return false
+		var first_byte := file.get_8()
+		file.seek(0)
+		if first_byte != 0x5B:
+			file.close()
+			var binary_resource := ResourceLoader.load(path, declared_type)
+			return (
+				binary_resource != null
+				and binary_resource.is_class(declared_type)
+			)
+		var first_line := file.get_line().strip_edges()
+		file.close()
+		var header := _parse_resource_tag(first_line)
+		if not header.get("ok", false) or header.get("name", "") != "gd_resource":
+			return false
+		var actual_type: String = header["attributes"].get("type", "")
+		return (
+			not actual_type.is_empty()
+			and ClassDB.is_parent_class(actual_type, declared_type)
+		)
+	var loaded_resource := ResourceLoader.load(path, declared_type)
+	return loaded_resource != null and loaded_resource.is_class(declared_type)
 
 
 func _resource_dependency_path(raw_dependency: String) -> String:
@@ -681,7 +1242,6 @@ func _return_to_title_transaction(navigation: int) -> void:
 	# The deferred transaction still runs before change_scene_to_packed() removes
 	# it, so saving after the request cannot capture teardown state.
 	auto_save()
-	_cancel_active_gameplay()
 	var entered_title := await _enter_title_scene_and_confirm(
 		title_scene,
 		"configured",
@@ -713,6 +1273,7 @@ func _return_to_title_transaction(navigation: int) -> void:
 		_finish_navigation(navigation)
 		return
 
+	_cancel_active_gameplay()
 	_close_current_overlay()
 	backlog_manager.clear()
 	choice_history_manager.clear()
@@ -729,50 +1290,45 @@ func _enter_title_scene_and_confirm(
 	description: String,
 	navigation: int,
 ) -> bool:
-	if not await _await_navigation_scene_slot(navigation):
-		return false
-	var expected_path := title_scene.resource_path.simplify_path()
-	_navigation_scene_request_pending = true
-	_navigation_pending_scene_path = expected_path
-	var scene_error := get_tree().change_scene_to_packed(title_scene)
-	if scene_error != OK:
-		if _owns_navigation(navigation):
-			_navigation_scene_request_pending = false
-			_navigation_pending_scene_path = ""
-			push_error(
-				"StellaRuntime: failed to request the %s title scene (%s)"
-				% [description, error_string(scene_error)]
-			)
-		return false
-
-	# Multiple Runtime facades may have queued scene requests in the same idle
-	# turn. Ignore scene_changed events for an older request while this owner is
-	# still current; a newer facade changes the generation and exits this loop.
-	while _owns_navigation(navigation):
-		await get_tree().scene_changed
-		if not _owns_navigation(navigation):
-			return false
-		var current_scene := get_tree().current_scene
-		if (
-			current_scene != null
-			and current_scene.scene_file_path.simplify_path() == expected_path
-		):
-			_navigation_scene_request_pending = false
-			_navigation_pending_scene_path = ""
-			return true
-	return false
+	return await _enter_scene_and_confirm(
+		{
+			"scene": title_scene,
+			"path": title_scene.resource_path.simplify_path(),
+		},
+		navigation,
+		"%s title" % description,
+	)
 
 
 ## Legacy API — starts scenario in current scene (for testing).
 func start_scenario(scenario_path: String) -> void:
+	var scenario_data := _parse_scenario(scenario_path)
+	if scenario_data == null:
+		return
+	var navigation := _begin_navigation("start_scenario")
+	if not await _await_navigation_scene_slot(navigation):
+		return
+	if not _owns_navigation(navigation):
+		return
 	_cancel_active_gameplay()
 	_last_scenario_path = scenario_path
 	game_state.transition_to(GameStateMachine.State.PLAYING)
-	_start_scenario_internal(scenario_path)
+	_start_preparsed_scenario(scenario_data, scenario_path)
+	_finish_navigation(navigation)
 
 
 func _start_scenario_internal(scenario_path: String) -> void:
-	_prepare_scenario(scenario_path)
+	var scenario_data := _parse_scenario(scenario_path)
+	if scenario_data == null:
+		return
+	_start_preparsed_scenario(scenario_data, scenario_path)
+
+
+func _start_preparsed_scenario(
+	scenario_data: ScenarioData,
+	scenario_path: String,
+) -> void:
+	_install_scenario(scenario_data, scenario_path)
 	SignalBus.reset_stage_visuals()
 	presentation_state.clear()
 	engine.run()
@@ -786,11 +1342,11 @@ func _start_scenario_internal(scenario_path: String) -> void:
 ## the previous playthrough's history doesn't bleed into the new one
 ## (which would otherwise let stale (scene, command) positions silently
 ## match new entries via the cursor's known-path branch).
-func _prepare_scenario(scenario_path: String) -> void:
+func _parse_scenario(scenario_path: String) -> ScenarioData:
 	var file = FileAccess.open(scenario_path, FileAccess.READ)
 	if file == null:
 		push_error("StellaRuntime: cannot open %s" % scenario_path)
-		return
+		return null
 	var source = file.get_as_text()
 	file.close()
 
@@ -806,6 +1362,19 @@ func _prepare_scenario(scenario_path: String) -> void:
 			push_error(msg)
 		else:
 			push_warning(msg)
+	return data
+
+
+func _prepare_scenario(scenario_path: String) -> bool:
+	var data := _parse_scenario(scenario_path)
+	if data == null:
+		return false
+	_install_scenario(data, scenario_path)
+	return true
+
+
+func _install_scenario(data: ScenarioData, scenario_path: String) -> void:
+	var scenario_id := data.id
 
 	engine.load_scenario(data)
 	save_manager.register_provider(engine.context)
@@ -836,11 +1405,24 @@ func _prepare_scenario(scenario_path: String) -> void:
 
 
 ## Load scenario, restore snapshot, restore presentation, then run.
-func _load_scenario_and_restore(scenario_path: String, slot_id: int) -> void:
-	_prepare_scenario(scenario_path)
-	save_manager.load_save(slot_id)
+func _load_preparsed_scenario_and_restore(
+	scenario_data: ScenarioData,
+	scenario_path: String,
+	save_data: Dictionary,
+) -> void:
+	_install_scenario(scenario_data, scenario_path)
+	save_manager.restore_data(save_data)
 	presentation_state.apply_to_presenters()
 	engine.run()
+
+
+func _load_scenario_and_restore(scenario_path: String, slot_id: int) -> bool:
+	var scenario_data := _parse_scenario(scenario_path)
+	var save_data: Variant = save_manager.read_save_data(slot_id)
+	if scenario_data == null or save_data == null:
+		return false
+	_load_preparsed_scenario_and_restore(scenario_data, scenario_path, save_data)
+	return true
 
 
 ## Check if we're on the title screen — either directly or via an overlay opened from title.
@@ -880,7 +1462,15 @@ func _on_state_changed(from_state: int, _to_state: int) -> void:
 
 
 func _on_scenario_ended(id: String) -> void:
+	if engine == null or not engine.is_emitting_active_scenario_end():
+		return
 	SignalBus.scenario_ended_event.emit(id)
+	# The public bridge is itself reentrant. A listener may start a replacement
+	# navigation, which invalidates this run while the engine is still inside
+	# scenario_ended.emit(). Do not let the retired callback append a title
+	# navigation after that newer owner has already taken over.
+	if not engine.is_emitting_active_scenario_end():
+		return
 	# Auto return to title after scenario ends
 	return_to_title()
 
@@ -1012,12 +1602,16 @@ func quick_save() -> void:
 ## Quick load (separate from manual save slots).
 ## Works from both title screen (switches to game scene) and in-game (reloads in place).
 func quick_load() -> bool:
-	if not save_manager.has_quick_save():
+	var save_data: Variant = save_manager.read_quick_save_data()
+	if save_data == null:
 		return false
 	var scenario_path = _last_scenario_path
 	if scenario_path == "":
 		scenario_path = config.scenario_path
 	if scenario_path == "":
+		return false
+	var scenario_data := _parse_scenario(scenario_path)
+	if scenario_data == null:
 		return false
 
 	var needs_game_scene := (
@@ -1025,16 +1619,18 @@ func quick_load() -> bool:
 		or _navigation_scene_request_pending
 		or _return_to_title_pending
 	)
+	var destination: Dictionary = {}
+	if needs_game_scene:
+		destination = _load_navigation_scene(_get_game_scene_path(), "game")
+		if destination.is_empty():
+			return false
 	var navigation := _begin_navigation("quick_load")
-	_cancel_active_gameplay()
-	_last_scenario_path = scenario_path
 
 	# From title or while superseding another scene request, explicitly assert
 	# the game destination before restoring providers and starting the engine.
 	if needs_game_scene:
-		game_state.transition_to(GameStateMachine.State.PLAYING)
-		if not await _enter_scene_file_and_confirm(
-			_get_game_scene_path(),
+		if not await _enter_scene_and_confirm(
+			destination,
 			navigation,
 			"game",
 		):
@@ -1042,24 +1638,25 @@ func quick_load() -> bool:
 			return false
 		if not _owns_navigation(navigation):
 			return false
+		_cancel_active_gameplay()
 		_close_current_overlay()
-		_prepare_scenario(scenario_path)
-		var ok = save_manager.quick_load()
-		if ok:
-			presentation_state.apply_to_presenters()
-			engine.run()
+		_last_scenario_path = scenario_path
+		game_state.transition_to(GameStateMachine.State.PLAYING)
+		_load_preparsed_scenario_and_restore(
+			scenario_data,
+			scenario_path,
+			save_data,
+		)
 		_finish_navigation(navigation)
-		return ok
+		return true
 
 	# In-game: reload in place
+	_cancel_active_gameplay()
 	_reset_presentation()
-	_prepare_scenario(scenario_path)
-	var ok = save_manager.quick_load()
-	if ok:
-		presentation_state.apply_to_presenters()
-		engine.run()
+	_last_scenario_path = scenario_path
+	_load_preparsed_scenario_and_restore(scenario_data, scenario_path, save_data)
 	_finish_navigation(navigation)
-	return ok
+	return true
 
 
 ## Whether a quick save exists.
@@ -1100,11 +1697,17 @@ func continue_game() -> bool:
 	var continue_type = save_manager.get_latest_continue_type()
 	if continue_type == "":
 		return false
+	var save_data: Variant = _read_continue_data(continue_type)
+	if save_data == null:
+		return false
 
 	var scenario_path = _last_scenario_path
 	if scenario_path == "":
 		scenario_path = config.scenario_path
 	if scenario_path == "":
+		return false
+	var scenario_data := _parse_scenario(scenario_path)
+	if scenario_data == null:
 		return false
 
 	var needs_game_scene := (
@@ -1112,16 +1715,18 @@ func continue_game() -> bool:
 		or _navigation_scene_request_pending
 		or _return_to_title_pending
 	)
+	var destination: Dictionary = {}
+	if needs_game_scene:
+		destination = _load_navigation_scene(_get_game_scene_path(), "game")
+		if destination.is_empty():
+			return false
 	var navigation := _begin_navigation("continue_game")
-	_cancel_active_gameplay()
-	_last_scenario_path = scenario_path
 
 	# From title or while superseding another scene request, explicitly assert
 	# the game destination before restoring providers and starting the engine.
 	if needs_game_scene:
-		game_state.transition_to(GameStateMachine.State.PLAYING)
-		if not await _enter_scene_file_and_confirm(
-			_get_game_scene_path(),
+		if not await _enter_scene_and_confirm(
+			destination,
 			navigation,
 			"game",
 		):
@@ -1129,24 +1734,25 @@ func continue_game() -> bool:
 			return false
 		if not _owns_navigation(navigation):
 			return false
+		_cancel_active_gameplay()
 		_close_current_overlay()
-		_prepare_scenario(scenario_path)
-		var ok = _load_continue(continue_type)
-		if ok:
-			presentation_state.apply_to_presenters()
-			engine.run()
+		_last_scenario_path = scenario_path
+		game_state.transition_to(GameStateMachine.State.PLAYING)
+		_load_preparsed_scenario_and_restore(
+			scenario_data,
+			scenario_path,
+			save_data,
+		)
 		_finish_navigation(navigation)
-		return ok
+		return true
 
 	# In-game: reload in place
+	_cancel_active_gameplay()
 	_reset_presentation()
-	_prepare_scenario(scenario_path)
-	var ok = _load_continue(continue_type)
-	if ok:
-		presentation_state.apply_to_presenters()
-		engine.run()
+	_last_scenario_path = scenario_path
+	_load_preparsed_scenario_and_restore(scenario_data, scenario_path, save_data)
 	_finish_navigation(navigation)
-	return ok
+	return true
 
 
 ## Load from the appropriate continue save type.
@@ -1156,6 +1762,14 @@ func _load_continue(continue_type: String) -> bool:
 	elif continue_type == "auto":
 		return save_manager.auto_load()
 	return false
+
+
+func _read_continue_data(continue_type: String) -> Variant:
+	if continue_type == "quick":
+		return save_manager.read_quick_save_data()
+	if continue_type == "auto":
+		return save_manager.read_auto_save_data()
+	return null
 
 
 ## Save to a specific slot.
@@ -1302,31 +1916,31 @@ func show_backlog() -> void:
 	if not config.backlog:
 		return
 	var scene_path = config.backlog_scene if config.backlog_scene != "" else DEFAULT_BACKLOG_SCENE
-	_open_overlay(scene_path)
-	game_state.transition_to(GameStateMachine.State.BACKLOG)
+	if _open_overlay(scene_path):
+		game_state.transition_to(GameStateMachine.State.BACKLOG)
 
 
 ## Show the save/load overlay.
 func show_save_load(mode: String = "save") -> void:
 	var scene_path = config.save_load_scene if config.save_load_scene != "" else DEFAULT_SAVE_LOAD_SCENE
-	_open_overlay(scene_path)
-	if _current_overlay and _current_overlay.has_method("set_mode"):
-		_current_overlay.set_mode(mode)
-	game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
+	if _open_overlay(scene_path):
+		if _current_overlay and _current_overlay.has_method("set_mode"):
+			_current_overlay.set_mode(mode)
+		game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
 
 
 ## Show the settings overlay.
 func show_settings() -> void:
 	var scene_path = config.settings_scene if config.settings_scene != "" else DEFAULT_SETTINGS_SCENE
-	_open_overlay(scene_path)
-	game_state.transition_to(GameStateMachine.State.SETTINGS)
+	if _open_overlay(scene_path):
+		game_state.transition_to(GameStateMachine.State.SETTINGS)
 
 
 ## Show the flowchart overlay (issue #97 PR-D).
 func show_flowchart() -> void:
 	var scene_path = config.flowchart_scene if config.flowchart_scene != "" else DEFAULT_FLOWCHART_SCENE
-	_open_overlay(scene_path)
-	game_state.transition_to(GameStateMachine.State.FLOWCHART)
+	if _open_overlay(scene_path):
+		game_state.transition_to(GameStateMachine.State.FLOWCHART)
 
 
 ## Close the current overlay and return to previous state.
@@ -1337,21 +1951,26 @@ func close_overlay() -> void:
 	game_state.return_to_previous()
 
 
-func _open_overlay(scene_path: String) -> void:
+func _open_overlay(scene_path: String) -> bool:
+	var destination := _load_navigation_scene(scene_path, "overlay")
+	if destination.is_empty():
+		return false
+	var scene: PackedScene = destination["scene"]
+	var overlay := scene.instantiate()
+	if overlay == null:
+		push_error("StellaRuntime: overlay scene could not be instantiated")
+		return false
 	if _current_overlay != null:
 		push_warning("StellaRuntime: opening overlay while another is active — closing previous")
-	_close_current_overlay()
-	var scene = load(scene_path) as PackedScene
-	if scene == null:
-		push_error("StellaRuntime: cannot load overlay scene %s" % scene_path)
-		return
-	_current_overlay = scene.instantiate()
+		_close_current_overlay()
+	_current_overlay = overlay
 	# Add as CanvasLayer child so it renders above game content
 	var overlay_layer = CanvasLayer.new()
 	overlay_layer.layer = 10
 	overlay_layer.name = "OverlayLayer"
 	overlay_layer.add_child(_current_overlay)
 	add_child(overlay_layer)
+	return true
 
 
 func _close_current_overlay() -> void:
@@ -1465,9 +2084,7 @@ func _restore_runtime_from_snapshot(snap: Dictionary, override_scene_id: String 
 
 	save_manager.register_provider(new_ctx)
 	save_manager.register_provider(new_ctx.variable_store)
-	var old_ctx = engine.context
-	engine.context = new_ctx
-	old_ctx.is_finished = true
+	engine.replace_context(new_ctx)
 	SignalBus.engine_abort_requested.emit()
 
 	engine.run()

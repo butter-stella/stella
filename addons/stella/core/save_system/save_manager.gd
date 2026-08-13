@@ -34,25 +34,18 @@ func save(slot_id: int) -> void:
 
 
 func load_save(slot_id: int) -> bool:
-	var path = save_dir + "save_%d.json" % slot_id
-	if not FileAccess.file_exists(path):
+	var data: Variant = read_save_data(slot_id)
+	if data == null:
 		return false
-
-	var file = FileAccess.open(path, FileAccess.READ)
-	if file == null:
-		return false
-
-	var text = file.get_as_text()
-	var data = JSON.parse_string(text)
-	if data == null or not data is Dictionary:
-		return false
-
-	for provider in _providers:
-		var id = provider.get_provider_id()
-		if data.has(id):
-			provider.restore_snapshot(data[id])
-
+	restore_data(data)
 	return true
+
+
+## Parse a manual save without mutating registered providers. Runtime scene
+## navigation uses this to validate the complete transaction before replacing
+## a live game or title scene.
+func read_save_data(slot_id: int) -> Variant:
+	return _read_data(save_dir + "save_%d.json" % slot_id)
 
 
 func has_save(slot_id: int) -> bool:
@@ -101,21 +94,15 @@ func quick_save() -> void:
 
 
 func quick_load() -> bool:
-	var path = save_dir + "quicksave.json"
-	if not FileAccess.file_exists(path):
+	var data: Variant = read_quick_save_data()
+	if data == null:
 		return false
-	var file = FileAccess.open(path, FileAccess.READ)
-	if file == null:
-		return false
-	var text = file.get_as_text()
-	var data = JSON.parse_string(text)
-	if data == null or not data is Dictionary:
-		return false
-	for provider in _providers:
-		var id = provider.get_provider_id()
-		if data.has(id):
-			provider.restore_snapshot(data[id])
+	restore_data(data)
 	return true
+
+
+func read_quick_save_data() -> Variant:
+	return _read_data(save_dir + "quicksave.json")
 
 
 func has_quick_save() -> bool:
@@ -149,21 +136,15 @@ func auto_save() -> void:
 
 
 func auto_load() -> bool:
-	var path = save_dir + "autosave.json"
-	if not FileAccess.file_exists(path):
+	var data: Variant = read_auto_save_data()
+	if data == null:
 		return false
-	var file = FileAccess.open(path, FileAccess.READ)
-	if file == null:
-		return false
-	var text = file.get_as_text()
-	var data = JSON.parse_string(text)
-	if data == null or not data is Dictionary:
-		return false
-	for provider in _providers:
-		var id = provider.get_provider_id()
-		if data.has(id):
-			provider.restore_snapshot(data[id])
+	restore_data(data)
 	return true
+
+
+func read_auto_save_data() -> Variant:
+	return _read_data(save_dir + "autosave.json")
 
 
 func has_auto_save() -> bool:
@@ -223,6 +204,39 @@ func _read_metadata(path: String) -> Dictionary:
 		result["timestamp"] = ts
 		result["timestamp_str"] = "%04d/%02d/%02d %02d:%02d" % [dt["year"], dt["month"], dt["day"], dt["hour"], dt["minute"]]
 	return result
+
+
+## Apply an already parsed save snapshot. The caller owns validation and may
+## keep this data across an asynchronous scene transition without reopening a
+## file whose contents could change mid-transaction.
+func restore_data(data: Dictionary) -> void:
+	for provider in _providers:
+		var id = provider.get_provider_id()
+		if data.has(id):
+			provider.restore_snapshot(data[id])
+
+
+func _read_data(path: String) -> Variant:
+	if not FileAccess.file_exists(path):
+		return null
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return null
+	var text := file.get_as_text()
+	var read_error := file.get_error()
+	file.close()
+	if read_error not in [OK, ERR_FILE_EOF]:
+		return null
+	var data: Variant = JSON.parse_string(text)
+	if data == null or not data is Dictionary:
+		return null
+	# Every registered snapshot provider has a Dictionary restore boundary.
+	# Reject a structurally invalid save before Runtime replaces the current
+	# scene/context instead of discovering the type mismatch during commit.
+	for key: Variant in data:
+		if key != "timestamp" and not data[key] is Dictionary:
+			return null
+	return data
 
 
 func _ensure_dir() -> void:

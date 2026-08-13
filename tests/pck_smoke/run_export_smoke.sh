@@ -90,6 +90,11 @@ run_probe() {
 		cat "$run_log"
 		return 1
 	fi
+	if grep -Fq 'PRIVATE_DEGRADED_TITLE_DEPENDENCY' "$run_log"; then
+		cat "$run_log"
+		echo "error: $pack_name leaked private dependency source" >&2
+		return 1
+	fi
 	if [[ ! -f "$marker_path" ]] || ! grep -Fxq "$expected_marker" "$marker_path"; then
 		cat "$run_log"
 		echo "error: $pack_name did not produce marker $expected_marker" >&2
@@ -105,3 +110,13 @@ run_probe \
 	"config" \
 	"config-ok"
 run_probe "Stella PCK Selected Scenes" "selected-scenes" "fallback" "fallback-ok"
+run_probe \
+	"Stella PCK Compressed Binary Tokens" \
+	"compressed-navigation" \
+	"navigation-interleaving" \
+	"navigation-interleaving-ok"
+run_probe \
+	"Stella PCK Compressed Binary Tokens" \
+	"compressed-degraded" \
+	"degraded-title-fallback" \
+	"degraded-fallback-ok"

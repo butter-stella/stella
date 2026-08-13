@@ -1,6 +1,6 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=2 format=3 uid="uid://cfdiw46c5l2k"]
 
-[ext_resource type="PackedScene" path="res://tests/fixtures/startup/ready_return.tscn" id="1_base"]
+[ext_resource type="PackedScene" path="res://addons/stella/scenes/bootstrap.tscn" id="1_base"]
 
 [node name="ClearedInheritedScriptTitle" instance=ExtResource("1_base")]
 script = null

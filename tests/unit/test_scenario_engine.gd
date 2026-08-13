@@ -708,6 +708,91 @@ func test_engine_signals_scene_changed():
 	assert_eq(changed_ids, ["scene1", "scene2"])
 
 
+func test_scenario_started_reentrancy_cannot_resume_or_end_replaced_run():
+	var handler := TrackingHandler.new("dialogue")
+	_registry.register(handler)
+	var old_scenario := _build_scenario([{
+		"id": "old",
+		"commands": [{"type": "dialogue", "params": {"text": "stale"}}],
+	}])
+	old_scenario.id = "old"
+	var replacement := _build_scenario([{"id": "replacement", "commands": []}])
+	replacement.id = "replacement"
+	var changed_ids: Array[String] = []
+	var ended_ids: Array[String] = []
+	_engine.scene_changed.connect(func(id: String) -> void: changed_ids.append(id))
+	_engine.scenario_ended.connect(func(id: String) -> void: ended_ids.append(id))
+	_engine.scenario_started.connect(func(id: String) -> void:
+		if id == "old":
+			_engine.load_scenario(replacement)
+			_engine.run()
+	)
+
+	_engine.load_scenario(old_scenario)
+	await _engine.run()
+
+	assert_eq(handler.executed, [])
+	assert_eq(changed_ids, ["replacement"])
+	assert_eq(ended_ids, ["replacement"])
+	assert_eq(_engine.context.scenario_data.id, "replacement")
+
+
+func test_scene_changed_reentrancy_cannot_resume_or_end_replaced_run():
+	var handler := TrackingHandler.new("dialogue")
+	_registry.register(handler)
+	var old_scenario := _build_scenario([{
+		"id": "old_scene",
+		"commands": [{"type": "dialogue", "params": {"text": "stale"}}],
+	}])
+	old_scenario.id = "old"
+	var replacement := _build_scenario([{"id": "replacement", "commands": []}])
+	replacement.id = "replacement"
+	var ended_ids: Array[String] = []
+	_engine.scenario_ended.connect(func(id: String) -> void: ended_ids.append(id))
+	_engine.scene_changed.connect(func(id: String) -> void:
+		if id == "old_scene":
+			_engine.load_scenario(replacement)
+			_engine.run()
+	)
+
+	_engine.load_scenario(old_scenario)
+	await _engine.run()
+
+	assert_eq(handler.executed, [])
+	assert_eq(ended_ids, ["replacement"])
+	assert_eq(_engine.context.scenario_data.id, "replacement")
+
+
+func test_command_executed_reentrancy_cannot_run_remaining_old_commands():
+	var handler := TrackingHandler.new("dialogue")
+	_registry.register(handler)
+	var old_scenario := _build_scenario([{
+		"id": "old_scene",
+		"commands": [
+			{"type": "dialogue", "params": {"text": "first"}},
+			{"type": "dialogue", "params": {"text": "stale second"}},
+		],
+	}])
+	old_scenario.id = "old"
+	var replacement := _build_scenario([{"id": "replacement", "commands": []}])
+	replacement.id = "replacement"
+	var ended_ids: Array[String] = []
+	_engine.scenario_ended.connect(func(id: String) -> void: ended_ids.append(id))
+	_engine.command_executed.connect(func(_command: CommandData) -> void:
+		if _engine.context.scenario_data.id == "old":
+			_engine.load_scenario(replacement)
+			_engine.run()
+	)
+
+	_engine.load_scenario(old_scenario)
+	await _engine.run()
+
+	assert_eq(handler.executed.size(), 1)
+	assert_eq(handler.executed[0].get_string("text"), "first")
+	assert_eq(ended_ids, ["replacement"])
+	assert_eq(_engine.context.scenario_data.id, "replacement")
+
+
 func test_context_tracks_current_position():
 	var handler = TrackingHandler.new("dialogue")
 	_registry.register(handler)

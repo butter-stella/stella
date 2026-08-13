@@ -149,6 +149,20 @@ func test_load_nonexistent_slot_returns_false():
 	assert_false(_manager.load_save(999))
 
 
+func test_read_save_data_rejects_non_dictionary_provider_snapshot():
+	var provider := MockProvider.new("vars")
+	provider.data = {"preserved": true}
+	_manager.register_provider(provider)
+	_manager._ensure_dir()
+	var file := FileAccess.open(_save_dir + "save_1.json", FileAccess.WRITE)
+	file.store_string('{"vars":"invalid","timestamp":1}')
+	file.close()
+
+	assert_null(_manager.read_save_data(1))
+	assert_false(_manager.load_save(1))
+	assert_eq(provider.data, {"preserved": true})
+
+
 func test_has_save():
 	var provider = MockProvider.new("vars")
 	provider.data = {"x": 1}

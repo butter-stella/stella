@@ -8,6 +8,17 @@ const TEST_MISSING_SCRIPT_TITLE_PATH = "user://test_missing_script_title.tscn"
 const TEST_MISSING_NESTED_TITLE_PATH = "user://test_missing_nested_title.tscn"
 const TEST_WRONG_SCRIPT_BASE_TITLE_PATH = "user://test_wrong_script_base_title.tscn"
 const TEST_UID_RELOCATED_TITLE_PATH = "user://test_uid_relocated_title.tscn"
+const TEST_WRONG_TYPED_TEXTURE_TITLE_PATH = (
+	"user://test_wrong_typed_texture_title.tscn"
+)
+const TEST_WRONG_TYPED_TEXTURE_PATH = "user://test_wrong_typed_texture.tres"
+const TEST_MALFORMED_TEXTURE_TITLE_PATH = (
+	"user://test_malformed_texture_title.tscn"
+)
+const TEST_MALFORMED_TEXTURE_PATH = "user://test_malformed_texture.tres"
+const TEST_MULTILINE_RESOURCE_TITLE_PATH = (
+	"user://test_multiline_resource_title.tscn"
+)
 const UID_DEPENDENCY_SCRIPT = (
 	"res://tests/fixtures/pck_smoke/export_probe_runner.gd"
 )
@@ -22,6 +33,11 @@ const TEST_CONFIG_PATHS = [
 	TEST_MISSING_NESTED_TITLE_PATH,
 	TEST_WRONG_SCRIPT_BASE_TITLE_PATH,
 	TEST_UID_RELOCATED_TITLE_PATH,
+	TEST_WRONG_TYPED_TEXTURE_TITLE_PATH,
+	TEST_WRONG_TYPED_TEXTURE_PATH,
+	TEST_MALFORMED_TEXTURE_TITLE_PATH,
+	TEST_MALFORMED_TEXTURE_PATH,
+	TEST_MULTILINE_RESOURCE_TITLE_PATH,
 	"user://test_stella.cfg",
 	"user://test_stella_partial.cfg",
 	"user://test_stella_has.cfg",
@@ -270,6 +286,10 @@ func test_title_resolver_rejects_bootstrap_scripts_anywhere_in_packed_tree():
 		"res://tests/fixtures/startup/inherited_recursive_title.tscn",
 		"res://tests/fixtures/startup/nested_recursive_title.tscn",
 		"res://tests/fixtures/startup/nested_instance_recursive_title.tscn",
+		(
+			"res://tests/fixtures/startup/"
+			+ "cleared_root_with_recursive_child_title.tscn"
+		),
 	]:
 		_runtime.title_scene_path = recursive_path
 		var resolved: PackedScene = _runtime.resolve_title_scene(fallback)
@@ -303,6 +323,35 @@ func test_title_resolver_accepts_inherited_scene_that_explicitly_clears_script()
 	assert_not_null(resolved)
 	assert_eq(resolved.resource_path, cleared_path)
 	assert_eq(_runtime.title_scene_path, cleared_path)
+	assert_engine_error_count(0)
+
+
+func test_title_dependency_preflight_accepts_multiline_serialized_variants():
+	_write_raw_project_config(
+		TEST_MULTILINE_RESOURCE_TITLE_PATH,
+		(
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"MultilineMetadataTitle\" type=\"Node\" "
+			+ "groups=[\"alpha\", \"beta\"]]\n"
+			+ "metadata/example = {\n"
+			+ "\"items\": [1, 2, 3],\n"
+			+ "\"nested\": {\n"
+			+ "\"enabled\": true\n"
+			+ "}\n"
+			+ "}\n"
+			+ "metadata/paths = Array[NodePath]([\n"
+			+ "NodePath(\"One\"),\n"
+			+ "NodePath(\"Two\")\n"
+			+ "])\n"
+		),
+	)
+	_runtime.title_scene_path = TEST_MULTILINE_RESOURCE_TITLE_PATH
+
+	var resolved: PackedScene = _runtime.resolve_title_scene()
+
+	assert_not_null(resolved)
+	assert_eq(resolved.resource_path, TEST_MULTILINE_RESOURCE_TITLE_PATH)
+	assert_eq(_runtime.title_scene_path, TEST_MULTILINE_RESOURCE_TITLE_PATH)
 	assert_engine_error_count(0)
 
 
@@ -386,6 +435,56 @@ func test_title_resolver_rejects_degraded_dependencies_and_wrong_script_base():
 	assert_engine_error_count(0,
 		"dependency preflight must reject degraded scenes before ResourceLoader "
 		+ "prints missing private paths")
+
+
+func test_title_resolver_rejects_wrong_type_and_unloadable_existing_resources():
+	_write_raw_project_config(
+		TEST_WRONG_TYPED_TEXTURE_PATH,
+		"[gd_resource type=\"Resource\" format=3]\n\n[resource]\n",
+	)
+	_write_raw_project_config(
+		TEST_WRONG_TYPED_TEXTURE_TITLE_PATH,
+		(
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"Texture2D\" "
+			+ "path=\"%s\" id=\"1_texture\"]\n\n"
+			% TEST_WRONG_TYPED_TEXTURE_PATH
+			+ "[node name=\"WrongTypedTextureTitle\" type=\"Sprite2D\"]\n"
+			+ "texture = ExtResource(\"1_texture\")\n"
+		),
+	)
+	_write_raw_project_config(
+		TEST_MALFORMED_TEXTURE_PATH,
+		(
+			"[gd_resource type=\"Texture2D\" format=3]\n\n"
+			+ "[resource]\n"
+			+ "private_value = PRIVATE_DEPENDENCY_VALUE_MUST_NOT_LEAK\n"
+		),
+	)
+	_write_raw_project_config(
+		TEST_MALFORMED_TEXTURE_TITLE_PATH,
+		(
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"Texture2D\" "
+			+ "path=\"%s\" id=\"1_texture\"]\n\n"
+			% TEST_MALFORMED_TEXTURE_PATH
+			+ "[node name=\"MalformedTextureTitle\" type=\"Sprite2D\"]\n"
+			+ "texture = ExtResource(\"1_texture\")\n"
+		),
+	)
+
+	var fallback := load(_runtime.DEFAULT_TITLE_SCENE) as PackedScene
+	for invalid_path: String in [
+		TEST_WRONG_TYPED_TEXTURE_TITLE_PATH,
+		TEST_MALFORMED_TEXTURE_TITLE_PATH,
+	]:
+		_runtime.title_scene_path = invalid_path
+		var resolved: PackedScene = _runtime.resolve_title_scene(fallback)
+		assert_eq(resolved, fallback)
+		assert_eq(_runtime.title_scene_path, _runtime.DEFAULT_TITLE_SCENE)
+		assert_push_error("falling back to the built-in title scene")
+	assert_engine_error_count(0,
+		"Dependency validation must not pass private malformed source to Godot")
 
 
 func test_runtime_title_scene_from_config_override():
