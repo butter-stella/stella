@@ -3,6 +3,7 @@ extends Node
 const BOOTSTRAP_SCENE = "res://addons/stella/scenes/bootstrap.tscn"
 const BUILT_IN_TITLE_SCENE = "res://addons/stella/scenes/title.tscn"
 const CONFIGURED_TITLE_SCENE = "res://examples/demo/scenes/title.tscn"
+const READY_RETURN_SCENE = "res://tests/fixtures/startup/ready_return.tscn"
 const EXPECTED_GAME_TITLE = "Stella Demo"
 const EXPECTED_SCENARIO = "res://examples/demo/scenarios/demo.stla"
 const EXPECTED_BACKGROUNDS = "res://examples/demo/art/backgrounds/"
@@ -23,6 +24,10 @@ func run() -> void:
 			await _probe_selected_scenes_fallback()
 		"source-fallback":
 			await _probe_source_fallback()
+		"degraded-title-fallback":
+			await _probe_degraded_title_fallbacks()
+		"ready-return":
+			await _probe_ready_return()
 		var unsupported_mode:
 			_fail("unsupported probe mode: %s" % unsupported_mode)
 
@@ -92,6 +97,140 @@ func _probe_source_fallback() -> void:
 		failures.append("the fallback title consumer did not receive game.title")
 
 	_finish("fallback-ok", failures)
+
+
+func _probe_degraded_title_fallbacks() -> void:
+	var fixtures := _write_degraded_title_fixtures()
+	if fixtures.is_empty():
+		_fail("could not create degraded title fixtures")
+		return
+
+	var failures := PackedStringArray()
+	for degraded_path: String in fixtures:
+		# Normal startup must reject each degraded PackedScene before it can
+		# become current_scene.
+		StellaRuntime.title_scene_path = degraded_path
+		if not await _enter_bootstrap_and_wait_for(BUILT_IN_TITLE_SCENE):
+			_cleanup_degraded_title_fixtures(fixtures)
+			return
+		if StellaRuntime.title_scene_path != BUILT_IN_TITLE_SCENE:
+			failures.append("startup did not normalize a degraded title path")
+
+		# The in-game return path uses the same resolver and must commit TITLE
+		# only after the built-in scene is confirmed as current.
+		StellaRuntime.title_scene_path = degraded_path
+		StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+		StellaRuntime.return_to_title()
+		if not StellaRuntime._return_to_title_pending:
+			failures.append("return transaction was not scheduled")
+			continue
+		await get_tree().scene_changed
+		if not await _wait_for_return_completion():
+			failures.append("return transaction did not complete")
+			continue
+		var current_scene := get_tree().current_scene
+		if (
+			current_scene == null
+			or current_scene.scene_file_path != BUILT_IN_TITLE_SCENE
+		):
+			failures.append("return entered a degraded title scene")
+		if StellaRuntime.game_state.current_state != GameStateMachine.State.TITLE:
+			failures.append("return did not commit TITLE on the built-in scene")
+
+	_cleanup_degraded_title_fixtures(fixtures)
+	_finish("degraded-fallback-ok", failures)
+
+
+func _probe_ready_return() -> void:
+	StellaRuntime.title_scene_path = BUILT_IN_TITLE_SCENE
+	var change_error := get_tree().change_scene_to_file(READY_RETURN_SCENE)
+	if change_error != OK:
+		_fail("cannot enter ready-return fixture: %s" % error_string(change_error))
+		return
+
+	# The fixture calls return_to_title() synchronously from its root _ready().
+	# The request must be pending, with PLAYING state untouched, until a later
+	# lifecycle turn can safely replace that busy root.
+	await get_tree().scene_changed
+	var failures := PackedStringArray()
+	var ready_scene := get_tree().current_scene
+	if ready_scene == null or ready_scene.scene_file_path != READY_RETURN_SCENE:
+		failures.append("ready-return fixture was not current after its _ready")
+	if StellaRuntime.game_state.current_state != GameStateMachine.State.PLAYING:
+		failures.append("return committed TITLE before confirming scene_changed")
+	if not StellaRuntime._return_to_title_pending:
+		failures.append("return request was not deferred from _ready")
+
+	await get_tree().scene_changed
+	if not await _wait_for_return_completion():
+		failures.append("deferred return transaction did not complete")
+	var current_scene := get_tree().current_scene
+	if (
+		current_scene == null
+		or current_scene.scene_file_path != BUILT_IN_TITLE_SCENE
+	):
+		failures.append("deferred return did not finish on the built-in title")
+	if StellaRuntime.game_state.current_state != GameStateMachine.State.TITLE:
+		failures.append("deferred return did not commit TITLE after scene_changed")
+
+	_finish("ready-return-ok", failures)
+
+
+func _write_degraded_title_fixtures() -> PackedStringArray:
+	var missing_script_path := "user://stella_probe_missing_script_title.tscn"
+	var missing_nested_path := "user://stella_probe_missing_nested_title.tscn"
+	var wrong_base_path := "user://stella_probe_wrong_script_base_title.tscn"
+	var sources := {
+		missing_script_path: (
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"Script\" "
+			+ "path=\"user://PRIVATE_DEGRADED_TITLE_DEPENDENCY.gd\" "
+			+ "id=\"1_missing\"]\n\n"
+			+ "[node name=\"MissingScriptTitle\" type=\"Node\"]\n"
+			+ "script = ExtResource(\"1_missing\")\n"
+		),
+		missing_nested_path: (
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"PackedScene\" "
+			+ "path=\"user://PRIVATE_DEGRADED_TITLE_DEPENDENCY.tscn\" "
+			+ "id=\"1_missing\"]\n\n"
+			+ "[node name=\"MissingNestedTitle\" type=\"Node\"]\n\n"
+			+ "[node name=\"MissingChild\" parent=\".\" "
+			+ "instance=ExtResource(\"1_missing\")]\n"
+		),
+		wrong_base_path: (
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"Script\" "
+			+ "path=\"res://addons/stella/presentation/dialogue/"
+			+ "dialogue_mode_profile.gd\" id=\"1_resource\"]\n\n"
+			+ "[node name=\"WrongScriptBaseTitle\" type=\"Node\"]\n"
+			+ "script = ExtResource(\"1_resource\")\n"
+		),
+	}
+	var paths := PackedStringArray()
+	for path: String in sources:
+		var file := FileAccess.open(path, FileAccess.WRITE)
+		if file == null:
+			_cleanup_degraded_title_fixtures(paths)
+			return PackedStringArray()
+		file.store_string(sources[path])
+		file.close()
+		paths.append(path)
+	return paths
+
+
+func _cleanup_degraded_title_fixtures(paths: PackedStringArray) -> void:
+	for path: String in paths:
+		if FileAccess.file_exists(path):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+
+func _wait_for_return_completion() -> bool:
+	for _frame_index in range(120):
+		if not StellaRuntime._return_to_title_pending:
+			return true
+		await get_tree().process_frame
+	return false
 
 
 func _enter_bootstrap_and_wait_for(expected_scene: String) -> bool:

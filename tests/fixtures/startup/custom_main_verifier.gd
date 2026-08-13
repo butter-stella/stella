@@ -7,6 +7,12 @@ const EXPECTED_TITLE = "Synthetic Custom Main Probe"
 func verify_after_return(initial_failures: PackedStringArray) -> void:
 	var failures := initial_failures.duplicate()
 	await get_tree().scene_changed
+	for _frame_index in range(120):
+		if not StellaRuntime._return_to_title_pending:
+			break
+		await get_tree().process_frame
+	if StellaRuntime._return_to_title_pending:
+		failures.append("return_to_title transaction did not complete")
 
 	var current_scene := get_tree().current_scene
 	if current_scene == null or current_scene.scene_file_path != BUILT_IN_TITLE_SCENE:

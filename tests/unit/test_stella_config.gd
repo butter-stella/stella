@@ -4,12 +4,18 @@ const TEST_BASE_CONFIG_PATH = "user://test_project_base.cfg"
 const TEST_LOCAL_CONFIG_PATH = "user://test_project_local.cfg"
 const TEST_MISSING_CONFIG_PATH = "user://test_project_missing.cfg"
 const TEST_EMPTY_TITLE_PATH = "user://test_empty_title.scn"
+const TEST_MISSING_SCRIPT_TITLE_PATH = "user://test_missing_script_title.tscn"
+const TEST_MISSING_NESTED_TITLE_PATH = "user://test_missing_nested_title.tscn"
+const TEST_WRONG_SCRIPT_BASE_TITLE_PATH = "user://test_wrong_script_base_title.tscn"
 const PRIVATE_SENTINEL = "PRIVATE_VALUE_MUST_NOT_APPEAR_IN_DIAGNOSTIC"
 const TEST_CONFIG_PATHS = [
 	TEST_BASE_CONFIG_PATH,
 	TEST_LOCAL_CONFIG_PATH,
 	TEST_MISSING_CONFIG_PATH,
 	TEST_EMPTY_TITLE_PATH,
+	TEST_MISSING_SCRIPT_TITLE_PATH,
+	TEST_MISSING_NESTED_TITLE_PATH,
+	TEST_WRONG_SCRIPT_BASE_TITLE_PATH,
 	"user://test_stella.cfg",
 	"user://test_stella_partial.cfg",
 	"user://test_stella_has.cfg",
@@ -86,6 +92,7 @@ func test_defaults_when_no_file():
 	# Loading a non-existent file should use all defaults
 	assert_eq(config.load_from_path(TEST_MISSING_CONFIG_PATH), ERR_FILE_NOT_FOUND)
 
+	assert_eq(StellaConfig.SCHEMA_VERSION, 2)
 	assert_false(config.has_config_file)
 	assert_eq(config.get_applied_sources(), PackedStringArray())
 	assert_eq(config.game_title, "Stella")
@@ -278,6 +285,56 @@ func test_title_resolver_rejects_empty_and_required_constructor_scenes():
 		assert_eq(resolved, fallback)
 		assert_eq(_runtime.title_scene_path, _runtime.DEFAULT_TITLE_SCENE)
 		assert_push_error("falling back to the built-in title scene")
+
+
+func test_title_resolver_rejects_degraded_dependencies_and_wrong_script_base():
+	_write_raw_project_config(
+		TEST_MISSING_SCRIPT_TITLE_PATH,
+		(
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"Script\" "
+			+ "path=\"user://missing_title_dependency.gd\" id=\"1_missing\"]\n\n"
+			+ "[node name=\"MissingScriptTitle\" type=\"Node\"]\n"
+			+ "script = ExtResource(\"1_missing\")\n"
+		),
+	)
+	_write_raw_project_config(
+		TEST_MISSING_NESTED_TITLE_PATH,
+		(
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"PackedScene\" "
+			+ "path=\"user://missing_title_dependency.tscn\" id=\"1_missing\"]\n\n"
+			+ "[node name=\"MissingNestedTitle\" type=\"Node\"]\n\n"
+			+ "[node name=\"MissingChild\" parent=\".\" "
+			+ "instance=ExtResource(\"1_missing\")]\n"
+		),
+	)
+	_write_raw_project_config(
+		TEST_WRONG_SCRIPT_BASE_TITLE_PATH,
+		(
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"Script\" "
+			+ "path=\"res://addons/stella/presentation/dialogue/"
+			+ "dialogue_mode_profile.gd\" id=\"1_resource\"]\n\n"
+			+ "[node name=\"WrongScriptBaseTitle\" type=\"Node\"]\n"
+			+ "script = ExtResource(\"1_resource\")\n"
+		),
+	)
+
+	var fallback := load(_runtime.DEFAULT_TITLE_SCENE) as PackedScene
+	for invalid_path: String in [
+		TEST_MISSING_SCRIPT_TITLE_PATH,
+		TEST_MISSING_NESTED_TITLE_PATH,
+		TEST_WRONG_SCRIPT_BASE_TITLE_PATH,
+	]:
+		_runtime.title_scene_path = invalid_path
+		var resolved: PackedScene = _runtime.resolve_title_scene(fallback)
+		assert_eq(resolved, fallback)
+		assert_eq(_runtime.title_scene_path, _runtime.DEFAULT_TITLE_SCENE)
+		assert_push_error("falling back to the built-in title scene")
+	assert_engine_error_count(0,
+		"dependency preflight must reject degraded scenes before ResourceLoader "
+		+ "prints missing private paths")
 
 
 func test_runtime_title_scene_from_config_override():
@@ -513,11 +570,11 @@ func test_parser_supports_comments_crlf_whitespace_and_quoted_escapes():
 		TEST_LOCAL_CONFIG_PATH,
 		(
 			"  ; leading comment\r\n"
-			+ "[ game ] # trailing section comment\r\n"
-			+ " title = \"Line\\nQuote: \\\";#\\\" Slash: \\\\ Snowman: \\u2603\" # value comment\r\n"
-			+ "[features]# compact trailing comment\r\n"
+			+ "[ game ] ; trailing section comment\r\n"
+			+ " title = \"Line\\nQuote: \\\";#\\\" Slash: \\\\ Snowman: \\u2603\" ; value comment\r\n"
+			+ "[features]; compact trailing comment\r\n"
 			+ "\tbacklog = false\r\n"
-			+ "\tsave_slots = 12# final comment"
+			+ "\tsave_slots = 12; final comment"
 		),
 	)
 
@@ -527,6 +584,30 @@ func test_parser_supports_comments_crlf_whitespace_and_quoted_escapes():
 	assert_eq(config.save_slots, 12)
 	assert_eq(config.last_error_line, 0)
 	assert_eq(config.last_error_column, 0)
+
+
+func test_hash_trailing_content_rejects_the_whole_source_atomically():
+	_write_project_config(TEST_BASE_CONFIG_PATH, {
+		"game": {"title": "Committed Base"},
+	})
+	assert_eq(config.load_from_path(TEST_BASE_CONFIG_PATH), OK)
+	_write_raw_project_config(
+		TEST_LOCAL_CONFIG_PATH,
+		(
+			"[game]\n"
+			+ "title = \"Rejected Local\"#not-a-stella-comment\n"
+			+ "scenario = \"res://must_not_apply.stla\"\n"
+		),
+	)
+
+	assert_eq(config.load_from_path(TEST_LOCAL_CONFIG_PATH), ERR_PARSE_ERROR)
+	assert_eq(config.game_title, "Committed Base")
+	assert_eq(config.scenario_path, "res://scenarios/main.stla")
+	assert_eq(config.get_applied_sources(), PackedStringArray([
+		TEST_BASE_CONFIG_PATH,
+	]))
+	assert_true(config.last_error_detail.contains("unexpected trailing content"))
+	assert_engine_error_count(0)
 
 
 func test_parser_preserves_config_file_unknown_escape_compatibility():

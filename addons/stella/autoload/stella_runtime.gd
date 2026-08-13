@@ -51,6 +51,7 @@ var title_scene_path: String = ""
 ## Internal state
 var _last_scenario_path: String = ""
 var _current_overlay: Node = null
+var _return_to_title_pending: bool = false
 
 
 func _init() -> void:
@@ -349,6 +350,11 @@ func resolve_title_scene(fallback_scene: PackedScene = null) -> PackedScene:
 func _title_scene_is_enterable(scene: PackedScene) -> bool:
 	if scene == null or not scene.can_instantiate():
 		return false
+	if (
+		not scene.resource_path.is_empty()
+		and not _title_scene_dependencies_are_available(scene.resource_path)
+	):
+		return false
 	var pending: Array[PackedScene] = [scene]
 	var visited: Dictionary = {}
 	while not pending.is_empty():
@@ -365,24 +371,86 @@ func _title_scene_is_enterable(scene: PackedScene) -> bool:
 		var state := current.get_state()
 		for node_index in state.get_node_count():
 			var nested_scene := state.get_node_instance(node_index)
+			var node_native_type := _title_node_native_type(
+				state,
+				node_index,
+				nested_scene,
+				{},
+			)
+			# A packed instance with a missing dependency degrades to an empty
+			# node type instead of making PackedScene.can_instantiate() fail.
+			if node_native_type == &"":
+				return false
 			if nested_scene != null:
 				pending.append(nested_scene)
 			for property_index in state.get_node_property_count(node_index):
 				if state.get_node_property_name(node_index, property_index) != &"script":
 					continue
-				var script := state.get_node_property_value(
+				var script_value: Variant = state.get_node_property_value(
 					node_index,
 					property_index,
-				) as Script
-				if not _title_script_is_enterable(script):
+				)
+				# Missing external scripts are represented as null in the packed
+				# state. Treat that as degradation, not a scriptless title node.
+				if not script_value is Script:
+					return false
+				if not _title_script_is_enterable(
+					script_value as Script,
+					node_native_type,
+				):
 					return false
 	return true
 
 
-func _title_script_is_enterable(script: Script) -> bool:
-	if script == null:
-		return true
-	if not script.can_instantiate() or script.is_abstract():
+func _title_node_native_type(
+	state: SceneState,
+	node_index: int,
+	nested_scene: PackedScene,
+	visited: Dictionary,
+) -> StringName:
+	var native_type := state.get_node_type(node_index)
+	if native_type != &"":
+		return native_type
+	if nested_scene == null:
+		return &""
+	return _title_scene_root_native_type(nested_scene, visited)
+
+
+func _title_scene_root_native_type(
+	scene: PackedScene,
+	visited: Dictionary,
+) -> StringName:
+	if scene == null or not scene.can_instantiate():
+		return &""
+	var identity := scene.resource_path
+	if identity.is_empty():
+		identity = str(scene.get_instance_id())
+	if visited.has(identity):
+		return &""
+	visited[identity] = true
+
+	var state := scene.get_state()
+	if state.get_node_count() == 0:
+		return &""
+	return _title_node_native_type(
+		state,
+		0,
+		state.get_node_instance(0),
+		visited,
+	)
+
+
+func _title_script_is_enterable(
+	script: Script,
+	node_native_type: StringName,
+) -> bool:
+	if script == null or not script.can_instantiate() or script.is_abstract():
+		return false
+	var script_native_type := script.get_instance_base_type()
+	if (
+		script_native_type == &""
+		or not ClassDB.is_parent_class(node_native_type, script_native_type)
+	):
 		return false
 
 	var current := script
@@ -404,43 +472,94 @@ func _title_script_is_enterable(script: Script) -> bool:
 
 
 func _load_title_scene(path: String) -> PackedScene:
-	if path == "" or not ResourceLoader.exists(path, "PackedScene"):
+	if (
+		path == ""
+		or not ResourceLoader.exists(path, "PackedScene")
+		or not _title_scene_dependencies_are_available(path)
+	):
 		return null
 	return load(path) as PackedScene
 
 
-## Return to title screen. Destructive cleanup and state transition happen only
-## after SceneTree accepts the resolved (or built-in fallback) scene.
+## Recursively verify that every external resource referenced by a candidate
+## title still exists. Godot can otherwise load a degraded PackedScene while
+## silently replacing a missing script or nested instance with null.
+func _title_scene_dependencies_are_available(path: String) -> bool:
+	var pending: Array[String] = [path.simplify_path()]
+	var visited: Dictionary = {}
+	while not pending.is_empty():
+		var current_path: String = pending.pop_back()
+		if visited.has(current_path):
+			continue
+		visited[current_path] = true
+		if not ResourceLoader.exists(current_path):
+			return false
+		for raw_dependency: String in ResourceLoader.get_dependencies(current_path):
+			var dependency_path := _resource_dependency_path(raw_dependency)
+			if dependency_path.is_empty() or not ResourceLoader.exists(dependency_path):
+				return false
+			pending.append(dependency_path)
+	return true
+
+
+func _resource_dependency_path(raw_dependency: String) -> String:
+	var fields := raw_dependency.split("::", true)
+	# Imported/exported resources may report UID::type::fallback-path. Prefer
+	# the stable fallback path when it is present so recursive inspection also
+	# works in PCK builds; ordinary path-only entries use the first field.
+	if fields.size() >= 3 and not fields[2].is_empty():
+		return fields[2].simplify_path()
+	if fields.is_empty():
+		return ""
+	return fields[0].simplify_path()
+
+
+## Return to title screen. The whole transaction is deferred so this API is
+## safe from a scene root's _ready(), where the parent is still busy. Cleanup
+## and TITLE state are committed only after SceneTree.scene_changed confirms
+## the resolved (or built-in fallback) scene became current_scene.
 func return_to_title() -> void:
+	if _return_to_title_pending:
+		return
+	_return_to_title_pending = true
+	_return_to_title_transaction.call_deferred()
+
+
+func _return_to_title_transaction() -> void:
 	var title_scene := resolve_title_scene()
 	if title_scene == null:
 		push_error("StellaRuntime: built-in title scene is unavailable")
+		_return_to_title_pending = false
 		return
 
 	# Snapshot scene-owned providers while the outgoing scene is still alive.
-	# change_scene_to_packed() synchronously removes it and runs _exit_tree(), so
-	# saving after the request can capture teardown state instead of gameplay.
+	# The deferred transaction still runs before change_scene_to_packed() removes
+	# it, so saving after the request cannot capture teardown state.
 	auto_save()
-	var scene_error := get_tree().change_scene_to_packed(title_scene)
-	if scene_error != OK:
+	var entered_title := await _enter_title_scene_and_confirm(
+		title_scene,
+		"configured",
+	)
+	var title_path := title_scene.resource_path.simplify_path()
+	if not entered_title and title_path != DEFAULT_TITLE_SCENE:
 		push_error(
-			(
-				"StellaRuntime: failed to enter the configured title scene (%s); "
-				+ "falling back to the built-in title scene"
-			) % error_string(scene_error)
+			"StellaRuntime: failed to enter the configured title scene; "
+			+ "falling back to the built-in title scene"
 		)
 		title_scene_path = DEFAULT_TITLE_SCENE
 		title_scene = DEFAULT_TITLE_PACKED_SCENE
 		if not _title_scene_is_enterable(title_scene):
 			push_error("StellaRuntime: built-in title scene is not enterable")
+			_return_to_title_pending = false
 			return
-		scene_error = get_tree().change_scene_to_packed(title_scene)
-		if scene_error != OK:
-			push_error(
-				"StellaRuntime: failed to enter the built-in title scene (%s)"
-				% error_string(scene_error)
-			)
-			return
+		entered_title = await _enter_title_scene_and_confirm(
+			title_scene,
+			"built-in",
+		)
+	if not entered_title:
+		push_error("StellaRuntime: failed to enter the built-in title scene")
+		_return_to_title_pending = false
+		return
 
 	_close_current_overlay()
 	backlog_manager.clear()
@@ -450,6 +569,37 @@ func return_to_title() -> void:
 	game_state.transition_to(GameStateMachine.State.TITLE)
 	if config.title_bgm != "":
 		_play_title_bgm()
+	_return_to_title_pending = false
+
+
+func _enter_title_scene_and_confirm(
+	title_scene: PackedScene,
+	description: String,
+) -> bool:
+	var expected_path := title_scene.resource_path.simplify_path()
+	var scene_error := get_tree().change_scene_to_packed(title_scene)
+	if scene_error != OK:
+		push_error(
+			"StellaRuntime: failed to request the %s title scene (%s)"
+			% [description, error_string(scene_error)]
+		)
+		return false
+
+	await get_tree().scene_changed
+	var current_scene := get_tree().current_scene
+	if (
+		current_scene != null
+		and current_scene.scene_file_path.simplify_path() == expected_path
+	):
+		return true
+	var current_path := "<null>"
+	if current_scene != null:
+		current_path = current_scene.scene_file_path
+	push_error(
+		"StellaRuntime: %s title transition completed on %s instead of %s"
+		% [description, current_path, expected_path]
+	)
+	return false
 
 
 ## Legacy API — starts scenario in current scene (for testing).
@@ -1011,11 +1161,13 @@ func _open_overlay(scene_path: String) -> void:
 
 
 func _close_current_overlay() -> void:
-	if _current_overlay != null:
-		var layer = _current_overlay.get_parent()
-		_current_overlay = null
-		if layer != null:
-			layer.queue_free()
+	var overlay := _current_overlay
+	_current_overlay = null
+	if not is_instance_valid(overlay):
+		return
+	var layer := overlay.get_parent()
+	if is_instance_valid(layer):
+		layer.queue_free()
 
 
 # ─── Facade API: CG Gallery ───

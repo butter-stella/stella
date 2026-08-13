@@ -226,9 +226,18 @@ func test_return_to_title_closes_overlay():
 	runtime.show_settings()
 	assert_not_null(runtime._current_overlay)
 
-	# return_to_title should close the overlay
+	# Cleanup is intentionally not committed until the deferred scene transaction
+	# confirms its final current_scene.
 	runtime.return_to_title()
+	assert_not_null(runtime._current_overlay)
+	var completed: bool = await wait_until(
+		func() -> bool: return not runtime._return_to_title_pending,
+		2.0,
+		"return_to_title confirms the new current_scene",
+	)
+	assert_true(completed)
 	assert_null(runtime._current_overlay)
+	assert_eq(runtime.game_state.current_state, GameStateMachine.State.TITLE)
 
 
 func test_start_game_closes_overlay():

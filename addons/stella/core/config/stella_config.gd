@@ -3,6 +3,9 @@
 class_name StellaConfig
 extends RefCounted
 
+## Layered configuration's strict, closed-schema compatibility boundary.
+## Version 1 used ConfigFile directly and ignored unknown section/key entries.
+const SCHEMA_VERSION := 2
 const _MAX_CONFIG_SOURCE_BYTES := 1024 * 1024
 const _MAX_CONFIG_STRING_BYTES := 256 * 1024
 
@@ -810,10 +813,7 @@ func _skip_config_trivia(cursor: _ConfigCursor) -> void:
 
 func _finish_config_line(cursor: _ConfigCursor, context: String) -> Dictionary:
 	cursor.skip_horizontal_whitespace()
-	# ConfigFile accepts '#' as a trailing comment delimiter after a complete
-	# section header or assignment. A line-leading '#' is intentionally not
-	# trivia because ConfigFile does not consistently treat it as a comment.
-	if cursor.peek() in [";", "#"]:
+	if cursor.peek() == ";":
 		_skip_config_comment(cursor)
 	if cursor.is_at_end():
 		return {"error": OK}

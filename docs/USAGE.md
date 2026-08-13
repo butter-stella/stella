@@ -142,11 +142,11 @@ game_scene = "res://private_preview/ui/preview_game.tscn"
 
 配置按 key 独立解析，优先级为“内置默认值 < `stella.cfg` < `stella.local.cfg`”。这套规则一致覆盖 `[game]`、`[paths]`、`[features]`、`[system_se]` 和 `[overrides]`；后一个文件只覆盖其中明确写出的 key，例如上面的本地文件不会改变基础配置中的 `game.title`。
 
-配置语法使用 Stella schema 所需的常用子集：文件必须是 UTF-8 且不能含 NUL 字节；字符串必须用双引号包围，布尔值写作 `true` / `false`，整数使用十进制。完整行注释以分号 `;` 开头；完成的 section header 或赋值后也兼容 Godot 4.6 `ConfigFile` 的行尾 `#` 注释。字符串转义兼容 `ConfigFile`，包括 `\\`、`\"`、`\n`、`\uXXXX`、`\UXXXXXX` 及 UTF-16 surrogate pair；未知转义也沿用其“去掉反斜杠、保留后一字符”的行为。显式写入空字符串也是一次有效覆盖。单个来源最多 1 MiB，单个 quoted String 的原始 UTF-8 表示最多 256 KiB；超限、NUL 和非法 UTF-8 都会按无部分提交的错误处理。
+配置语法使用 Stella schema 所需的常用子集：文件必须是 UTF-8 且不能含 NUL 字节；字符串必须用双引号包围，布尔值写作 `true` / `false`，整数使用十进制。完整行和行尾注释都使用分号 `;`；`#` 不属于 Stella 注释语法，出现在完成的 section header 或赋值后会使整个来源被拒绝。字符串转义兼容 Godot 4.6 `ConfigFile`，包括 `\\`、`\"`、`\n`、`\uXXXX`、`\UXXXXXX` 及 UTF-16 surrogate pair；未知转义也沿用其“去掉反斜杠、保留后一字符”的行为。显式写入空字符串也是一次有效覆盖。单个来源最多 1 MiB，单个 quoted String 的原始 UTF-8 表示最多 256 KiB；超限、NUL 和非法 UTF-8 都会按无部分提交的错误处理。
 
 两个文件都是可选来源：缺失的文件不会报错，也不会清空较低优先级已经解析出的值。每个存在的来源会先完成读取和 schema 校验，再一次性提交；类型错误、未知 section/key 或语法损坏都会原子拒绝整个来源，该来源不会部分生效，也不会出现在已应用来源列表中。基础配置失败时保留默认值并停止继续叠加，本地覆盖失败时则完整保留已经生效的基础配置。语法错误诊断会带来源路径、安全的行列位置和预期修复提示；schema 错误会指出相关 section/key，类型错误还会带预期类型，且二者都不会打印配置值。
 
-兼容边界：分层配置解析器仍兼容上述 Godot 4.6 标量写法，但从引入严格 Stella schema 的版本起，未知 section/key 不再像旧解析器那样静默忽略。这是有意的校验收紧。升级前请把宿主自定义元数据移出 `stella.cfg` / `stella.local.cfg`，或改用 Stella 已声明的 section/key；解析器不会透传未知条目，因此不能把“仅使用基础文件”理解为可继续接受旧的自定义键。
+兼容边界：`StellaConfig.SCHEMA_VERSION == 2` 标识分层配置与严格 closed schema 的迁移边界。v2 继续兼容上面的 Godot 4.6 标量值和字符串转义，但未知 section/key 不再像 v1 的直接 `ConfigFile` 加载器那样静默忽略。这是有意的校验收紧；“只使用基础文件”仅保证已声明 Stella key 的值保持原有语义，并不继续接受旧的自定义键。升级到 v2 前请把宿主自定义元数据移出 `stella.cfg` / `stella.local.cfg`，或改用 Stella 已声明的 section/key。
 
 Runtime 每次解析后都会完整应用 resolved snapshot，包括没有配置文件时的内置默认值。因此删除或禁用配置来源并重新初始化时，Runtime 不会继续保留上一轮的本地路径或其他覆盖。
 
@@ -181,7 +181,7 @@ GODOT_BIN=godot tests/pck_smoke/run_export_smoke.sh
 
 参考 `examples/demo/` 的结构搭建自己的标题场景和游戏场景，然后在 `stella.cfg` 的 `[overrides]` 中指向它们。
 
-使用插件提供的默认 bootstrap 入口时，`[overrides].title_scene` 同时控制首次启动进入的标题场景和之后的返回标题行为；启动配置会在场景重定向和 Presenter 消费配置前完成解析与应用。
+使用插件提供的默认 bootstrap 入口时，`[overrides].title_scene` 同时控制首次启动进入的标题场景和之后的返回标题行为；启动配置会在场景重定向和 Presenter 消费配置前完成解析与应用。标题候选的脚本、嵌套场景和其他外部依赖必须全部随构建存在，且节点脚本的原生基类必须与节点类型兼容，否则首次启动和返回标题都会原子回退内置标题。`return_to_title()` 可以从场景根 `_ready()` 调用；它会延迟切换，并在实际 `scene_changed` 确认后才清理游戏状态。
 
 游戏场景中使用插件的 Presenter 脚本（`BackgroundPresenter`、`StagePresenter` 等），通过 `StellaRuntime` 的 Facade API 控制游戏流程。`BackgroundPresenter` 独立管理 `@bg` 基础背景；人物、前景、事件图和其他可变换图片统一放在动态 `StageLayer` 中。StageLayer 按稳定 ID 创建任意数量的图片层，不预建位置槽。
 
