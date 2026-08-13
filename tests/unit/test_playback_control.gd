@@ -49,6 +49,52 @@ func test_read_flag_restore_merges_cross_playthrough_progress():
 	assert_true(rfm.is_read("route_b", "scene_2", 7), "empty snapshot must not clear progress")
 
 
+func test_read_flag_structured_key_does_not_collide_on_colons() -> void:
+	var rfm := ReadFlagManager.new()
+	rfm.mark_read("route:branch", "scene", 4)
+
+	assert_true(rfm.is_read("route:branch", "scene", 4))
+	assert_false(rfm.is_read("route", "branch:scene", 4),
+		"tuple components must not collide through delimiter concatenation")
+
+
+func test_read_flag_legacy_snapshot_migrates_to_v2_and_remains_queryable() -> void:
+	var rfm := ReadFlagManager.new()
+	rfm.restore_snapshot({"main:start:3": true})
+
+	assert_true(rfm.is_dialogue_read(
+		"path:res://story/main.stla", "main", "start", 30, 3),
+		"a canonical request may fall back to an actually migrated v1 address")
+	var snapshot := rfm.capture_snapshot()
+	assert_eq(snapshot.get("version"), 2)
+	assert_eq(snapshot.get("flags", []).size(), 1)
+
+
+func test_equal_basenames_keep_distinct_canonical_read_history() -> void:
+	var rfm := ReadFlagManager.new()
+	rfm.mark_dialogue_read("path:res://route_a/main.stla", "start", 7)
+
+	assert_true(rfm.is_dialogue_read(
+		"path:res://route_a/main.stla", "main", "start", 7, 0))
+	assert_false(rfm.is_dialogue_read(
+		"path:res://route_b/main.stla", "main", "start", 7, 0),
+		"new canonical records must never activate the basename fallback")
+
+
+func test_dialogue_activation_abort_wins_over_late_advance() -> void:
+	var activation := DialogueActivation.new()
+	assert_true(activation.abort())
+	assert_false(activation.advance())
+	assert_eq(activation.get_outcome(), DialogueActivation.Outcome.ABORTED)
+
+
+func test_dialogue_activation_advance_wins_over_late_abort() -> void:
+	var activation := DialogueActivation.new()
+	assert_true(activation.advance())
+	assert_false(activation.abort())
+	assert_eq(activation.get_outcome(), DialogueActivation.Outcome.ADVANCED)
+
+
 # --- BacklogManager ---
 
 func _seg(text: String, voice: String = "") -> Dictionary:

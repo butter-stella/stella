@@ -29,11 +29,11 @@ func _build_scenario(num_dialogues: int) -> ScenarioData:
 	return data
 
 
-# Drive the engine forward by N dialogues by emitting advance_requested.
+# Drive the engine forward by acknowledging N exact dialogue requests.
 func _advance(n: int) -> void:
 	for _i in range(n):
 		await get_tree().process_frame
-		SignalBus.advance_requested.emit()
+		RuntimeTestSupport.advance_dialogue_for_test(get_tree())
 	await get_tree().process_frame
 
 

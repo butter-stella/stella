@@ -445,7 +445,7 @@ func test_continue_from_save_overlay_not_closed_before_scene_change():
 	# continue coroutine can create and start its context after that wait, leaving
 	# a live engine loop that a later test's advance signal can accidentally
 	# resume. wait_until yields until after show_dialogue dispatch has returned,
-	# so DialogueHandler has installed its abort waiter before cleanup begins.
+	# so DialogueHandler's request-scoped activation exists before cleanup begins.
 	var reached_loaded_dialogue: bool = await wait_until(
 		func() -> bool: return not loaded_contexts.is_empty(),
 		2.0,

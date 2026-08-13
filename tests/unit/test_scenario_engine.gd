@@ -127,6 +127,39 @@ func test_engine_executes_multiple_commands_in_order():
 	assert_eq(handler.executed[2].get_string("text"), "Third")
 
 
+func test_parallel_dialogues_have_distinct_authored_read_identities() -> void:
+	var read_flags := ReadFlagManager.new()
+	var dialogue_handler := DialogueHandler.new(read_flags)
+	var parallel_handler := ParallelHandler.new()
+	parallel_handler.set_registry(_registry)
+	_registry.register(dialogue_handler)
+	_registry.register(parallel_handler)
+	var first := _build_cmd("dialogue", {"text": "First"})
+	var second := _build_cmd("dialogue", {"text": "Second"})
+	var parallel := _build_cmd("parallel", {"commands": [first, second]})
+	var scenario := _build_scenario([{"id": "start", "commands": []}])
+	scenario.scenes[0].commands.append(parallel)
+	var requests: Array[DialogueRequest] = []
+	var capture := func(request: DialogueRequest): requests.append(request)
+	SignalBus.dialogue_requested.connect(capture)
+
+	_engine.load_scenario(scenario)
+	_engine.run()
+	assert_eq(requests.size(), 1)
+	assert_ne(first.uid, second.uid)
+	requests[0].advance()
+	await get_tree().process_frame
+	assert_eq(requests.size(), 2)
+	assert_true(read_flags.is_dialogue_read(
+		"id:test", "test", "start", first.uid, 0))
+	assert_false(read_flags.is_dialogue_read(
+		"id:test", "test", "start", second.uid, 0),
+		"the first nested dialogue must not pre-mark its sibling")
+	requests[1].abort()
+	_engine.stop()
+	SignalBus.dialogue_requested.disconnect(capture)
+
+
 func test_engine_advances_to_next_scene():
 	var handler = TrackingHandler.new("dialogue")
 	_registry.register(handler)

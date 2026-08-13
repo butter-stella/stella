@@ -1,4 +1,4 @@
-## Emits show_dialogue signal and waits for advance_requested.
+## Emits a request-scoped dialogue activation and waits for its acknowledgement.
 class_name DialogueHandler extends CommandHandler
 
 var _read_flags: ReadFlagManager
@@ -17,14 +17,17 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 	# Snapshot the semantic command identity before awaiting input. The context is
 	# mutable and can be jumped/replaced while a dialogue is blocked.
 	var scenario_id := ""
+	var scenario_identity := ""
 	var scene_id := ""
 	var command_index := -1
 	if context != null and context.scenario_data != null:
 		var current_scene := context.current_scene()
 		if current_scene != null:
 			scenario_id = context.scenario_data.id
+			scenario_identity = context.scenario_data.get_read_identity()
 			scene_id = current_scene.id
 			command_index = context.current_command_index
+	var command_uid := data.uid if data.uid >= 0 else command_index
 
 	var character = data.get_string("character", "")
 	var mode = data.get_string("mode", "adv")
@@ -74,6 +77,9 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 			if not nvl_page_entries.is_empty():
 				nvl_page_entries = context.materialize_nvl_page_entries(
 					nvl_page_entries)
+	var activation := DialogueActivation.new()
+	if context != null and not context.install_dialogue_activation(activation):
+		return
 	SignalBus.emit_dialogue_request(DialogueRequest.new(
 		character,
 		segments,
@@ -84,26 +90,36 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 		presentation_provenance,
 		nvl_page_entries,
 		entry_id,
-		data.uid,
+		command_uid,
+		activation,
+		scenario_identity,
+		scenario_id,
+		scene_id,
+		command_index,
 	))
-	# Race against engine_abort_requested so backlog jump can interrupt us.
-	if not await CommandHandler.await_with_abort(SignalBus.advance_requested):
-		return
-	# Loading/replacing a scenario stops its old context without necessarily
-	# emitting the abort signal. A later run's advance must not complete that
-	# abandoned command.
-	if context == null or context.is_finished:
+	var outcome := activation.get_outcome()
+	if activation.is_pending():
+		outcome = await activation.resolved
+	var owns_activation := (
+		context != null and context.owns_dialogue_activation(activation)
+	)
+	if context != null:
+		context.clear_dialogue_activation(activation)
+	if (
+		outcome != DialogueActivation.Outcome.ADVANCED
+		or not owns_activation
+	):
 		return
 
 	# Read state belongs to command completion, not to presentation. Aborted lines
 	# return above and remain unread.
-	if command_index < 0:
+	if command_uid < 0 or scenario_identity.is_empty() or scene_id.is_empty():
 		push_warning(
-			"DialogueHandler: cannot mark a completed dialogue without a valid position"
+			"DialogueHandler: cannot mark a completed dialogue without a valid identity"
 		)
 		return
-	_read_flags.mark_read(
-		scenario_id,
+	_read_flags.mark_dialogue_read(
+		scenario_identity,
 		scene_id,
-		command_index,
+		command_uid,
 	)

@@ -1,8 +1,17 @@
 extends RefCounted
 ## Test-only isolation helper for the persistent StellaRuntime autoload.
 
+static var _active_dialogue_request: DialogueRequest
+
+
+static func _capture_dialogue_request(request: DialogueRequest) -> void:
+	_active_dialogue_request = request
+
 
 static func reset_for_test(runtime: Node, tree: SceneTree) -> void:
+	if not SignalBus.dialogue_requested.is_connected(_capture_dialogue_request):
+		SignalBus.dialogue_requested.connect(_capture_dialogue_request)
+	_active_dialogue_request = null
 	# Detach the context before waking a blocking handler. ScenarioEngine.run()
 	# uses identity as its generation guard; reversing these steps can let the
 	# old run reach scenario_ended and trigger title navigation / auto-save.
@@ -71,6 +80,24 @@ static func reset_for_test(runtime: Node, tree: SceneTree) -> void:
 	runtime.save_manager.register_provider(runtime.presentation_state)
 	runtime.save_manager.register_provider(runtime.flowchart_state)
 	runtime.save_manager.register_provider(runtime.flowchart_visited)
+
+
+## Drive the exact DialogueRequest rendered by the active built-in panel.
+## Tests must not use the global advance notification as a command ack.
+static func advance_dialogue_for_test(tree: SceneTree) -> bool:
+	if (
+		_active_dialogue_request != null
+		and _active_dialogue_request.get_activation() != null
+		and _active_dialogue_request.get_activation().is_pending()
+	):
+		return _active_dialogue_request.advance()
+	for node in tree.root.find_children("DialoguePanel", "", true, false):
+		if not node.has_method("request_current_dialogue_advance"):
+			continue
+		var activation = node.get("_current_dialogue_activation")
+		if activation is DialogueActivation and activation.is_pending():
+			return bool(node.request_current_dialogue_advance())
+	return false
 
 
 static func _reset_audio_for_test(audio_presenter: Node) -> void:

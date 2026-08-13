@@ -3,6 +3,10 @@ class_name ScenarioData extends RefCounted
 
 var id: String = ""
 var title: String = ""
+## Canonical authored source used by persistent command identities. Parsed
+## scenarios keep their full resource path so equal basenames in different
+## directories never share read history.
+var source_path: String = ""
 var scenes: Array = []  # Array[SceneData]
 ## Chapters in declaration order (issue #97). Each chapter owns one or more
 ## scenes. Populated by DslParser; empty for scenarios constructed manually
@@ -30,6 +34,12 @@ func get_dialogue_profile(profile_name: String) -> Dictionary:
 func get_dialogue_profile_provenance(profile_name: String) -> Dictionary:
 	var provenance: Dictionary = dialogue_profile_provenance.get(profile_name, {})
 	return provenance.duplicate(true)
+
+
+func get_read_identity() -> String:
+	if not source_path.is_empty():
+		return "path:%s" % source_path.simplify_path()
+	return "id:%s" % id
 
 
 func get_scene(scene_id: String) -> SceneData:
@@ -76,11 +86,20 @@ func get_chapter_for_scene(scene_id: String) -> ChapterData:
 ## Idempotent: if a command already has uid != -1 it is left alone, so
 ## tests that construct CommandData with explicit uids work too.
 func assign_command_uids() -> void:
-	var next_uid := 0
+	var next_uid := [0]
 	for scene in scenes:
 		for cmd in scene.commands:
-			if cmd.uid == -1:
-				cmd.uid = next_uid
-			# Always advance the counter so explicit uids don't collide
-			# with auto-assigned ones.
-			next_uid = max(next_uid, cmd.uid) + 1
+			_assign_command_uid_recursive(cmd, next_uid)
+
+
+func _assign_command_uid_recursive(cmd: CommandData, next_uid: Array) -> void:
+	if cmd == null:
+		return
+	if cmd.uid == -1:
+		cmd.uid = int(next_uid[0])
+	# Always advance the counter so explicit uids don't collide with assigned
+	# top-level or nested commands.
+	next_uid[0] = maxi(int(next_uid[0]), cmd.uid) + 1
+	for child in cmd.params.get("commands", []):
+		if child is CommandData:
+			_assign_command_uid_recursive(child, next_uid)

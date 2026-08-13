@@ -18,7 +18,7 @@ _input:
   1. 鼠标下有交互控件（Button/Slider）？→ return，让 GUI 处理
   2. 打字中？→ 完成打字 + set_input_as_handled（消费事件）
   3. UI 隐藏？→ 恢复 UI + set_input_as_handled
-  4. 否则 → advance_requested（推进剧本）
+  4. 否则 → 当前 `DialogueRequest.advance()`（推进该次命令激活）
 
 _unhandled_input:
   键盘（空格/回车/Ctrl）→ UI 隐藏时先恢复并消费按键，否则正常处理
@@ -55,7 +55,7 @@ _unhandled_input:
 
 纯展示，零输入处理代码。暴露打字、临时隐藏和 Ctrl 快进状态；InputHandler 通过 `complete_typewriter()` 请求同步完成当前句，由 Presenter 统一取消尚未结束的字符/`{wait}` 计时、应用最终表情并进入 ready 状态，避免输入层直接改字段后留下旧协程。
 
-Presenter 同时观察 `AutoPlayController` / `SkipController` 的状态变化，因此内置工具栏、`StellaAction` 与 `StellaRuntime.toggle_auto_play()` / `toggle_skip()` 共享同一条完成路径：ready 状态开启快进会立即推进，开启自动播放会进入配置的 voice-wait 与 delay tail，而不是只改变按钮高亮。
+Presenter 同时观察 `AutoPlayController` / `SkipController` 的状态变化，因此内置工具栏、`StellaAction` 与 `StellaRuntime.toggle_auto_play()` / `toggle_skip()` 共享同一条完成路径：ready 状态开启快进会在允许跳过时立即确认当前 request；`skip_only_read=true` 时 ready 但尚未确认的行仍属未读，快进会停在该行。开启自动播放会进入配置的 voice-wait 与 delay tail，而不是只改变按钮高亮。
 
 ### Overlay（save_load/backlog/settings）
 
@@ -65,4 +65,4 @@ Presenter 同时观察 `AutoPlayController` / `SkipController` 的状态变化�
 
 AVG 标准行为：打字未完成时点击 = 完成打字（不推进），打字完成后点击 = 推进。
 
-实现：`_input` 调用 Presenter 的 `complete_typewriter()`，由 Presenter 同步取消旧的字符/等待协程、应用最终头像状态，并把当前对话剩余的 `@combine` 舞台操作按声明顺序归约后以 cut 投影。成功后输入层再用 `set_input_as_handled()` 消费事件，因此既不会同时推进，也不会留下跨到下一句的 Tween。仅完成打字不会把该行标为已读；`DialogueHandler` 在剧情命令收到正常推进后写入已读记录，中止则保持未读，因此无界面执行也遵守相同语义。已完成的对话直接通过 `SignalBus.emit_advance_requested()` 广播原有无参数 `advance_requested` 信号；SignalBus 的 pre-dispatch hook 在同一次原子推进内先收束该行所属的舞台与语音状态，再把信号交给剧情引擎。这个 hook 同样覆盖扩展代码直接调用 `advance_requested.emit()` 的兼容路径，并避免收束回调同步展示的新台词又被输入层随后发出的 `advance_requested` 误清。
+实现：`_input` 调用 Presenter 的 `complete_typewriter()`，由 Presenter 同步取消旧的字符/等待协程、应用最终头像状态，并把当前对话剩余的 `@combine` 舞台操作按声明顺序归约后以 cut 投影。成功后输入层再用 `set_input_as_handled()` 消费事件，因此既不会同时推进，也不会留下跨到下一句的 Tween。仅完成打字不会把该行标为已读；`DialogueHandler` 在当前 request 的 `DialogueActivation` 被正常确认、且 engine/context owner 仍有效后写入已读记录，中止则保持未读，因此无界面执行也遵守相同语义。Presenter 的输入、Auto 与 Skip 都调用当前 `DialogueRequest.advance()`；SignalBus 随后广播无参数 `advance_requested` 作为表现层兼容通知，用于收束舞台与语音。扩展直接广播该旧信号不会完成任何剧情 waiter，也不会误推进另一个 activation。

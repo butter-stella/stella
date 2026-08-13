@@ -151,6 +151,34 @@ func test_assign_command_uids_skips_already_assigned():
 	assert_eq(c2.uid, 50, "pre-assigned uid preserved")
 
 
+func test_assign_command_uids_includes_nested_parallel_commands() -> void:
+	var data := ScenarioData.new()
+	var scene := SceneData.new()
+	var parallel := CommandData.new()
+	parallel.type = "parallel"
+	var first := CommandData.new()
+	first.type = "dialogue"
+	var second := CommandData.new()
+	second.type = "dialogue"
+	parallel.params = {"commands": [first, second]}
+	scene.commands = [parallel]
+	data.scenes = [scene]
+
+	data.assign_command_uids()
+
+	assert_eq(parallel.uid, 0)
+	assert_eq(first.uid, 1)
+	assert_eq(second.uid, 2)
+
+
+func test_read_identity_uses_simplified_full_source_path() -> void:
+	var data := ScenarioData.new()
+	data.id = "main"
+	data.source_path = "res://routes/../route_a/main.stla"
+
+	assert_eq(data.get_read_identity(), "path:res://route_a/main.stla")
+
+
 # ─── ChapterData (issue #97) ───
 
 func test_chapter_data_default_fields():

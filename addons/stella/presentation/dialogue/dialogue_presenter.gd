@@ -46,8 +46,11 @@ var _ctrl_held: bool = false  # Ctrl key skip
 # completion and intentionally are NOT reverted by rollback (backlog / flowchart
 # / choice rewind) — once advanced, always read. See stella_runtime.gd:436.
 var _current_scenario_id: String = ""
+var _current_scenario_identity: String = ""
 var _current_scene_id: String = ""
 var _current_command_index: int = -1
+var _current_command_uid: int = -1
+var _current_dialogue_activation: DialogueActivation
 var _current_voice: String = ""  # current dialogue voice asset
 var _current_voice_character: String = ""
 var _voice_playing: bool = false
@@ -688,7 +691,7 @@ func _on_skip_active_changed(active: bool) -> void:
 		return
 	# Apply the unread gate before finalizing the typewriter. A toolbar press on
 	# an unread line must stop skip without scheduling a command advance.
-	if _is_typing and not _should_skip_current():
+	if (_is_typing or _dialogue_ready) and not _should_skip_current():
 		_apply_unread_skip_gate()
 		return
 	# Skip just activated. If the typewriter is mid-flight, snap the text to
@@ -719,7 +722,7 @@ func _on_skip_active_changed(active: bool) -> void:
 		_dialogue_ready
 		and _indicator_candidate_dialogue_gen == _dialogue_gen
 	):
-		SignalBus.emit_advance_requested()
+		request_current_dialogue_advance()
 
 
 func _schedule_advance_after_skip_delay(gen: int) -> void:
@@ -736,7 +739,7 @@ func _schedule_advance_after_skip_delay(gen: int) -> void:
 	if not StellaRuntime.game_state.is_playing():
 		_restore_ready_after_cancelled_skip(gen)
 		return
-	SignalBus.emit_advance_requested()
+	request_current_dialogue_advance()
 
 
 func cancel_pending_skip() -> void:
@@ -876,15 +879,15 @@ func _should_skip_current() -> bool:
 		return false
 	if _ctrl_held:
 		return true
-	if not StellaRuntime.is_skipping():
-		return false
-	if not StellaRuntime.get_setting("skip_only_read"):
-		return true
-	# No known position (e.g. tests without a real scenario engine, or an
-	# in-between state) — can't gate on read status, so allow the skip.
-	if _current_command_index < 0:
-		return true
-	return _is_current_line_read()
+	return StellaRuntime.skip_controller.should_skip(
+		_current_scenario_id,
+		_current_scene_id,
+		_current_command_index,
+		StellaRuntime.read_flags,
+		StellaRuntime.get_setting("skip_only_read"),
+		_current_scenario_identity,
+		_current_command_uid,
+	)
 
 
 ## Side-effect counterpart to `_should_skip_current()`. If toolbar skip is
@@ -894,22 +897,32 @@ func _should_skip_current() -> bool:
 func _apply_unread_skip_gate() -> void:
 	if _ctrl_held:
 		return
-	if not StellaRuntime.is_skipping():
-		return
-	if not StellaRuntime.get_setting("skip_only_read"):
-		return
-	if _current_command_index < 0:
-		return
-	if _is_current_line_read():
+	if _should_skip_current():
 		return
 	StellaRuntime.skip_controller.stop()
 	_update_toggle_buttons()
 
 
-func _capture_current_position() -> void:
+func _capture_request_identity(request: Dictionary) -> void:
 	_current_scenario_id = ""
+	_current_scenario_identity = ""
 	_current_scene_id = ""
 	_current_command_index = -1
+	_current_command_uid = -1
+	_current_dialogue_activation = request.get("activation") as DialogueActivation
+	_current_scenario_identity = String(request.get("scenario_identity", ""))
+	_current_scenario_id = String(request.get("legacy_scenario_id", ""))
+	_current_scene_id = String(request.get("scene_id", ""))
+	_current_command_index = int(request.get("legacy_command_index", -1))
+	_current_command_uid = int(request.get("command_uid", -1))
+	if (
+		not _current_scenario_identity.is_empty()
+		and not _current_scene_id.is_empty()
+		and _current_command_uid >= 0
+	):
+		return
+	# Compatibility for direct legacy Presenter calls that predate the typed
+	# request identity. Runtime DialogueHandler requests never use this path.
 	if StellaRuntime.engine == null or StellaRuntime.engine.context == null:
 		return
 	var ctx = StellaRuntime.engine.context
@@ -919,15 +932,36 @@ func _capture_current_position() -> void:
 	if scene == null:
 		return
 	_current_scenario_id = ctx.scenario_data.id
+	_current_scenario_identity = ctx.scenario_data.get_read_identity()
 	_current_scene_id = scene.id
 	_current_command_index = ctx.current_command_index
+	var command := ctx.current_command()
+	_current_command_uid = command.uid if command != null else -1
 
 
 func _is_current_line_read() -> bool:
-	if _current_command_index < 0:
+	if _current_command_uid < 0 and _current_command_index < 0:
 		return false
+	if not _current_scenario_identity.is_empty() and _current_command_uid >= 0:
+		return StellaRuntime.read_flags.is_dialogue_read(
+			_current_scenario_identity,
+			_current_scenario_id,
+			_current_scene_id,
+			_current_command_uid,
+			_current_command_index,
+		)
 	return StellaRuntime.read_flags.is_read(
 		_current_scenario_id, _current_scene_id, _current_command_index)
+
+
+## Input, auto-play, and skip acknowledge the exact request currently rendered.
+## Legacy raw SHOW calls have no blocking activation and retain their global
+## compatibility notification.
+func request_current_dialogue_advance() -> bool:
+	if _current_dialogue_activation != null:
+		return _current_dialogue_activation.advance()
+	SignalBus.emit_advance_requested()
+	return true
 
 
 ## Unified dialogue handler.
@@ -958,6 +992,12 @@ func _on_dialogue_requested(dialogue_request: DialogueRequest) -> void:
 		"declarative_presentation": dialogue_request.uses_declarative_presentation(),
 		"custom_effect_registry": custom_effect_registry.duplicate(true),
 		"boundary_revision": revision,
+		"activation": dialogue_request.get_activation(),
+		"scenario_identity": dialogue_request.get_scenario_identity(),
+		"legacy_scenario_id": dialogue_request.get_legacy_scenario_id(),
+		"scene_id": dialogue_request.get_scene_id(),
+		"legacy_command_index": dialogue_request.get_legacy_command_index(),
+		"command_uid": dialogue_request.get_command_uid(),
 	}
 	# This SHOW is later than any parked hide/scene boundary and therefore owns
 	# the next visible state. Metadata above is retained in the request snapshot.
@@ -1034,6 +1074,7 @@ func _show_dialogue_request(request: Dictionary) -> void:
 		"presentation_provenance", {})
 	var custom_effect_registry: Dictionary = request.get(
 		"custom_effect_registry", {})
+	_capture_request_identity(request)
 	_show_dialogue_now(
 		String(request.get("character", "")),
 		request_segments,
@@ -1092,10 +1133,6 @@ func _show_dialogue_now(
 	if _ui_hidden:
 		_ui_hidden = false
 		visible = true
-
-	# Cache (scenario_id, scene_id, command_index) of the line we are about to
-	# display — consulted by _should_skip_current() / _apply_unread_skip_gate().
-	_capture_current_position()
 
 	# Snapshot dialogue state. _start_voice_playback later writes _playback_*
 	# but never touches _dialogue_*, so a backlog replay can run in parallel
@@ -1488,7 +1525,7 @@ func _continue_auto_play_after_ready(gen: int) -> void:
 	_auto_pending_attempt = -1
 	if StellaRuntime.is_auto_playing() \
 		and StellaRuntime.game_state.is_playing():
-		SignalBus.emit_advance_requested()
+		request_current_dialogue_advance()
 
 
 func _wait_for_active_voice_finished(gen: int, attempt: int) -> bool:
@@ -2956,8 +2993,11 @@ func _apply_hide_dialogue_boundary(revision: int) -> void:
 	_active_uses_stla_presentation = false
 	_current_mode = "adv"
 	_current_scenario_id = ""
+	_current_scenario_identity = ""
 	_current_scene_id = ""
 	_current_command_index = -1
+	_current_command_uid = -1
+	_current_dialogue_activation = null
 	visible = false
 	_ui_hidden = false
 	_reset_nvl_accumulator()

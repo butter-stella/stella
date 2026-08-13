@@ -373,7 +373,7 @@ func test_new_typing_and_advance_hide_the_ready_indicator_synchronously() -> voi
 	assert_false(indicator.visible,
 		"a valid SHOW must hide the old ready marker before its first await")
 
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	assert_false(indicator.visible,
 		"advance must keep the marker hidden even without a following dialogue")
 	await get_tree().create_timer(0.15).timeout
@@ -391,7 +391,7 @@ func test_double_click_style_advance_invalidates_pending_completion() -> void:
 	_text_label(_presenter).visible_characters = -1
 	# Models the second click arriving before the old typewriter coroutine has
 	# resumed and committed its ready-to-advance state.
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	await get_tree().create_timer(0.15).timeout
 
 	var indicator := _presenter.get_node_or_null("AdvanceIndicator") as CanvasItem
@@ -659,14 +659,17 @@ func test_active_skip_never_exposes_a_ready_indicator() -> void:
 	SignalBus.advance_requested.disconnect(on_advance)
 
 
-func test_activating_toolbar_skip_from_ready_hides_synchronously() -> void:
+func test_activating_toolbar_skip_from_ready_stops_at_unread_line() -> void:
 	var indicator := await _show_and_wait_for_indicator(
 		_presenter, "Ready before toolbar skip", "adv", _texture_profile())
 	if indicator == null:
 		return
+	StellaRuntime.set_setting("skip_only_read", true)
+	_presenter._current_scenario_identity = ""
 	_presenter._current_scenario_id = "ready_skip"
 	_presenter._current_scene_id = "start"
 	_presenter._current_command_index = 15403
+	_presenter._current_command_uid = -1
 	assert_false(StellaRuntime.read_flags.is_read(
 		"ready_skip", "start", 15403),
 		"the explicit ready-line action must be tested while the line is unread")
@@ -677,11 +680,12 @@ func test_activating_toolbar_skip_from_ready_hides_synchronously() -> void:
 	if not _press_toolbar_skip(_presenter):
 		SignalBus.advance_requested.disconnect(on_advance)
 		return
-	assert_true(StellaRuntime.is_skipping())
-	assert_eq(advance_count[0], 1,
-		"toolbar skip advances a dialogue that was already fully shown")
-	assert_false(indicator.visible,
-		"activating skip must retire the existing ready marker synchronously")
+	assert_false(StellaRuntime.is_skipping(),
+		"skip_only_read must stop toolbar skip at a ready unread line")
+	assert_eq(advance_count[0], 0,
+		"a fully shown line is still unread until its command is acknowledged")
+	assert_true(indicator.visible,
+		"the unread line remains ready for an ordinary user advance")
 	SignalBus.advance_requested.disconnect(on_advance)
 
 
@@ -793,8 +797,11 @@ func test_toolbar_skip_checks_unread_gate_before_finalizing_typewriter() -> void
 		SignalBus.advance_requested.disconnect(on_advance)
 		return
 	_presenter._current_scenario_id = "issue_154_skip_gate"
+	_presenter._current_scenario_identity = ""
 	_presenter._current_scene_id = "start"
 	_presenter._current_command_index = 15402
+	_presenter._current_command_uid = -1
+	_presenter._current_dialogue_activation = null
 	assert_false(StellaRuntime.read_flags.is_read(
 		"issue_154_skip_gate", "start", 15402))
 
@@ -840,8 +847,11 @@ func test_stella_action_skip_applies_unread_gate_during_typewriter() -> void:
 		SignalBus.advance_requested.disconnect(on_advance)
 		return
 	_presenter._current_scenario_id = "issue_154_public_skip_gate"
+	_presenter._current_scenario_identity = ""
 	_presenter._current_scene_id = "start"
 	_presenter._current_command_index = 15403
+	_presenter._current_command_uid = -1
+	_presenter._current_dialogue_activation = null
 
 	var button := Button.new()
 	var action := StellaAction.new()
@@ -955,7 +965,7 @@ func test_an_early_advance_retires_the_pending_skip_timer() -> void:
 	if not typing_started or not _press_toolbar_skip(_presenter):
 		SignalBus.advance_requested.disconnect(on_advance)
 		return
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	assert_eq(advance_count[0], 1)
 	await get_tree().create_timer(0.35).timeout
 	assert_eq(advance_count[0], 1,
@@ -1371,7 +1381,7 @@ func test_overlay_marker_hides_on_advance_without_a_following_show() -> void:
 	if indicator == null:
 		return
 
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	assert_false(indicator.visible,
 		"@overlay off has no presenter event, so advance must close its marker")
 	await get_tree().process_frame
@@ -1451,7 +1461,10 @@ func test_stla_scene_diagnostics_distinguish_profile_path_and_declaration_line()
 		var expected_name := "alpha" if index == 0 else "beta"
 		var expected_line := index + 1
 		context.apply_dialogue_mode_events(command.dialogue_mode_events_before)
-		SignalBus.advance_requested.emit.call_deferred()
+		SignalBus.dialogue_requested.connect(
+			func(request: DialogueRequest): request.advance(),
+			CONNECT_ONE_SHOT,
+		)
 		await DialogueHandler.new(ReadFlagManager.new()).execute(command, context)
 		assert_push_warning((
 			"DialoguePresenter advance indicator [STLA profile '%s'; "
@@ -1513,7 +1526,7 @@ func test_custom_scene_ready_hook_tracks_show_and_advance() -> void:
 		"custom scenes are initialized hidden before receiving ready=true",
 	)
 
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	assert_false(bool(content.get("advance_ready")))
 	assert_eq(
 		content.get("advance_ready_history"),
@@ -1566,7 +1579,7 @@ func test_advance_dispatch_does_not_invalidate_a_synchronously_shown_replacement
 
 	# Direct signal emission is part of the public compatibility surface and
 	# must receive the same pre-dispatch ordering guarantee as the wrapper.
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	SignalBus.advance_requested.disconnect(earlier_listener)
 	assert_true(did_show[0])
 	assert_gt(serial_seen[0], 0,
@@ -1612,7 +1625,7 @@ func test_finalize_signal_cannot_retire_a_synchronously_shown_replacement() -> v
 	# fixture. This is the same state set by a loaded dialogue voice.
 	_presenter._playback_total_duration = 1.0
 	_presenter._playback_is_dialogue = true
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	SignalBus.dialogue_voice_finished.disconnect(on_voice_finished)
 	assert_true(did_show[0])
 	assert_eq(_text_label(_presenter).text,
@@ -1703,7 +1716,7 @@ func test_advance_tail_cannot_stop_voice_started_by_finalize_replacement() -> vo
 	}], "adv", _texture_profile(), true)
 	assert_true(audio_presenter._voice_player.playing)
 
-	SignalBus.emit_advance_requested()
+	_presenter.request_current_dialogue_advance()
 	SignalBus.dialogue_voice_finished.disconnect(on_dialogue_voice_finished)
 	assert_true(did_replace[0])
 	assert_eq(_text_label(_presenter).text,
@@ -1972,7 +1985,7 @@ func test_voice_kickoff_cannot_overwrite_a_synchronously_shown_replacement() -> 
 
 	SignalBus.dialogue_voice_started.disconnect(on_voice_started)
 	SignalBus.voice_play.disconnect(on_voice_play)
-	SignalBus.emit_advance_requested()
+	_presenter.request_current_dialogue_advance()
 
 
 func test_indicator_ready_hook_cannot_overwrite_reentrant_show() -> void:
@@ -2045,7 +2058,7 @@ func test_advance_during_owned_voice_emit_blocks_retired_audio_tail() -> void:
 		if did_advance[0] or asset != "narration_001":
 			return
 		did_advance[0] = true
-		SignalBus.emit_advance_requested()
+		_presenter.request_current_dialogue_advance()
 	SignalBus.voice_play.connect(on_voice_play)
 	var late_audio: Node = AUDIO_PRESENTER_SCRIPT.new()
 	add_child_autoqfree(late_audio)
@@ -2112,7 +2125,7 @@ func test_owned_voice_tail_cannot_restart_retired_audio() -> void:
 				"narration_002.wav"),
 			"the canonical AudioPresenter retains replacement audio",
 		)
-	SignalBus.emit_advance_requested()
+	_presenter.request_current_dialogue_advance()
 
 
 func test_same_dialogue_replay_retires_the_previous_voice_tail() -> void:
@@ -2153,7 +2166,7 @@ func test_same_dialogue_replay_retires_the_previous_voice_tail() -> void:
 				"narration_002.wav"),
 			"same-line replay queue must suppress the retired voice signal tail",
 		)
-	SignalBus.emit_advance_requested()
+	_presenter.request_current_dialogue_advance()
 
 
 func test_hide_during_compat_voice_notification_retires_dialogue_queue() -> void:
@@ -2184,7 +2197,7 @@ func test_hide_during_compat_voice_notification_retires_dialogue_queue() -> void
 	assert_true(did_hide[0])
 	assert_false(_presenter.visible)
 	assert_false(_presenter._playback_queue_active)
-	SignalBus.emit_advance_requested()
+	_presenter.request_current_dialogue_advance()
 
 
 func test_direct_raw_voice_remains_legacy_compatible() -> void:
@@ -2239,7 +2252,7 @@ func test_nested_raw_different_voice_remains_legacy_compatible() -> void:
 	if audio_presenter._voice_player.stream != null:
 		assert_true(audio_presenter._voice_player.stream.resource_path.ends_with(
 			"narration_002.wav"))
-	SignalBus.emit_advance_requested()
+	_presenter.request_current_dialogue_advance()
 
 
 func test_empty_raw_show_does_not_retire_the_active_owned_queue() -> void:
@@ -2286,7 +2299,7 @@ func test_empty_raw_show_does_not_retire_the_active_owned_queue() -> void:
 	assert_true(await _wait_for_typing_to_finish(_presenter),
 		"the accepted line still reaches its natural ready boundary")
 	SignalBus.voice_play.disconnect(on_voice_play)
-	SignalBus.emit_advance_requested()
+	_presenter.request_current_dialogue_advance()
 
 
 func test_profile_ready_hook_cannot_overwrite_reentrant_show() -> void:

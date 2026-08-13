@@ -235,8 +235,13 @@ func test_reset_for_test_does_not_leave_parallel_children_waiting() -> void:
 	await get_tree().process_frame
 	assert_eq(
 		SignalBus.advance_requested.get_connections().size(),
-		advance_connection_count + 1,
-		"the first parallel dialogue should be awaiting advance",
+		advance_connection_count,
+		"request-scoped dialogue must not install a global advance waiter",
+	)
+	assert_eq(
+		SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connection_count + 1,
+		"the first parallel dialogue owns one request-scoped abort listener",
 	)
 
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())

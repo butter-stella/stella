@@ -37,6 +37,13 @@ func _command(params: Dictionary) -> CommandData:
 	return command
 
 
+func _advance_next_dialogue() -> void:
+	_bus.dialogue_requested.connect(
+		func(request: DialogueRequest): request.advance(),
+		CONNECT_ONE_SHOT,
+	)
+
+
 func _scenario() -> ScenarioData:
 	var scenario := ScenarioData.new()
 	var scene := SceneData.new()
@@ -63,7 +70,7 @@ func test_dialogue_handler_resolves_runtime_profile_and_provenance_by_name() -> 
 	var received: Array = []
 	_capture_dialogue(received)
 
-	_bus.advance_requested.emit.call_deferred()
+	_advance_next_dialogue()
 	await DialogueHandler.new(_read_flags).execute(_command({
 		"text": "runtime",
 		"presentation_from_context": true,
@@ -90,7 +97,7 @@ func test_monologue_is_static_without_inheriting_or_mutating_runtime_profile() -
 	var received: Array = []
 	_capture_dialogue(received)
 
-	_bus.advance_requested.emit.call_deferred()
+	_advance_next_dialogue()
 	await DialogueHandler.new(_read_flags).execute(_command({
 		"text": "thought",
 		"mode": "monologue",
@@ -104,7 +111,7 @@ func test_monologue_is_static_without_inheriting_or_mutating_runtime_profile() -
 	assert_eq(context.current_dialogue_mode, "nvl")
 	assert_eq(context.current_dialogue_profile_name, "novel")
 
-	_bus.advance_requested.emit.call_deferred()
+	_advance_next_dialogue()
 	await DialogueHandler.new(_read_flags).execute(_command({
 		"text": "after",
 		"presentation_from_context": true,
@@ -126,7 +133,7 @@ func test_static_command_clears_stale_runtime_profile_before_context_resumes() -
 	var received: Array = []
 	_capture_dialogue(received)
 
-	_bus.advance_requested.emit.call_deferred()
+	_advance_next_dialogue()
 	await DialogueHandler.new(_read_flags).execute(_command({
 		"text": "static",
 		"mode": "overlay",
@@ -138,7 +145,7 @@ func test_static_command_clears_stale_runtime_profile_before_context_resumes() -
 	assert_eq(context.current_dialogue_profile_name, "")
 	assert_false(context.current_dialogue_uses_declarative_presentation)
 
-	_bus.advance_requested.emit.call_deferred()
+	_advance_next_dialogue()
 	await DialogueHandler.new(_read_flags).execute(_command({
 		"text": "runtime after static",
 		"presentation_from_context": true,

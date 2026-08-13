@@ -615,8 +615,11 @@ func _fresh_position(dialogue: Node, index: int = 0) -> void:
 	# position fields directly — _on_show_dialogue normally fills them from
 	# engine.context.
 	dialogue._current_scenario_id = "test_scn"
+	dialogue._current_scenario_identity = ""
 	dialogue._current_scene_id = "test_scene"
 	dialogue._current_command_index = index
+	dialogue._current_command_uid = -1
+	dialogue._current_dialogue_activation = null
 
 
 func test_ctrl_held_skips_unread_regardless_of_setting():

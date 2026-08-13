@@ -173,6 +173,31 @@ Game
 
 `StellaRuntime` 提供简洁的 API，用户搭建自己的 UI 时只需要调用这些方法：
 
+### 自定义对话 consumer / handler 迁移
+
+Canonical 对话事件是 `SignalBus.dialogue_requested(request)`。自定义 UI 或无界面 runner 完成显示后，应确认收到的**同一个** request；不要用旧的全局 `advance_requested` 作为剧情确认：
+
+```gdscript
+func _ready() -> void:
+	SignalBus.dialogue_requested.connect(_on_dialogue_requested)
+
+func _on_dialogue_requested(request: DialogueRequest) -> void:
+	# 渲染 request.get_segments()；玩家推进时：
+	request.advance()
+	# 若该次显示被关闭/取消，则改用 request.abort()
+```
+
+`advance()` / `abort()` 只有第一次调用成功，迟到的另一结果返回 `false`，也不能影响替换后的 request。`show_dialogue(character, segments, mode)` 与 `advance_requested()` 仍会作为扩展兼容通知发出，但不拥有命令完成权。
+
+直接组装 `CommandRegistry` 的扩展需把同一个已读管理器注入 handler：
+
+```gdscript
+var read_flags := ReadFlagManager.new()
+registry.register(DialogueHandler.new(read_flags))
+```
+
+`DialogueHandler.new()` 的无参数形式不再可用；内置 `StellaRuntime` 已在 composition root 统一完成注入，并会在测试/session reset 替换 read manager 时重建注册。
+
 ### 游戏流程
 
 ```gdscript

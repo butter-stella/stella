@@ -855,10 +855,10 @@ func get_backlog() -> Array:
 ##    mix (old context provider + new presentation_state).
 ## 8. Swap engine.context, mark the old ctx finished (belt-and-braces in
 ##    case the old loop is between iterations), and emit
-##    engine_abort_requested. Every blocking handler (dialogue/wait/choice)
-##    races against this signal via CommandHandler.await_with_abort, so a
-##    single emit cancels them all regardless of which native signal each
-##    was waiting on.
+##    engine_abort_requested. Dialogue owns a request-scoped activation that
+##    subscribes to abort; wait/choice race through CommandHandler helpers. A
+##    single emit therefore cancels every blocking kind without making their
+##    normal completion signals interchangeable.
 ## 9. engine.run() — new loop picks up the restored context.
 func _restore_runtime_from_snapshot(snap: Dictionary, override_scene_id: String = "") -> void:
 	_close_current_overlay()

@@ -30,6 +30,8 @@ signal advance_dispatch_started(serial: int)
 var _dialogue_presentation_stack: Array[Dictionary] = []
 var _show_dialogue_dispatch_serial: int = 0
 var _dialogue_request_serial: int = 0
+var _dialogue_request_dispatch_depth: int = 0
+var _pending_dialogue_advance_notifications: Array[int] = []
 var _last_raw_show_dispatch_serial: int = -1
 var _last_raw_show_segments: Variant = null
 var _advance_dispatch_serial: int = 0
@@ -99,9 +101,27 @@ func emit_dialogue_request(request: DialogueRequest) -> void:
 		request.get_nvl_page_entries(),
 		request_entry_id,
 		request.get_command_uid(),
+		request.get_activation(),
+		request.get_scenario_identity(),
+		request.get_legacy_scenario_id(),
+		request.get_scene_id(),
+		request.get_legacy_command_index(),
 	)
+	var activation := canonical.get_activation()
+	if activation != null:
+		if activation.is_pending():
+			activation.resolved.connect(
+				_on_dialogue_activation_resolved.bind(
+					activation.get_instance_id()
+				),
+				CONNECT_ONE_SHOT,
+			)
+		else:
+			_on_dialogue_activation_resolved(
+				activation.get_outcome(), activation.get_instance_id())
 	# Built-in state observes an immutable snapshot before the mutable public
 	# compatibility signal is delivered to extensions.
+	_dialogue_request_dispatch_depth += 1
 	dialogue_requested.emit(canonical)
 	var compatibility_segments := canonical.get_segments()
 	_dialogue_presentation_stack.append({
@@ -121,10 +141,35 @@ func emit_dialogue_request(request: DialogueRequest) -> void:
 	show_dialogue.emit(
 		canonical.get_character(), compatibility_segments, canonical.get_mode())
 	_dialogue_presentation_stack.pop_back()
+	_dialogue_request_dispatch_depth -= 1
+	if _dialogue_request_dispatch_depth == 0:
+		_flush_dialogue_advance_notifications()
 
 
-## Convenience emitter. Direct advance_requested.emit() remains fully
-## compatible because the bus-level pre-dispatch hook observes both paths.
+func _on_dialogue_activation_resolved(
+	outcome: DialogueActivation.Outcome,
+	activation_id: int,
+) -> void:
+	if outcome != DialogueActivation.Outcome.ADVANCED:
+		return
+	if _dialogue_request_dispatch_depth > 0:
+		_pending_dialogue_advance_notifications.append(activation_id)
+		return
+	advance_requested.emit()
+
+
+func _flush_dialogue_advance_notifications() -> void:
+	if _pending_dialogue_advance_notifications.is_empty():
+		return
+	var pending := _pending_dialogue_advance_notifications.duplicate()
+	_pending_dialogue_advance_notifications.clear()
+	for _activation_id in pending:
+		advance_requested.emit()
+
+
+## Compatibility notification emitter. Direct advance_requested.emit() remains
+## observable by presentation/extensions, but neither path resolves a blocking
+## DialogueHandler; consumers must call DialogueRequest.advance().
 func emit_advance_requested() -> void:
 	advance_requested.emit()
 
