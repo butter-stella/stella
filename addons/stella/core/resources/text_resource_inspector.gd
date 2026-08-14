@@ -246,10 +246,11 @@ static func _resource_character_is_digit(character: String) -> bool:
 	return character >= "0" and character <= "9"
 
 
-## VariantParser 4.6.1 converts integer tokens through String::to_int(). Its
-## signed accumulation wraps at the int64 boundary before the next-digit clamp.
-## Keep the same two's-complement result without calling String.to_int(), whose
-## overflow diagnostic would echo a private resource ID before preflight ends.
+## VariantParser 4.6.1 converts its StringBuffer integer token through the static
+## String::to_int(char32_t *, ..., false) parser path. This is not the String
+## instance to_int() exposed to GDScript: the parser path performs signed
+## accumulation and a next-digit clamp. Reproduce that path without invoking its
+## overflow diagnostic, which would echo a private resource ID during preflight.
 static func _godot_46_resource_integer_string(literal: String) -> String:
 	const WORD_BASE := 4294967296
 	const WORD_MASK := 4294967295
@@ -296,6 +297,8 @@ static func _godot_46_resource_integer_string(literal: String) -> String:
 static func _normalized_resource_id_value(value: String, quoted: bool) -> String:
 	if value.is_empty():
 		return ""
+	if quoted and value in ["inf", "-inf"]:
+		return "n:" + value
 	var numeric := _resource_numeric_literal(value)
 	if not numeric.get("ok", false):
 		return "s:" + value if quoted else ""

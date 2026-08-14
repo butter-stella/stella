@@ -198,6 +198,10 @@ func test_numeric_resource_id_grammar_matches_godot_loader():
 		{"literal": "1.0", "reference": '"1.0"', "accepted": true},
 		{"literal": "1e1", "reference": "10.0", "accepted": true},
 		{"literal": "-1e1", "reference": '"-10.0"', "accepted": true},
+		{"literal": "1e309", "reference": '"inf"', "accepted": true},
+		{"literal": "-1e309", "reference": '"-inf"', "accepted": true},
+		{"literal": '"inf"', "reference": "1e309", "accepted": true},
+		{"literal": '"-inf"', "reference": "-1e309", "accepted": true},
 		{"literal": "0x10", "accepted": false},
 	]
 	for case: Dictionary in cases:
@@ -243,6 +247,23 @@ func test_numeric_resource_id_grammar_matches_godot_loader():
 				assert_not_null(instance.texture, "reference: %s" % literal)
 				instance.free()
 	assert_engine_error_count(0)
+
+
+func test_only_canonical_quoted_nonfinite_resource_ids_are_numeric():
+	assert_eq(
+		TextResourceInspector._normalized_resource_id_value("inf", true),
+		"n:inf",
+	)
+	assert_eq(
+		TextResourceInspector._normalized_resource_id_value("-inf", true),
+		"n:-inf",
+	)
+	for value in ["INF", "Inf", "-INF", "nan", "NaN", "Infinity"]:
+		assert_eq(
+			TextResourceInspector._normalized_resource_id_value(value, true),
+			"s:" + value,
+			"ordinary quoted ID: %s" % value,
+		)
 
 
 func test_repeated_instances_are_memoized_without_materializing_full_tree():
