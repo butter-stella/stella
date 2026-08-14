@@ -6,15 +6,17 @@ func get_command_type() -> String:
 	return "wait"
 
 
-func execute(data: CommandData, _context: ScenarioContext) -> void:
+func execute(data: CommandData, context: ScenarioContext) -> void:
 	var mode = data.get_string("mode", "")
 
-	# Both branches race against engine_abort_requested so a backlog jump
-	# can promptly cancel a wait — including the timer-mode wait that
-	# previously parked the old run() coroutine until its timer fired.
+	# Both branches join the context's execution generation so every context
+	# replacement promptly cancels them, including timer waits whose native
+	# timeout may be far in the future. The global abort remains a compatibility
+	# source inside await_with_abort and is folded into the same generation.
 	if mode == "click":
-		await CommandHandler.await_with_abort(SignalBus.advance_requested)
+		await CommandHandler.await_with_abort(
+			SignalBus.advance_requested, context)
 	else:
 		var duration = data.get_float("duration", 1.0)
 		var timer = Engine.get_main_loop().create_timer(duration)
-		await CommandHandler.await_with_abort(timer.timeout)
+		await CommandHandler.await_with_abort(timer.timeout, context)

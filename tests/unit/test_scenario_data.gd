@@ -151,6 +151,154 @@ func test_assign_command_uids_skips_already_assigned():
 	assert_eq(c2.uid, 50, "pre-assigned uid preserved")
 
 
+func test_assign_command_uids_includes_nested_parallel_commands() -> void:
+	var data := ScenarioData.new()
+	var scene := SceneData.new()
+	var parallel := CommandData.new()
+	parallel.type = "parallel"
+	var first := CommandData.new()
+	first.type = "dialogue"
+	var second := CommandData.new()
+	second.type = "dialogue"
+	parallel.params = {"commands": [first, second]}
+	scene.commands = [parallel]
+	data.scenes = [scene]
+
+	data.assign_command_uids()
+
+	assert_eq(parallel.uid, 0)
+	assert_eq(first.uid, 1)
+	assert_eq(second.uid, 2)
+
+
+func test_read_identity_uses_simplified_full_source_path() -> void:
+	var data := ScenarioData.new()
+	data.id = "main"
+	data.source_path = "res://routes/../route_a/main.stla"
+
+	assert_eq(data.get_read_identity(), "path:res://route_a/main.stla")
+
+
+func test_content_change_invalidates_position_based_read_identity() -> void:
+	var original := DslParser.parse(
+		DslLexer.tokenize("@scene start\n「B」"),
+		"main",
+		"res://story/main.stla",
+	)
+	var updated := DslParser.parse(
+		DslLexer.tokenize("@scene start\n「A」\n「B」"),
+		"main",
+		"res://story/main.stla",
+	)
+	original.assign_command_uids()
+	updated.assign_command_uids()
+	var flags := ReadFlagManager.new()
+	flags.mark_dialogue_read(
+		original.get_read_identity(), "start", original.scenes[0].commands[0].uid)
+
+	assert_ne(original.get_read_identity(), updated.get_read_identity())
+	assert_false(flags.is_dialogue_read(
+		updated.get_read_identity(),
+		"main",
+		"start",
+		updated.scenes[0].commands[0].uid,
+		0,
+	), "an inserted command must fail closed instead of inheriting B's old flag")
+
+
+func test_semantic_fingerprint_ignores_comment_whitespace_and_spelling() -> void:
+	var original := DslParser.parse(DslLexer.tokenize("""@chapter route \"Route\"
+@scene start
+@if flag
+@bg room cut 0 # first note
+@end"""), "main", "res://story/main.stla")
+	var equivalent := DslParser.parse(DslLexer.tokenize("""// shifted comment
+
+@chapter   route “Route”
+@scene   start
+@if flag
+@bg   room   cut   0.0   # revised note
+@end"""), "main", "res://story/main.stla")
+
+	assert_eq(original.diagnostics, [])
+	assert_eq(equivalent.diagnostics, [])
+	assert_eq(original.get_read_identity(), equivalent.get_read_identity(),
+		"non-semantic edits must retain read history even when @if lines move")
+
+
+func test_semantic_fingerprint_ignores_documented_inline_comments() -> void:
+	var original := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@bg room cut 0 // first note"""), "main", "res://story/main.stla")
+	var equivalent := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@bg room cut 0 // revised note"""), "main", "res://story/main.stla")
+
+	assert_eq(original.get_read_identity(), equivalent.get_read_identity())
+
+
+func test_semantic_fingerprint_uses_normalized_condition_ir() -> void:
+	var original := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@if score==1 && !flag || ratio >= 01.500
+「Same branch」
+@end"""), "main", "res://story/main.stla")
+	var equivalent := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@if score  ==  1.0  &&  ! flag  ||  ratio>=1.5
+「Same branch」
+@end"""), "main", "res://story/main.stla")
+	var changed := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@if score != 1 && !flag || ratio >= 1.5
+「Same branch」
+@end"""), "main", "res://story/main.stla")
+
+	assert_eq(original.diagnostics, [])
+	assert_eq(equivalent.diagnostics, [])
+	assert_eq(original.get_read_identity(), equivalent.get_read_identity(),
+		"condition spacing and equivalent numeric spelling retain read history")
+	assert_ne(original.get_read_identity(), changed.get_read_identity(),
+		"a condition behavior change must still invalidate the fingerprint")
+
+
+func test_semantic_fingerprint_preserves_tiny_condition_numbers() -> void:
+	var decimal := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@if ratio == 0.000000000000000001
+「Tiny branch」
+@end"""), "main", "res://story/main.stla")
+	var scientific := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@if ratio == 1e-18
+「Tiny branch」
+@end"""), "main", "res://story/main.stla")
+	var zero := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@if ratio == 0
+「Tiny branch」
+@end"""), "main", "res://story/main.stla")
+
+	assert_eq(decimal.diagnostics, [])
+	assert_eq(scientific.diagnostics, [])
+	assert_eq(zero.diagnostics, [])
+	assert_eq(decimal.get_read_identity(), scientific.get_read_identity(),
+		"equivalent decimal and scientific Float values retain read history")
+	assert_ne(decimal.get_read_identity(), zero.get_read_identity(),
+		"zero and a tiny nonzero condition must not share read history")
+
+
+func test_semantic_fingerprint_changes_for_authored_behavior() -> void:
+	var original := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@bg room cut 0"""), "main", "res://story/main.stla")
+	var changed := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@bg hallway cut 0"""), "main", "res://story/main.stla")
+
+	assert_ne(original.get_read_identity(), changed.get_read_identity())
+
+
 # ─── ChapterData (issue #97) ───
 
 func test_chapter_data_default_fields():

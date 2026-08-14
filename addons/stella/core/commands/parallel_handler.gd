@@ -3,6 +3,8 @@
 ## non-blocking commands first, then handle any that need await.
 class_name ParallelHandler extends CommandHandler
 
+const BLOCKING_COMMAND_TYPES := ["dialogue", "choice", "wait"]
+
 ## CommandRegistry owns this handler, so the back-reference must stay weak.
 ## A strong reference here creates an uncollectable RefCounted cycle.
 var _registry_ref: WeakRef
@@ -24,17 +26,20 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 	if command_registry == null:
 		push_warning("ParallelHandler: no registry set, cannot dispatch sub-commands")
 		return
+	for sub_cmd in sub_commands:
+		if sub_cmd is CommandData and sub_cmd.type in BLOCKING_COMMAND_TYPES:
+			push_warning(
+				"ParallelHandler: blocking '%s' child is not allowed"
+				% sub_cmd.type)
+			return
 
 	for sub_cmd in sub_commands:
-		# A runtime reset or rollback can abort the currently awaited child. Do
-		# not start a later child after that one-shot abort signal has fired, or
-		# the new child could wait forever on a signal it already missed.
 		if context.is_finished:
 			return
 		context.apply_dialogue_mode_events(sub_cmd.dialogue_mode_events_before)
 		var handler = command_registry.get_handler(sub_cmd.type)
 		if handler:
-			await handler.execute(sub_cmd, context)
+			handler.execute(sub_cmd, context)
 			if context.is_finished:
 				return
 		context.apply_dialogue_mode_events(sub_cmd.dialogue_mode_events_after)

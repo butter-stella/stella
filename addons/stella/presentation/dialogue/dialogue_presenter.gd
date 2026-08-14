@@ -42,12 +42,15 @@ var _ui_hidden: bool = false
 var _ctrl_held: bool = false  # Ctrl key skip
 # Cached position of the currently displayed line — filled from engine.context
 # on _on_show_dialogue, consulted by _should_skip_current() for read-aware
-# toolbar skip, written by _mark_current_line_read() when the user has seen
-# the line. Read flags intentionally are NOT reverted by rollback (backlog /
-# flowchart / choice rewind) — once seen, always seen. See stella_runtime.gd:436.
+# toolbar skip. Read flags are written by DialogueHandler after normal command
+# completion and intentionally are NOT reverted by rollback (backlog / flowchart
+# / choice rewind) — once advanced, always read. See stella_runtime.gd:436.
 var _current_scenario_id: String = ""
+var _current_scenario_identity: String = ""
 var _current_scene_id: String = ""
 var _current_command_index: int = -1
+var _current_command_uid: int = -1
+var _current_dialogue_activation: DialogueActivation
 var _current_voice: String = ""  # current dialogue voice asset
 var _current_voice_character: String = ""
 var _voice_playing: bool = false
@@ -147,7 +150,9 @@ var _playback_is_dialogue: bool = true
 func _ready():
 	SignalBus.dialogue_requested.connect(_on_dialogue_requested)
 	SignalBus.hide_dialogue.connect(_on_hide_dialogue)
-	# SignalBus emits this pre-dispatch event before every public/raw advance.
+	SignalBus.dialogue_advance_committed.connect(
+		_on_dialogue_advance_committed)
+	# SignalBus emits this pre-dispatch event before every direct public/raw advance.
 	# A replacement Presenter created later in that same signal stack never sees
 	# the old transition, so it cannot accidentally retire the newly shown line.
 	SignalBus.advance_dispatch_started.connect(_on_advance_dispatch_started)
@@ -417,6 +422,9 @@ func _retire_dialogue_lifecycle(
 ) -> bool:
 	var owner_gen := _dialogue_gen
 	var queue_gen := _playback_queue_gen
+	_abort_current_dialogue_activation()
+	if owner_gen != _dialogue_gen or queue_gen != _playback_queue_gen:
+		return false
 	if not _retire_logical_voice_session_internal(
 		owner_gen, queue_gen, allow_detached
 	):
@@ -424,7 +432,9 @@ func _retire_dialogue_lifecycle(
 	if owner_gen != _dialogue_gen or queue_gen != _playback_queue_gen:
 		return false
 	_queued_voice_replay_request.clear()
-	_queued_dialogue_requests.clear()
+	_abort_queued_dialogue_requests()
+	if owner_gen != _dialogue_gen or queue_gen != _playback_queue_gen:
+		return false
 	_finalization_pending = false
 	_cancel_pending_stage_operation_requests()
 	var finish_records: Array = _stage_transition_records.values()
@@ -472,7 +482,9 @@ func _request_lifecycle_boundary(action: StringName) -> void:
 	):
 		return
 	var revision := _next_boundary_revision()
-	_queued_dialogue_requests.clear()
+	_abort_queued_dialogue_requests()
+	if revision != _boundary_revision:
+		return
 	_queued_voice_replay_request.clear()
 	_finalization_pending = false
 	if _presentation_dispatch_depth > 0 or _finalization_in_progress:
@@ -686,9 +698,8 @@ func _on_skip_active_changed(active: bool) -> void:
 		# Preserve the public controller state while an overlay owns input. The
 		# PLAYING transition below re-applies it to the still-ready dialogue.
 		return
-	# The unread gate must run before any completion path can mark the line read.
-	# Otherwise a toolbar press during typing finalizes first, then observes its
-	# own newly-written read flag and incorrectly schedules an advance.
+	# Apply the unread gate before finalizing the typewriter. A toolbar press on
+	# an unread line must stop skip without scheduling a command advance.
 	if (_is_typing or _dialogue_ready) and not _should_skip_current():
 		_apply_unread_skip_gate()
 		return
@@ -720,7 +731,7 @@ func _on_skip_active_changed(active: bool) -> void:
 		_dialogue_ready
 		and _indicator_candidate_dialogue_gen == _dialogue_gen
 	):
-		SignalBus.emit_advance_requested()
+		request_current_dialogue_advance()
 
 
 func _schedule_advance_after_skip_delay(gen: int) -> void:
@@ -737,7 +748,7 @@ func _schedule_advance_after_skip_delay(gen: int) -> void:
 	if not StellaRuntime.game_state.is_playing():
 		_restore_ready_after_cancelled_skip(gen)
 		return
-	SignalBus.emit_advance_requested()
+	request_current_dialogue_advance()
 
 
 func cancel_pending_skip() -> void:
@@ -877,15 +888,15 @@ func _should_skip_current() -> bool:
 		return false
 	if _ctrl_held:
 		return true
-	if not StellaRuntime.is_skipping():
-		return false
-	if not StellaRuntime.get_setting("skip_only_read"):
-		return true
-	# No known position (e.g. tests without a real scenario engine, or an
-	# in-between state) — can't gate on read status, so allow the skip.
-	if _current_command_index < 0:
-		return true
-	return _is_current_line_read()
+	return StellaRuntime.skip_controller.should_skip(
+		_current_scenario_id,
+		_current_scene_id,
+		_current_command_index,
+		StellaRuntime.read_flags,
+		StellaRuntime.get_setting("skip_only_read"),
+		_current_scenario_identity,
+		_current_command_uid,
+	)
 
 
 ## Side-effect counterpart to `_should_skip_current()`. If toolbar skip is
@@ -895,22 +906,32 @@ func _should_skip_current() -> bool:
 func _apply_unread_skip_gate() -> void:
 	if _ctrl_held:
 		return
-	if not StellaRuntime.is_skipping():
-		return
-	if not StellaRuntime.get_setting("skip_only_read"):
-		return
-	if _current_command_index < 0:
-		return
-	if _is_current_line_read():
+	if _should_skip_current():
 		return
 	StellaRuntime.skip_controller.stop()
 	_update_toggle_buttons()
 
 
-func _capture_current_position() -> void:
+func _capture_request_identity(request: Dictionary) -> void:
 	_current_scenario_id = ""
+	_current_scenario_identity = ""
 	_current_scene_id = ""
 	_current_command_index = -1
+	_current_command_uid = -1
+	_current_dialogue_activation = request.get("activation") as DialogueActivation
+	_current_scenario_identity = String(request.get("scenario_identity", ""))
+	_current_scenario_id = String(request.get("legacy_scenario_id", ""))
+	_current_scene_id = String(request.get("scene_id", ""))
+	_current_command_index = int(request.get("legacy_command_index", -1))
+	_current_command_uid = int(request.get("command_uid", -1))
+	if (
+		not _current_scenario_identity.is_empty()
+		and not _current_scene_id.is_empty()
+		and _current_command_uid >= 0
+	):
+		return
+	# Compatibility for direct legacy Presenter calls that predate the typed
+	# request identity. Runtime DialogueHandler requests never use this path.
 	if StellaRuntime.engine == null or StellaRuntime.engine.context == null:
 		return
 	var ctx = StellaRuntime.engine.context
@@ -920,22 +941,24 @@ func _capture_current_position() -> void:
 	if scene == null:
 		return
 	_current_scenario_id = ctx.scenario_data.id
+	_current_scenario_identity = ctx.scenario_data.get_read_identity()
 	_current_scene_id = scene.id
 	_current_command_index = ctx.current_command_index
+	var command := ctx.current_command()
+	_current_command_uid = command.uid if command != null else -1
 
 
-func _is_current_line_read() -> bool:
-	if _current_command_index < 0:
+## Input, auto-play, and skip acknowledge the exact request currently rendered.
+## Legacy raw SHOW calls have no blocking activation and retain their global
+## compatibility notification.
+func request_current_dialogue_advance() -> bool:
+	if _current_dialogue_activation != null:
+		if _current_dialogue_activation.advance():
+			return true
+		_current_dialogue_activation = null
 		return false
-	return StellaRuntime.read_flags.is_read(
-		_current_scenario_id, _current_scene_id, _current_command_index)
-
-
-func _mark_current_line_read() -> void:
-	if _current_command_index < 0:
-		return
-	StellaRuntime.read_flags.mark_read(
-		_current_scenario_id, _current_scene_id, _current_command_index)
+	SignalBus.emit_advance_requested()
+	return true
 
 
 ## Unified dialogue handler.
@@ -966,6 +989,12 @@ func _on_dialogue_requested(dialogue_request: DialogueRequest) -> void:
 		"declarative_presentation": dialogue_request.uses_declarative_presentation(),
 		"custom_effect_registry": custom_effect_registry.duplicate(true),
 		"boundary_revision": revision,
+		"activation": dialogue_request.get_activation(),
+		"scenario_identity": dialogue_request.get_scenario_identity(),
+		"legacy_scenario_id": dialogue_request.get_legacy_scenario_id(),
+		"scene_id": dialogue_request.get_scene_id(),
+		"legacy_command_index": dialogue_request.get_legacy_command_index(),
+		"command_uid": dialogue_request.get_command_uid(),
 	}
 	# This SHOW is later than any parked hide/scene boundary and therefore owns
 	# the next visible state. Metadata above is retained in the request snapshot.
@@ -979,11 +1008,63 @@ func _on_dialogue_requested(dialogue_request: DialogueRequest) -> void:
 		# Multiple synchronous SHOW requests cannot all own the same UI. Match the
 		# normal signal semantics by letting the newest request supersede earlier
 		# queued requests before presentation control returns to the dialogue.
-		_queued_dialogue_requests.clear()
+		_abort_queued_dialogue_requests()
+		if int(request.get("boundary_revision", -1)) != _boundary_revision:
+			_abort_dialogue_request(request)
+			return
 		_queued_dialogue_requests.append(request)
 		return
-	_queued_dialogue_requests.clear()
+	_abort_queued_dialogue_requests()
 	_accept_dialogue_request(request)
+
+
+## A Presenter can render only one queued replacement. Every displaced typed
+## request must be explicitly cancelled so its DialogueHandler cannot remain
+## suspended after the UI chooses a newer owner.
+func _abort_queued_dialogue_requests() -> void:
+	var displaced := _queued_dialogue_requests.duplicate()
+	_queued_dialogue_requests.clear()
+	for queued_request in displaced:
+		if not queued_request is Dictionary:
+			continue
+		var request: Dictionary = queued_request
+		_abort_dialogue_request(request)
+
+
+func _abort_dialogue_request(request: Dictionary) -> void:
+	var activation := request.get("activation") as DialogueActivation
+	if activation != null:
+		activation.abort()
+
+
+## Returns whether synchronous replacement callbacks gave this request a
+## presenter-owned slot. A superseded incoming activation that is neither
+## current nor queued must be cancelled explicitly so its handler cannot hang.
+func _dialogue_request_is_owned(request: Dictionary) -> bool:
+	var activation := request.get("activation") as DialogueActivation
+	if activation == null:
+		return false
+	if activation == _current_dialogue_activation:
+		return true
+	for queued_request in _queued_dialogue_requests:
+		if not queued_request is Dictionary:
+			continue
+		var queued: Dictionary = queued_request
+		var queued_activation := queued.get("activation") as DialogueActivation
+		if queued_activation == activation:
+			return true
+	return false
+
+
+## The Presenter owns at most one visible typed request. Any boundary that
+## replaces or hides that presentation must resolve the old Core waiter before
+## dropping its reference. Clear first so an abort callback may synchronously
+## publish a replacement without this retirement path cancelling the newcomer.
+func _abort_current_dialogue_activation() -> void:
+	var activation := _current_dialogue_activation
+	_current_dialogue_activation = null
+	if activation != null:
+		activation.abort()
 
 
 ## Compatibility for tests/extensions that called the old presenter callback
@@ -995,6 +1076,7 @@ func _on_show_dialogue(character: String, segments: Array, mode: String) -> void
 func _accept_dialogue_request(request: Dictionary) -> void:
 	var revision := int(request.get("boundary_revision", -1))
 	if revision != _boundary_revision:
+		_abort_dialogue_request(request)
 		return
 	_boundary_operation_depth += 1
 	_queued_voice_replay_request.clear()
@@ -1012,6 +1094,8 @@ func _accept_dialogue_request(request: Dictionary) -> void:
 	# retain their normal replay deferral semantics.
 	if retirement_survived:
 		_show_dialogue_request(request)
+	elif not _dialogue_request_is_owned(request):
+		_abort_dialogue_request(request)
 	if _boundary_operation_depth == 0:
 		_drain_deferred_presentation_work()
 
@@ -1019,6 +1103,9 @@ func _accept_dialogue_request(request: Dictionary) -> void:
 func _retire_dialogue_for_replacement() -> bool:
 	var owner_gen := _dialogue_gen
 	var queue_gen := _playback_queue_gen
+	_abort_current_dialogue_activation()
+	if owner_gen != _dialogue_gen or queue_gen != _playback_queue_gen:
+		return false
 	# A newer SHOW wins immediately: revoke undispatched cues and stop only exact
 	# transitions already acknowledged for the retiring line. Never fold its
 	# remaining authored cues into the replacement's stage state.
@@ -1042,6 +1129,7 @@ func _show_dialogue_request(request: Dictionary) -> void:
 		"presentation_provenance", {})
 	var custom_effect_registry: Dictionary = request.get(
 		"custom_effect_registry", {})
+	_capture_request_identity(request)
 	_show_dialogue_now(
 		String(request.get("character", "")),
 		request_segments,
@@ -1100,11 +1188,6 @@ func _show_dialogue_now(
 	if _ui_hidden:
 		_ui_hidden = false
 		visible = true
-
-	# Cache (scenario_id, scene_id, command_index) of the line we are about to
-	# display — consulted by _should_skip_current() / _apply_unread_skip_gate()
-	# and written by _mark_current_line_read() once the user has seen the line.
-	_capture_current_position()
 
 	# Snapshot dialogue state. _start_voice_playback later writes _playback_*
 	# but never touches _dialogue_*, so a backlog replay can run in parallel
@@ -1416,7 +1499,7 @@ func _show_dialogue_now(
 
 	# Public playback facades can activate skip during the final character's
 	# timer, after the loop's last leading check. Observe that transition before
-	# natural completion marks this unread line as read.
+	# natural completion makes this unread line ready.
 	if _is_typing and _should_skip_current():
 		_invalidate_advance_indicator()
 		if gen != _dialogue_gen:
@@ -1441,7 +1524,6 @@ func _show_dialogue_now(
 	text_label.visible_characters = -1
 	_is_typing = false
 	_apply_final_inline_avatar_expression(character, segments)
-	_mark_current_line_read()
 	_mark_dialogue_ready_for_indicator(gen)
 
 	# Auto-play: wait for the voice queue to drain all segments, then advance.
@@ -1498,7 +1580,7 @@ func _continue_auto_play_after_ready(gen: int) -> void:
 	_auto_pending_attempt = -1
 	if StellaRuntime.is_auto_playing() \
 		and StellaRuntime.game_state.is_playing():
-		SignalBus.emit_advance_requested()
+		request_current_dialogue_advance()
 
 
 func _wait_for_active_voice_finished(gen: int, attempt: int) -> bool:
@@ -1729,7 +1811,32 @@ func _invalidate_advance_indicator() -> void:
 			_run_indicator_operation(func(): _advance_indicator.hide_indicator())
 
 
+func _on_dialogue_advance_committed(activation_id: int) -> void:
+	if (
+		_current_dialogue_activation != null
+		and _current_dialogue_activation.get_instance_id() == activation_id
+	):
+		_current_dialogue_activation = null
+		_finalize_current_dialogue_for_advance()
+		return
+	# A synchronous headless consumer may commit while this Presenter has the
+	# matching SHOW parked behind another presentation dispatch. Remove only that
+	# retired request; it must never render later or affect the active owner.
+	for index in range(_queued_dialogue_requests.size()):
+		var queued: Dictionary = _queued_dialogue_requests[index]
+		var activation := queued.get("activation") as DialogueActivation
+		if activation != null and activation.get_instance_id() == activation_id:
+			_queued_dialogue_requests.remove_at(index)
+			return
+
+
 func _on_advance_dispatch_started(_serial: int) -> void:
+	# This path is only for a direct legacy advance_requested emission. Canonical
+	# dialogue commits use the owner-scoped callback above and suppress this echo.
+	_finalize_current_dialogue_for_advance()
+
+
+func _finalize_current_dialogue_for_advance() -> void:
 	var was_typing := _is_typing
 	var needs_voice_finalization := _logical_dialogue_voice_session_is_open()
 	var needs_stage_finalization := (
@@ -2266,7 +2373,6 @@ func _finalize_dialogue(character: String, segments: Array, gen: int) -> void:
 	var voice_session_validator := _voice_session_event_owner_is_current.bind(
 		gen, _playback_queue_gen)
 	_playback_aborted = true
-	_mark_current_line_read()
 	# Keep the retiring line atomic until every finalization-owned public signal
 	# has returned. In particular, a queued SHOW must not be drained by the stage
 	# fold before the old logical voice session and avatar state are retired.
@@ -2941,7 +3047,7 @@ func _on_hide_dialogue():
 func _apply_hide_dialogue_boundary(revision: int) -> void:
 	# Invalidate every async branch of the current dialogue before clearing the
 	# visible state. Without this, an old typewriter can finish after a runtime
-	# reset and mark its line in the replacement ReadFlagManager.
+	# reset and mutate the replacement dialogue presentation.
 	var retiring_gen := _dialogue_gen
 	var retiring_queue_gen := _playback_queue_gen
 	if not _retire_dialogue_lifecycle(false):
@@ -2967,8 +3073,11 @@ func _apply_hide_dialogue_boundary(revision: int) -> void:
 	_active_uses_stla_presentation = false
 	_current_mode = "adv"
 	_current_scenario_id = ""
+	_current_scenario_identity = ""
 	_current_scene_id = ""
 	_current_command_index = -1
+	_current_command_uid = -1
+	_current_dialogue_activation = null
 	visible = false
 	_ui_hidden = false
 	_reset_nvl_accumulator()
@@ -2987,7 +3096,7 @@ func _apply_hide_dialogue_boundary(revision: int) -> void:
 	_finalization_transition_records.clear()
 	_cancel_pending_stage_operation_requests()
 	_stage_operation_request_results.clear()
-	_queued_dialogue_requests.clear()
+	_abort_queued_dialogue_requests()
 	_queued_voice_replay_request.clear()
 	_finalization_pending = false
 	_finalization_in_progress = false

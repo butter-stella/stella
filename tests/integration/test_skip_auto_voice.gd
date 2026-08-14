@@ -615,8 +615,11 @@ func _fresh_position(dialogue: Node, index: int = 0) -> void:
 	# position fields directly — _on_show_dialogue normally fills them from
 	# engine.context.
 	dialogue._current_scenario_id = "test_scn"
+	dialogue._current_scenario_identity = ""
 	dialogue._current_scene_id = "test_scene"
 	dialogue._current_command_index = index
+	dialogue._current_command_uid = -1
+	dialogue._current_dialogue_activation = null
 
 
 func test_ctrl_held_skips_unread_regardless_of_setting():
@@ -716,17 +719,6 @@ func test_toolbar_skip_read_line_allowed():
 	StellaRuntime.skip_controller.is_active = true
 	assert_true(dialogue._should_skip_current(), "read line should be skippable by toolbar skip")
 	StellaRuntime.skip_controller.is_active = false
-
-
-func test_mark_current_line_read_writes_to_read_flags():
-	var dialogue = get_tree().root.find_child("DialoguePanel", true, false)
-	if dialogue == null:
-		pending("DialoguePanel not available in test scene")
-		return
-	_fresh_position(dialogue, 1004)
-	assert_false(StellaRuntime.read_flags.is_read("test_scn", "test_scene", 1004))
-	dialogue._mark_current_line_read()
-	assert_true(StellaRuntime.read_flags.is_read("test_scn", "test_scene", 1004))
 
 
 func test_skip_only_read_setting_default_true():

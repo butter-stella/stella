@@ -2,6 +2,8 @@
 ## Tracks current position and jump requests.
 class_name ScenarioContext extends RefCounted
 
+signal cancellation_requested()
+
 var scenario_data: ScenarioData
 var current_scene_index: int = 0
 var current_command_index: int = 0
@@ -25,11 +27,86 @@ var current_dialogue_uses_declarative_presentation: bool = false
 var adv_dialogue_profile_name: String = ""
 var adv_dialogue_uses_declarative_presentation: bool = false
 var _dialogue_request_serial: int = 0
+var _runtime_owner_state: Dictionary = {}
+var _active_dialogue_activation: DialogueActivation
+var _cancellation_requested: bool = false
 
 
 func _init(data: ScenarioData = null):
 	if data:
 		scenario_data = data
+
+
+## ScenarioEngine supplies a small shared owner token instead of a Callable so
+## the RefCounted engine and context cannot form a reference cycle.
+func bind_runtime_owner(owner_state: Dictionary) -> void:
+	_runtime_owner_state = owner_state
+
+
+func is_runtime_owner_current() -> bool:
+	return (
+		not is_finished
+		and (
+			_runtime_owner_state.is_empty()
+			or bool(_runtime_owner_state.get("current", false))
+		)
+	)
+
+
+## Cancel every blocking command owned by this execution generation. A context
+## is itself the generation token: replacing it cancels only the retired run,
+## while the newly installed context remains available to synchronous tails.
+func request_cancellation() -> void:
+	if _cancellation_requested:
+		return
+	_cancellation_requested = true
+	is_finished = true
+	abort_active_dialogue()
+	cancellation_requested.emit()
+
+
+func is_cancellation_requested() -> bool:
+	return _cancellation_requested
+
+
+## Only one blocking dialogue may own a context at a time. A reentrant or
+## malformed second activation is rejected instead of stealing ownership from
+## the command that the engine is still executing.
+func install_dialogue_activation(activation: DialogueActivation) -> bool:
+	if activation == null:
+		return false
+	if not is_runtime_owner_current():
+		activation.abort()
+		return false
+	if (
+		_active_dialogue_activation != null
+		and _active_dialogue_activation != activation
+	):
+		activation.abort()
+		return false
+	_active_dialogue_activation = activation
+	return true
+
+
+func owns_dialogue_activation(activation: DialogueActivation) -> bool:
+	return (
+		activation != null
+		and _active_dialogue_activation == activation
+		and is_runtime_owner_current()
+	)
+
+
+func clear_dialogue_activation(activation: DialogueActivation) -> void:
+	if _active_dialogue_activation == activation:
+		_active_dialogue_activation = null
+
+
+func abort_active_dialogue() -> void:
+	if _active_dialogue_activation == null:
+		return
+	var activation := _active_dialogue_activation
+	_active_dialogue_activation = null
+	activation.abort()
 
 
 func current_scene() -> SceneData:
