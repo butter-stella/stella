@@ -1,0 +1,9 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/stella/scenes/bootstrap.gd" id="1_bootstrap"]
+
+[node name="RecursiveRoot" type="Node"]
+script = ExtResource("1_bootstrap")
+
+[node name="RecursiveChild" type="Node" parent="."]
+script = ExtResource("1_bootstrap")

@@ -1,0 +1,4 @@
+[gd_scene format=3 uid="uid://cnltnlv0oq0m0"]
+
+[node name="StartupProbeOverlay" type="Node"]
+metadata/startup_probe = true

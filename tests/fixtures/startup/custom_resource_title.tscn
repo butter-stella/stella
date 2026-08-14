@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="StellaStartupCustomResource" path="res://tests/fixtures/startup/custom_resource.tres" id="1_custom"]
+
+[node name="CustomResourceTitle" type="Node"]
+metadata/custom_resource = ExtResource("1_custom")

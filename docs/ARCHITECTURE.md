@@ -81,6 +81,39 @@ flowchart TB
 - 反向：用户输入（点击/选择）从 `presentation/input` 经 `SignalBus` 回到 `scenario_engine` 推进剧情
 - `playback` 子模块（auto/skip/backlog/read_flag）状态独立，与 engine 协作并通过 SignalBus 与 UI 联动
 
+### 1.2 启动配置数据流
+
+项目配置必须在任何消费者构造前解析为一个一致的快照。`StellaRuntime._init()` 先解析并应用配置，随后 `_ready()` 才构造子系统；因此即使插件保留宿主自定义主场景，该场景的成员初始化器与 `_init()` 也能读取最终快照。启动顺序是：
+
+```mermaid
+flowchart LR
+    DEFAULTS["StellaConfig 内置默认值"]
+    BASE["stella.cfg<br/>可选基础层"]
+    LOCAL["stella.local.cfg<br/>可选本地层"]
+    APPLY["StellaRuntime._apply_config()"]
+    CONSUMERS["构造 Core 子系统<br/>与全局 Presenter"]
+    SCENE["无 UI bootstrap<br/>按 title_scene 进入首次场景"]
+    PRESENTERS["构造 / ready 场景内 Presenter"]
+
+    DEFAULTS --> BASE --> LOCAL --> APPLY --> CONSUMERS --> SCENE --> PRESENTERS
+```
+
+每一层都按 key 合并，优先级为 `defaults < base < local`。来源不存在时是无副作用的 no-op；目录或悬空软链仍算“存在但不可读”，必须诊断。来源存在时，`StellaConfig.load_from_path()` 会先读完整文件并校验文件中声明的 section、key 和值类型，只有全部成功才提交这一来源及其来源记录。未知 section/key、类型错误、NUL、非法 UTF-8 或语法损坏都会原子拒绝整个来源。因此损坏的本地层不会留下半套覆盖，基础层仍保持完整；损坏的基础层保持 defaults，报告错误并阻止本地层掩盖共享配置错误。每个来源最多 1 MiB，每个 quoted String 的原始 UTF-8 表示最多 256 KiB；解析器按连续片段线性组装字符串，先检查字节编码、NUL 和上限，再创建 resolved value。语法诊断只保留来源、安全的行列位置和预期修复提示，schema 诊断只保留相关 section/key（类型错误另带预期类型），均不回显配置值。`get_applied_config_sources()` 只返回成功提交的来源，并保持实际应用顺序。标量值和字符串转义继续兼容 Godot 4.6 `ConfigFile`，注释则只使用其稳定的分号 `;` 语法；`#` 不作为行尾注释。`StellaConfig.SCHEMA_VERSION == 2` 是此次严格 closed schema 的可识别迁移边界：v1 直接加载时会忽略的未知 section/key 在 v2 中整源拒绝，宿主自定义元数据必须迁出 Stella 配置文件。
+
+解析不是在旧对象上反复打补丁。`_load_project_config()` 每次都从新的 `StellaConfig` 和内置默认值开始，`_apply_config()` 则无条件完整复制 resolved snapshot（即使没有来源成功应用），因此删除或禁用配置来源后重新解析不会让 Runtime 镜像残留上一次的路径或其他值；需要复用配置对象的调用方可用 `StellaConfig.reset()` 恢复默认值，并同时清空 `has_config_file`、来源列表和错误元数据。完成解析和应用后才创建 Core 子系统与全局 Presenter；项目默认主场景是无 UI 的 `bootstrap.tscn`，它随后按最终 `title_scene` 进入首次场景。所有 configured scene（title、game、overlay）共用递归 PackedScene 预检，并在状态提交前拒绝不存在、声明类型与实际资源不兼容、现存但不可解析、依赖退化、无节点、bootstrap 行为、脚本原生基类与节点类型不兼容、脚本不可实例化或有效 `_init()` 仍需实参的候选场景；title 失败时统一回退内置标题。源码 `.tscn`/`.tres` 依赖先由脱敏 metadata/Variant parser 校验，包含构造器参数以及 ExtResource/SubResource 声明引用关系；parser 同时按格式验证 tag、顺序和必填字段：`.tscn` 只接受 `ext_resource`、`sub_resource`、`node`、`connection`、`editable`，`.tres` 只接受 `ext_resource`、`sub_resource`、唯一的 `resource`。单个 tag 最多 512 KiB、单个 quoted attribute 最多 256 KiB，quoted value 用连续片段线性组装，避免启动路径的二次复杂度。Godot 4.6 不接受资源文件的 UTF-8 BOM，因此 parser 会在任何 `ResourceLoader` 调用前安全拒绝 BOM，并只跳过 header 前的空行和分号注释，任意其他非 header 文本都直接拒绝，不把 malformed 私有值交给 Godot 会回显原文的 resource parser。依赖类型检查复用同一套 byte/header gate；只有明确的 `RSRC` / `RSCC` magic 或导出 remap 才进入结构化依赖读取。继承场景按完整相对 NodePath 归并最终 effective script override（包括 inherited child 或普通 nested editable child 上的 `script = null` 或安全替换），仍继续检查未被覆盖的 base children；custom `script_class` Resource 按全局脚本继承链参与声明类型匹配。首次启动和之后返回标题使用同一个 resolver；`return_to_title()` 会延迟整个切换事务以避开场景根 `_ready()` 的 busy-parent 阶段，并且只在 `SceneTree.scene_changed` 后确认最终 `current_scene` 是目标标题，才清理运行状态、切到 `TITLE` 和播放标题 BGM。SceneTree 最终仍拒绝已预检的自定义场景时，返回路径会再尝试内置 fallback。已有项目若使用自定义主场景，插件不会覆盖；旧版内置标题主场景会迁移到 bootstrap。场景内 Presenter 在此之后构造或进入 ready，不会观察到部分应用的配置。
+
+Core 的 `TextResourceInspector.inspect()` 是源码 `.tscn` / `.tres` 无副作用预检的单一 typed API；`StellaRuntime` 只消费 `InspectionResult`，不再承载资源 grammar。Inspector 会在任何 Godot resource parser 调用前校验 tag 与 attribute key 的 identifier token、node/sub-resource 类型是否存在并继承正确的 `Node` / `Resource` 基类（包括注册到 ClassDB 的 GDExtension class）。quoted tag attribute 和 Variant String 共用 Godot 4.6 兼容的 decoder，包括 `\u` / `\U`、引号、反斜杠和未知转义；resource ID 则按 Godot 4.6 numeric Variant 语义规范化到同一无歧义 key：numeric token 先转换为 Godot 的 canonical String，quoted ID 保留 decoded 原文并进入同一 key 域。因此正负整数、int64 边界外字面量、decimal、exponent、有限值格式化和浮点溢出的 `inf` / `-inf` 都能与同值 canonical quoted ID 匹配，而 `"01"` 等非 canonical 文本仍保持独立；quoted 空 ID 是合法的独立 key，缺少 token 的 unquoted 空 ID 仍非法。tokenizer 不接受的前导 `+` 和 hex 继续拒绝。文本、binary `.scn` 和导出 remap 的 PackedScene 统一转换为紧凑 SceneState model；Inspector 不展开每个 nested instance 的完整子树，只在 parent、owner、connection、editable 或 property-only override 实际查询某条完整 NodePath 时惰性解析 inherited/nested tree。单次顶层 inspection 按 canonical path + expected type memoize 已完成结果，所以同一 nested scene 被重复实例化不会指数级重复预检。
+
+标题依赖和 Runtime scene destination 带 UID 时优先跟随 UID registry 的当前规范路径，只有依赖 UID 不可用才采用序列化 fallback，避免资源移动后被旧 fallback 误判为缺失，也避免以 `uid://` 请求后拿 canonical `res://` 比较而永久占用导航槽。所有 Runtime 场景入口（包括 legacy `start_scenario`）共享单一 navigation generation 和在途场景请求槽：每次先无副作用地解析 scenario、按目标 `ScenarioData` 校验存档中全部内置 provider schema（scenario/scene/command 边界、return/NVL 数组、变量/表现/解锁/流程图字段类型），再深度加载目标 PackedScene；校验失败不会取得所有权，也不会改变当前 scene、context、overlay、state 或路径。`DslParser.parse(tokens, id, source_path)` 在公开 parser 边界就从规范化剧本来源路径生成带版本前缀的 SHA-256 identity 并存入 `ScenarioData`；Runtime 与扩展调用该 API 得到同一语义。程序化构造的 `ScenarioData` 可用 `set_authored_identity(stable_key)` 显式生成另一个带域前缀的 hashed identity 并存入 scenario snapshot，因此不同目录中同名 `.stla` 不会互相接收存档，存档本身也不暴露私有来源路径或 authored key。缺少该 identity 的旧存档无法无歧义迁移，Runtime 的 `load_game` / quick / continue 路径统一 fail-closed；需要迁移的宿主工具可先用不传 `ScenarioData` 的通用读取 API 检查 JSON，再按自己的旧版本映射显式重写。有效的后调用会接管所有权，使旧 ScenarioEngine run generation 同步失效，等待旧场景请求落地后再发出自己的目标请求；只有确认最终 scene 后才脱离旧 context、发 abort 并提交新运行状态。旧 continuation 每次 await 后必须验证所有权，因此最终 destination 与状态遵循 last-call-wins。
+
+`ScenarioEngine` 自己也为每次 `run()` 维护独立世代。`scenario_started`、`scene_changed`、`command_executed` 等外部可重入 signal 返回后，以及最终发送 `scenario_ended` 前，都必须复查同一 context 与世代；Runtime 只接受 engine 正在为当前 active run 同步发送的 end event，并在公开 `SignalBus.scenario_ended_event` 返回后再次复查再决定是否返回标题。这样 signal callback 内发起的新导航可以立即取消旧控制流，旧 run 或 bridge tail 都不会覆盖新 owner。
+
+测试隔离属于同一启动边界。CI 和标准测试命令必须显式设置 `STELLA_DISABLE_LOCAL_CONFIG=1`；该开关只跳过隐式的 `res://stella.local.cfg`，显式传给测试辅助路径的 synthetic 配置仍正常解析。CI 的 GUT 与 rendering job 都会在项目根创建合法的 poison local 配置并带此变量运行；完整 GUT 还直接断言 Runtime 的 `game_title` 未采用 poison 值，而不是只依赖来源记录。
+
+配置中的 scene override 是字符串形式的动态依赖，Selected Scenes/Resources 导出无法自动追踪它们；宿主导出 preset 必须显式收录 title/game/各 overlay scene。bootstrap 对内置 fallback title 使用静态 PackedScene 依赖，确保即使只选择 bootstrap 也能安全回退。CI 另以 Godot 4.6.1 把 Binary Tokens、Compressed Binary Tokens 和 Selected Scenes 三种 PCK 导出后从源码目录外启动；export 前会创建被 include filter 选中、必须由 exclude filter 剔除的 synthetic `stella.local.cfg`，每个运行态 probe 都直接断言包内不存在该文件，再检查最终 `current_scene` 与配置 consumer 的真实值。Compressed Binary Tokens 还运行 UID/superseding/失败事务/lifecycle-reentrancy 导航探针，以及 existing-but-wrong-type 与 existing-but-unloadable 私有依赖 fallback 探针，避免“导出成功但运行态配置、导航或依赖校验损坏”的假绿。
+
+Compressed PCK 的真实进程回归同时覆盖 signed、int64 边界外、exponent、non-finite、quoted 空 ExtResource/SubResource ID，以及 finite big / negative small numeric 与 canonical quoted resource ID 的双向匹配；还覆盖 binary `.scn` nested child 的 property override，以及 unknown native type、无效 parent/owner/attribute 的 title、game 与 overlay 目标。失败路径断言旧 scene/context/overlay/state owner 不变，外层日志 gate 则确认私有 sentinel 没有进入 Godot parser。
+
 ---
 
 ## 二、核心设计
@@ -249,7 +282,7 @@ func capture_snapshot() -> Dictionary: ...
 func restore_snapshot(snapshot: Dictionary) -> void: ...
 ```
 
-`SaveManager` 维护 provider 列表，存档时遍历调用 `capture_snapshot()` 聚合为 JSON 写入 `user://saves/save_<slot>.json`，读档时反向恢复。除了变量系统，`PresentationState` 也作为 provider 捕获基础背景、动态舞台层和 BGM 等表现层状态，实现真正的“所见即所存”。运行中读档、快读或回退会先把 `ScenarioEngine.context` 所有权交给新 context，再发 hard hide/全局 abort 清理旧 Presenter；旧阻塞命令的同步取消因此只能观察到 stale owner，不能把取消误报为 `scenario_ended` 或抢回最终 context。
+`SaveManager` 维护 provider 列表，存档时遍历调用 `capture_snapshot()` 聚合为 JSON 写入 `user://saves/save_<slot>.json`，读档时反向恢复。Scenario snapshot 同时保存剧本 ID 与版本化来源 identity；scenario-aware 读取必须二者都与目标 `ScenarioData` 一致，缺少来源 identity 的旧存档由 Runtime 拒绝，不能仅凭同名文件猜测目标。除了变量系统，`PresentationState` 也作为 provider 捕获基础背景、动态舞台层和 BGM 等表现层状态，实现真正的“所见即所存”。运行中读档、快读或回退会先把 `ScenarioEngine.context` 所有权交给新 context，再发 hard hide/全局 abort 清理旧 Presenter；旧阻塞命令的同步取消因此只能观察到 stale owner，不能把取消误报为 `scenario_ended` 或抢回最终 context。
 
 动态舞台层以 `stage_layers: Dictionary` 保存：键是稳定业务 ID，值是经过 `StageLayerState` 归一化的完整 JSON-safe 状态。人物、事件图和其他舞台图片都使用这一份状态，不存在第二套人物快照。`PresentationState` 与 `StagePresenter` 使用同一 reducer，所以 patch 语义不会漂移。完整恢复先使旧舞台操作失效并清空当前投影，再用 `stage_state_apply_requested` 同步 cut 精确重建全部舞台层；投影信号不回写逻辑状态。
 
@@ -488,7 +521,7 @@ sakura「我本来很开心的...[expr:surprised]但是听到这个消息之后.
 ### 4.2 语音收藏 / 鉴赏
 
 - `VoiceBookmarkManager`（`core/bookmark/`）：游戏中收藏语音 → 收藏界面浏览/重播 → 可跳转回对应场景继续游玩。依赖快照机制，收藏时自动捕获状态快照。
-- `UnlockManager`（`core/gallery/`）：CG / 音乐 / 场景的解锁与鉴赏，依赖 global 变量持久化。
+- `UnlockManager`（`core/gallery/`）：CG / 音乐 / 场景的解锁进度 provider。`StellaRuntime` 的 CG Facade 是 `[features].cg_gallery` 的生产消费者：关闭时拒绝新 CG 解锁并隐藏查询结果，同时继续保留 provider 中已有进度，避免临时关闭功能破坏存档兼容性；框架不内置 Gallery UI。
 
 ### 4.3 本地化
 
@@ -649,8 +682,8 @@ stella/
 ### 运行测试
 
 ```bash
-godot --headless --import 2>&1 | tail -1
-godot -s addons/gut/gut_cmdln.gd --headless 2>&1
+godot --headless --import
+STELLA_DISABLE_LOCAL_CONFIG=1 godot -s addons/gut/gut_cmdln.gd --headless 2>&1
 ```
 
 ---
@@ -675,4 +708,3 @@ godot -s addons/gut/gut_cmdln.gd --headless 2>&1
 | **节点式剧情编辑器** | 未实现 | 当前仅有 `.stla` 文件级编辑器（`addons/stella/editor/stla_editor.gd`）。完整的 GraphEdit 节点编辑器作为后续可选项 |
 | **Live2D 人物** | 未实现 | 当前动态舞台层使用 Sprite2D 通道。后续可通过自定义 Stage presenter/资源类型接入 GDCubism |
 | **Rust 性能扩展** | 未实现 | DSL 解析器接口已稳定，后续如需可用 gdext 重写性能热点 |
-| **CI 自动化** | 未实现 | 后续可加 GitHub Actions + GUT 自动测试 |

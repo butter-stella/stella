@@ -31,6 +31,7 @@ static func parse(
 ) -> ScenarioData:
 	var data = ScenarioData.new()
 	data.id = scenario_id
+	data.source_identity = ScenarioData.make_source_identity(source_path)
 	data.source_path = source_path
 	var profile_collection := DialogueProfileParser.collect(tokens, source_path)
 	var dialogue_profiles: Dictionary = profile_collection["profiles"]

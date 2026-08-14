@@ -1,0 +1,8 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="PackedScene" path="res://tests/fixtures/startup/inherited_script_child_base_title.tscn" id="1_base"]
+
+[node name="ClearedInheritedChildScriptTitle" instance=ExtResource("1_base")]
+
+[node name="Child" parent="."]
+script = null

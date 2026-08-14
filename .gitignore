@@ -22,5 +22,8 @@ export/
 examples/demo/audio/bgm/*.mp3
 examples/demo/audio/bgm/*.ogg
 
+# Local project override
+/stella.local.cfg
+
 # Test results
 .gut_editor_config.json

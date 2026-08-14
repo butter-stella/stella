@@ -6,7 +6,8 @@ const AUTOLOADS = {
 	"StellaRuntime": "res://addons/stella/autoload/stella_runtime.gd",
 }
 
-const DEFAULT_MAIN_SCENE = "res://addons/stella/scenes/title.tscn"
+const DEFAULT_MAIN_SCENE = "res://addons/stella/scenes/bootstrap.tscn"
+const LEGACY_MAIN_SCENE = "res://addons/stella/scenes/title.tscn"
 
 var _stla_editor: Control
 var _stla_editor_script := preload("res://addons/stella/editor/stla_editor.gd")
@@ -17,9 +18,11 @@ func _enter_tree():
 		if not ProjectSettings.has_setting("autoload/" + autoload_name):
 			add_autoload_singleton(autoload_name, AUTOLOADS[autoload_name])
 
-	# Set main scene to built-in title if not configured
+	# New projects start through the bootstrap so layered config can select the
+	# first title scene. Migrate Stella's legacy built-in title entry, but never
+	# replace a project-owned main scene.
 	var current_main = ProjectSettings.get_setting("application/run/main_scene", "")
-	if current_main == "":
+	if current_main == "" or current_main == LEGACY_MAIN_SCENE:
 		ProjectSettings.set_setting("application/run/main_scene", DEFAULT_MAIN_SCENE)
 		ProjectSettings.save()
 
