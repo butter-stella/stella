@@ -1086,7 +1086,7 @@ func _title_nested_script_overrides(
 		if override_path == nested_node_path:
 			result["."] = script_overrides[override_path]
 		elif override_path.begins_with(child_prefix):
-			result[override_path.substr(child_prefix.length())] = (
+			result["./" + override_path.substr(child_prefix.length())] = (
 				script_overrides[override_path]
 			)
 	return result
@@ -1135,6 +1135,33 @@ func _title_inherited_node_native_type(
 ) -> StringName:
 	if state.get_node_count() == 0:
 		return &""
+	var target_path := String(state.get_node_path(node_index))
+	var owning_scene: PackedScene = null
+	var owning_path := ""
+	# An editable child override of an ordinary nested PackedScene is serialized
+	# as a property-only entry in the outer scene. Resolve it relative to the
+	# nearest owning instance, not relative to node 0 (which is the ordinary
+	# outer root in this case).
+	for candidate_index in state.get_node_count():
+		var candidate_scene := state.get_node_instance(candidate_index)
+		if candidate_scene == null:
+			continue
+		var candidate_path := String(state.get_node_path(candidate_index))
+		if (
+			candidate_path == "."
+			or not target_path.begins_with(candidate_path + "/")
+			or candidate_path.length() <= owning_path.length()
+		):
+			continue
+		owning_scene = candidate_scene
+		owning_path = candidate_path
+	if owning_scene != null:
+		var relative_path := target_path.substr(owning_path.length() + 1)
+		return _title_scene_node_native_type_at_path(
+			owning_scene,
+			NodePath("./" + relative_path),
+			visited,
+		)
 	var inherited_root := state.get_node_instance(0)
 	if inherited_root == null:
 		return &""
@@ -1324,19 +1351,18 @@ func _read_text_resource_dependencies(path: String) -> Dictionary:
 		return _structured_resource_dependencies(path)
 	if bytes.has(0):
 		return {"ok": false, "dependencies": []}
-	var text_bytes := bytes
 	if (
 		bytes.size() >= 3
 		and bytes[0] == 0xEF
 		and bytes[1] == 0xBB
 		and bytes[2] == 0xBF
 	):
-		text_bytes = bytes.slice(3)
-	var text := text_bytes.get_string_from_utf8()
-	if text.to_utf8_buffer() != text_bytes:
+		# Godot 4.6's text resource loader does not accept a UTF-8 BOM. Reject
+		# it here so the later real load cannot echo the private resource path.
 		return {"ok": false, "dependencies": []}
-	if not text.is_empty() and text.unicode_at(0) == 0xFEFF:
-		text = text.substr(1)
+	var text := bytes.get_string_from_utf8()
+	if text.to_utf8_buffer() != bytes:
+		return {"ok": false, "dependencies": []}
 	var lines := text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
 	if lines.is_empty():
 		return {"ok": false, "dependencies": []}
@@ -1438,6 +1464,8 @@ func _read_text_resource_dependencies(path: String) -> Dictionary:
 	return {
 		"ok": saw_body_tag and assignment_state.is_empty(),
 		"dependencies": dependencies,
+		"format": "text",
+		"header": header,
 	}
 
 
@@ -1513,7 +1541,11 @@ func _structured_resource_dependencies(path: String) -> Dictionary:
 			"path": dependency_path,
 			"type": declared_type,
 		})
-	return {"ok": true, "dependencies": dependencies}
+	return {
+		"ok": true,
+		"dependencies": dependencies,
+		"format": "structured",
+	}
 
 
 func _parse_resource_tag(line: String) -> Dictionary:
@@ -1854,29 +1886,22 @@ func _text_resource_declares_type(path: String, declared_type: String) -> bool:
 	if extension == "tscn":
 		return ClassDB.is_parent_class("PackedScene", declared_type)
 	if extension == "tres":
-		var file := FileAccess.open(path, FileAccess.READ)
-		if file == null:
-			var remapped_resource := ResourceLoader.load(path, declared_type)
-			return (
-				remapped_resource != null
-				and remapped_resource.is_class(declared_type)
-			)
-		if file.get_length() > MAX_TITLE_TEXT_RESOURCE_BYTES:
+		# Reuse the same byte/header gate as dependency discovery. In
+		# particular, never classify a BOM or arbitrary non-'[' preamble as
+		# binary and pass it to ResourceLoader, whose parse error includes the
+		# authored path.
+		var metadata := _read_text_resource_dependencies(path)
+		if not metadata.get("ok", false):
 			return false
-		var first_byte := file.get_8()
-		file.seek(0)
-		if first_byte != 0x5B:
-			file.close()
+		if metadata.get("format", "") == "structured":
 			var binary_resource := ResourceLoader.load(path, declared_type)
 			return (
 				binary_resource != null
-				and binary_resource.is_class(declared_type)
+					and binary_resource.is_class(declared_type)
 			)
-		var first_line := file.get_line().strip_edges()
-		file.close()
-		var header := _parse_resource_tag(first_line)
-		if not header.get("ok", false) or header.get("name", "") != "gd_resource":
+		if metadata.get("format", "") != "text":
 			return false
+		var header: Dictionary = metadata.get("header", {})
 		var actual_type: String = header["attributes"].get("type", "")
 		if (
 			not actual_type.is_empty()
@@ -2077,7 +2102,6 @@ func _parse_scenario(scenario_path: String) -> ScenarioData:
 	var tokens = DslLexer.tokenize(source)
 	var scenario_id = scenario_path.get_file().get_basename()
 	var data = DslParser.parse(tokens, scenario_id, scenario_path)
-	data.source_identity = ScenarioData.make_source_identity(scenario_path)
 	# Surface parser diagnostics (issue #97). DslParser is intentionally silent
 	# about console reporting; this is the integration point where parse-time
 	# errors/warnings reach the developer.

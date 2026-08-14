@@ -271,6 +271,54 @@ func test_scenario_identity_distinguishes_same_basename_and_rejects_legacy():
 		"pre-v1 saves require explicit migration and must fail closed")
 
 
+func test_public_parser_identity_keeps_extension_saves_eligible():
+	var parsed := DslParser.parse(
+		DslLexer.tokenize('@scene start "Start"\n「one」\n「two」'),
+		"public_parser",
+		"res://extensions/public_parser.stla",
+	)
+	var snapshot := _make_valid_save_snapshot()
+	snapshot["scenario_context"]["scenario_id"] = parsed.id
+	snapshot["scenario_context"]["scenario_source_identity"] = (
+		parsed.source_identity
+	)
+	assert_false(parsed.source_identity.is_empty())
+	assert_true(_manager.validate_data_for_scenario(snapshot, parsed))
+	_manager._ensure_dir()
+	var file := FileAccess.open(_save_dir + "save_1.json", FileAccess.WRITE)
+	file.store_string(JSON.stringify(snapshot))
+	file.close()
+	assert_not_null(_manager.read_save_data(1, parsed),
+		"public-parser scenarios must remain eligible for scenario-aware reads")
+
+
+func test_programmatic_scenario_can_set_stable_authored_identity():
+	var scenario := _make_validation_scenario()
+	var previous_identity := scenario.source_identity
+	assert_eq(scenario.set_authored_identity("my_extension:route-a:v1"), OK)
+	assert_true(scenario.source_identity.begins_with(
+		"stella-authored-v1:sha256:",
+	))
+	assert_false(scenario.source_identity.contains("my_extension"),
+		"authored key must not be copied into save identity")
+	var snapshot := _make_valid_save_snapshot()
+	snapshot["scenario_context"]["scenario_source_identity"] = (
+		scenario.source_identity
+	)
+	assert_true(_manager.validate_data_for_scenario(snapshot, scenario))
+	_manager._ensure_dir()
+	var file := FileAccess.open(_save_dir + "save_2.json", FileAccess.WRITE)
+	file.store_string(JSON.stringify(snapshot))
+	file.close()
+	assert_not_null(_manager.read_save_data(2, scenario),
+		"programmatic scenarios with an authored identity must remain loadable")
+	var assigned_identity := scenario.source_identity
+	assert_eq(scenario.set_authored_identity("  "), ERR_INVALID_PARAMETER)
+	assert_eq(scenario.source_identity, assigned_identity,
+		"invalid assignment must preserve the existing identity")
+	assert_ne(scenario.source_identity, previous_identity)
+
+
 func test_save_validation_covers_builtin_provider_field_types_atomically():
 	var scenario := _make_validation_scenario()
 	var valid := _make_valid_save_snapshot()

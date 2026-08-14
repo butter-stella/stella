@@ -322,6 +322,35 @@ StellaRuntime.get_save_list()        # 获取所有有存档的槽位
 
 Runtime 会把规范化剧本来源的版本化 identity 写入存档，并在 `load_game()`、`quick_load()`、`continue_from_save()` 和 `continue_game()` 导航前校验它。这样不同目录下同为 `shared.stla` 的剧本也不会串档，存档 JSON 中不会写入私有来源路径。缺少该 identity 的旧版存档会 fail-closed；如果产品必须保留旧档，请在升级发布前由宿主迁移工具读取旧 JSON、根据产品自己的旧版本映射确认目标剧本，再显式写入新 identity，不要仅按文件 basename 自动猜测。
 
+直接调用公开 parser 时请传入 authored path；identity 会在 parser 边界生成，而不依赖 Runtime 的私有包装：
+
+```gdscript
+var data := DslParser.parse(tokens, "route_a", "res://story/route_a.stla")
+```
+
+扩展若完全程序化构造 `ScenarioData`，必须在需要读写持久存档前提供稳定的 authored key：
+
+```gdscript
+var data := ScenarioData.new()
+data.id = "route_a"
+var identity_error := data.set_authored_identity("my_extension:route-a:v1")
+if identity_error != OK:
+	push_error("invalid authored scenario identity")
+```
+
+这个 key 会先哈希再进入存档，不会原样写入 JSON；它不是 secret。兼容版本必须持续使用同一个 key，不兼容内容应显式换 key。不要用显示标题或文件 basename 充当 key，也不要给空 identity 的程序化 `ScenarioData` 开启 scenario-aware 读档。
+
+迁移旧的程序化存档时，宿主必须先按自己的旧版本映射确认目标，再使用同一个 authored key，并把生成值写入待迁移 snapshot；不要对未知旧档猜 key：
+
+```gdscript
+var legacy_snapshot := StellaRuntime.save_manager.read_save_data(slot_id)
+# 仅在宿主已确认 legacy_snapshot 属于 route_a 后执行：
+legacy_snapshot["scenario_context"]["scenario_source_identity"] = (
+	data.source_identity
+)
+# 再由宿主自己的原子迁移事务写回 JSON。
+```
+
 ### 播放控制
 
 ```gdscript

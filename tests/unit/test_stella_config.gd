@@ -28,6 +28,8 @@ const TEST_INVALID_PACKED_CONSTRUCTOR_TITLE_PATH = (
 	"user://test_invalid_packed_constructor_title.tscn"
 )
 const TEST_PREAMBLE_TITLE_PATH = "user://test_preamble_title.tscn"
+const TEST_BOM_TEXTURE_TITLE_PATH = "user://test_bom_texture_title.tscn"
+const TEST_BOM_TEXTURE_PATH = "user://test_bom_texture.tres"
 const TEST_INVALID_PREAMBLE_TITLE_PATH = (
 	"user://test_invalid_preamble_title.tscn"
 )
@@ -56,6 +58,8 @@ const TEST_CONFIG_PATHS = [
 	TEST_INVALID_CONSTRUCTOR_TITLE_PATH,
 	TEST_INVALID_PACKED_CONSTRUCTOR_TITLE_PATH,
 	TEST_PREAMBLE_TITLE_PATH,
+	TEST_BOM_TEXTURE_TITLE_PATH,
+	TEST_BOM_TEXTURE_PATH,
 	TEST_INVALID_PREAMBLE_TITLE_PATH,
 	TEST_DEGRADED_GAME_PATH,
 	"user://test_stella.cfg",
@@ -340,6 +344,10 @@ func test_title_resolver_accepts_inherited_scene_that_explicitly_clears_script()
 			"res://tests/fixtures/startup/"
 			+ "cleared_inherited_child_script_title.tscn"
 		),
+		(
+			"res://tests/fixtures/startup/"
+			+ "nested_editable_child_cleared_script_title.tscn"
+		),
 	]:
 		_runtime.title_scene_path = cleared_path
 		var resolved: PackedScene = _runtime.resolve_title_scene()
@@ -349,7 +357,9 @@ func test_title_resolver_accepts_inherited_scene_that_explicitly_clears_script()
 		var instance := resolved.instantiate()
 		assert_not_null(instance)
 		if instance != null:
-			if instance.has_node("Child"):
+			if instance.has_node("Nested/Child"):
+				assert_null(instance.get_node("Nested/Child").get_script())
+			elif instance.has_node("Child"):
 				assert_null(instance.get_node("Child").get_script())
 			instance.free()
 	assert_engine_error_count(0)
@@ -432,20 +442,60 @@ func test_scene_preflight_rejects_undeclared_refs_and_invalid_constructor_safely
 		"safe preflight must reject private tokens before Godot parses them")
 
 
-func test_scene_preflight_handles_legal_preamble_without_parser_fallback():
-	var valid_contents := PackedByteArray([0xEF, 0xBB, 0xBF])
-	valid_contents.append_array(
+func test_scene_preflight_rejects_bom_before_real_consumer_load():
+	var bom_title_contents := PackedByteArray([0xEF, 0xBB, 0xBF])
+	bom_title_contents.append_array(
 		(
-			"\r\n; legal leading ConfigFile-style resource comment\r\n\r\n"
-			+ "[gd_scene format=3]\r\n\r\n"
-			+ "[node name=\"PreambleTitle\" type=\"Node\"]\r\n"
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"BomTitle\" type=\"Node\"]\n"
 		).to_utf8_buffer()
 	)
-	_write_project_config_bytes(TEST_PREAMBLE_TITLE_PATH, valid_contents)
-	var dependency_result: Dictionary = (
-		_runtime._read_text_resource_dependencies(TEST_PREAMBLE_TITLE_PATH)
+	_write_project_config_bytes(TEST_PREAMBLE_TITLE_PATH, bom_title_contents)
+	var bom_texture_contents := PackedByteArray([0xEF, 0xBB, 0xBF])
+	bom_texture_contents.append_array(
+		(
+			"[gd_resource type=\"Texture2D\" format=3]\n\n"
+			+ "[resource]\n"
+			+ "metadata/private = PRIVATE_BOM_DEPENDENCY_SENTINEL\n"
+		).to_utf8_buffer()
 	)
-	assert_true(dependency_result.get("ok", false))
+	_write_project_config_bytes(TEST_BOM_TEXTURE_PATH, bom_texture_contents)
+	_write_raw_project_config(
+		TEST_BOM_TEXTURE_TITLE_PATH,
+		(
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"Texture2D\" path=\"%s\" "
+			% TEST_BOM_TEXTURE_PATH
+			+ "id=\"1_texture\"]\n\n"
+			+ "[node name=\"BomTextureTitle\" type=\"Sprite2D\"]\n"
+			+ "texture = ExtResource(\"1_texture\")\n"
+		),
+	)
+	var fallback := load(_runtime.DEFAULT_TITLE_SCENE) as PackedScene
+	for invalid_path: String in [
+		TEST_PREAMBLE_TITLE_PATH,
+		TEST_BOM_TEXTURE_TITLE_PATH,
+	]:
+		_runtime.title_scene_path = invalid_path
+		assert_eq(_runtime.resolve_title_scene(fallback), fallback)
+		assert_push_error("falling back to the built-in title scene")
+	assert_engine_error_count(0,
+		"BOM resources must be rejected before Godot echoes private paths")
+
+
+func test_scene_preflight_handles_legal_preamble_without_loader_fallback():
+	_write_raw_project_config(
+		TEST_PREAMBLE_TITLE_PATH,
+		(
+			"\r\n; legal leading resource comment\r\n\r\n"
+			+ "[gd_scene format=3]\r\n\r\n"
+			+ "[node name=\"PreambleTitle\" type=\"Node\"]\r\n"
+		),
+	)
+	_runtime.title_scene_path = TEST_PREAMBLE_TITLE_PATH
+	var valid_resolved: PackedScene = _runtime.resolve_title_scene()
+	assert_not_null(valid_resolved)
+	assert_eq(valid_resolved.resource_path, TEST_PREAMBLE_TITLE_PATH)
 
 	_write_raw_project_config(
 		TEST_INVALID_PREAMBLE_TITLE_PATH,

@@ -27,6 +27,10 @@ const NAVIGATION_SCENARIO = (
 const NAVIGATION_SAVE_SLOT = 9173
 const SAME_NAME_SCENARIO_A = "user://stella_review_a/shared.stla"
 const SAME_NAME_SCENARIO_B = "user://stella_review_b/shared.stla"
+const NESTED_EDITABLE_CHILD_TITLE = (
+	"res://tests/fixtures/startup/"
+	+ "nested_editable_child_cleared_script_title.tscn"
+)
 
 
 func run() -> void:
@@ -129,6 +133,7 @@ func _probe_degraded_title_fallbacks() -> void:
 		return
 
 	var failures := PackedStringArray()
+	_probe_nested_editable_child_override(failures)
 	for degraded_path: String in fixtures:
 		# Normal startup must reject each degraded PackedScene before it can
 		# become current_scene.
@@ -162,6 +167,22 @@ func _probe_degraded_title_fallbacks() -> void:
 
 	_cleanup_degraded_title_fixtures(fixtures)
 	_finish("degraded-fallback-ok", failures)
+
+
+func _probe_nested_editable_child_override(failures: PackedStringArray) -> void:
+	var scene: PackedScene = StellaRuntime._load_title_scene(
+		NESTED_EDITABLE_CHILD_TITLE,
+	)
+	if scene == null:
+		failures.append("nested editable child override was rejected")
+		return
+	var instance := scene.instantiate()
+	if instance == null or not instance.has_node("Nested/Child"):
+		failures.append("nested editable child override did not instantiate")
+	elif instance.get_node("Nested/Child").get_script() != null:
+		failures.append("nested editable child script override was not effective")
+	if instance != null:
+		instance.free()
 
 
 func _probe_ready_return() -> void:
@@ -756,6 +777,11 @@ func _write_degraded_title_fixtures() -> PackedStringArray:
 	var leading_preamble_path := (
 		"user://stella_probe_leading_preamble_title.tscn"
 	)
+	var bom_title_path := "user://PRIVATE_BOM_TITLE_PATH.tscn"
+	var bom_dependency_path := "user://PRIVATE_BOM_DEPENDENCY.tres"
+	var bom_dependency_title_path := (
+		"user://stella_probe_bom_dependency_title.tscn"
+	)
 	var sources := {
 		missing_script_path: (
 			"[gd_scene load_steps=2 format=3]\n\n"
@@ -832,6 +858,14 @@ func _write_degraded_title_fixtures() -> PackedStringArray:
 			+ "[node name=\"LeadingPreambleTitle\" type=\"Node\"]\n"
 			+ "metadata/private = PRIVATE_LEADING_PREAMBLE_SENTINEL\n"
 		),
+		bom_dependency_title_path: (
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"Texture2D\" path=\"%s\" "
+			% bom_dependency_path
+			+ "id=\"1_texture\"]\n\n"
+			+ "[node name=\"BomDependencyTitle\" type=\"Sprite2D\"]\n"
+			+ "texture = ExtResource(\"1_texture\")\n"
+		),
 	}
 	var paths := PackedStringArray()
 	for path: String in sources:
@@ -840,6 +874,26 @@ func _write_degraded_title_fixtures() -> PackedStringArray:
 			_cleanup_degraded_title_fixtures(paths)
 			return PackedStringArray()
 		file.store_string(sources[path])
+		file.close()
+		paths.append(path)
+	var binary_sources := {
+		bom_title_path: (
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"BomTitle\" type=\"Node\"]\n"
+		),
+		bom_dependency_path: (
+			"[gd_resource type=\"Texture2D\" format=3]\n\n"
+			+ "[resource]\n"
+		),
+	}
+	for path: String in binary_sources:
+		var file := FileAccess.open(path, FileAccess.WRITE)
+		if file == null:
+			_cleanup_degraded_title_fixtures(paths)
+			return PackedStringArray()
+		var contents := PackedByteArray([0xEF, 0xBB, 0xBF])
+		contents.append_array(String(binary_sources[path]).to_utf8_buffer())
+		file.store_buffer(contents)
 		file.close()
 		paths.append(path)
 	return paths
