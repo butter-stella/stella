@@ -178,12 +178,20 @@ func _probe_numeric_resource_ids(failures: PackedStringArray) -> void:
 		failures.append("could not create numeric resource-ID fixture")
 		return
 	file.store_string(
-		"[gd_scene load_steps=2 format=3]\n\n"
+		"[gd_scene load_steps=4 format=3]\n\n"
 		+ "[ext_resource type=\"Texture\\U000032D\" "
 		+ "path=\"res://examples/demo/art/backgrounds/bg_\\u0063afe.png\" "
 		+ "id=-1]\n\n"
+		+ "[ext_resource type=\"Texture2D\" "
+		+ "path=\"res://examples/demo/art/backgrounds/bg_cafe.png\" "
+		+ "id=9223372036854775808]\n\n"
+		+ "[ext_resource type=\"Texture2D\" "
+		+ "path=\"res://examples/demo/art/backgrounds/bg_cafe.png\" "
+		+ "id=1e1]\n\n"
 		+ "[node name=\"NumericResourceId\" type=\"Sprite2D\"]\n"
 		+ "texture = ExtResource(-1)\n"
+		+ "metadata/overflow = ExtResource(-9223372036854775808)\n"
+		+ "metadata/exponent = ExtResource(\"10.0\")\n"
 	)
 	file.close()
 	var scene := StellaRuntime._load_title_scene(scene_path)
@@ -191,8 +199,13 @@ func _probe_numeric_resource_ids(failures: PackedStringArray) -> void:
 		failures.append("Godot-valid signed resource ID was rejected")
 	else:
 		var instance := scene.instantiate() as Sprite2D
-		if instance == null or instance.texture == null:
-			failures.append("signed/escaped resource reference did not resolve")
+		if (
+			instance == null
+			or instance.texture == null
+			or instance.get_meta("overflow") == null
+			or instance.get_meta("exponent") == null
+		):
+			failures.append("numeric/escaped resource reference did not resolve")
 		if instance != null:
 			instance.free()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(scene_path))

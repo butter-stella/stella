@@ -6,6 +6,7 @@ const INVALID_PATH = "user://text_inspector_invalid.tscn"
 const BINARY_NESTED_PATH = "user://text_inspector_nested.scn"
 const BINARY_OUTER_PATH = "user://text_inspector_binary_outer.tscn"
 const ESCAPED_PATH = "user://text_inspector_escaped_tags.tscn"
+const NUMERIC_ID_MATRIX_PATH = "user://text_inspector_numeric_id_matrix.tscn"
 const REPEATED_PATH_PREFIX = "user://text_inspector_repeated_"
 const REPEATED_DEPTH = 16
 
@@ -20,6 +21,7 @@ func after_each():
 		BINARY_NESTED_PATH,
 		BINARY_OUTER_PATH,
 		ESCAPED_PATH,
+		NUMERIC_ID_MATRIX_PATH,
 	])
 	for depth in range(REPEATED_DEPTH + 1):
 		paths.append(REPEATED_PATH_PREFIX + str(depth) + ".tscn")
@@ -176,6 +178,70 @@ func test_tag_strings_and_signed_numeric_ids_match_godot_loader():
 		assert_eq(instance.name, 'Root"Quoted\\Path')
 		assert_not_null(instance.texture)
 		instance.free()
+	assert_engine_error_count(0)
+
+
+func test_numeric_resource_id_grammar_matches_godot_loader():
+	var cases := [
+		{"literal": "+1", "accepted": false},
+		{
+			"literal": "9223372036854775808",
+			"reference": "-9223372036854775808",
+			"accepted": true,
+		},
+		{
+			"literal": "-9223372036854775809",
+			"reference": "9223372036854775807",
+			"accepted": true,
+		},
+		{"literal": "99999999999999999999", "accepted": true},
+		{"literal": "1.0", "reference": '"1.0"', "accepted": true},
+		{"literal": "1e1", "reference": "10.0", "accepted": true},
+		{"literal": "-1e1", "reference": '"-10.0"', "accepted": true},
+		{"literal": "0x10", "accepted": false},
+	]
+	for case: Dictionary in cases:
+		var literal: String = case["literal"]
+		var reference: String = case.get("reference", literal)
+		var accepted: bool = case["accepted"]
+		_write_text(
+			NUMERIC_ID_MATRIX_PATH,
+			(
+				"[gd_scene load_steps=2 format=3]\n\n"
+				+ "[ext_resource type=\"Texture2D\" "
+				+ "path=\"res://examples/demo/art/backgrounds/bg_cafe.png\" "
+				+ "id=%s]\n\n" % literal
+				+ "[node name=\"Root\" type=\"Sprite2D\"]\n"
+				+ "texture = ExtResource(%s)\n" % reference
+			),
+		)
+
+		var result := _inspector.inspect(NUMERIC_ID_MATRIX_PATH, "PackedScene")
+		assert_eq(result.ok, accepted, "inspector: %s" % literal)
+		assert_eq(
+			result.matches_expected_type,
+			true,
+			"typed result metadata: %s" % literal,
+		)
+
+		# These fixtures are handed to Godot only as a differential oracle. The
+		# 4.6.1 parser logs its own overflow message for some accepted integer IDs,
+		# so keep that oracle output out of the preflight diagnostic assertion.
+		var previous_print_errors := Engine.print_error_messages
+		Engine.print_error_messages = false
+		var scene := ResourceLoader.load(
+			NUMERIC_ID_MATRIX_PATH,
+			"PackedScene",
+			ResourceLoader.CACHE_MODE_IGNORE_DEEP,
+		) as PackedScene
+		Engine.print_error_messages = previous_print_errors
+		assert_eq(scene != null, accepted, "Godot loader: %s" % literal)
+		if scene != null:
+			var instance := scene.instantiate() as Sprite2D
+			assert_not_null(instance, "instance: %s" % literal)
+			if instance != null:
+				assert_not_null(instance.texture, "reference: %s" % literal)
+				instance.free()
 	assert_engine_error_count(0)
 
 

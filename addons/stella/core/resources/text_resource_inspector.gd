@@ -187,7 +187,7 @@ static func _safe_decimal_integer_literal(literal: String) -> bool:
 	if literal.is_empty():
 		return false
 	var digit_start := 0
-	if literal[0] in ["+", "-"]:
+	if literal[0] == "-":
 		digit_start = 1
 	if digit_start == literal.length():
 		return false
@@ -209,41 +209,100 @@ static func _safe_decimal_integer_literal(literal: String) -> bool:
 	return true
 
 
+static func _resource_numeric_literal(literal: String) -> Dictionary:
+	if literal.is_empty() or literal.begins_with("+"):
+		return {"ok": false}
+	var index := 1 if literal.begins_with("-") else 0
+	if index >= literal.length() or not _resource_character_is_digit(literal[index]):
+		return {"ok": false}
+	while index < literal.length() and _resource_character_is_digit(literal[index]):
+		index += 1
+	var is_float := false
+	if index < literal.length() and literal[index] == ".":
+		is_float = true
+		index += 1
+		while index < literal.length() and _resource_character_is_digit(literal[index]):
+			index += 1
+	if index < literal.length() and literal[index].to_lower() == "e":
+		is_float = true
+		index += 1
+		if index < literal.length() and literal[index] in ["+", "-"]:
+			index += 1
+		while index < literal.length() and _resource_character_is_digit(literal[index]):
+			index += 1
+	if index != literal.length():
+		return {"ok": false}
+	return {
+		"ok": true,
+		"value": (
+			str(literal.to_float())
+			if is_float
+			else _godot_46_resource_integer_string(literal)
+		),
+	}
+
+
+static func _resource_character_is_digit(character: String) -> bool:
+	return character >= "0" and character <= "9"
+
+
+## VariantParser 4.6.1 converts integer tokens through String::to_int(). Its
+## signed accumulation wraps at the int64 boundary before the next-digit clamp.
+## Keep the same two's-complement result without calling String.to_int(), whose
+## overflow diagnostic would echo a private resource ID before preflight ends.
+static func _godot_46_resource_integer_string(literal: String) -> String:
+	const WORD_BASE := 4294967296
+	const WORD_MASK := 4294967295
+	const SIGN_WORD := 2147483648
+	const MAX_DIV_TEN := 922337203685477580
+	var negative := literal.begins_with("-")
+	var start := 1 if negative else 0
+	var high := 0
+	var low := 0
+	for index in range(start, literal.length()):
+		if high < SIGN_WORD:
+			var signed_value := high * WORD_BASE + low
+			if signed_value > MAX_DIV_TEN:
+				return (
+					"-9223372036854775808"
+					if negative
+					else "9223372036854775807"
+				)
+		var digit := literal.unicode_at(index) - 48
+		var low_product := low * 10 + digit
+		low = low_product % WORD_BASE
+		var carry := low_product >> 32
+		high = (high * 10 + carry) % WORD_BASE
+	if negative:
+		low = WORD_MASK - low + 1
+		var carry := 0
+		if low >= WORD_BASE:
+			low -= WORD_BASE
+			carry = 1
+		high = (WORD_MASK - high + carry) % WORD_BASE
+	if high < SIGN_WORD:
+		return str(high * WORD_BASE + low)
+	if high == SIGN_WORD and low == 0:
+		return "-9223372036854775808"
+	var magnitude_low := WORD_MASK - low + 1
+	var magnitude_carry := 0
+	if magnitude_low >= WORD_BASE:
+		magnitude_low -= WORD_BASE
+		magnitude_carry = 1
+	var magnitude_high := WORD_MASK - high + magnitude_carry
+	return "-" + str(magnitude_high * WORD_BASE + magnitude_low)
+
+
 static func _normalized_resource_id_value(value: String, quoted: bool) -> String:
 	if value.is_empty():
 		return ""
-	var digit_start := 0
-	if value[0] in ["+", "-"]:
-		digit_start = 1
-	var signed_decimal := digit_start < value.length()
-	for index in range(digit_start, value.length()):
-		if value[index] < "0" or value[index] > "9":
-			signed_decimal = false
-			break
-	if not signed_decimal:
+	var numeric := _resource_numeric_literal(value)
+	if not numeric.get("ok", false):
 		return "s:" + value if quoted else ""
-	var magnitude_start := digit_start
-	while (
-		magnitude_start < value.length() - 1
-		and value[magnitude_start] == "0"
-	):
-		magnitude_start += 1
-	var has_quoted_spelling_difference := (
-		quoted
-		and (
-			value.begins_with("+")
-			or magnitude_start > digit_start
-			or not _safe_decimal_integer_literal(value)
-		)
-	)
-	if has_quoted_spelling_difference:
+	var normalized: String = numeric["value"]
+	if quoted and value != normalized:
 		return "s:" + value
-	if not _safe_decimal_integer_literal(value):
-		return ""
-	var magnitude := value.substr(magnitude_start)
-	if magnitude == "0":
-		return "n:0"
-	return "n:" + ("-" if value.begins_with("-") else "") + magnitude
+	return "n:" + normalized
 
 
 func inspect(path: String, expected_type: String = "") -> InspectionResult:
@@ -347,7 +406,7 @@ class _ResourceValueParser:
 			return _parse_array()
 		if character == "{":
 			return _parse_dictionary()
-		if character == "+" or character == "-" or _is_digit(character):
+		if character == "-" or _is_digit(character):
 			return _parse_number()
 		if _is_identifier_start(character):
 			return _parse_identifier_or_constructor()
@@ -425,7 +484,7 @@ class _ResourceValueParser:
 
 	func _parse_number() -> Dictionary:
 		var start := _index
-		if _text[_index] in ["+", "-"]:
+		if _text[_index] == "-":
 			_index += 1
 		if _consume_word("inf") or _consume_word("nan"):
 			return {
@@ -434,22 +493,6 @@ class _ResourceValueParser:
 				"value": _text.substr(start, _index - start),
 			}
 		var saw_digit := false
-		if (
-			_index + 1 < _text.length()
-			and _text[_index] == "0"
-			and _text[_index + 1].to_lower() == "x"
-		):
-			_index += 2
-			var hex_start := _index
-			while _index < _text.length() and _is_hex_digit(_text[_index]):
-				_index += 1
-			if _index == hex_start:
-				return {"ok": false}
-			return {
-				"ok": true,
-				"kind": "number",
-				"value": _text.substr(start, _index - start),
-			}
 		while _index < _text.length() and _is_digit(_text[_index]):
 			saw_digit = true
 			_index += 1
@@ -465,11 +508,8 @@ class _ResourceValueParser:
 			_index += 1
 			if _index < _text.length() and _text[_index] in ["+", "-"]:
 				_index += 1
-			var exponent_start := _index
 			while _index < _text.length() and _is_digit(_text[_index]):
 				_index += 1
-			if _index == exponent_start:
-				return {"ok": false}
 		if (
 			_index < _text.length()
 			and _is_identifier_continue(_text[_index])
