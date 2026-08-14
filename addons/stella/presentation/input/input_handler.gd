@@ -47,7 +47,7 @@ func _input(event: InputEvent) -> void:
 			if dialogue and dialogue.complete_typewriter():
 				get_viewport().set_input_as_handled()
 				return
-			SignalBus.emit_advance_requested()
+			_request_dialogue_advance(dialogue)
 			get_viewport().set_input_as_handled()
 			return
 
@@ -56,7 +56,7 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 
-		SignalBus.emit_advance_requested()
+		_request_dialogue_advance(dialogue)
 
 	elif event.button_index == MOUSE_BUTTON_RIGHT:
 		if not StellaRuntime.game_state.is_playing():
@@ -99,7 +99,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			dialogue._ctrl_held = true
 			# Ctrl pressed while text fully shown: advance immediately to start skipping
 			if not dialogue._is_typing:
-				SignalBus.emit_advance_requested()
+				_request_dialogue_advance(dialogue)
 		return
 	# Keyboard restore mirrors the hidden-state left click: the restoring key is
 	# consumed and must never also advance the scenario.
@@ -120,11 +120,21 @@ func _unhandled_input(event: InputEvent) -> void:
 		if dialogue and dialogue.complete_typewriter():
 			pass
 		else:
-			SignalBus.emit_advance_requested()
+			_request_dialogue_advance(dialogue)
 
 
 func _get_dialogue():
 	return get_node_or_null("%DialoguePanel")
+
+
+func _request_dialogue_advance(dialogue) -> void:
+	if dialogue != null and dialogue.has_method("request_current_dialogue_advance"):
+		if bool(dialogue.request_current_dialogue_advance()):
+			return
+	# Compatibility for custom scenes that still expose only the legacy global
+	# input notification, and for non-dialogue blockers such as @wait click.
+	# New DialogueHandler commands require request.advance().
+	SignalBus.emit_advance_requested()
 
 
 func _restore_soft_hidden_dialogue(dialogue) -> bool:

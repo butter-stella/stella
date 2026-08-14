@@ -9,6 +9,23 @@ class_name ChoiceHandler extends CommandHandler
 ## (which only returns a bool).
 class _AbortChoiceRace extends RefCounted:
 	signal done(was_aborted: bool, id: String)
+	var _resolved: bool = false
+	var _was_aborted: bool = false
+	var _selected_id: String = ""
+
+	func resolve(was_aborted: bool, id: String) -> void:
+		if _resolved:
+			return
+		_resolved = true
+		_was_aborted = was_aborted
+		_selected_id = id
+		done.emit(was_aborted, id)
+
+	func is_resolved() -> bool:
+		return _resolved
+
+	func get_result() -> Array:
+		return [_was_aborted, _selected_id]
 
 
 func get_command_type() -> String:
@@ -19,23 +36,49 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 	var prompt = data.get_string("prompt", "")
 	var options = data.params.get("options", [])
 
-	SignalBus.choice_show.emit(prompt, options)
-	# Race against engine_abort_requested. If aborted, return early; the
-	# engine loop will see ctx != context and exit cleanly without
-	# applying any selection.
+	# Install every completion/cancellation owner before publishing SHOW. A
+	# headless or custom consumer may select, abort, or replace the context
+	# synchronously from the SHOW callback, so the waiter also caches its result
+	# for the pre-await completion case.
+	if context != null and not context.is_runtime_owner_current():
+		return
 	var waiter = _AbortChoiceRace.new()
 	var on_choice := func(id: String):
-		waiter.done.emit(false, id)
+		waiter.resolve(false, id)
+	var on_context_cancel := func():
+		waiter.resolve(true, "")
 	var on_abort := func():
-		waiter.done.emit(true, "")
+		if context != null:
+			context.request_cancellation()
+		waiter.resolve(true, "")
 	SignalBus.choice_selected.connect(on_choice, CONNECT_ONE_SHOT)
+	if context != null:
+		context.cancellation_requested.connect(
+			on_context_cancel, CONNECT_ONE_SHOT)
 	SignalBus.engine_abort_requested.connect(on_abort, CONNECT_ONE_SHOT)
-	var result: Array = await waiter.done
+
+	SignalBus.choice_show.emit(prompt, options)
+	# A synchronous SHOW tail can invalidate ownership without emitting the
+	# context signal (for example, a custom consumer setting is_finished).
+	if context != null and not context.is_runtime_owner_current():
+		waiter.resolve(true, "")
+	var result: Array = waiter.get_result()
+	if not waiter.is_resolved():
+		result = await waiter.done
 	if SignalBus.choice_selected.is_connected(on_choice):
 		SignalBus.choice_selected.disconnect(on_choice)
+	if (
+		context != null
+		and context.cancellation_requested.is_connected(on_context_cancel)
+	):
+		context.cancellation_requested.disconnect(on_context_cancel)
 	if SignalBus.engine_abort_requested.is_connected(on_abort):
 		SignalBus.engine_abort_requested.disconnect(on_abort)
-	if result[0]:  # aborted
+	if (
+		result[0]
+		or (context != null and not context.is_runtime_owner_current())
+	):
+		SignalBus.choice_hide.emit()
 		return
 	var selected_id = result[1]
 

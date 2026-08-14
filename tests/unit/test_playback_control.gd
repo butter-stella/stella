@@ -49,6 +49,172 @@ func test_read_flag_restore_merges_cross_playthrough_progress():
 	assert_true(rfm.is_read("route_b", "scene_2", 7), "empty snapshot must not clear progress")
 
 
+func test_read_flag_structured_key_does_not_collide_on_colons() -> void:
+	var rfm := ReadFlagManager.new()
+	rfm.mark_read("route:branch", "scene", 4)
+
+	assert_true(rfm.is_read("route:branch", "scene", 4))
+	assert_false(rfm.is_read("route", "branch:scene", 4),
+		"tuple components must not collide through delimiter concatenation")
+
+
+func test_read_flag_legacy_snapshot_migrates_to_v2_and_remains_queryable() -> void:
+	var rfm := ReadFlagManager.new()
+	rfm.restore_snapshot({"main:start:3": true})
+
+	assert_true(rfm.is_dialogue_read(
+		"path:res://story/main.stla", "main", "start", 30, 3),
+		"a canonical request may fall back to an actually migrated v1 address")
+	var snapshot := rfm.capture_snapshot()
+	assert_eq(snapshot.get("version"), 2)
+	assert_eq(snapshot.get("flags", []).size(), 0)
+	assert_eq(snapshot.get("legacy_flags", []), ["main:start:3"])
+
+
+func test_ambiguous_v1_key_preserves_raw_lookup_instead_of_guessing_tuple() -> void:
+	var rfm := ReadFlagManager.new()
+	rfm.restore_snapshot({"route:a:scene:7": true})
+
+	assert_true(rfm.is_read("route:a", "scene", 7))
+	assert_true(rfm.is_read("route", "a:scene", 7),
+		"v1 ambiguity preserves both historical string-equivalent queries")
+	var snapshot := rfm.capture_snapshot()
+	var restored := ReadFlagManager.new()
+	restored.restore_snapshot(snapshot)
+	assert_eq(restored.capture_snapshot().get("legacy_flags", []),
+		["route:a:scene:7"])
+
+
+func test_unknown_snapshot_version_is_rejected_without_mutation() -> void:
+	var rfm := ReadFlagManager.new()
+	rfm.mark_read("current", "scene", 1)
+	rfm.restore_snapshot({"version": 99, "flags": []})
+
+	assert_push_error("ReadFlagManager: unsupported snapshot version")
+	assert_true(rfm.is_read("current", "scene", 1))
+
+
+func test_malformed_v2_is_rejected_atomically() -> void:
+	var rfm := ReadFlagManager.new()
+	rfm.restore_snapshot({
+		"version": 2,
+		"flags": [
+			{"scenario": "valid", "scene": "start", "command_uid": 1},
+			{"scenario": "broken"},
+		],
+	})
+
+	assert_push_error("ReadFlagManager: malformed v2 snapshot record")
+	assert_false(rfm.is_read("valid", "start", 1),
+		"a malformed snapshot cannot be partially applied")
+
+
+func test_v2_rejects_out_of_range_json_uids_atomically() -> void:
+	for invalid_uid in [
+		-1,
+		-1e100,
+		1e100,
+		9007199254740992,
+		9007199254740992.0,
+	]:
+		var rfm := ReadFlagManager.new()
+		rfm.restore_snapshot({
+			"version": 2,
+			"flags": [
+				{"scenario": "valid", "scene": "start", "command_uid": 1},
+				{
+					"scenario": "invalid",
+					"scene": "start",
+					"command_uid": invalid_uid,
+				},
+			],
+		})
+
+		assert_push_error("ReadFlagManager: malformed v2 snapshot record")
+		assert_false(rfm.is_read("valid", "start", 1),
+			"one invalid UID must reject the whole snapshot")
+
+
+func test_v2_accepts_exact_json_integer_boundaries() -> void:
+	var rfm := ReadFlagManager.new()
+	var encoded := JSON.stringify({
+		"version": 2,
+		"flags": [
+			{"scenario": "zero", "scene": "start", "command_uid": 0.0},
+			{
+				"scenario": "large-float",
+				"scene": "start",
+				"command_uid": 9007199254740990.0,
+			},
+			{
+				"scenario": "max-int",
+				"scene": "start",
+				"command_uid": 9007199254740991,
+			},
+		],
+	})
+	var decoded: Dictionary = JSON.parse_string(encoded)
+	rfm.restore_snapshot(decoded)
+
+	assert_true(rfm.is_read("zero", "start", 0))
+	assert_true(rfm.is_read("large-float", "start", 9007199254740990))
+	assert_true(rfm.is_read("max-int", "start", 9007199254740991))
+
+
+func test_public_read_writes_round_trip_through_json_snapshot() -> void:
+	var rfm := ReadFlagManager.new()
+	rfm.mark_read("compat", "start", 0)
+	rfm.mark_dialogue_read(
+		"path:res://story/main.stla", "chapter", 9007199254740991)
+	var decoded: Dictionary = JSON.parse_string(
+		JSON.stringify(rfm.capture_snapshot()))
+	var restored := ReadFlagManager.new()
+	restored.restore_snapshot(decoded)
+
+	assert_true(restored.is_read("compat", "start", 0))
+	assert_true(restored.is_dialogue_read(
+		"path:res://story/main.stla", "main", "chapter",
+		9007199254740991, -1))
+
+
+func test_public_read_writes_reject_uids_outside_snapshot_schema() -> void:
+	var rfm := ReadFlagManager.new()
+	rfm.mark_read("negative", "start", -1)
+	assert_push_error(
+		"ReadFlagManager: command UID must be a non-negative JSON-safe integer")
+	rfm.mark_dialogue_read("unsafe", "start", 9007199254740992)
+	assert_push_error(
+		"ReadFlagManager: command UID must be a non-negative JSON-safe integer")
+
+	assert_eq(rfm.capture_snapshot().get("flags", []), [],
+		"the public API cannot create state that its restore path rejects")
+
+
+func test_equal_basenames_keep_distinct_canonical_read_history() -> void:
+	var rfm := ReadFlagManager.new()
+	rfm.mark_dialogue_read("path:res://route_a/main.stla", "start", 7)
+
+	assert_true(rfm.is_dialogue_read(
+		"path:res://route_a/main.stla", "main", "start", 7, 0))
+	assert_false(rfm.is_dialogue_read(
+		"path:res://route_b/main.stla", "main", "start", 7, 0),
+		"new canonical records must never activate the basename fallback")
+
+
+func test_dialogue_activation_abort_wins_over_late_advance() -> void:
+	var activation := DialogueActivation.new()
+	assert_true(activation.abort())
+	assert_false(activation.advance())
+	assert_eq(activation.get_outcome(), DialogueActivation.Outcome.ABORTED)
+
+
+func test_dialogue_activation_advance_wins_over_late_abort() -> void:
+	var activation := DialogueActivation.new()
+	assert_true(activation.advance())
+	assert_false(activation.abort())
+	assert_eq(activation.get_outcome(), DialogueActivation.Outcome.ADVANCED)
+
+
 # --- BacklogManager ---
 
 func _seg(text: String, voice: String = "") -> Dictionary:

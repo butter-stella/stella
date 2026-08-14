@@ -6,6 +6,9 @@ extends Node
 ## Canonical internal request. Core and built-in presenters consume this typed,
 ## self-contained payload; show_dialogue below remains the extension adapter.
 signal dialogue_requested(request: DialogueRequest)
+## Core emits this only after the owning DialogueHandler has committed the
+## activation. Built-in presentation validates the id before retiring UI state.
+signal dialogue_advance_committed(activation_id: int)
 ## Presentation may enrich the current typed request with the names of active
 ## custom RichTextEffects. Runtime already stored the canonical entry directly;
 ## this value-only event lets it recompute that same entry without retaining a
@@ -30,6 +33,7 @@ signal advance_dispatch_started(serial: int)
 var _dialogue_presentation_stack: Array[Dictionary] = []
 var _show_dialogue_dispatch_serial: int = 0
 var _dialogue_request_serial: int = 0
+var _owned_dialogue_advance_echo_pending: int = 0
 var _last_raw_show_dispatch_serial: int = -1
 var _last_raw_show_segments: Variant = null
 var _advance_dispatch_serial: int = 0
@@ -99,6 +103,11 @@ func emit_dialogue_request(request: DialogueRequest) -> void:
 		request.get_nvl_page_entries(),
 		request_entry_id,
 		request.get_command_uid(),
+		request.get_activation(),
+		request.get_scenario_identity(),
+		request.get_legacy_scenario_id(),
+		request.get_scene_id(),
+		request.get_legacy_command_index(),
 	)
 	# Built-in state observes an immutable snapshot before the mutable public
 	# compatibility signal is delivered to extensions.
@@ -123,8 +132,24 @@ func emit_dialogue_request(request: DialogueRequest) -> void:
 	_dialogue_presentation_stack.pop_back()
 
 
-## Convenience emitter. Direct advance_requested.emit() remains fully
-## compatible because the bus-level pre-dispatch hook observes both paths.
+## Publish presentation completion only after Core has validated ownership and
+## committed durable read state. The typed event preserves the exact owner;
+## advance_requested remains a notification for extensions and AudioPresenter.
+func emit_dialogue_advance_committed(activation: DialogueActivation) -> bool:
+	if (
+		activation == null
+		or activation.get_outcome() != DialogueActivation.Outcome.ADVANCED
+	):
+		return false
+	dialogue_advance_committed.emit(activation.get_instance_id())
+	_owned_dialogue_advance_echo_pending += 1
+	advance_requested.emit()
+	return true
+
+
+## Compatibility notification emitter. Direct advance_requested.emit() remains
+## observable by presentation/extensions, but neither path resolves a blocking
+## DialogueHandler; consumers must call DialogueRequest.advance().
 func emit_advance_requested() -> void:
 	advance_requested.emit()
 
@@ -475,6 +500,9 @@ func _on_show_dialogue_dispatch_started(
 
 
 func _on_advance_requested_dispatch_started() -> void:
+	if _owned_dialogue_advance_echo_pending > 0:
+		_owned_dialogue_advance_echo_pending -= 1
+		return
 	_advance_dispatch_serial += 1
 	advance_dispatch_started.emit(_advance_dispatch_serial)
 
@@ -721,6 +749,7 @@ signal dialogue_voice_replay_requested(voices: Array, character: String)
 
 # Choice
 signal choice_show(prompt: String, options: Array)
+signal choice_hide()
 signal choice_selected(option_id: String)
 
 # Effects

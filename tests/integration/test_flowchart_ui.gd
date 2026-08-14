@@ -68,7 +68,7 @@ func _setup_and_play(data: ScenarioData) -> void:
 func _advance(n: int) -> void:
 	for _i in range(n):
 		await get_tree().process_frame
-		SignalBus.advance_requested.emit()
+		RuntimeTestSupport.advance_dialogue_for_test(get_tree())
 	await get_tree().process_frame
 
 

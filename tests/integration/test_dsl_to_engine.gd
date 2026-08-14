@@ -110,6 +110,56 @@ sakura「这样啊...」
 	assert_true(scenes_visited.has("friendly"))
 
 
+func test_headless_dialogue_marks_only_commands_advanced_normally() -> void:
+	var source := """@chapter test
+@scene start
+「First」
+「Second」"""
+	var scenario := DslParser.parse(DslLexer.tokenize(source), "headless_read_flags")
+	assert_eq(scenario.diagnostics, [])
+	var read_flags := ReadFlagManager.new()
+	var registry := CommandRegistry.new()
+	registry.register(DialogueHandler.new(read_flags))
+	var engine := ScenarioEngine.new()
+	engine.registry = registry
+	engine.load_scenario(scenario)
+	var context := engine.context
+	var scenario_identity := scenario.get_read_identity()
+	var shown_texts: Array[String] = []
+	var requests: Array[DialogueRequest] = []
+	var on_dialogue := func(request: DialogueRequest) -> void:
+		shown_texts.append(String(request.get_segments()[0].get("text", "")))
+		requests.append(request)
+	SignalBus.dialogue_requested.connect(on_dialogue)
+
+	engine.run()
+	await get_tree().process_frame
+	assert_eq(shown_texts, ["First"])
+	assert_eq(context.current_command_index, 0)
+	assert_false(read_flags.is_dialogue_read(
+		scenario_identity, "headless_read_flags", "start", 0, 0))
+
+	assert_true(requests[0].advance())
+	await get_tree().process_frame
+	assert_eq(shown_texts, ["First", "Second"])
+	assert_eq(context.current_command_index, 1,
+		"the engine advances to the next command before dispatching it")
+	assert_true(read_flags.is_dialogue_read(
+		scenario_identity, "headless_read_flags", "start", 0, 0))
+	assert_false(read_flags.is_dialogue_read(
+		scenario_identity, "headless_read_flags", "start", 1, 1),
+		"the currently waiting command is not read yet")
+
+	# Runtime cancellation replaces the active context before waking the handler.
+	engine.context = null
+	SignalBus.engine_abort_requested.emit()
+	await get_tree().process_frame
+	assert_false(read_flags.is_dialogue_read(
+		scenario_identity, "headless_read_flags", "start", 1, 1),
+		"aborting the second command must leave it unread")
+	SignalBus.dialogue_requested.disconnect(on_dialogue)
+
+
 func test_named_stage_runs_from_dsl_through_scenario_engine():
 	var source = """@chapter test
 @scene start

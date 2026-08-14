@@ -173,6 +173,33 @@ Game
 
 `StellaRuntime` 提供简洁的 API，用户搭建自己的 UI 时只需要调用这些方法：
 
+### 自定义对话 consumer / handler 迁移
+
+Canonical 对话事件是 `SignalBus.dialogue_requested(request)`。自定义 UI 或无界面 runner 完成显示后，应确认收到的**同一个** request；不要用旧的全局 `advance_requested` 作为剧情确认：
+
+```gdscript
+func _ready() -> void:
+	SignalBus.dialogue_requested.connect(_on_dialogue_requested)
+
+func _on_dialogue_requested(request: DialogueRequest) -> void:
+	# 渲染 request.get_segments()；玩家推进时：
+	request.advance()
+	# 若该次显示被关闭/取消，则改用 request.abort()
+```
+
+`advance()` / `abort()` 只有第一次调用成功，迟到的另一结果返回 `false`，也不能影响替换后的 request。正常 `advance()` 会先由 Core 验证 owner 并提交已读，再广播兼容通知；`abort()` 会取消当前 scenario context，不会跳过当前行继续执行下一条。自定义 Presenter 只能保留一个可见 owner；若 typed request 被另一条 typed/raw SHOW 替换，或 hard hide/场景退出令它不可达，必须在丢失引用前调用旧 request 的 `abort()`。`show_dialogue(character, segments, mode)` 与 `advance_requested()` 仍会作为扩展兼容通知发出，但不拥有 DialogueHandler 的命令完成权；没有 pending 对话时，内置输入会用旧 advance 通知解除 `@wait click`。
+
+直接组装 `CommandRegistry` 的扩展需把同一个已读管理器注入 handler：
+
+```gdscript
+var read_flags := ReadFlagManager.new()
+registry.register(DialogueHandler.new(read_flags))
+```
+
+`DialogueHandler.new()` 的无参数形式不再可用；内置 `StellaRuntime` 已在 composition root 统一完成注入，并会在测试/session reset 替换 read manager 时重建注册。
+
+扩展若直接调用 `ReadFlagManager.mark_read()` / `mark_dialogue_read()`，command UID 必须是 `0` 到 `2^53 - 1` 范围内的整数。写入与存档恢复使用同一校验；非法 UID 会立即拒绝，不会制造一份可以 capture 却无法 JSON restore 的已读状态。
+
 ### 游戏流程
 
 ```gdscript
@@ -238,6 +265,8 @@ StellaRuntime.has_save(slot_id)      # 检查槽位是否有存档
 StellaRuntime.delete_save(slot_id)   # 删除存档
 StellaRuntime.get_save_list()        # 获取所有有存档的槽位
 ```
+
+在游戏内读档、快读或从 Backlog/选项/流程图回退时，Runtime 会先把 engine context 所有权转交给恢复后的 context，再清理旧画面和阻塞命令。旧对话的取消不会触发自然 `scenario_ended`，恢复后的 context 始终是最终执行 owner；自定义 Presenter 仍只需遵守上文的 request `advance()` / `abort()` 契约。
 
 ### 播放控制
 
@@ -399,6 +428,16 @@ func execute(data: CommandData, _context: ScenarioContext) -> void:
     var intensity = data.get_float("intensity", 5.0)
     SignalBus.effect_requested.emit("shake", {"intensity": intensity})
 ```
+
+如果自定义命令会阻塞等待 signal，应把 `context` 传给统一取消 helper：
+
+```gdscript
+func execute(_data: CommandData, context: ScenarioContext) -> void:
+    if not await CommandHandler.await_with_abort(my_completed, context):
+        return
+```
+
+context 在一次剧情执行期间就是它的代际 token；载入、重启或回滚会取消旧 context 的所有此类等待，避免旧 handler 响应新剧情的输入。
 
 在启动时注册：
 ```gdscript
