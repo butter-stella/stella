@@ -15,7 +15,13 @@ class InspectionResult extends RefCounted:
 	var format: String = ""
 	var header: Dictionary = {}
 	var node_paths: Dictionary = {}
+	## Compact effective-tree model. Only nodes authored or queried by an
+	## override are materialized; nested instance descendants resolve lazily.
+	var scene_model: Dictionary = {}
 	var matches_expected_type: bool = true
+	## Unique canonical path + expected-type inspections performed by the most
+	## recent top-level transaction. Cached repeated instances do not increment it.
+	var visited_resource_count: int = 0
 
 
 	func to_dictionary() -> Dictionary:
@@ -25,32 +31,274 @@ class InspectionResult extends RefCounted:
 			"format": format,
 			"header": header.duplicate(true),
 			"node_paths": node_paths.duplicate(true),
+			"scene_model": scene_model.duplicate(true),
 			"matches_expected_type": matches_expected_type,
+			"visited_resource_count": visited_resource_count,
 		}
 
 
 var _active_paths: Dictionary = {}
+var _completed_results: Dictionary = {}
+var _inspection_depth: int = 0
+var _transaction_visit_count: int = 0
+var _last_inspection_visit_count: int = 0
+
+
+## Decode the String grammar shared by Godot 4.6 text-resource tags and
+## serialized Variant values. The returned `end` points just after the closing
+## quote. Raw source is never included in errors or metadata on failure.
+static func _decode_resource_string(
+	text: String,
+	quote_index: int,
+	max_raw_bytes: int = -1,
+) -> Dictionary:
+	if (
+		quote_index < 0
+		or quote_index >= text.length()
+		or text[quote_index] != "\""
+	):
+		return {"ok": false}
+	var index := quote_index + 1
+	var raw_start := index
+	var segment_start := index
+	var parts := PackedStringArray()
+	while index < text.length():
+		var character := text[index]
+		if character == "\"":
+			if (
+				max_raw_bytes >= 0
+				and text.substr(raw_start, index - raw_start).to_utf8_buffer().size()
+				> max_raw_bytes
+			):
+				return {"ok": false}
+			if segment_start < index:
+				parts.append(text.substr(segment_start, index - segment_start))
+			return {
+				"ok": true,
+				"value": "".join(parts),
+				"end": index + 1,
+			}
+		if character != "\\":
+			index += 1
+			continue
+
+		if segment_start < index:
+			parts.append(text.substr(segment_start, index - segment_start))
+		index += 1
+		if index >= text.length():
+			return {"ok": false}
+		var escaped := text[index]
+		index += 1
+		match escaped:
+			"\"":
+				parts.append("\"")
+			"\\":
+				parts.append("\\")
+			"/":
+				parts.append("/")
+			"b":
+				parts.append(String.chr(8))
+			"f":
+				parts.append(String.chr(12))
+			"n":
+				parts.append("\n")
+			"r":
+				parts.append("\r")
+			"t":
+				parts.append("\t")
+			"u", "U":
+				var digit_count := 4 if escaped == "u" else 6
+				var decoded := _decode_resource_unicode_digits(
+					text,
+					index,
+					digit_count,
+				)
+				if not decoded.get("ok", false):
+					return {"ok": false}
+				index = decoded["end"]
+				var codepoint: int = decoded["codepoint"]
+				if codepoint >= 0xD800 and codepoint <= 0xDBFF:
+					if (
+						index + 1 >= text.length()
+						or text[index] != "\\"
+						or text[index + 1] not in ["u", "U"]
+					):
+						return {"ok": false}
+					var low_kind := text[index + 1]
+					var low_count := 4 if low_kind == "u" else 6
+					var decoded_low := _decode_resource_unicode_digits(
+						text,
+						index + 2,
+						low_count,
+					)
+					if not decoded_low.get("ok", false):
+						return {"ok": false}
+					var low_codepoint: int = decoded_low["codepoint"]
+					if low_codepoint < 0xDC00 or low_codepoint > 0xDFFF:
+						return {"ok": false}
+					index = decoded_low["end"]
+					codepoint = (
+						0x10000
+						+ ((codepoint - 0xD800) << 10)
+						+ low_codepoint - 0xDC00
+					)
+				elif codepoint >= 0xDC00 and codepoint <= 0xDFFF:
+					return {"ok": false}
+				if codepoint > 0x10FFFF:
+					codepoint = 0xFFFD
+				parts.append(String.chr(codepoint))
+			_:
+				# VariantParser drops the slash for unknown escapes.
+				parts.append(escaped)
+		segment_start = index
+	return {"ok": false}
+
+
+static func _decode_resource_unicode_digits(
+	text: String,
+	start: int,
+	digit_count: int,
+) -> Dictionary:
+	if start < 0 or start + digit_count > text.length():
+		return {"ok": false}
+	var codepoint := 0
+	for index in range(start, start + digit_count):
+		var digit := _resource_hex_digit_value(text[index])
+		if digit < 0:
+			return {"ok": false}
+		codepoint = codepoint * 16 + digit
+	return {
+		"ok": true,
+		"codepoint": codepoint,
+		"end": start + digit_count,
+	}
+
+
+static func _resource_hex_digit_value(character: String) -> int:
+	if character >= "0" and character <= "9":
+		return character.unicode_at(0) - "0".unicode_at(0)
+	var lower := character.to_lower()
+	if lower >= "a" and lower <= "f":
+		return 10 + lower.unicode_at(0) - "a".unicode_at(0)
+	return -1
+
+
+static func _safe_decimal_integer_literal(literal: String) -> bool:
+	if literal.is_empty():
+		return false
+	var digit_start := 0
+	if literal[0] in ["+", "-"]:
+		digit_start = 1
+	if digit_start == literal.length():
+		return false
+	for index in range(digit_start, literal.length()):
+		if literal[index] < "0" or literal[index] > "9":
+			return false
+	while digit_start < literal.length() - 1 and literal[digit_start] == "0":
+		digit_start += 1
+	var digits := literal.substr(digit_start)
+	var limit := "9223372036854775808" if literal.begins_with("-") else (
+		"9223372036854775807"
+	)
+	if digits.length() != limit.length():
+		return digits.length() < limit.length()
+	for index in digits.length():
+		if digits[index] == limit[index]:
+			continue
+		return digits[index] < limit[index]
+	return true
+
+
+static func _normalized_resource_id_value(value: String, quoted: bool) -> String:
+	if value.is_empty():
+		return ""
+	var digit_start := 0
+	if value[0] in ["+", "-"]:
+		digit_start = 1
+	var signed_decimal := digit_start < value.length()
+	for index in range(digit_start, value.length()):
+		if value[index] < "0" or value[index] > "9":
+			signed_decimal = false
+			break
+	if not signed_decimal:
+		return "s:" + value if quoted else ""
+	var magnitude_start := digit_start
+	while (
+		magnitude_start < value.length() - 1
+		and value[magnitude_start] == "0"
+	):
+		magnitude_start += 1
+	var has_quoted_spelling_difference := (
+		quoted
+		and (
+			value.begins_with("+")
+			or magnitude_start > digit_start
+			or not _safe_decimal_integer_literal(value)
+		)
+	)
+	if has_quoted_spelling_difference:
+		return "s:" + value
+	if not _safe_decimal_integer_literal(value):
+		return ""
+	var magnitude := value.substr(magnitude_start)
+	if magnitude == "0":
+		return "n:0"
+	return "n:" + ("-" if value.begins_with("-") else "") + magnitude
 
 
 func inspect(path: String, expected_type: String = "") -> InspectionResult:
+	var is_top_level := _inspection_depth == 0
+	if is_top_level:
+		_active_paths.clear()
+		_completed_results.clear()
+		_transaction_visit_count = 0
+	_inspection_depth += 1
+	var result := _inspect_cached(path, expected_type)
+	_inspection_depth -= 1
+	if is_top_level:
+		_last_inspection_visit_count = _transaction_visit_count
+		result.visited_resource_count = _transaction_visit_count
+		_active_paths.clear()
+		_completed_results.clear()
+	return result
+
+
+func get_last_inspection_visit_count() -> int:
+	return _last_inspection_visit_count
+
+
+func _inspect_cached(path: String, expected_type: String) -> InspectionResult:
 	var canonical_path := path.simplify_path()
+	var cache_key := canonical_path + "\n" + expected_type
+	if _completed_results.has(cache_key):
+		return _inspection_result_from_dictionary(_completed_results[cache_key])
 	if _active_paths.has(canonical_path):
 		return InspectionResult.new()
 	_active_paths[canonical_path] = true
-	var raw := _inspect_dictionary(path)
+	_transaction_visit_count += 1
+	var raw := _inspect_dictionary(canonical_path)
+	var result := _inspection_result_from_dictionary(raw)
+	if result.ok and not expected_type.is_empty():
+		result.matches_expected_type = _text_resource_declares_type(
+			canonical_path,
+			expected_type,
+			result,
+		)
+	_active_paths.erase(canonical_path)
+	_completed_results[cache_key] = result.to_dictionary()
+	return _inspection_result_from_dictionary(_completed_results[cache_key])
+
+
+func _inspection_result_from_dictionary(raw: Dictionary) -> InspectionResult:
 	var result := InspectionResult.new()
 	result.ok = raw.get("ok", false)
 	result.dependencies.assign(raw.get("dependencies", []))
 	result.format = raw.get("format", "")
 	result.header = raw.get("header", {}).duplicate(true)
 	result.node_paths = raw.get("node_paths", {}).duplicate(true)
-	if result.ok and not expected_type.is_empty():
-		result.matches_expected_type = _text_resource_declares_type(
-			path,
-			expected_type,
-			result,
-		)
-	_active_paths.erase(canonical_path)
+	result.scene_model = raw.get("scene_model", {}).duplicate(true)
+	result.matches_expected_type = raw.get("matches_expected_type", true)
+	result.visited_resource_count = raw.get("visited_resource_count", 0)
 	return result
 
 
@@ -111,25 +359,18 @@ class _ResourceValueParser:
 			_index += 1
 		if _index >= _text.length() or _text[_index] != "\"":
 			return {"ok": false}
-		_index += 1
-		var value_parts := PackedStringArray()
-		while _index < _text.length():
-			var character := _text[_index]
-			_index += 1
-			if character == "\"":
-				return {
-					"ok": true,
-					"kind": "string",
-					"value": "".join(value_parts),
-				}
-			if character == "\\":
-				if _index >= _text.length():
-					return {"ok": false}
-				value_parts.append(_text[_index])
-				_index += 1
-				continue
-			value_parts.append(character)
-		return {"ok": false}
+		var decoded := TextResourceInspector._decode_resource_string(
+			_text,
+			_index,
+		)
+		if not decoded.get("ok", false):
+			return {"ok": false}
+		_index = decoded["end"]
+		return {
+			"ok": true,
+			"kind": "string",
+			"value": decoded["value"],
+		}
 
 
 	func _parse_array() -> Dictionary:
@@ -415,23 +656,7 @@ class _ResourceValueParser:
 
 
 	func _normalized_resource_id(value: String, quoted: bool) -> String:
-		if value.is_empty():
-			return ""
-		var only_digits := true
-		for character in value:
-			if character < "0" or character > "9":
-				only_digits = false
-				break
-		if only_digits:
-			if quoted and value.length() > 1 and value.begins_with("0"):
-				return "s:" + value
-			var digit_start := 0
-			while digit_start < value.length() - 1 and value[digit_start] == "0":
-				digit_start += 1
-			return "n:" + value.substr(digit_start)
-		if quoted:
-			return "s:" + value
-		return ""
+		return TextResourceInspector._normalized_resource_id_value(value, quoted)
 
 
 	func _arguments_are_numbers(
@@ -700,6 +925,7 @@ func _inspect_dictionary(path: String) -> Dictionary:
 	):
 		return {"ok": false, "dependencies": []}
 	var node_paths: Dictionary = {}
+	var scene_model: Dictionary = {}
 	if extension == "tscn":
 		var scene_structure := _inspect_scene_structure(
 			scene_structure_tags,
@@ -708,12 +934,14 @@ func _inspect_dictionary(path: String) -> Dictionary:
 		if not scene_structure.get("ok", false):
 			return {"ok": false, "dependencies": []}
 		node_paths = scene_structure.get("node_paths", {})
+		scene_model = scene_structure.get("scene_model", {})
 	return {
 		"ok": true,
 		"dependencies": dependencies,
 		"format": "text",
 		"header": header,
 		"node_paths": node_paths,
+		"scene_model": scene_model,
 	}
 
 
@@ -721,7 +949,12 @@ func _inspect_scene_structure(
 	tags: Array[Dictionary],
 	ext_resources: Dictionary,
 ) -> Dictionary:
-	var node_paths: Dictionary = {}
+	var scene_model := {
+		"nodes": {},
+		"instances": {},
+	}
+	var node_paths: Dictionary = scene_model["nodes"]
+	var instance_paths: Dictionary = scene_model["instances"]
 	var node_tags: Array[Dictionary] = []
 	var trailing_tags: Array[Dictionary] = []
 	for tag: Dictionary in tags:
@@ -749,52 +982,71 @@ func _inspect_scene_structure(
 			if has_type:
 				node_paths["."] = String(attributes["type"])
 			else:
-				var inherited_paths := _scene_instance_node_paths(
+				var inherited := _scene_instance_dependency(
 					String(attributes["instance"]),
 					ext_resources,
 				)
-				if not inherited_paths.get("ok", false):
+				if not inherited.get("ok", false):
 					return {"ok": false}
-				node_paths = inherited_paths.get("node_paths", {}).duplicate(true)
-				if not node_paths.has("."):
+				instance_paths["."] = inherited["path"]
+				var inherited_type := _scene_model_node_type(
+					scene_model,
+					".",
+					{},
+				)
+				if inherited_type.is_empty():
 					return {"ok": false}
+				node_paths["."] = inherited_type
 			continue
 
 		var parent_path := _normalized_scene_path(
 			String(attributes.get("parent", "")),
 		)
-		if parent_path.is_empty() or not node_paths.has(parent_path):
+		if (
+			parent_path.is_empty()
+			or _scene_model_node_type(scene_model, parent_path, {}).is_empty()
+		):
 			return {"ok": false}
 		var node_path := name if parent_path == "." else parent_path + "/" + name
 		if has_type or has_instance:
-			if node_paths.has(node_path):
+			if not _scene_model_node_type(scene_model, node_path, {}).is_empty():
 				return {"ok": false}
 			if has_type:
 				node_paths[node_path] = String(attributes["type"])
 			else:
-				var nested_paths := _scene_instance_node_paths(
+				var nested := _scene_instance_dependency(
 					String(attributes["instance"]),
 					ext_resources,
 				)
-				if not nested_paths.get("ok", false):
+				if not nested.get("ok", false):
 					return {"ok": false}
-				for nested_path: String in nested_paths.get("node_paths", {}):
-					var effective_path := node_path
-					if nested_path != ".":
-						effective_path += "/" + nested_path
-					node_paths[effective_path] = (
-						nested_paths["node_paths"][nested_path]
-					)
-		elif not node_paths.has(node_path):
+				instance_paths[node_path] = nested["path"]
+				var nested_type := _scene_model_node_type(
+					scene_model,
+					node_path,
+					{},
+				)
+				if nested_type.is_empty():
+					return {"ok": false}
+				node_paths[node_path] = nested_type
+		else:
 			# Property-only entries are valid only when an inherited or nested
-			# effective node already exists at the complete NodePath.
-			return {"ok": false}
+			# effective node already exists at the complete NodePath. Resolve only
+			# this path instead of materializing every descendant of every instance.
+			var inherited_type := _scene_model_node_type(
+				scene_model,
+				node_path,
+				{},
+			)
+			if inherited_type.is_empty():
+				return {"ok": false}
+			node_paths[node_path] = inherited_type
 
 		if attributes.has("owner"):
 			var owner_path := _normalized_scene_path(String(attributes["owner"]))
 			if (
 				owner_path.is_empty()
-				or not node_paths.has(owner_path)
+				or _scene_model_node_type(scene_model, owner_path, {}).is_empty()
 				or not _scene_path_is_ancestor(owner_path, node_path)
 			):
 				return {"ok": false}
@@ -807,23 +1059,34 @@ func _inspect_scene_structure(
 					var endpoint := _normalized_scene_path(
 						String(attributes.get(key, "")),
 					)
-					if endpoint.is_empty() or not node_paths.has(endpoint):
+					if (
+						endpoint.is_empty()
+						or _scene_model_node_type(scene_model, endpoint, {}).is_empty()
+					):
 						return {"ok": false}
 			"editable":
 				var editable_path := _normalized_scene_path(
 					String(attributes.get("path", "")),
 				)
-				if editable_path.is_empty() or not node_paths.has(editable_path):
+				if (
+					editable_path.is_empty()
+					or _scene_model_node_type(
+						scene_model,
+						editable_path,
+						{},
+					).is_empty()
+				):
 					return {"ok": false}
 			_:
 				return {"ok": false}
 	return {
 		"ok": true,
-		"node_paths": node_paths,
+		"node_paths": node_paths.duplicate(true),
+		"scene_model": scene_model,
 	}
 
 
-func _scene_instance_node_paths(
+func _scene_instance_dependency(
 	serialized_value: String,
 	ext_resources: Dictionary,
 ) -> Dictionary:
@@ -848,19 +1111,59 @@ func _scene_instance_node_paths(
 	var nested := inspect(dependency.get("path", ""), "PackedScene")
 	if not nested.ok or not nested.matches_expected_type:
 		return {"ok": false}
-	if nested.format == "structured":
-		# Binary resources cannot contain private source text. SceneState performs
-		# the final native-type/script validation after loading.
-		return {
-			"ok": true,
-			"node_paths": {".": "Node"},
-		}
-	if not nested.node_paths.has("."):
+	if nested.scene_model.is_empty():
+		return {"ok": false}
+	var root_type := _scene_model_node_type(nested.scene_model, ".", {})
+	if root_type.is_empty():
 		return {"ok": false}
 	return {
 		"ok": true,
-		"node_paths": nested.node_paths.duplicate(true),
+		"path": String(dependency.get("path", "")).simplify_path(),
+		"root_type": root_type,
 	}
+
+
+func _scene_model_node_type(
+	scene_model: Dictionary,
+	target_path: String,
+	visited: Dictionary,
+) -> String:
+	var normalized_target := _normalized_scene_path(target_path)
+	if normalized_target.is_empty():
+		return ""
+	var nodes: Dictionary = scene_model.get("nodes", {})
+	if nodes.has(normalized_target):
+		return String(nodes[normalized_target])
+	var instances: Dictionary = scene_model.get("instances", {})
+	var owning_path := ""
+	for candidate_path: String in instances:
+		var owns_target := (
+			candidate_path == "."
+			or normalized_target == candidate_path
+			or normalized_target.begins_with(candidate_path + "/")
+		)
+		if owns_target and candidate_path.length() > owning_path.length():
+			owning_path = candidate_path
+	if owning_path.is_empty():
+		return ""
+	var relative_path := normalized_target
+	if owning_path != ".":
+		relative_path = "." if normalized_target == owning_path else (
+			normalized_target.substr(owning_path.length() + 1)
+		)
+	var dependency_path := String(instances[owning_path]).simplify_path()
+	var identity := dependency_path + "\n" + relative_path
+	if dependency_path.is_empty() or visited.has(identity):
+		return ""
+	visited[identity] = true
+	var nested := inspect(dependency_path, "PackedScene")
+	if (
+		not nested.ok
+		or not nested.matches_expected_type
+		or nested.scene_model.is_empty()
+	):
+		return ""
+	return _scene_model_node_type(nested.scene_model, relative_path, visited)
 
 
 func _scene_node_name_is_valid(name: String) -> bool:
@@ -1111,29 +1414,7 @@ func _resource_tag_has_safe_integer(
 	if quoted.get(key, false) and not allow_quoted:
 		return false
 	var literal := String(attributes[key])
-	if literal.is_empty():
-		return false
-	var digit_start := 0
-	if literal[0] in ["+", "-"]:
-		digit_start = 1
-	if digit_start == literal.length():
-		return false
-	for index in range(digit_start, literal.length()):
-		if literal[index] < "0" or literal[index] > "9":
-			return false
-	while digit_start < literal.length() - 1 and literal[digit_start] == "0":
-		digit_start += 1
-	var digits := literal.substr(digit_start)
-	var limit := "9223372036854775808" if literal.begins_with("-") else (
-		"9223372036854775807"
-	)
-	if digits.length() != limit.length():
-		return digits.length() < limit.length()
-	for index in digits.length():
-		if digits[index] == limit[index]:
-			continue
-		return digits[index] < limit[index]
-	return true
+	return _safe_decimal_integer_literal(literal)
 
 
 func _resource_id_key(tag: Dictionary, key: String) -> String:
@@ -1142,23 +1423,7 @@ func _resource_id_key(tag: Dictionary, key: String) -> String:
 	if not attributes.has(key):
 		return ""
 	var value: String = attributes[key]
-	if value.is_empty():
-		return ""
-	var only_digits := true
-	for character in value:
-		if character < "0" or character > "9":
-			only_digits = false
-			break
-	if only_digits:
-		if quoted.get(key, false) and value.length() > 1 and value.begins_with("0"):
-			return "s:" + value
-		var digit_start := 0
-		while digit_start < value.length() - 1 and value[digit_start] == "0":
-			digit_start += 1
-		return "n:" + value.substr(digit_start)
-	if quoted.get(key, false):
-		return "s:" + value
-	return ""
+	return _normalized_resource_id_value(value, quoted.get(key, false))
 
 
 func _resource_declared_class_inherits(
@@ -1259,10 +1524,70 @@ func _structured_resource_dependencies(path: String) -> Dictionary:
 			"path": dependency_path,
 			"type": declared_type,
 		})
-	return {
+	var result := {
 		"ok": true,
 		"dependencies": dependencies,
 		"format": "structured",
+	}
+	# Godot 4.6 treats `ResourceLoader.exists(..., type_hint)` as an existence
+	# query even when the cached resource has another type. Inspect the loaded
+	# structured value itself so scripts/textures are not misclassified as
+	# PackedScenes while binary `.scn` files still expose their SceneState.
+	var structured_resource := ResourceLoader.load(path)
+	if structured_resource is PackedScene:
+		var packed := structured_resource as PackedScene
+		var scene_model := _structured_scene_model(packed)
+		if not scene_model.get("ok", false):
+			return {"ok": false, "dependencies": []}
+		result["scene_model"] = scene_model["scene_model"]
+		result["node_paths"] = scene_model["node_paths"]
+	return result
+
+
+## Convert a binary/remapped PackedScene's own serialized SceneState into the
+## same compact model used by text scenes. Nested descendants remain lazy; only
+## property-only entries actually present in this state are resolved.
+func _structured_scene_model(scene: PackedScene) -> Dictionary:
+	if scene == null or not scene.can_instantiate():
+		return {"ok": false}
+	var state := scene.get_state()
+	if state == null or state.get_node_count() == 0:
+		return {"ok": false}
+	var model := {
+		"nodes": {},
+		"instances": {},
+	}
+	var nodes: Dictionary = model["nodes"]
+	var instances: Dictionary = model["instances"]
+	var unresolved := PackedStringArray()
+	for node_index in state.get_node_count():
+		var node_path := _normalized_scene_path(
+			String(state.get_node_path(node_index)),
+		)
+		if node_path.is_empty():
+			return {"ok": false}
+		var nested_scene := state.get_node_instance(node_index)
+		if nested_scene != null:
+			var nested_path := nested_scene.resource_path.simplify_path()
+			if nested_path.is_empty():
+				return {"ok": false}
+			instances[node_path] = nested_path
+		var native_type := String(state.get_node_type(node_index))
+		if native_type.is_empty():
+			unresolved.append(node_path)
+		else:
+			nodes[node_path] = native_type
+	for node_path: String in unresolved:
+		var native_type := _scene_model_node_type(model, node_path, {})
+		if native_type.is_empty():
+			return {"ok": false}
+		nodes[node_path] = native_type
+	if not nodes.has("."):
+		return {"ok": false}
+	return {
+		"ok": true,
+		"scene_model": model,
+		"node_paths": nodes.duplicate(true),
 	}
 
 
@@ -1310,45 +1635,15 @@ func _parse_resource_tag(line: String) -> Dictionary:
 			return {"ok": false}
 		if content[index] == "\"":
 			quoted_attributes[key] = true
-			index += 1
-			var raw_value_start := index
-			var segment_start := index
-			var value_parts := PackedStringArray()
-			var closed := false
-			while index < content.length():
-				var character := content[index]
-				if character == "\\":
-					if segment_start < index:
-						value_parts.append(
-							content.substr(segment_start, index - segment_start)
-						)
-					index += 1
-					if index >= content.length():
-						return {"ok": false}
-					value_parts.append(content[index])
-					index += 1
-					segment_start = index
-					continue
-				if character == "\"":
-					if segment_start < index:
-						value_parts.append(
-							content.substr(segment_start, index - segment_start)
-						)
-					if (
-						content.substr(
-							raw_value_start,
-							index - raw_value_start,
-						).to_utf8_buffer().size()
-						> MAX_QUOTED_ATTRIBUTE_BYTES
-					):
-						return {"ok": false}
-					index += 1
-					closed = true
-					break
-				index += 1
-			if not closed:
+			var decoded := _decode_resource_string(
+				content,
+				index,
+				MAX_QUOTED_ATTRIBUTE_BYTES,
+			)
+			if not decoded.get("ok", false):
 				return {"ok": false}
-			attributes[key] = "".join(value_parts)
+			attributes[key] = decoded["value"]
+			index = decoded["end"]
 		else:
 			quoted_attributes[key] = false
 			var value_start := index

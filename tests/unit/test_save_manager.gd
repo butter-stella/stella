@@ -292,6 +292,29 @@ func test_public_parser_identity_keeps_extension_saves_eligible():
 		"public-parser scenarios must remain eligible for scenario-aware reads")
 
 
+func test_scenario_aware_read_accepts_current_read_flag_snapshot():
+	var scenario := _make_validation_scenario()
+	var snapshot := _make_valid_save_snapshot()
+	var read_flags := ReadFlagManager.new()
+	read_flags.mark_dialogue_read(
+		scenario.source_identity,
+		"start",
+		1,
+	)
+	snapshot["read_flags"] = read_flags.capture_snapshot()
+	assert_true(_manager.validate_data_for_scenario(snapshot, scenario))
+
+	var invalid_record := snapshot.duplicate(true)
+	invalid_record["read_flags"]["flags"][0]["command_uid"] = -1
+	assert_false(_manager.validate_data_for_scenario(invalid_record, scenario))
+	var invalid_legacy := snapshot.duplicate(true)
+	invalid_legacy["read_flags"]["legacy_flags"] = [1]
+	assert_false(_manager.validate_data_for_scenario(invalid_legacy, scenario))
+	var invalid_version := snapshot.duplicate(true)
+	invalid_version["read_flags"]["version"] = 999
+	assert_false(_manager.validate_data_for_scenario(invalid_version, scenario))
+
+
 func test_programmatic_scenario_can_set_stable_authored_identity():
 	var scenario := _make_validation_scenario()
 	var previous_identity := scenario.source_identity

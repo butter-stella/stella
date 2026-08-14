@@ -59,6 +59,12 @@ const TEST_INVALID_TAG_ATTRIBUTE_PATH = (
 const TEST_NUMERIC_RESOURCE_ID_PATH = (
 	"user://test_numeric_resource_id.tscn"
 )
+const TEST_BINARY_NESTED_TITLE_PATH = (
+	"user://test_binary_nested_title.scn"
+)
+const TEST_BINARY_OUTER_TITLE_PATH = (
+	"user://test_binary_outer_title.tscn"
+)
 const UID_DEPENDENCY_SCRIPT = (
 	"res://tests/fixtures/pck_smoke/export_probe_runner.gd"
 )
@@ -98,6 +104,8 @@ const TEST_CONFIG_PATHS = [
 	TEST_MISSING_PARENT_PATH,
 	TEST_INVALID_TAG_ATTRIBUTE_PATH,
 	TEST_NUMERIC_RESOURCE_ID_PATH,
+	TEST_BINARY_NESTED_TITLE_PATH,
+	TEST_BINARY_OUTER_TITLE_PATH,
 	"user://test_stella.cfg",
 	"user://test_stella_partial.cfg",
 	"user://test_stella_has.cfg",
@@ -722,6 +730,50 @@ func test_scene_preflight_accepts_numeric_resource_ids_without_ambiguity():
 		assert_not_null(instance.texture)
 	if instance != null:
 		instance.free()
+	assert_engine_error_count(0)
+
+
+func test_title_resolver_accepts_binary_nested_child_override():
+	var binary_root := Node.new()
+	binary_root.name = "NestedRoot"
+	var binary_child := Node.new()
+	binary_child.name = "Child"
+	binary_root.add_child(binary_child)
+	binary_child.owner = binary_root
+	var binary_scene := PackedScene.new()
+	assert_eq(binary_scene.pack(binary_root), OK)
+	assert_eq(ResourceSaver.save(binary_scene, TEST_BINARY_NESTED_TITLE_PATH), OK)
+	binary_root.free()
+	_write_raw_project_config(
+		TEST_BINARY_OUTER_TITLE_PATH,
+		(
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"PackedScene\" "
+			+ "path=\"%s\" id=\"1_nested\"]\n\n"
+			% TEST_BINARY_NESTED_TITLE_PATH
+			+ "[node name=\"Outer\" type=\"Node\"]\n\n"
+			+ "[node name=\"Nested\" parent=\".\" "
+			+ "instance=ExtResource(\"1_nested\")]\n\n"
+			+ "[node name=\"Child\" parent=\"Nested\" index=\"0\"]\n"
+			+ "metadata/probe = \"override\"\n\n"
+			+ "[editable path=\"Nested\"]\n"
+		),
+	)
+
+	_runtime.title_scene_path = TEST_BINARY_OUTER_TITLE_PATH
+	var resolved: PackedScene = _runtime.resolve_title_scene()
+	assert_not_null(resolved)
+	if resolved != null:
+		assert_eq(resolved.resource_path, TEST_BINARY_OUTER_TITLE_PATH)
+		var instance := resolved.instantiate()
+		assert_not_null(instance)
+		if instance != null:
+			var child := instance.get_node_or_null("Nested/Child")
+			assert_not_null(child)
+			if child != null:
+				assert_eq(child.get_meta("probe"), "override")
+			instance.free()
+	assert_eq(_runtime.title_scene_path, TEST_BINARY_OUTER_TITLE_PATH)
 	assert_engine_error_count(0)
 
 

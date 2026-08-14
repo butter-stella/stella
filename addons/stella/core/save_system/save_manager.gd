@@ -2,6 +2,9 @@
 ## Each subsystem registers as a provider; SaveManager collects and restores snapshots.
 class_name SaveManager extends RefCounted
 
+const MAX_JSON_SAFE_INTEGER := 9007199254740991
+const FIRST_UNSAFE_JSON_INTEGER_FLOAT := 9007199254740992.0
+
 var save_dir: String = "user://saves/"
 var _providers: Array = []
 
@@ -271,7 +274,10 @@ func validate_data_for_scenario(
 		and not _presentation_snapshot_is_valid(data["presentation_state"])
 	):
 		return false
-	if data.has("read_flags") and not _bool_map_is_valid(data["read_flags"]):
+	if (
+		data.has("read_flags")
+		and not _read_flags_snapshot_is_valid(data["read_flags"])
+	):
 		return false
 	if data.has("unlocks") and not _unlocks_snapshot_is_valid(data["unlocks"]):
 		return false
@@ -446,6 +452,58 @@ func _bool_map_is_valid(raw_map: Variant) -> bool:
 		if not key is String or not raw_map[key] is bool:
 			return false
 	return true
+
+
+## ReadFlagManager v2 stores collision-safe structured records while saves
+## created by earlier Stella versions remain a flat String -> bool map. Accept
+## both restore contracts, but validate the complete selected schema before a
+## navigation transaction can replace the active scene/context.
+func _read_flags_snapshot_is_valid(raw_snapshot: Variant) -> bool:
+	if not raw_snapshot is Dictionary:
+		return false
+	var snapshot: Dictionary = raw_snapshot
+	if not snapshot.has("version"):
+		return _bool_map_is_valid(snapshot)
+	var version: Variant = snapshot["version"]
+	if not _integer_is_valid(version) or int(version) != 2:
+		return false
+	var records: Variant = snapshot.get("flags", null)
+	var legacy_records: Variant = snapshot.get("legacy_flags", [])
+	if not records is Array or not legacy_records is Array:
+		return false
+	for raw_record: Variant in records:
+		if not raw_record is Dictionary:
+			return false
+		var record: Dictionary = raw_record
+		if (
+			not record.get("scenario", null) is String
+			or not record.get("scene", null) is String
+			or not _json_safe_non_negative_integer_is_valid(
+				record.get("command_uid", null),
+			)
+			or (record.has("legacy") and not record["legacy"] is bool)
+		):
+			return false
+	for legacy_key: Variant in legacy_records:
+		if not legacy_key is String:
+			return false
+	return true
+
+
+func _json_safe_non_negative_integer_is_valid(value: Variant) -> bool:
+	if value is int:
+		return value >= 0 and value <= MAX_JSON_SAFE_INTEGER
+	if not value is float:
+		return false
+	var numeric: float = value
+	if (
+		not is_finite(numeric)
+		or numeric < 0.0
+		or numeric >= FIRST_UNSAFE_JSON_INTEGER_FLOAT
+		or numeric != floor(numeric)
+	):
+		return false
+	return float(int(numeric)) == numeric
 
 
 func _unlocks_snapshot_is_valid(raw_snapshot: Variant) -> bool:

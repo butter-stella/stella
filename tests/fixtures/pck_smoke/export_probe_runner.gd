@@ -134,6 +134,7 @@ func _probe_degraded_title_fallbacks() -> void:
 
 	var failures := PackedStringArray()
 	_probe_nested_editable_child_override(failures)
+	_probe_binary_nested_editable_child_override(failures)
 	_probe_numeric_resource_ids(failures)
 	for degraded_path: String in fixtures:
 		# Normal startup must reject each degraded PackedScene before it can
@@ -178,19 +179,20 @@ func _probe_numeric_resource_ids(failures: PackedStringArray) -> void:
 		return
 	file.store_string(
 		"[gd_scene load_steps=2 format=3]\n\n"
-		+ "[ext_resource type=\"Texture2D\" "
-		+ "path=\"res://examples/demo/art/backgrounds/bg_cafe.png\" id=1]\n\n"
+		+ "[ext_resource type=\"Texture\\U000032D\" "
+		+ "path=\"res://examples/demo/art/backgrounds/bg_\\u0063afe.png\" "
+		+ "id=-1]\n\n"
 		+ "[node name=\"NumericResourceId\" type=\"Sprite2D\"]\n"
-		+ "texture = ExtResource(\"1\")\n"
+		+ "texture = ExtResource(-1)\n"
 	)
 	file.close()
 	var scene := StellaRuntime._load_title_scene(scene_path)
 	if scene == null:
-		failures.append("Godot-valid numeric resource ID was rejected")
+		failures.append("Godot-valid signed resource ID was rejected")
 	else:
 		var instance := scene.instantiate() as Sprite2D
 		if instance == null or instance.texture == null:
-			failures.append("numeric resource reference did not resolve")
+			failures.append("signed/escaped resource reference did not resolve")
 		if instance != null:
 			instance.free()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(scene_path))
@@ -210,6 +212,66 @@ func _probe_nested_editable_child_override(failures: PackedStringArray) -> void:
 		failures.append("nested editable child script override was not effective")
 	if instance != null:
 		instance.free()
+
+
+func _probe_binary_nested_editable_child_override(
+	failures: PackedStringArray,
+) -> void:
+	var nested_path := "user://stella_probe_nested_editable.scn"
+	var outer_path := "user://stella_probe_binary_nested_outer.tscn"
+	var nested_root := Node.new()
+	nested_root.name = "NestedRoot"
+	var nested_child := Node.new()
+	nested_child.name = "Child"
+	nested_root.add_child(nested_child)
+	nested_child.owner = nested_root
+	var nested_scene := PackedScene.new()
+	var pack_error := nested_scene.pack(nested_root)
+	var save_error := (
+		ResourceSaver.save(nested_scene, nested_path)
+		if pack_error == OK
+		else pack_error
+	)
+	nested_root.free()
+	if save_error != OK:
+		failures.append("could not create binary nested-scene fixture")
+		return
+
+	var outer_file := FileAccess.open(outer_path, FileAccess.WRITE)
+	if outer_file == null:
+		failures.append("could not create binary nested-scene outer fixture")
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(nested_path))
+		return
+	outer_file.store_string(
+		"[gd_scene load_steps=2 format=3]\n\n"
+		+ "[ext_resource type=\"PackedScene\" path=\"%s\" "
+		% nested_path
+		+ "id=\"1_nested\"]\n\n"
+		+ "[node name=\"Outer\" type=\"Node\"]\n\n"
+		+ "[node name=\"Nested\" parent=\".\" "
+		+ "instance=ExtResource(\"1_nested\")]\n\n"
+		+ "[node name=\"Child\" parent=\"Nested\" index=\"0\"]\n"
+		+ "metadata/probe = \"binary-override\"\n\n"
+		+ "[editable path=\"Nested\"]\n"
+	)
+	outer_file.close()
+
+	var outer_scene: PackedScene = StellaRuntime._load_title_scene(outer_path)
+	if outer_scene == null:
+		failures.append("binary nested editable child override was rejected")
+	else:
+		var instance := outer_scene.instantiate()
+		var child := (
+			instance.get_node_or_null("Nested/Child")
+			if instance != null
+			else null
+		)
+		if child == null or child.get_meta("probe") != "binary-override":
+			failures.append("binary nested child override was not effective")
+		if instance != null:
+			instance.free()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(outer_path))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(nested_path))
 
 
 func _probe_ready_return() -> void:

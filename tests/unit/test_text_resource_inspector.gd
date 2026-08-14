@@ -3,12 +3,27 @@ extends GutTest
 const NESTED_PATH = "user://text_inspector_nested.tscn"
 const OUTER_PATH = "user://text_inspector_outer.tscn"
 const INVALID_PATH = "user://text_inspector_invalid.tscn"
+const BINARY_NESTED_PATH = "user://text_inspector_nested.scn"
+const BINARY_OUTER_PATH = "user://text_inspector_binary_outer.tscn"
+const ESCAPED_PATH = "user://text_inspector_escaped_tags.tscn"
+const REPEATED_PATH_PREFIX = "user://text_inspector_repeated_"
+const REPEATED_DEPTH = 16
 
 var _inspector := TextResourceInspector.new()
 
 
 func after_each():
-	for path: String in [NESTED_PATH, OUTER_PATH, INVALID_PATH]:
+	var paths := PackedStringArray([
+		NESTED_PATH,
+		OUTER_PATH,
+		INVALID_PATH,
+		BINARY_NESTED_PATH,
+		BINARY_OUTER_PATH,
+		ESCAPED_PATH,
+	])
+	for depth in range(REPEATED_DEPTH + 1):
+		paths.append(REPEATED_PATH_PREFIX + str(depth) + ".tscn")
+	for path: String in paths:
 		if FileAccess.file_exists(path):
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
@@ -81,6 +96,120 @@ func test_numeric_and_quoted_ids_share_only_their_unambiguous_key():
 		assert_not_null(instance.get_meta("numeric"))
 		assert_not_null(instance.get_meta("quoted"))
 		instance.free()
+	assert_engine_error_count(0)
+
+
+func test_binary_nested_scene_exposes_real_child_for_property_override():
+	var binary_root := Node.new()
+	binary_root.name = "NestedRoot"
+	var binary_child := Node.new()
+	binary_child.name = "Child"
+	binary_root.add_child(binary_child)
+	binary_child.owner = binary_root
+	var binary_scene := PackedScene.new()
+	assert_eq(binary_scene.pack(binary_root), OK)
+	assert_eq(ResourceSaver.save(binary_scene, BINARY_NESTED_PATH), OK)
+	binary_root.free()
+
+	_write_text(
+		BINARY_OUTER_PATH,
+		(
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"PackedScene\" path=\"%s\" "
+			% BINARY_NESTED_PATH
+			+ "id=\"1_nested\"]\n\n"
+			+ "[node name=\"Outer\" type=\"Node\"]\n\n"
+			+ "[node name=\"Nested\" parent=\".\" "
+			+ "instance=ExtResource(\"1_nested\")]\n\n"
+			+ "[node name=\"Child\" parent=\"Nested\" index=\"0\"]\n"
+			+ "metadata/probe = \"override\"\n\n"
+			+ "[editable path=\"Nested\"]\n"
+		),
+	)
+
+	var result := _inspector.inspect(BINARY_OUTER_PATH, "PackedScene")
+	assert_true(result.ok)
+	assert_true(result.matches_expected_type)
+	assert_true(result.node_paths.has("Nested/Child"))
+	assert_eq(result.visited_resource_count, 2)
+	var loaded := ResourceLoader.load(BINARY_OUTER_PATH, "PackedScene") as PackedScene
+	assert_not_null(loaded)
+	var instance := loaded.instantiate() if loaded != null else null
+	assert_not_null(instance)
+	if instance != null:
+		var child := instance.get_node_or_null("Nested/Child")
+		assert_not_null(child)
+		if child != null:
+			assert_eq(child.get_meta("probe"), "override")
+		instance.free()
+	assert_engine_error_count(0)
+
+
+func test_tag_strings_and_signed_numeric_ids_match_godot_loader():
+	_write_text(
+		ESCAPED_PATH,
+		(
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"Texture\\U000032D\" "
+			+ "path=\"res://examples/demo/art/backgrounds/bg_\\u0063afe.png\" "
+			+ "id=-1]\n\n"
+			+ "[node name=\"Root\\\"Quoted\\\\Path\" type=\"Sprite2D\"]\n"
+			+ "texture = ExtResource(-1)\n"
+		),
+	)
+
+	var result := _inspector.inspect(ESCAPED_PATH, "PackedScene")
+	assert_true(result.ok)
+	assert_true(result.matches_expected_type)
+	assert_eq(result.dependencies.size(), 1)
+	if result.dependencies.size() == 1:
+		assert_eq(
+			result.dependencies[0]["path"],
+			"res://examples/demo/art/backgrounds/bg_cafe.png",
+		)
+		assert_eq(result.dependencies[0]["type"], "Texture2D")
+	var scene := ResourceLoader.load(ESCAPED_PATH, "PackedScene") as PackedScene
+	assert_not_null(scene)
+	var instance := scene.instantiate() if scene != null else null
+	assert_true(instance is Sprite2D)
+	if instance is Sprite2D:
+		assert_eq(instance.name, 'Root"Quoted\\Path')
+		assert_not_null(instance.texture)
+		instance.free()
+	assert_engine_error_count(0)
+
+
+func test_repeated_instances_are_memoized_without_materializing_full_tree():
+	_write_text(
+		REPEATED_PATH_PREFIX + "0.tscn",
+		"[gd_scene format=3]\n\n[node name=\"Leaf\" type=\"Node\"]\n",
+	)
+	for depth in range(1, REPEATED_DEPTH + 1):
+		var child_path := REPEATED_PATH_PREFIX + str(depth - 1) + ".tscn"
+		_write_text(
+			REPEATED_PATH_PREFIX + str(depth) + ".tscn",
+			(
+				"[gd_scene load_steps=2 format=3]\n\n"
+				+ "[ext_resource type=\"PackedScene\" path=\"%s\" id=1]\n\n"
+				% child_path
+				+ "[node name=\"Level\" type=\"Node\"]\n\n"
+				+ "[node name=\"Left\" parent=\".\" instance=ExtResource(1)]\n\n"
+				+ "[node name=\"Right\" parent=\".\" instance=ExtResource(1)]\n"
+			),
+		)
+
+	var started := Time.get_ticks_msec()
+	var result := _inspector.inspect(
+		REPEATED_PATH_PREFIX + str(REPEATED_DEPTH) + ".tscn",
+		"PackedScene",
+	)
+	var elapsed := Time.get_ticks_msec() - started
+	assert_true(result.ok)
+	assert_true(result.matches_expected_type)
+	assert_lte(result.visited_resource_count, REPEATED_DEPTH + 1)
+	assert_eq(result.visited_resource_count, _inspector.get_last_inspection_visit_count())
+	assert_lte(result.node_paths.size(), 3)
+	assert_lt(elapsed, 2_000, "repeated-instance preflight must stay bounded")
 	assert_engine_error_count(0)
 
 
