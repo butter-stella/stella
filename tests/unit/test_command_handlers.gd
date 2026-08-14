@@ -624,6 +624,138 @@ func test_context_replacement_cancels_choice_and_rejects_late_selection() -> voi
 		"a late selection cannot mutate the retired VariableStore")
 
 
+func test_choice_show_can_select_synchronously_without_losing_completion() -> void:
+	_context.variable_store = VariableStore.new()
+	var handler := ChoiceHandler.new()
+	var command := _build_cmd("choice", {
+		"prompt": "Pick now",
+		"options": [{
+			"id": "picked",
+			"label": "Picked",
+			"jump": "selected_scene",
+		}],
+	})
+	var choice_connections := SignalBus.choice_selected.get_connections().size()
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	SignalBus.choice_show.connect(
+		func(_prompt: String, _options: Array) -> void:
+			SignalBus.choice_selected.emit("picked"),
+		CONNECT_ONE_SHOT,
+	)
+
+	await handler.execute(command, _context)
+
+	assert_eq(_context.pending_jump, "selected_scene",
+		"a synchronous headless selection completes the published choice")
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections)
+	assert_eq(_context.cancellation_requested.get_connections().size(), 0)
+
+
+func test_choice_show_revalidates_owner_after_synchronous_selection() -> void:
+	_context.variable_store = VariableStore.new()
+	var handler := ChoiceHandler.new()
+	var command := _build_cmd("choice", {
+		"prompt": "Retire after selection",
+		"options": [{
+			"id": "picked",
+			"label": "Picked",
+			"jump": "must_not_apply",
+			"set": {"leaked": "= 1"},
+		}],
+	})
+	var hide_count := [0]
+	var on_hide := func() -> void: hide_count[0] += 1
+	SignalBus.choice_hide.connect(on_hide)
+	# Signal callbacks run in connection order: first complete the choice, then
+	# retire its owner before the SHOW emission returns to the handler.
+	SignalBus.choice_show.connect(
+		func(_prompt: String, _options: Array) -> void:
+			SignalBus.choice_selected.emit("picked"),
+		CONNECT_ONE_SHOT,
+	)
+	SignalBus.choice_show.connect(
+		func(_prompt: String, _options: Array) -> void:
+			_context.is_finished = true,
+		CONNECT_ONE_SHOT,
+	)
+
+	await handler.execute(command, _context)
+	SignalBus.choice_hide.disconnect(on_hide)
+
+	assert_eq(hide_count[0], 1,
+		"a published choice is hidden when its owner retires later in SHOW")
+	assert_eq(_context.pending_jump, "",
+		"a cached selection cannot mutate a retired context")
+	assert_null(_context.variable_store.get_var("leaked"),
+		"a cached selection cannot mutate a retired VariableStore")
+
+
+func test_choice_show_can_abort_synchronously_and_hides_presentation() -> void:
+	var handler := ChoiceHandler.new()
+	var command := _build_cmd("choice", {
+		"prompt": "Abort now",
+		"options": [{"id": "stay", "label": "Stay"}],
+	})
+	var choice_connections := SignalBus.choice_selected.get_connections().size()
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	var hide_count := [0]
+	var on_hide := func() -> void: hide_count[0] += 1
+	SignalBus.choice_hide.connect(on_hide)
+	SignalBus.choice_show.connect(
+		func(_prompt: String, _options: Array) -> void:
+			SignalBus.engine_abort_requested.emit(),
+		CONNECT_ONE_SHOT,
+	)
+
+	await handler.execute(command, _context)
+	SignalBus.choice_hide.disconnect(on_hide)
+
+	assert_true(_context.is_cancellation_requested())
+	assert_eq(hide_count[0], 1,
+		"a choice published before synchronous abort must be hidden")
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections)
+	assert_eq(_context.cancellation_requested.get_connections().size(), 0)
+
+
+func test_choice_show_context_replacement_hides_published_choice() -> void:
+	var handler := ChoiceHandler.new()
+	var command := _build_cmd("choice", {
+		"prompt": "Replace now",
+		"options": [{"id": "old", "label": "Old"}],
+	})
+	var engine := ScenarioEngine.new()
+	engine.context = _context
+	var choice_connections := SignalBus.choice_selected.get_connections().size()
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	var hide_count := [0]
+	var on_hide := func() -> void: hide_count[0] += 1
+	SignalBus.choice_hide.connect(on_hide)
+	SignalBus.choice_show.connect(
+		func(_prompt: String, _options: Array) -> void:
+			engine.context = ScenarioContext.new(_context.scenario_data),
+		CONNECT_ONE_SHOT,
+	)
+
+	await handler.execute(command, _context)
+	SignalBus.choice_hide.disconnect(on_hide)
+
+	assert_true(_context.is_cancellation_requested())
+	assert_eq(hide_count[0], 1,
+		"a choice published before synchronous replacement must be hidden")
+	assert_eq(_context.pending_jump, "")
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections)
+	assert_eq(_context.cancellation_requested.get_connections().size(), 0)
+
+
 # --- BgHandler ---
 
 func test_bg_handler_emits_signal():
