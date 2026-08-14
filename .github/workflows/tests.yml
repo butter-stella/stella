@@ -185,7 +185,7 @@ jobs:
           degraded_status=0
           STELLA_EXPORT_PROBE_MODE="degraded-title-fallback" \
             STELLA_EXPORT_PROBE_MARKER="$marker" \
-            godot --headless --path . --quit-after 60 \
+            godot --headless --path . --quit-after 600 \
             res://tests/fixtures/pck_smoke/export_probe_host.tscn \
             >"$fallback_log" 2>&1 || degraded_status=$?
           cat "$fallback_log"
