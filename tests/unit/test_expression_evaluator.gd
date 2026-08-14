@@ -113,3 +113,42 @@ func test_semantic_key_normalizes_runtime_equivalent_expression_spelling() -> vo
 		ExpressionEvaluator.semantic_key("score == 1"),
 		ExpressionEvaluator.semantic_key("score != 1"),
 	)
+
+
+func test_tiny_nonzero_number_remains_distinct_from_zero() -> void:
+	_store.set_var("ratio", 0.0)
+
+	assert_true(_eval.evaluate("ratio == 0", _store))
+	assert_false(_eval.evaluate("ratio == 0.000000000000000001", _store))
+	assert_ne(
+		ExpressionEvaluator.semantic_key("ratio == 0"),
+		ExpressionEvaluator.semantic_key("ratio == 0.000000000000000001"),
+		"fingerprints must preserve tiny nonzero runtime values",
+	)
+
+
+func test_tiny_negative_decimal_and_scientific_spelling_are_equivalent() -> void:
+	_store.set_var("ratio", -1.0e-18)
+
+	assert_true(_eval.evaluate("ratio == -0.000000000000000001", _store))
+	assert_true(_eval.evaluate("ratio == -1e-18", _store))
+	assert_eq(
+		ExpressionEvaluator.semantic_key("ratio == -0.000000000000000001"),
+		ExpressionEvaluator.semantic_key("ratio == -1e-18"),
+		"equivalent negative decimal and scientific spellings share one Float key",
+	)
+	assert_ne(
+		ExpressionEvaluator.semantic_key("ratio == -1e-18"),
+		ExpressionEvaluator.semantic_key("ratio == 0"),
+	)
+
+
+func test_positive_scientific_and_decimal_boundary_share_runtime_identity() -> void:
+	_store.set_var("ratio", 1.0e-18)
+
+	assert_true(_eval.evaluate("ratio == 1e-18", _store))
+	assert_true(_eval.evaluate("ratio == 0.000000000000000001", _store))
+	assert_eq(
+		ExpressionEvaluator.semantic_key("ratio == 1e-18"),
+		ExpressionEvaluator.semantic_key("ratio == 0.000000000000000001"),
+	)

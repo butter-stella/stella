@@ -7,11 +7,35 @@ func evaluate(expr: String, store: VariableStore) -> bool:
 	return _evaluate_ir(_parse_expression(expr), store)
 
 
-## Returns the normalized expression IR used by evaluate(). Fingerprints can
-## therefore distinguish runtime behavior without depending on source spacing
-## or equivalent numeric spelling.
+## Returns an exact, JSON-safe projection of the runtime expression IR.
+## Fingerprints can therefore distinguish every runtime Float value without
+## depending on source spacing or equivalent numeric spelling.
 static func semantic_key(expr: String) -> Array:
-	return _parse_expression(expr)
+	return _semantic_ir(_parse_expression(expr))
+
+
+static func _semantic_ir(ir: Array) -> Array:
+	match String(ir[0]):
+		"or", "and":
+			return [ir[0], _semantic_ir(ir[1]), _semantic_ir(ir[2])]
+		"not", "value":
+			return [ir[0], _semantic_value_ir(ir[1])]
+		"compare":
+			return [
+				ir[0],
+				ir[1],
+				_semantic_value_ir(ir[2]),
+				_semantic_value_ir(ir[3]),
+			]
+	return ir.duplicate(true)
+
+
+static func _semantic_value_ir(value_ir: Array) -> Array:
+	if String(value_ir[0]) == "number":
+		# Variant's binary encoding preserves the exact Float used by evaluate(),
+		# while equivalent decimal/scientific spellings share the same bytes.
+		return ["number", var_to_bytes(float(value_ir[1])).hex_encode()]
+	return value_ir.duplicate(true)
 
 
 static func _parse_expression(expr: String) -> Array:
@@ -57,11 +81,47 @@ static func _parse_value(token: String) -> Array:
 	if token == "false":
 		return ["literal", false]
 	if token.is_valid_int() or token.is_valid_float():
-		var numeric := token.to_float()
+		var numeric := _parse_number(token)
 		if numeric == 0.0:
 			numeric = 0.0
-		return ["number", String.num(numeric, 17)]
+		return ["number", numeric]
 	return ["variable", token]
+
+
+static func _parse_number(token: String) -> float:
+	# Godot's plain-decimal conversion can round very small values to zero while
+	# its exponent form preserves them. Canonicalize every accepted spelling to
+	# one scientific representation before conversion so decimal and exponent
+	# forms reach the same runtime Float.
+	var unsigned := token
+	var sign_prefix := ""
+	if unsigned.begins_with("+") or unsigned.begins_with("-"):
+		sign_prefix = unsigned.left(1)
+		unsigned = unsigned.substr(1)
+
+	var explicit_exponent := 0
+	var exponent_pos := unsigned.to_lower().find("e")
+	if exponent_pos != -1:
+		explicit_exponent = int(unsigned.substr(exponent_pos + 1))
+		unsigned = unsigned.left(exponent_pos)
+
+	var decimal_pos := unsigned.find(".")
+	var fractional_digits := 0
+	if decimal_pos != -1:
+		fractional_digits = unsigned.length() - decimal_pos - 1
+		unsigned = unsigned.erase(decimal_pos, 1)
+
+	unsigned = unsigned.lstrip("0")
+	if unsigned.is_empty():
+		return 0.0
+
+	var normalized_exponent := (
+		explicit_exponent - fractional_digits + unsigned.length() - 1)
+	var scientific := sign_prefix + unsigned.left(1)
+	if unsigned.length() > 1:
+		scientific += "." + unsigned.substr(1)
+	scientific += "e" + str(normalized_exponent)
+	return scientific.to_float()
 
 
 func _evaluate_ir(ir: Array, store: VariableStore) -> bool:
@@ -88,7 +148,7 @@ func _resolve_value(value_ir: Array, store: VariableStore) -> Variant:
 		"literal":
 			return value_ir[1]
 		"number":
-			return String(value_ir[1]).to_float()
+			return float(value_ir[1])
 		"variable":
 			return store.get_var(String(value_ir[1]))
 	return null

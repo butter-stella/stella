@@ -262,6 +262,32 @@ func test_semantic_fingerprint_uses_normalized_condition_ir() -> void:
 		"a condition behavior change must still invalidate the fingerprint")
 
 
+func test_semantic_fingerprint_preserves_tiny_condition_numbers() -> void:
+	var decimal := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@if ratio == 0.000000000000000001
+「Tiny branch」
+@end"""), "main", "res://story/main.stla")
+	var scientific := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@if ratio == 1e-18
+「Tiny branch」
+@end"""), "main", "res://story/main.stla")
+	var zero := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@if ratio == 0
+「Tiny branch」
+@end"""), "main", "res://story/main.stla")
+
+	assert_eq(decimal.diagnostics, [])
+	assert_eq(scientific.diagnostics, [])
+	assert_eq(zero.diagnostics, [])
+	assert_eq(decimal.get_read_identity(), scientific.get_read_identity(),
+		"equivalent decimal and scientific Float values retain read history")
+	assert_ne(decimal.get_read_identity(), zero.get_read_identity(),
+		"zero and a tiny nonzero condition must not share read history")
+
+
 func test_semantic_fingerprint_changes_for_authored_behavior() -> void:
 	var original := DslParser.parse(DslLexer.tokenize("""@chapter route
 @scene start
