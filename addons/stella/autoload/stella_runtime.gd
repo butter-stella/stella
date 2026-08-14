@@ -16,6 +16,8 @@ const DEFAULT_SAVE_LOAD_SCENE = "res://addons/stella/scenes/save_load.tscn"
 const DEFAULT_BACKLOG_SCENE = "res://addons/stella/scenes/backlog.tscn"
 const DEFAULT_FLOWCHART_SCENE = "res://addons/stella/scenes/flowchart.tscn"
 const MAX_TITLE_TEXT_RESOURCE_BYTES = 8 * 1024 * 1024
+const MAX_RESOURCE_TAG_BYTES = 512 * 1024
+const MAX_RESOURCE_QUOTED_ATTRIBUTE_BYTES = 256 * 1024
 
 
 ## Parse serialized Variant values without evaluating them or handing malformed
@@ -1379,7 +1381,11 @@ func _read_text_resource_dependencies(path: String) -> Dictionary:
 	if header_line_index < 0:
 		return {"ok": false, "dependencies": []}
 	var header := _parse_resource_tag(header_text)
-	if not header.get("ok", false) or header.get("name", "") != expected_header:
+	if (
+		not header.get("ok", false)
+		or header.get("name", "") != expected_header
+		or not _resource_header_tag_is_valid(header, extension)
+	):
 		return {"ok": false, "dependencies": []}
 
 	var dependencies: Array[Dictionary] = []
@@ -1388,7 +1394,12 @@ func _read_text_resource_dependencies(path: String) -> Dictionary:
 	var resource_references: Array[Dictionary] = []
 	if not _append_resource_tag_references(header, resource_references):
 		return {"ok": false, "dependencies": []}
-	var saw_body_tag := false
+	var format_state := {
+		"stage": 0,
+		"node_count": 0,
+		"main_resource_count": 0,
+		"allows_assignments": false,
+	}
 	var assignment_state: Dictionary = {}
 	for line_index in range(header_line_index + 1, lines.size()):
 		var raw_line: String = lines[line_index]
@@ -1410,13 +1421,18 @@ func _read_text_resource_dependencies(path: String) -> Dictionary:
 			continue
 		if stripped.begins_with("["):
 			var tag := _parse_resource_tag(stripped)
-			if not tag.get("ok", false):
+			if (
+				not tag.get("ok", false)
+				or not _resource_body_tag_is_valid(
+					tag,
+					extension,
+					format_state,
+				)
+			):
 				return {"ok": false, "dependencies": []}
 			if not _append_resource_tag_references(tag, resource_references):
 				return {"ok": false, "dependencies": []}
 			if tag["name"] == "ext_resource":
-				if saw_body_tag:
-					return {"ok": false, "dependencies": []}
 				var attributes: Dictionary = tag["attributes"]
 				var declared_type: String = attributes.get("type", "")
 				var resource_id: String = attributes.get("id", "")
@@ -1435,15 +1451,13 @@ func _read_text_resource_dependencies(path: String) -> Dictionary:
 					"path": dependency_path,
 					"type": declared_type,
 				})
-			else:
-				saw_body_tag = true
-				if tag["name"] == "sub_resource":
-					var sub_id: String = tag["attributes"].get("id", "")
-					if sub_id.is_empty() or sub_resource_ids.has(sub_id):
-						return {"ok": false, "dependencies": []}
-					sub_resource_ids[sub_id] = true
+			elif tag["name"] == "sub_resource":
+				var sub_id: String = tag["attributes"].get("id", "")
+				if sub_id.is_empty() or sub_resource_ids.has(sub_id):
+					return {"ok": false, "dependencies": []}
+				sub_resource_ids[sub_id] = true
 			continue
-		if not saw_body_tag:
+		if not format_state.get("allows_assignments", false):
 			return {"ok": false, "dependencies": []}
 		assignment_state = _begin_resource_assignment(stripped)
 		if not assignment_state.get("ok", false):
@@ -1461,12 +1475,235 @@ func _read_text_resource_dependencies(path: String) -> Dictionary:
 		sub_resource_ids,
 	):
 		return {"ok": false, "dependencies": []}
+	if (
+		not assignment_state.is_empty()
+		or not _resource_format_state_is_complete(extension, format_state)
+	):
+		return {"ok": false, "dependencies": []}
 	return {
-		"ok": saw_body_tag and assignment_state.is_empty(),
+		"ok": true,
 		"dependencies": dependencies,
 		"format": "text",
 		"header": header,
 	}
+
+
+func _resource_header_tag_is_valid(tag: Dictionary, extension: String) -> bool:
+	var expected_name := "gd_scene" if extension == "tscn" else "gd_resource"
+	if tag.get("name", "") != expected_name:
+		return false
+	var attributes: Dictionary = tag.get("attributes", {})
+	if (
+		not _resource_tag_has_safe_integer(tag, "format", true, false)
+		or String(attributes["format"]) not in ["1", "2", "3"]
+		or not _resource_tag_optional_quoted_string(tag, "uid")
+		or not _resource_tag_has_safe_integer(tag, "load_steps", false, false)
+	):
+		return false
+	if extension == "tscn":
+		return true
+	return (
+		_resource_tag_has_quoted_string(tag, "type")
+		and _resource_tag_optional_quoted_string(tag, "script_class", true)
+	)
+
+
+## Mirror Godot 4.6's format-specific tag state before ResourceLoader sees the
+## source. This intentionally validates only loader-significant fields while
+## allowing forward-compatible extra attributes whose Variant syntax is safe.
+func _resource_body_tag_is_valid(
+	tag: Dictionary,
+	extension: String,
+	state: Dictionary,
+) -> bool:
+	var tag_name: String = tag.get("name", "")
+	var stage: int = state.get("stage", 0)
+	state["allows_assignments"] = false
+	if tag_name == "ext_resource":
+		if stage != 0 or not _resource_ext_tag_is_valid(tag):
+			return false
+		return true
+	if tag_name == "sub_resource":
+		if stage > 1 or not _resource_sub_tag_is_valid(tag):
+			return false
+		state["stage"] = 1
+		state["allows_assignments"] = true
+		return true
+	if extension == "tres":
+		if tag_name != "resource" or stage > 2:
+			return false
+		if state.get("main_resource_count", 0) != 0:
+			return false
+		state["stage"] = 2
+		state["main_resource_count"] = 1
+		state["allows_assignments"] = true
+		return true
+
+	match tag_name:
+		"node":
+			if stage > 2 or not _resource_scene_node_tag_is_valid(tag, state):
+				return false
+			state["stage"] = 2
+			state["node_count"] = state.get("node_count", 0) + 1
+			state["allows_assignments"] = true
+			return true
+		"connection":
+			if (
+				state.get("node_count", 0) == 0
+				or not _resource_connection_tag_is_valid(tag)
+			):
+				return false
+			state["stage"] = 3
+			return true
+		"editable":
+			if (
+				state.get("node_count", 0) == 0
+				or not _resource_tag_has_quoted_string(tag, "path")
+			):
+				return false
+			state["stage"] = 3
+			return true
+		_:
+			return false
+
+
+func _resource_format_state_is_complete(
+	extension: String,
+	state: Dictionary,
+) -> bool:
+	if extension == "tscn":
+		return state.get("node_count", 0) > 0
+	return state.get("main_resource_count", 0) == 1
+
+
+func _resource_ext_tag_is_valid(tag: Dictionary) -> bool:
+	return (
+		_resource_tag_has_quoted_string(tag, "type")
+		and _resource_tag_has_quoted_string(tag, "path")
+		and _resource_tag_has_quoted_string(tag, "id")
+		and _resource_tag_optional_quoted_string(tag, "uid")
+	)
+
+
+func _resource_sub_tag_is_valid(tag: Dictionary) -> bool:
+	return (
+		_resource_tag_has_quoted_string(tag, "type")
+		and _resource_tag_has_quoted_string(tag, "id")
+	)
+
+
+func _resource_scene_node_tag_is_valid(
+	tag: Dictionary,
+	state: Dictionary,
+) -> bool:
+	if not _resource_tag_has_quoted_string(tag, "name"):
+		return false
+	for key: String in ["type", "parent", "owner", "instance_placeholder"]:
+		if not _resource_tag_optional_quoted_string(tag, key):
+			return false
+	for key: String in ["instance", "groups", "node_paths", "parent_id_path", "owner_uid_path"]:
+		if not _resource_tag_optional_unquoted_value(tag, key):
+			return false
+	for key: String in ["index", "unique_id"]:
+		if not _resource_tag_has_safe_integer(tag, key, false, true):
+			return false
+	var attributes: Dictionary = tag.get("attributes", {})
+	var node_count: int = state.get("node_count", 0)
+	if node_count == 0:
+		return (
+			not attributes.has("parent")
+			and (
+				_resource_tag_has_quoted_string(tag, "type")
+				or attributes.has("instance")
+			)
+		)
+	return attributes.has("parent")
+
+
+func _resource_connection_tag_is_valid(tag: Dictionary) -> bool:
+	for key: String in ["from", "to", "signal", "method"]:
+		if not _resource_tag_has_quoted_string(tag, key):
+			return false
+	for key: String in ["flags", "unbinds"]:
+		if not _resource_tag_has_safe_integer(tag, key, false, true):
+			return false
+	for key: String in ["binds", "from_uid_path", "to_uid_path"]:
+		if not _resource_tag_optional_unquoted_value(tag, key):
+			return false
+	return true
+
+
+func _resource_tag_has_quoted_string(
+	tag: Dictionary,
+	key: String,
+	allow_empty: bool = false,
+) -> bool:
+	var attributes: Dictionary = tag.get("attributes", {})
+	var quoted: Dictionary = tag.get("quoted_attributes", {})
+	return (
+		attributes.has(key)
+		and quoted.get(key, false)
+		and (allow_empty or not String(attributes[key]).is_empty())
+	)
+
+
+func _resource_tag_optional_quoted_string(
+	tag: Dictionary,
+	key: String,
+	allow_empty: bool = false,
+) -> bool:
+	var attributes: Dictionary = tag.get("attributes", {})
+	return (
+		not attributes.has(key)
+		or _resource_tag_has_quoted_string(tag, key, allow_empty)
+	)
+
+
+func _resource_tag_optional_unquoted_value(
+	tag: Dictionary,
+	key: String,
+) -> bool:
+	var attributes: Dictionary = tag.get("attributes", {})
+	var quoted: Dictionary = tag.get("quoted_attributes", {})
+	return not attributes.has(key) or not quoted.get(key, false)
+
+
+func _resource_tag_has_safe_integer(
+	tag: Dictionary,
+	key: String,
+	required: bool,
+	allow_quoted: bool,
+) -> bool:
+	var attributes: Dictionary = tag.get("attributes", {})
+	var quoted: Dictionary = tag.get("quoted_attributes", {})
+	if not attributes.has(key):
+		return not required
+	if quoted.get(key, false) and not allow_quoted:
+		return false
+	var literal := String(attributes[key])
+	if literal.is_empty():
+		return false
+	var digit_start := 0
+	if literal[0] in ["+", "-"]:
+		digit_start = 1
+	if digit_start == literal.length():
+		return false
+	for index in range(digit_start, literal.length()):
+		if literal[index] < "0" or literal[index] > "9":
+			return false
+	while digit_start < literal.length() - 1 and literal[digit_start] == "0":
+		digit_start += 1
+	var digits := literal.substr(digit_start)
+	var limit := "9223372036854775808" if literal.begins_with("-") else (
+		"9223372036854775807"
+	)
+	if digits.length() != limit.length():
+		return digits.length() < limit.length()
+	for index in digits.length():
+		if digits[index] == limit[index]:
+			continue
+		return digits[index] < limit[index]
+	return true
 
 
 func _resource_bytes_have_binary_magic(bytes: PackedByteArray) -> bool:
@@ -1549,7 +1786,11 @@ func _structured_resource_dependencies(path: String) -> Dictionary:
 
 
 func _parse_resource_tag(line: String) -> Dictionary:
-	if not line.begins_with("[") or not line.ends_with("]"):
+	if (
+		not line.begins_with("[")
+		or not line.ends_with("]")
+		or line.to_utf8_buffer().size() > MAX_RESOURCE_TAG_BYTES
+	):
 		return {"ok": false}
 	var content := line.substr(1, line.length() - 2)
 	var index := 0
@@ -1584,26 +1825,44 @@ func _parse_resource_tag(line: String) -> Dictionary:
 		if content[index] == "\"":
 			quoted_attributes[key] = true
 			index += 1
-			var value := ""
+			var raw_value_start := index
+			var segment_start := index
+			var value_parts := PackedStringArray()
 			var closed := false
 			while index < content.length():
 				var character := content[index]
 				if character == "\\":
+					if segment_start < index:
+						value_parts.append(
+							content.substr(segment_start, index - segment_start)
+						)
 					index += 1
 					if index >= content.length():
 						return {"ok": false}
-					value += content[index]
+					value_parts.append(content[index])
 					index += 1
+					segment_start = index
 					continue
 				if character == "\"":
+					if segment_start < index:
+						value_parts.append(
+							content.substr(segment_start, index - segment_start)
+						)
+					if (
+						content.substr(
+							raw_value_start,
+							index - raw_value_start,
+						).to_utf8_buffer().size()
+						> MAX_RESOURCE_QUOTED_ATTRIBUTE_BYTES
+					):
+						return {"ok": false}
 					index += 1
 					closed = true
 					break
-				value += character
 				index += 1
 			if not closed:
 				return {"ok": false}
-			attributes[key] = value
+			attributes[key] = "".join(value_parts)
 		else:
 			quoted_attributes[key] = false
 			var value_start := index

@@ -34,6 +34,20 @@ const TEST_INVALID_PREAMBLE_TITLE_PATH = (
 	"user://test_invalid_preamble_title.tscn"
 )
 const TEST_DEGRADED_GAME_PATH = "user://test_degraded_game.tscn"
+const TEST_UNKNOWN_BODY_TAG_TITLE_PATH = (
+	"user://test_unknown_body_tag_title.tscn"
+)
+const TEST_UNKNOWN_BODY_TAG_GAME_PATH = (
+	"user://test_unknown_body_tag_game.tscn"
+)
+const TEST_UNKNOWN_RESOURCE_TAG_TITLE_PATH = (
+	"user://test_unknown_resource_tag_title.tscn"
+)
+const TEST_UNKNOWN_RESOURCE_TAG_PATH = (
+	"user://test_unknown_resource_tag.tres"
+)
+const TEST_INVALID_TAG_ORDER_PATH = "user://test_invalid_tag_order.tscn"
+const TEST_MISSING_TAG_FIELD_PATH = "user://test_missing_tag_field.tres"
 const UID_DEPENDENCY_SCRIPT = (
 	"res://tests/fixtures/pck_smoke/export_probe_runner.gd"
 )
@@ -62,6 +76,12 @@ const TEST_CONFIG_PATHS = [
 	TEST_BOM_TEXTURE_PATH,
 	TEST_INVALID_PREAMBLE_TITLE_PATH,
 	TEST_DEGRADED_GAME_PATH,
+	TEST_UNKNOWN_BODY_TAG_TITLE_PATH,
+	TEST_UNKNOWN_BODY_TAG_GAME_PATH,
+	TEST_UNKNOWN_RESOURCE_TAG_TITLE_PATH,
+	TEST_UNKNOWN_RESOURCE_TAG_PATH,
+	TEST_INVALID_TAG_ORDER_PATH,
+	TEST_MISSING_TAG_FIELD_PATH,
 	"user://test_stella.cfg",
 	"user://test_stella_partial.cfg",
 	"user://test_stella_has.cfg",
@@ -517,6 +537,134 @@ func test_scene_preflight_handles_legal_preamble_without_loader_fallback():
 	assert_push_error("falling back to the built-in title scene")
 	assert_engine_error_count(0,
 		"legal preamble must not expose malformed private resource source")
+
+
+func test_scene_preflight_rejects_unknown_format_tags_before_real_consumers():
+	_write_raw_project_config(
+		TEST_UNKNOWN_BODY_TAG_TITLE_PATH,
+		(
+			"[gd_scene format=3]\n\n"
+			+ "[PRIVATE_BODY_TAG_SENTINEL]\n"
+		),
+	)
+	_write_raw_project_config(
+		TEST_UNKNOWN_BODY_TAG_GAME_PATH,
+		(
+			"[gd_scene format=3]\n\n"
+			+ "[PRIVATE_GAME_BODY_TAG_SENTINEL]\n"
+		),
+	)
+	_write_raw_project_config(
+		TEST_UNKNOWN_RESOURCE_TAG_PATH,
+		(
+			"[gd_resource type=\"Texture2D\" format=3]\n\n"
+			+ "[PRIVATE_RESOURCE_TAG_SENTINEL]\n"
+		),
+	)
+	_write_raw_project_config(
+		TEST_UNKNOWN_RESOURCE_TAG_TITLE_PATH,
+		(
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"Texture2D\" path=\"%s\" "
+			% TEST_UNKNOWN_RESOURCE_TAG_PATH
+			+ "id=\"1_texture\"]\n\n"
+			+ "[node name=\"UnknownResourceTagTitle\" type=\"Sprite2D\"]\n"
+			+ "texture = ExtResource(\"1_texture\")\n"
+		),
+	)
+
+	for invalid_path: String in [
+		TEST_UNKNOWN_BODY_TAG_TITLE_PATH,
+		TEST_UNKNOWN_RESOURCE_TAG_PATH,
+	]:
+		assert_false(
+			_runtime._read_text_resource_dependencies(invalid_path).get(
+				"ok",
+				true,
+			)
+		)
+
+	var fallback := load(_runtime.DEFAULT_TITLE_SCENE) as PackedScene
+	for invalid_title_path: String in [
+		TEST_UNKNOWN_BODY_TAG_TITLE_PATH,
+		TEST_UNKNOWN_RESOURCE_TAG_TITLE_PATH,
+	]:
+		_runtime.title_scene_path = invalid_title_path
+		assert_eq(_runtime.resolve_title_scene(fallback), fallback)
+		assert_push_error("falling back to the built-in title scene")
+	assert_true(
+		_runtime._load_navigation_scene(
+			TEST_UNKNOWN_BODY_TAG_GAME_PATH,
+			"game",
+		).is_empty()
+	)
+	assert_push_error("game scene is not loadable")
+	assert_engine_error_count(0,
+		"unknown source tags must never reach Godot's resource parser")
+
+
+func test_scene_preflight_enforces_tag_order_and_required_fields():
+	_write_raw_project_config(
+		TEST_INVALID_TAG_ORDER_PATH,
+		(
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"Root\" type=\"Node\"]\n\n"
+			+ "[ext_resource type=\"Script\" "
+			+ "path=\"res://addons/stella/scenes/bootstrap.gd\" "
+			+ "id=\"1_late\"]\n"
+		),
+	)
+	_write_raw_project_config(
+		TEST_MISSING_TAG_FIELD_PATH,
+		(
+			"[gd_resource type=\"Resource\" format=3]\n\n"
+			+ "[sub_resource type=\"Resource\"]\n\n"
+			+ "[resource]\n"
+		),
+	)
+
+	for invalid_path: String in [
+		TEST_INVALID_TAG_ORDER_PATH,
+		TEST_MISSING_TAG_FIELD_PATH,
+	]:
+		assert_false(
+			_runtime._read_text_resource_dependencies(invalid_path).get(
+				"ok",
+				true,
+			)
+		)
+	assert_engine_error_count(0)
+
+
+func test_resource_tag_parser_is_linear_and_bounds_individual_tags():
+	var small_value := "a".repeat(60 * 1024)
+	var large_value := "b".repeat(240 * 1024)
+	var small_started := Time.get_ticks_usec()
+	var small_result: Dictionary = _runtime._parse_resource_tag(
+		"[node name=\"%s\" type=\"Node\"]" % small_value,
+	)
+	var small_elapsed := Time.get_ticks_usec() - small_started
+	var large_started := Time.get_ticks_usec()
+	var large_result: Dictionary = _runtime._parse_resource_tag(
+		"[node name=\"%s\" type=\"Node\"]" % large_value,
+	)
+	var large_elapsed := Time.get_ticks_usec() - large_started
+
+	assert_true(small_result.get("ok", false))
+	assert_true(large_result.get("ok", false))
+	assert_lte(
+		large_elapsed,
+		small_elapsed * 8 + 500_000,
+		"a 4x quoted attribute must stay within a loose linear-time bound",
+	)
+	assert_false(
+		_runtime._parse_resource_tag(
+			"[node name=\"%s\" type=\"Node\"]"
+			% "c".repeat(300 * 1024),
+		).get("ok", true),
+		"one quoted attribute must have an independent size limit",
+	)
+	assert_engine_error_count(0)
 
 
 func test_navigation_scene_uses_the_same_deep_dependency_preflight():

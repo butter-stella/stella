@@ -460,6 +460,25 @@ func _probe_failed_navigation_preserves_owner(
 			failures.append("degraded game destroyed the active context")
 		if get_tree().current_scene.scene_file_path != active_scene_path:
 			failures.append("degraded game replaced the active scene")
+	var unknown_tag_game_path := "user://stella_probe_unknown_tag_game.tscn"
+	var unknown_tag_game := FileAccess.open(
+		unknown_tag_game_path,
+		FileAccess.WRITE,
+	)
+	if unknown_tag_game == null:
+		failures.append("could not create the unknown-tag game fixture")
+	else:
+		unknown_tag_game.store_string(
+			"[gd_scene format=3]\n\n"
+			+ "[PRIVATE_GAME_BODY_TAG_SENTINEL]\n"
+		)
+		unknown_tag_game.close()
+		StellaRuntime.start_game(NAVIGATION_SCENARIO, unknown_tag_game_path)
+		await get_tree().process_frame
+		if StellaRuntime.engine.context != active_context or active_context.is_finished:
+			failures.append("unknown-tag game destroyed the active context")
+		if get_tree().current_scene.scene_file_path != active_scene_path:
+			failures.append("unknown-tag game replaced the active scene")
 	StellaRuntime.start_game(
 		"res://tests/fixtures/scenarios/missing_navigation_scenario.stla",
 		NAVIGATION_GAME_SCENE,
@@ -553,6 +572,16 @@ func _probe_failed_navigation_preserves_owner(
 		failures.append("title-side degraded game left TITLE state")
 	if not StellaRuntime._navigation_kind.is_empty():
 		failures.append("title-side degraded game acquired navigation ownership")
+	StellaRuntime.start_game(NAVIGATION_SCENARIO, unknown_tag_game_path)
+	await get_tree().process_frame
+	if StellaRuntime.engine.context != null:
+		failures.append("title-side unknown-tag game created a context")
+	if get_tree().current_scene.scene_file_path != title_scene_path:
+		failures.append("title-side unknown-tag game replaced the title scene")
+	if StellaRuntime.game_state.current_state != GameStateMachine.State.TITLE:
+		failures.append("title-side unknown-tag game left TITLE state")
+	if not StellaRuntime._navigation_kind.is_empty():
+		failures.append("title-side unknown-tag game acquired navigation ownership")
 
 	var title_semantic_result: Variant = await StellaRuntime.load_game(
 		semantic_save_slot,
@@ -571,6 +600,10 @@ func _probe_failed_navigation_preserves_owner(
 	DirAccess.remove_absolute(
 		ProjectSettings.globalize_path(degraded_game_path),
 	)
+	if FileAccess.file_exists(unknown_tag_game_path):
+		DirAccess.remove_absolute(
+			ProjectSettings.globalize_path(unknown_tag_game_path),
+		)
 	StellaRuntime.delete_save(semantic_save_slot)
 
 
@@ -782,6 +815,15 @@ func _write_degraded_title_fixtures() -> PackedStringArray:
 	var bom_dependency_title_path := (
 		"user://stella_probe_bom_dependency_title.tscn"
 	)
+	var unknown_body_tag_path := (
+		"user://stella_probe_unknown_body_tag_title.tscn"
+	)
+	var unknown_resource_tag_path := (
+		"user://stella_probe_unknown_resource_tag.tres"
+	)
+	var unknown_resource_tag_title_path := (
+		"user://stella_probe_unknown_resource_tag_title.tscn"
+	)
 	var sources := {
 		missing_script_path: (
 			"[gd_scene load_steps=2 format=3]\n\n"
@@ -864,6 +906,22 @@ func _write_degraded_title_fixtures() -> PackedStringArray:
 			% bom_dependency_path
 			+ "id=\"1_texture\"]\n\n"
 			+ "[node name=\"BomDependencyTitle\" type=\"Sprite2D\"]\n"
+			+ "texture = ExtResource(\"1_texture\")\n"
+		),
+		unknown_body_tag_path: (
+			"[gd_scene format=3]\n\n"
+			+ "[PRIVATE_BODY_TAG_SENTINEL]\n"
+		),
+		unknown_resource_tag_path: (
+			"[gd_resource type=\"Texture2D\" format=3]\n\n"
+			+ "[PRIVATE_RESOURCE_TAG_SENTINEL]\n"
+		),
+		unknown_resource_tag_title_path: (
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"Texture2D\" path=\"%s\" "
+			% unknown_resource_tag_path
+			+ "id=\"1_texture\"]\n\n"
+			+ "[node name=\"UnknownResourceTagTitle\" type=\"Sprite2D\"]\n"
 			+ "texture = ExtResource(\"1_texture\")\n"
 		),
 	}

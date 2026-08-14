@@ -91,7 +91,7 @@ run_probe() {
 		return 1
 	fi
 	if grep -Eq \
-		'PRIVATE_(DEGRADED_TITLE|DEGRADED_GAME|EXT|SUB|VECTOR|PACKED|LEADING|BOM)' \
+		'PRIVATE_(DEGRADED_TITLE|DEGRADED_GAME|EXT|SUB|VECTOR|PACKED|LEADING|BOM|BODY_TAG|GAME_BODY_TAG|RESOURCE_TAG)' \
 		"$run_log"; then
 		cat "$run_log"
 		echo "error: $pack_name leaked private dependency source" >&2
