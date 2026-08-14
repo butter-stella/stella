@@ -90,9 +90,10 @@ static func _parse_value(token: String) -> Array:
 
 static func _parse_number(token: String) -> float:
 	# Godot's plain-decimal conversion can round very small values to zero while
-	# its exponent form preserves them. Canonicalize every accepted spelling to
-	# one scientific representation before conversion so decimal and exponent
-	# forms reach the same runtime Float.
+	# its exponent parser reports raw errors for large-but-valid exponents. Parse
+	# the exponent lexically with a bound derived from the token length, combine
+	# it with the normalized mantissa exponent, and invoke Godot conversion only
+	# inside the IEEE-754 Float range.
 	var unsigned := token
 	var sign_prefix := ""
 	if unsigned.begins_with("+") or unsigned.begins_with("-"):
@@ -100,10 +101,14 @@ static func _parse_number(token: String) -> float:
 		unsigned = unsigned.substr(1)
 
 	var explicit_exponent := 0
-	var exponent_pos := unsigned.to_lower().find("e")
+	var exponent_pos := unsigned.findn("e")
 	if exponent_pos != -1:
-		explicit_exponent = int(unsigned.substr(exponent_pos + 1))
+		var exponent_text := unsigned.substr(exponent_pos + 1)
 		unsigned = unsigned.left(exponent_pos)
+		# The mantissa adjustment is bounded by token.length(). Clamping beyond
+		# that plus the Float boundary therefore cannot change overflow/underflow.
+		explicit_exponent = _parse_bounded_decimal_exponent(
+			exponent_text, token.length() + 400)
 
 	var decimal_pos := unsigned.find(".")
 	var fractional_digits := 0
@@ -117,11 +122,37 @@ static func _parse_number(token: String) -> float:
 
 	var normalized_exponent := (
 		explicit_exponent - fractional_digits + unsigned.length() - 1)
+	if normalized_exponent > 308:
+		return -INF if sign_prefix == "-" else INF
+	if normalized_exponent < -324:
+		return 0.0
 	var scientific := sign_prefix + unsigned.left(1)
 	if unsigned.length() > 1:
 		scientific += "." + unsigned.substr(1)
 	scientific += "e" + str(normalized_exponent)
 	return scientific.to_float()
+
+
+static func _parse_bounded_decimal_exponent(text: String, limit: int) -> int:
+	var sign := 1
+	if text.begins_with("+") or text.begins_with("-"):
+		if text.begins_with("-"):
+			sign = -1
+		text = text.substr(1)
+	text = text.lstrip("0")
+	if text.is_empty():
+		return 0
+
+	var limit_text := str(limit)
+	if (
+		text.length() > limit_text.length()
+		or (
+			text.length() == limit_text.length()
+			and text > limit_text
+		)
+	):
+		return sign * (limit + 1)
+	return sign * int(text)
 
 
 func _evaluate_ir(ir: Array, store: VariableStore) -> bool:

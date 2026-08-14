@@ -152,3 +152,41 @@ func test_positive_scientific_and_decimal_boundary_share_runtime_identity() -> v
 		ExpressionEvaluator.semantic_key("ratio == 1e-18"),
 		ExpressionEvaluator.semantic_key("ratio == 0.000000000000000001"),
 	)
+
+
+func test_huge_positive_exponent_uses_float_overflow_without_int_error() -> void:
+	var huge := "ratio == 1e+999999999999999999999999"
+	_store.set_var("ratio", INF)
+
+	assert_true(_eval.evaluate(huge, _store))
+	assert_eq(
+		ExpressionEvaluator.semantic_key(huge),
+		ExpressionEvaluator.semantic_key("ratio == 1e999"),
+		"all positive exponent overflows share the runtime INF identity",
+	)
+	assert_ne(
+		ExpressionEvaluator.semantic_key(huge),
+		ExpressionEvaluator.semantic_key("ratio == 0.1"),
+		"an exponent beyond int64 cannot be rewritten to an unrelated finite value",
+	)
+	assert_eq(get_errors().size(), 0,
+		"valid exponent overflow must not emit an int conversion error")
+
+
+func test_huge_negative_exponent_uses_float_underflow_without_int_error() -> void:
+	var huge := "ratio == 1e-999999999999999999999999"
+	_store.set_var("ratio", 0.0)
+
+	assert_true(_eval.evaluate(huge, _store))
+	assert_eq(
+		ExpressionEvaluator.semantic_key(huge),
+		ExpressionEvaluator.semantic_key("ratio == 0"),
+		"negative exponent underflow shares the runtime zero identity",
+	)
+	assert_ne(
+		ExpressionEvaluator.semantic_key(huge),
+		ExpressionEvaluator.semantic_key("ratio == 1"),
+		"an exponent beyond int64 cannot be rewritten to one",
+	)
+	assert_eq(get_errors().size(), 0,
+		"valid exponent underflow must not emit an int conversion error")
