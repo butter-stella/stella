@@ -48,6 +48,17 @@ const TEST_UNKNOWN_RESOURCE_TAG_PATH = (
 )
 const TEST_INVALID_TAG_ORDER_PATH = "user://test_invalid_tag_order.tscn"
 const TEST_MISSING_TAG_FIELD_PATH = "user://test_missing_tag_field.tres"
+const TEST_UNKNOWN_NODE_TYPE_PATH = "user://test_unknown_node_type.tscn"
+const TEST_UNKNOWN_SUBRESOURCE_TYPE_PATH = (
+	"user://test_unknown_subresource_type.tscn"
+)
+const TEST_MISSING_PARENT_PATH = "user://test_missing_parent_path.tscn"
+const TEST_INVALID_TAG_ATTRIBUTE_PATH = (
+	"user://test_invalid_tag_attribute.tscn"
+)
+const TEST_NUMERIC_RESOURCE_ID_PATH = (
+	"user://test_numeric_resource_id.tscn"
+)
 const UID_DEPENDENCY_SCRIPT = (
 	"res://tests/fixtures/pck_smoke/export_probe_runner.gd"
 )
@@ -82,6 +93,11 @@ const TEST_CONFIG_PATHS = [
 	TEST_UNKNOWN_RESOURCE_TAG_PATH,
 	TEST_INVALID_TAG_ORDER_PATH,
 	TEST_MISSING_TAG_FIELD_PATH,
+	TEST_UNKNOWN_NODE_TYPE_PATH,
+	TEST_UNKNOWN_SUBRESOURCE_TYPE_PATH,
+	TEST_MISSING_PARENT_PATH,
+	TEST_INVALID_TAG_ATTRIBUTE_PATH,
+	TEST_NUMERIC_RESOURCE_ID_PATH,
 	"user://test_stella.cfg",
 	"user://test_stella_partial.cfg",
 	"user://test_stella_has.cfg",
@@ -636,32 +652,114 @@ func test_scene_preflight_enforces_tag_order_and_required_fields():
 	assert_engine_error_count(0)
 
 
+func test_scene_preflight_rejects_semantically_degraded_tags_safely():
+	var invalid_sources := {
+		TEST_UNKNOWN_NODE_TYPE_PATH: (
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"Root\" "
+			+ "type=\"PRIVATE_NODE_TYPE_SENTINEL\"]\n"
+		),
+		TEST_UNKNOWN_SUBRESOURCE_TYPE_PATH: (
+			"[gd_scene format=3]\n\n"
+			+ "[sub_resource "
+			+ "type=\"PRIVATE_SUBRESOURCE_TYPE_SENTINEL\" id=\"Private\"]\n\n"
+			+ "[node name=\"Root\" type=\"Node\"]\n"
+		),
+		TEST_MISSING_PARENT_PATH: (
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"Root\" type=\"Node\"]\n\n"
+			+ "[node name=\"Child\" type=\"Node\" "
+			+ "parent=\"PRIVATE_PARENT_PATH_SENTINEL\"]\n"
+		),
+		TEST_INVALID_TAG_ATTRIBUTE_PATH: (
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"Root\" type=\"Node\" "
+			+ "PRIVATE$ATTRIBUTE$SENTINEL=\"secret\"]\n"
+		),
+	}
+	var fallback := load(_runtime.DEFAULT_TITLE_SCENE) as PackedScene
+	for invalid_path: String in invalid_sources:
+		_write_raw_project_config(invalid_path, invalid_sources[invalid_path])
+		assert_false(
+			_runtime._read_text_resource_dependencies(invalid_path).get(
+				"ok",
+				true,
+			),
+			"semantic degradation must fail before ResourceLoader",
+		)
+		_runtime.title_scene_path = invalid_path
+		assert_eq(_runtime.resolve_title_scene(fallback), fallback)
+		assert_push_error("falling back to the built-in title scene")
+	assert_engine_error_count(0,
+		"private semantic sentinels must never reach Godot's parser")
+
+
+func test_scene_preflight_accepts_numeric_resource_ids_without_ambiguity():
+	_write_raw_project_config(
+		TEST_NUMERIC_RESOURCE_ID_PATH,
+		(
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource "
+			+ "path=\"res://examples/demo/art/backgrounds/bg_cafe.png\" "
+			+ "type=\"Texture2D\" id=1]\n\n"
+			+ "[node name=\"Root\" type=\"Sprite2D\"]\n"
+			+ "texture = ExtResource(1)\n"
+		),
+	)
+	assert_true(
+		_runtime._read_text_resource_dependencies(
+			TEST_NUMERIC_RESOURCE_ID_PATH,
+		).get("ok", false),
+		"Godot-valid numeric IDs must share the declared-ID key space",
+	)
+	_runtime.title_scene_path = TEST_NUMERIC_RESOURCE_ID_PATH
+	var resolved: PackedScene = _runtime.resolve_title_scene()
+	assert_not_null(resolved)
+	assert_eq(resolved.resource_path, TEST_NUMERIC_RESOURCE_ID_PATH)
+	var instance := resolved.instantiate()
+	assert_true(instance is Sprite2D)
+	if instance is Sprite2D:
+		assert_not_null(instance.texture)
+	if instance != null:
+		instance.free()
+	assert_engine_error_count(0)
+
+
 func test_resource_tag_parser_is_linear_and_bounds_individual_tags():
+	var inspector := TextResourceInspector.new()
 	var small_value := "a".repeat(60 * 1024)
 	var large_value := "b".repeat(240 * 1024)
+	_write_raw_project_config(
+		TEST_INVALID_TAG_ATTRIBUTE_PATH,
+		"[gd_scene format=3]\n\n[node name=\"%s\" type=\"Node\"]\n"
+		% small_value,
+	)
 	var small_started := Time.get_ticks_usec()
-	var small_result: Dictionary = _runtime._parse_resource_tag(
-		"[node name=\"%s\" type=\"Node\"]" % small_value,
-	)
+	var small_result := inspector.inspect(TEST_INVALID_TAG_ATTRIBUTE_PATH)
 	var small_elapsed := Time.get_ticks_usec() - small_started
-	var large_started := Time.get_ticks_usec()
-	var large_result: Dictionary = _runtime._parse_resource_tag(
-		"[node name=\"%s\" type=\"Node\"]" % large_value,
+	_write_raw_project_config(
+		TEST_INVALID_TAG_ATTRIBUTE_PATH,
+		"[gd_scene format=3]\n\n[node name=\"%s\" type=\"Node\"]\n"
+		% large_value,
 	)
+	var large_started := Time.get_ticks_usec()
+	var large_result := inspector.inspect(TEST_INVALID_TAG_ATTRIBUTE_PATH)
 	var large_elapsed := Time.get_ticks_usec() - large_started
 
-	assert_true(small_result.get("ok", false))
-	assert_true(large_result.get("ok", false))
+	assert_true(small_result.ok)
+	assert_true(large_result.ok)
 	assert_lte(
 		large_elapsed,
 		small_elapsed * 8 + 500_000,
 		"a 4x quoted attribute must stay within a loose linear-time bound",
 	)
+	_write_raw_project_config(
+		TEST_INVALID_TAG_ATTRIBUTE_PATH,
+		"[gd_scene format=3]\n\n[node name=\"%s\" type=\"Node\"]\n"
+		% "c".repeat(300 * 1024),
+	)
 	assert_false(
-		_runtime._parse_resource_tag(
-			"[node name=\"%s\" type=\"Node\"]"
-			% "c".repeat(300 * 1024),
-		).get("ok", true),
+		inspector.inspect(TEST_INVALID_TAG_ATTRIBUTE_PATH).ok,
 		"one quoted attribute must have an independent size limit",
 	)
 	assert_engine_error_count(0)

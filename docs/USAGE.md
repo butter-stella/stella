@@ -183,6 +183,8 @@ GODOT_BIN=godot tests/pck_smoke/run_export_smoke.sh
 
 使用插件提供的默认 bootstrap 入口时，`[overrides].title_scene` 同时控制首次启动进入的标题场景和之后的返回标题行为；启动配置会在场景重定向和 Presenter 消费配置前完成解析与应用。所有配置场景的脚本、嵌套场景和其他外部依赖必须全部随构建存在，依赖声明类型（包括 custom `script_class` Resource）必须与实际可加载资源兼容，且节点脚本的原生基类必须与节点类型兼容；title 失败会原子回退内置标题，game/overlay 失败则保持当前有效场景和状态。安全预检也会拒绝未声明的 ExtResource/SubResource ID、非法序列化构造器，以及不符合 Godot `.tscn`/`.tres` 格式的未知、乱序或缺少必填字段的 tag，不把错误值交给可能回显原文的 Godot parser；单个资源 tag 最多 512 KiB，单个 quoted tag attribute 最多 256 KiB。`return_to_title()` 可以从场景根 `_ready()` 调用；它会延迟切换，并在实际 `scene_changed` 确认后才清理游戏状态。其他游戏导航同样会在取得导航所有权前校验场景、剧本，以及存档中的 scenario/scene/command 边界和各内置 provider 字段类型；失败调用不会销毁当前有效运行状态。配置场景路径可使用 Godot UID，Runtime 会在请求和确认前统一解析到当前 canonical resource path。
 
+安全预检还会在调用 Godot resource parser 前拒绝非法 attribute key、未知或错误基类的 node/sub-resource type，以及 effective inherited/nested tree 中不存在的 parent、owner、connection endpoint 或 editable path。quoted ID 与 Godot 4.6 仍接受的 numeric ID（例如 `id=1` / `ExtResource(1)`）按同一 key 解析；format 2/3 的现有数字 ID 场景无需迁移。
+
 游戏场景中使用插件的 Presenter 脚本（`BackgroundPresenter`、`StagePresenter` 等），通过 `StellaRuntime` 的 Facade API 控制游戏流程。`BackgroundPresenter` 独立管理 `@bg` 基础背景；人物、前景、事件图和其他可变换图片统一放在动态 `StageLayer` 中。StageLayer 按稳定 ID 创建任意数量的图片层，不预建位置槽。
 
 如果自定义游戏场景需要支持 `@effect shake`，请在每个需要震动的舞台 `CanvasLayer` 下添加一个专用的全屏 `Control` 根节点（建议命名为 `ShakeRoot`，Full Rect、Mouse Filter Ignore），把该层的可见内容放到根节点下，再将根节点路径写入 `ScreenEffects.shake_target_paths`。使用全屏 `Control` 可确保子 Control 的 anchors 仍以视口尺寸布局；普通 `Node2D` 目标也受支持，但不适合作为锚点 UI 的父节点。路径相对 `ScreenEffects` 解析；内置默认值为 `../BackgroundLayer/ShakeRoot` 和 `../StageLayer/ShakeRoot`。`ScreenEffects` 在特效期间独占这些根节点的 `position`；镜头移动、平移等系统应使用外层 `CanvasLayer.offset` 或其他子节点，这样它们可以与 shake 安全叠加。不要把 UI 根节点列入目标，便可让对话框保持静止。

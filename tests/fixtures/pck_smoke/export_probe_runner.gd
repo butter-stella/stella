@@ -134,6 +134,7 @@ func _probe_degraded_title_fallbacks() -> void:
 
 	var failures := PackedStringArray()
 	_probe_nested_editable_child_override(failures)
+	_probe_numeric_resource_ids(failures)
 	for degraded_path: String in fixtures:
 		# Normal startup must reject each degraded PackedScene before it can
 		# become current_scene.
@@ -167,6 +168,32 @@ func _probe_degraded_title_fallbacks() -> void:
 
 	_cleanup_degraded_title_fixtures(fixtures)
 	_finish("degraded-fallback-ok", failures)
+
+
+func _probe_numeric_resource_ids(failures: PackedStringArray) -> void:
+	var scene_path := "user://stella_probe_numeric_resource_id.tscn"
+	var file := FileAccess.open(scene_path, FileAccess.WRITE)
+	if file == null:
+		failures.append("could not create numeric resource-ID fixture")
+		return
+	file.store_string(
+		"[gd_scene load_steps=2 format=3]\n\n"
+		+ "[ext_resource type=\"Texture2D\" "
+		+ "path=\"res://examples/demo/art/backgrounds/bg_cafe.png\" id=1]\n\n"
+		+ "[node name=\"NumericResourceId\" type=\"Sprite2D\"]\n"
+		+ "texture = ExtResource(\"1\")\n"
+	)
+	file.close()
+	var scene := StellaRuntime._load_title_scene(scene_path)
+	if scene == null:
+		failures.append("Godot-valid numeric resource ID was rejected")
+	else:
+		var instance := scene.instantiate() as Sprite2D
+		if instance == null or instance.texture == null:
+			failures.append("numeric resource reference did not resolve")
+		if instance != null:
+			instance.free()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(scene_path))
 
 
 func _probe_nested_editable_child_override(failures: PackedStringArray) -> void:
@@ -479,6 +506,53 @@ func _probe_failed_navigation_preserves_owner(
 			failures.append("unknown-tag game destroyed the active context")
 		if get_tree().current_scene.scene_file_path != active_scene_path:
 			failures.append("unknown-tag game replaced the active scene")
+	var semantic_game_path := "user://stella_probe_semantic_game.tscn"
+	var semantic_game := FileAccess.open(semantic_game_path, FileAccess.WRITE)
+	if semantic_game == null:
+		failures.append("could not create the semantic game fixture")
+	else:
+		semantic_game.store_string(
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"SemanticGame\" "
+			+ "type=\"PRIVATE_GAME_NODE_TYPE_SENTINEL\"]\n"
+		)
+		semantic_game.close()
+		StellaRuntime.start_game(NAVIGATION_SCENARIO, semantic_game_path)
+		await get_tree().process_frame
+		if StellaRuntime.engine.context != active_context or active_context.is_finished:
+			failures.append("semantic game destroyed the active context")
+		if get_tree().current_scene.scene_file_path != active_scene_path:
+			failures.append("semantic game replaced the active scene")
+
+	var semantic_overlay_path := "user://stella_probe_semantic_overlay.tscn"
+	var semantic_overlay := FileAccess.open(
+		semantic_overlay_path,
+		FileAccess.WRITE,
+	)
+	if semantic_overlay == null:
+		failures.append("could not create the semantic overlay fixture")
+	else:
+		semantic_overlay.store_string(
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"SemanticOverlay\" type=\"Node\"]\n\n"
+			+ "[node name=\"Child\" type=\"Node\" "
+			+ "parent=\"PRIVATE_OVERLAY_PARENT_PATH_SENTINEL\"]\n"
+		)
+		semantic_overlay.close()
+		var original_settings_scene: String = StellaRuntime.config.settings_scene
+		var original_overlay := StellaRuntime._current_overlay
+		var original_state: int = StellaRuntime.game_state.current_state
+		StellaRuntime.config.settings_scene = semantic_overlay_path
+		StellaRuntime.show_settings()
+		StellaRuntime.config.settings_scene = original_settings_scene
+		if StellaRuntime._current_overlay != original_overlay:
+			failures.append("semantic overlay replaced the active overlay owner")
+		if StellaRuntime.game_state.current_state != original_state:
+			failures.append("semantic overlay changed the active game state")
+		if StellaRuntime.engine.context != active_context:
+			failures.append("semantic overlay replaced the active context")
+		if get_tree().current_scene.scene_file_path != active_scene_path:
+			failures.append("semantic overlay replaced the active scene")
 	StellaRuntime.start_game(
 		"res://tests/fixtures/scenarios/missing_navigation_scenario.stla",
 		NAVIGATION_GAME_SCENE,
@@ -582,6 +656,16 @@ func _probe_failed_navigation_preserves_owner(
 		failures.append("title-side unknown-tag game left TITLE state")
 	if not StellaRuntime._navigation_kind.is_empty():
 		failures.append("title-side unknown-tag game acquired navigation ownership")
+	StellaRuntime.start_game(NAVIGATION_SCENARIO, semantic_game_path)
+	await get_tree().process_frame
+	if StellaRuntime.engine.context != null:
+		failures.append("title-side semantic game created a context")
+	if get_tree().current_scene.scene_file_path != title_scene_path:
+		failures.append("title-side semantic game replaced the title scene")
+	if StellaRuntime.game_state.current_state != GameStateMachine.State.TITLE:
+		failures.append("title-side semantic game left TITLE state")
+	if not StellaRuntime._navigation_kind.is_empty():
+		failures.append("title-side semantic game acquired navigation ownership")
 
 	var title_semantic_result: Variant = await StellaRuntime.load_game(
 		semantic_save_slot,
@@ -604,6 +688,11 @@ func _probe_failed_navigation_preserves_owner(
 		DirAccess.remove_absolute(
 			ProjectSettings.globalize_path(unknown_tag_game_path),
 		)
+	for semantic_path: String in [semantic_game_path, semantic_overlay_path]:
+		if FileAccess.file_exists(semantic_path):
+			DirAccess.remove_absolute(
+				ProjectSettings.globalize_path(semantic_path),
+			)
 	StellaRuntime.delete_save(semantic_save_slot)
 
 
@@ -824,6 +913,21 @@ func _write_degraded_title_fixtures() -> PackedStringArray:
 	var unknown_resource_tag_title_path := (
 		"user://stella_probe_unknown_resource_tag_title.tscn"
 	)
+	var unknown_node_type_path := (
+		"user://stella_probe_unknown_node_type_title.tscn"
+	)
+	var unknown_subresource_type_path := (
+		"user://stella_probe_unknown_subresource_type_title.tscn"
+	)
+	var missing_parent_path := (
+		"user://stella_probe_missing_parent_title.tscn"
+	)
+	var missing_owner_path := (
+		"user://stella_probe_missing_owner_title.tscn"
+	)
+	var invalid_attribute_path := (
+		"user://stella_probe_invalid_attribute_title.tscn"
+	)
 	var sources := {
 		missing_script_path: (
 			"[gd_scene load_steps=2 format=3]\n\n"
@@ -923,6 +1027,34 @@ func _write_degraded_title_fixtures() -> PackedStringArray:
 			+ "id=\"1_texture\"]\n\n"
 			+ "[node name=\"UnknownResourceTagTitle\" type=\"Sprite2D\"]\n"
 			+ "texture = ExtResource(\"1_texture\")\n"
+		),
+		unknown_node_type_path: (
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"UnknownNodeType\" "
+			+ "type=\"PRIVATE_NODE_TYPE_SENTINEL\"]\n"
+		),
+		unknown_subresource_type_path: (
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[sub_resource "
+			+ "type=\"PRIVATE_SUBRESOURCE_TYPE_SENTINEL\" id=\"Private\"]\n\n"
+			+ "[node name=\"UnknownSubresourceType\" type=\"Node\"]\n"
+		),
+		missing_parent_path: (
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"MissingParent\" type=\"Node\"]\n\n"
+			+ "[node name=\"Child\" type=\"Node\" "
+			+ "parent=\"PRIVATE_PARENT_PATH_SENTINEL\"]\n"
+		),
+		missing_owner_path: (
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"MissingOwner\" type=\"Node\"]\n\n"
+			+ "[node name=\"Child\" type=\"Node\" parent=\".\" "
+			+ "owner=\"PRIVATE_OWNER_PATH_SENTINEL\"]\n"
+		),
+		invalid_attribute_path: (
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"InvalidAttribute\" type=\"Node\" "
+			+ "PRIVATE$ATTRIBUTE$SENTINEL=\"secret\"]\n"
 		),
 	}
 	var paths := PackedStringArray()
