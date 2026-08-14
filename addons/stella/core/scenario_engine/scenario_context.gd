@@ -129,6 +129,9 @@ func get_provider_id() -> String:
 func capture_snapshot() -> Dictionary:
 	return {
 		"scenario_id": scenario_data.id if scenario_data else "",
+		"scenario_source_identity": (
+			scenario_data.source_identity if scenario_data else ""
+		),
 		"scene_index": current_scene_index,
 		"command_index": current_command_index,
 		"is_finished": is_finished,

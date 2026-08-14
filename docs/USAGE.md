@@ -13,7 +13,7 @@
 1. 将 `addons/stella/` 目录复制到你的项目的 `addons/` 下
 2. 启用插件（同上）
 
-插件激活后会自动注册 `SignalBus` 和 `StellaRuntime` 两个 Autoload，并设置主场景为内置标题画面。
+插件激活后会自动注册 `SignalBus` 和 `StellaRuntime` 两个 Autoload，并将空白项目或旧版内置标题入口迁移到无 UI 的启动场景。启动场景会在分层配置解析完成后进入最终的 `title_scene`；已有项目自己设置的主场景不会被覆盖。
 
 ---
 
@@ -98,9 +98,92 @@ save_load_scene = ""
 backlog_scene = ""
 ```
 
+`save_slots` 的合法范围是 `1..100`，超出范围会和其他 schema 错误一样原子拒绝整个来源。`backlog` 会控制内置对话工具栏和 Backlog overlay；`cg_gallery` 控制 `StellaRuntime` 的 CG 解锁/查询 Facade：关闭时不记录新 CG，查询也不暴露已有进度，但底层存档 provider 仍保留旧进度，重新启用后可继续使用。框架尚未提供内置 Gallery UI，宿主项目可用下文的 Facade 构建界面。
+
+#### 分层配置与本地覆盖
+
+将可公开、可复现的项目配置提交到受版本控制的 `stella.cfg`（tracked），只把当前开发者或当前机器需要的覆盖写入已被 Git 忽略的 `stella.local.cfg`（ignored）。
+
+Stella 插件或 Release zip 不会修改宿主仓库的 `.gitignore`；每个宿主项目必须自行加入根目录规则 `/stella.local.cfg`。提交前可用下面的命令同时验证 ignore 已生效且文件未被跟踪：
+
+```bash
+git check-ignore --quiet -- stella.local.cfg && \
+  ! git ls-files --error-unmatch stella.local.cfg >/dev/null 2>&1
+```
+
+例如，仓库中提交的基础配置可以是：
+
+```ini
+; stella.cfg（提交到仓库）
+[game]
+title = "Starfall"
+scenario = "res://scenarios/main.stla"
+
+[paths]
+voice = "res://audio/voice/"
+
+[overrides]
+game_scene = "res://scenes/game.tscn"
+```
+
+本机覆盖可以使用相同结构；以下 synthetic 路径仅作示例，不对应任何私有内容：
+
+```ini
+; stella.local.cfg（不要提交）
+[game]
+scenario = "res://private_preview/scenarios/preview.stla"
+
+[paths]
+voice = "res://private_preview/audio/voice/"
+
+[overrides]
+game_scene = "res://private_preview/ui/preview_game.tscn"
+```
+
+配置按 key 独立解析，优先级为“内置默认值 < `stella.cfg` < `stella.local.cfg`”。这套规则一致覆盖 `[game]`、`[paths]`、`[features]`、`[system_se]` 和 `[overrides]`；后一个文件只覆盖其中明确写出的 key，例如上面的本地文件不会改变基础配置中的 `game.title`。
+
+配置语法使用 Stella schema 所需的常用子集：文件必须是 UTF-8 且不能含 NUL 字节；字符串必须用双引号包围，布尔值写作 `true` / `false`，整数使用十进制。完整行和行尾注释都使用分号 `;`；`#` 不属于 Stella 注释语法，出现在完成的 section header 或赋值后会使整个来源被拒绝。字符串转义兼容 Godot 4.6 `ConfigFile`，包括 `\\`、`\"`、`\n`、`\uXXXX`、`\UXXXXXX` 及 UTF-16 surrogate pair；未知转义也沿用其“去掉反斜杠、保留后一字符”的行为。显式写入空字符串也是一次有效覆盖。单个来源最多 1 MiB，单个 quoted String 的原始 UTF-8 表示最多 256 KiB；超限、NUL 和非法 UTF-8 都会按无部分提交的错误处理。
+
+两个文件都是可选来源：缺失的文件不会报错，也不会清空较低优先级已经解析出的值。每个存在的来源会先完成读取和 schema 校验，再一次性提交；类型错误、未知 section/key 或语法损坏都会原子拒绝整个来源，该来源不会部分生效，也不会出现在已应用来源列表中。基础配置失败时保留默认值并停止继续叠加，本地覆盖失败时则完整保留已经生效的基础配置。语法错误诊断会带来源路径、安全的行列位置和预期修复提示；schema 错误会指出相关 section/key，类型错误还会带预期类型，且二者都不会打印配置值。
+
+兼容边界：`StellaConfig.SCHEMA_VERSION == 2` 标识分层配置与严格 closed schema 的迁移边界。v2 继续兼容上面的 Godot 4.6 标量值和字符串转义，但未知 section/key 不再像 v1 的直接 `ConfigFile` 加载器那样静默忽略。这是有意的校验收紧；“只使用基础文件”仅保证已声明 Stella key 的值保持原有语义，并不继续接受旧的自定义键。升级到 v2 前请把宿主自定义元数据移出 `stella.cfg` / `stella.local.cfg`，或改用 Stella 已声明的 section/key。
+
+Runtime 每次解析后都会完整应用 resolved snapshot，包括没有配置文件时的内置默认值。因此删除或禁用配置来源并重新初始化时，Runtime 不会继续保留上一轮的本地路径或其他覆盖。
+
+可用 Facade 查询本次启动实际提交的来源，返回顺序也就是应用顺序：
+
+```gdscript
+var sources: PackedStringArray = StellaRuntime.get_applied_config_sources()
+# 典型结果：["res://stella.cfg", "res://stella.local.cfg"]
+```
+
+自动化、CI 或一次性诊断应通过通用环境变量显式禁用本地层，避免当前机器的 `res://stella.local.cfg` 污染结果：
+
+```bash
+STELLA_DISABLE_LOCAL_CONFIG=1 godot --headless --path /path/to/project --quit
+```
+
+该环境变量只跳过启动时隐式加载的本地文件；测试代码显式传入的 synthetic 配置路径仍可用于验证分层行为。
+
+发布公共构建时，请在每个 Godot Export Preset 的资源过滤规则中显式包含 `stella.cfg`，并显式排除 `stella.local.cfg` 以及实际存放私有或生成内容的目录（例如上面的 `private_preview/`）。`.gitignore` 只控制 Git 是否跟踪文件，**不会**阻止 Godot 将它打包进导出产物。
+
+Godot 无法从字符串形式的动态路径自动发现 `[overrides]` 中的场景依赖。使用 **Export All Resources** 时应确认这些资源没有被 exclude filter 排除；使用 **Export Selected Scenes/Resources** 时，必须把配置引用的 `title_scene`、`game_scene`、`settings_scene`、`save_load_scene`、`backlog_scene` 和 `flowchart_scene` 全部加入导出资源集。无效或遗漏的自定义标题会回退内置标题，但遗漏 game/overlay 仍会让对应功能不可用。
+
+导出后应从源码目录外启动 PCK 或发布包并走一遍标题、开始游戏及各 overlay，而不只检查导出命令的退出码。仓库维护者可在安装 Godot 4.6.1 后运行标准 smoke；脚本会拒绝覆盖已有 `export_presets.cfg` 或 `stella.local.cfg`，创建一个必须被 export exclude filter 剔除的 synthetic local poison，临时使用 CI fixture，并验证三种 PCK 都看不到该文件，同时覆盖 Binary Tokens、Compressed Binary Tokens 及 Selected Scenes fallback 的真实配置 consumer：
+
+```bash
+GODOT_BIN=godot tests/pck_smoke/run_export_smoke.sh
+```
+
+`stella.local.cfg` 只是方便开发的覆盖层，不是 secrets vault：它既不加密，也不保证不会被误导出、备份或读取。不要在其中存放 API token、密码或其他凭据；凭据应通过环境变量或专用密钥管理服务提供。
+
 ### Step 4 — 搭建游戏场景
 
 参考 `examples/demo/` 的结构搭建自己的标题场景和游戏场景，然后在 `stella.cfg` 的 `[overrides]` 中指向它们。
+
+使用插件提供的默认 bootstrap 入口时，`[overrides].title_scene` 同时控制首次启动进入的标题场景和之后的返回标题行为；启动配置会在场景重定向和 Presenter 消费配置前完成解析与应用。所有配置场景的脚本、嵌套场景和其他外部依赖必须全部随构建存在，依赖声明类型（包括 custom `script_class` Resource）必须与实际可加载资源兼容，且节点脚本的原生基类必须与节点类型兼容；title 失败会原子回退内置标题，game/overlay 失败则保持当前有效场景和状态。安全预检也会拒绝未声明的 ExtResource/SubResource ID、非法序列化构造器，以及不符合 Godot `.tscn`/`.tres` 格式的未知、乱序或缺少必填字段的 tag，不把错误值交给可能回显原文的 Godot parser；单个资源 tag 最多 512 KiB，单个 quoted tag attribute 最多 256 KiB。`return_to_title()` 可以从场景根 `_ready()` 调用；它会延迟切换，并在实际 `scene_changed` 确认后才清理游戏状态。其他游戏导航同样会在取得导航所有权前校验场景、剧本，以及存档中的 scenario/scene/command 边界和各内置 provider 字段类型；失败调用不会销毁当前有效运行状态。配置场景路径可使用 Godot UID，Runtime 会在请求和确认前统一解析到当前 canonical resource path。
+
+安全预检还会在调用 Godot resource parser 前拒绝非法 attribute key、未知或错误基类的 node/sub-resource type，以及 effective inherited/nested tree 中不存在的 parent、owner、connection endpoint 或 editable path。quoted tag attribute 与 Variant String 使用同一套 Godot 4.6 转义语义，包括 `\u` / `\U`、引号和反斜杠。resource ID 按 Godot 4.6 numeric Variant 语义解析：numeric token 先转换为 Godot 的 canonical String，quoted ID 保留 decoded 原文并进入同一 key 域。因此 signed、int64 边界外、decimal、exponent、有限值格式化和浮点溢出的 `inf` / `-inf` 都能与同值 canonical quoted ID 匹配，而 `"01"` 等文本 ID 仍与数字 `1` 分离；`id=""` 是合法的 quoted ID，缺少 token 的 unquoted 空 ID 仍非法。Godot tokenizer 不接受的前导 `+` 和 hex 继续拒绝。format 2/3 的现有数字 ID 场景无需迁移。文本 nested scene、binary `.scn` 和导出 remap 都按真实 SceneState 验证 property-only child override；重复实例会在一次预检事务内按 canonical path + expected type 复用结果，不会无条件展开整棵 effective tree。
 
 游戏场景中使用插件的 Presenter 脚本（`BackgroundPresenter`、`StagePresenter` 等），通过 `StellaRuntime` 的 Facade API 控制游戏流程。`BackgroundPresenter` 独立管理 `@bg` 基础背景；人物、前景、事件图和其他可变换图片统一放在动态 `StageLayer` 中。StageLayer 按稳定 ID 创建任意数量的图片层，不预建位置槽。
 
@@ -266,6 +349,37 @@ StellaRuntime.delete_save(slot_id)   # 删除存档
 StellaRuntime.get_save_list()        # 获取所有有存档的槽位
 ```
 
+Runtime 会把规范化剧本来源的版本化 identity 写入存档，并在 `load_game()`、`quick_load()`、`continue_from_save()` 和 `continue_game()` 导航前校验它。这样不同目录下同为 `shared.stla` 的剧本也不会串档，存档 JSON 中不会写入私有来源路径。缺少该 identity 的旧版存档会 fail-closed；如果产品必须保留旧档，请在升级发布前由宿主迁移工具读取旧 JSON、根据产品自己的旧版本映射确认目标剧本，再显式写入新 identity，不要仅按文件 basename 自动猜测。
+
+直接调用公开 parser 时请传入 authored path；identity 会在 parser 边界生成，而不依赖 Runtime 的私有包装：
+
+```gdscript
+var data := DslParser.parse(tokens, "route_a", "res://story/route_a.stla")
+```
+
+扩展若完全程序化构造 `ScenarioData`，必须在需要读写持久存档前提供稳定的 authored key：
+
+```gdscript
+var data := ScenarioData.new()
+data.id = "route_a"
+var identity_error := data.set_authored_identity("my_extension:route-a:v1")
+if identity_error != OK:
+	push_error("invalid authored scenario identity")
+```
+
+这个 key 会先哈希再进入存档，不会原样写入 JSON；它不是 secret。兼容版本必须持续使用同一个 key，不兼容内容应显式换 key。不要用显示标题或文件 basename 充当 key，也不要给空 identity 的程序化 `ScenarioData` 开启 scenario-aware 读档。
+
+迁移旧的程序化存档时，宿主必须先按自己的旧版本映射确认目标，再使用同一个 authored key，并把生成值写入待迁移 snapshot；不要对未知旧档猜 key：
+
+```gdscript
+var legacy_snapshot := StellaRuntime.save_manager.read_save_data(slot_id)
+# 仅在宿主已确认 legacy_snapshot 属于 route_a 后执行：
+legacy_snapshot["scenario_context"]["scenario_source_identity"] = (
+	data.source_identity
+)
+# 再由宿主自己的原子迁移事务写回 JSON。
+```
+
 在游戏内读档、快读或从 Backlog/选项/流程图回退时，Runtime 会先把 engine context 所有权转交给恢复后的 context，再清理旧画面和阻塞命令。旧对话的取消不会触发自然 `scenario_ended`，恢复后的 context 始终是最终执行 owner；自定义 Presenter 仍只需遵守上文的 request `advance()` / `abort()` 契约。
 
 ### 播放控制
@@ -285,6 +399,16 @@ StellaRuntime.show_save_load()       # 打开存档/读档
 StellaRuntime.show_backlog()         # 打开回想记录
 StellaRuntime.close_overlay()        # 关闭当前覆盖层
 ```
+
+### CG Gallery
+
+```gdscript
+StellaRuntime.unlock_cg(cg_id)       # 启用 cg_gallery 时记录解锁
+StellaRuntime.is_cg_unlocked(cg_id)  # 查询单个 CG
+StellaRuntime.get_unlocked_cgs()     # 获取已解锁 CG 的副本
+```
+
+`cg_gallery=false` 时三个 API 都 fail-closed：写入返回 `false`，查询返回 `false` / 空数组；已有存档进度不会被清除。
 
 ### 设置
 

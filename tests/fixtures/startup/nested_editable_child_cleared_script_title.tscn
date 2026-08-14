@@ -1,0 +1,12 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="PackedScene" path="res://tests/fixtures/startup/inherited_script_child_base_title.tscn" id="1_nested"]
+
+[node name="NestedEditableChildClearedScriptTitle" type="Node"]
+
+[node name="Nested" parent="." instance=ExtResource("1_nested")]
+
+[node name="Child" parent="Nested" index="0"]
+script = null
+
+[editable path="Nested"]

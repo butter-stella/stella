@@ -88,11 +88,17 @@ relevant test; before handoff, run the full applicable suite when practical.
 godot --headless --import
 
 # Full GUT suite; .gutconfig.json includes unit and integration directories.
-godot -s addons/gut/gut_cmdln.gd --headless
+STELLA_DISABLE_LOCAL_CONFIG=1 \
+  godot -s addons/gut/gut_cmdln.gd --headless
 
 # Example targeted file.
-godot -s addons/gut/gut_cmdln.gd --headless \
+STELLA_DISABLE_LOCAL_CONFIG=1 \
+  godot -s addons/gut/gut_cmdln.gd --headless \
   -gtest=res://tests/unit/test_scenario_engine.gd
+
+# Godot 4.6.1 export-pack smoke (binary tokens, compressed binary tokens,
+# selected-scenes fallback), run with no project export_presets.cfg present.
+GODOT_BIN=godot tests/pck_smoke/run_export_smoke.sh
 ```
 
 Do not pipe these commands through `tail` or another command that masks Godot's

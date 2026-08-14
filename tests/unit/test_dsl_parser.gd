@@ -22,6 +22,23 @@ func test_empty_tokens():
 	var data = _parse("")
 	assert_eq(data.id, "test")
 	assert_eq(data.scenes.size(), 0)
+	assert_eq(data.source_identity, "")
+
+
+func test_public_parser_assigns_source_identity_from_authored_path():
+	var source_path := "res://extensions/review/../review/route.stla"
+	var data := DslParser.parse(
+		DslLexer.tokenize('@scene start "Start"'),
+		"extension_route",
+		source_path,
+	)
+	assert_eq(
+		data.source_identity,
+		ScenarioData.make_source_identity(source_path),
+	)
+	assert_true(data.source_identity.begins_with("stella-source-v1:sha256:"))
+	assert_false(data.source_identity.contains("extensions"),
+		"public parser identity must not copy the authored path")
 
 
 func test_single_scene():

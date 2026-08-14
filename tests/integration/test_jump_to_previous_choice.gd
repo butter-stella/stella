@@ -458,7 +458,12 @@ func test_return_to_title_clears_choice_history():
 	# return_to_title is the in-game "back to main menu" path. It must
 	# wipe choice history alongside backlog.
 	_runtime.return_to_title()
-	await get_tree().process_frame
+	var completed: bool = await wait_until(
+		func() -> bool: return not _runtime._return_to_title_pending,
+		2.0,
+		"return_to_title confirms the new current_scene",
+	)
+	assert_true(completed)
 
 	assert_eq(_runtime.choice_history_manager.size(), 0,
 		"return_to_title must clear choice history alongside backlog")

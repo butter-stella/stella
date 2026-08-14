@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          clean: true
 
       - name: Setup Godot
         uses: chickensoft-games/setup-godot@v2
@@ -22,7 +24,7 @@ jobs:
           use-dotnet: false
 
       - name: Import project
-        run: godot --headless --import 2>&1 || true
+        run: godot --headless --import 2>&1
         timeout-minutes: 2
 
       - name: Check clean shutdown
@@ -52,7 +54,253 @@ jobs:
           fi
         timeout-minutes: 2
 
+      - name: Probe layered config during real startup
+        shell: bash
+        run: |
+          local_config="stella.local.cfg"
+          marker="$RUNNER_TEMP/stella-startup-probe.ok"
+          startup_log="$RUNNER_TEMP/stella-startup-probe.log"
+          fallback_log="$RUNNER_TEMP/stella-startup-fallback.log"
+          cleanup() {
+            rm -f -- "$local_config" "$marker"
+          }
+          trap cleanup EXIT
+
+          if test -e "$local_config"; then
+            echo "::error::$local_config must not exist before the startup probe"
+            exit 1
+          fi
+
+          printf '%s\n' \
+            '[game]' \
+            'title = "Synthetic Startup Probe"' \
+            'scenario = "res://tests/fixtures/scenarios/dialogue/presentation_profile.stla"' \
+            'title_bgm = ""' \
+            '[paths]' \
+            'characters = "res://tests/fixtures/startup/characters/"' \
+            'stage = "res://tests/fixtures/stage/"' \
+            'se = "res://examples/demo/audio/se/"' \
+            '[features]' \
+            'cg_gallery = true' \
+            'backlog = false' \
+            'save_slots = 3' \
+            '[system_se]' \
+            'select = "se_cancel"' \
+            'cancel = "se_select"' \
+            '[overrides]' \
+            'title_scene = "res://tests/fixtures/startup/custom_title.tscn"' \
+            'game_scene = "res://tests/fixtures/startup/game.tscn"' \
+            'settings_scene = "res://tests/fixtures/startup/overlay.tscn"' \
+            > "$local_config"
+
+          startup_status=0
+          STELLA_STARTUP_PROBE_MARKER="$marker" \
+            godot --headless --path . --quit-after 60 \
+            >"$startup_log" 2>&1 || startup_status=$?
+          cat "$startup_log"
+          if (( startup_status != 0 )); then
+            exit "$startup_status"
+          fi
+          if ! grep -Fxq 'ok' "$marker"; then
+            echo "::error::real startup did not reach the configured title consumer"
+            exit 1
+          fi
+
+          rm -f -- "$local_config" "$marker"
+          printf '%s\n' \
+            '[game]' \
+            'title_bgm = ""' \
+            '[overrides]' \
+            'title_scene = "res://tests/fixtures/startup/required_init_title.tscn"' \
+            > "$local_config"
+          fallback_status=0
+          STELLA_EXPORT_PROBE_MODE="source-fallback" \
+            STELLA_EXPORT_PROBE_EXPECTED_TITLE="Stella Demo" \
+            STELLA_EXPORT_PROBE_MARKER="$marker" \
+            godot --headless --path . --quit-after 60 \
+            res://tests/fixtures/pck_smoke/export_probe_host.tscn \
+            >"$fallback_log" 2>&1 || fallback_status=$?
+          cat "$fallback_log"
+          if (( fallback_status != 0 )); then
+            exit "$fallback_status"
+          fi
+          if ! grep -Fxq 'fallback-ok' "$marker"; then
+            echo "::error::invalid override did not finish on the built-in title"
+            exit 1
+          fi
+
+          rm -f -- "$local_config" "$marker"
+          printf '%s\n' \
+            '[game]' \
+            'title_bgm = ""' \
+            '[overrides]' \
+            'title_scene = "res://addons/stella/scenes/../scenes/bootstrap.tscn"' \
+            > "$local_config"
+          recursive_status=0
+          STELLA_EXPORT_PROBE_MODE="source-fallback" \
+            STELLA_EXPORT_PROBE_EXPECTED_TITLE="Stella Demo" \
+            STELLA_EXPORT_PROBE_MARKER="$marker" \
+            godot --headless --path . --quit-after 60 \
+            res://tests/fixtures/pck_smoke/export_probe_host.tscn \
+            >"$fallback_log" 2>&1 || recursive_status=$?
+          cat "$fallback_log"
+          if (( recursive_status != 0 )); then
+            exit "$recursive_status"
+          fi
+          if ! grep -Fxq 'fallback-ok' "$marker"; then
+            echo "::error::recursive override did not finish on the built-in title"
+            exit 1
+          fi
+
+          rm -f -- "$local_config" "$marker"
+          printf '%s\n' \
+            '[game]' \
+            'title_bgm = ""' \
+            '[overrides]' \
+            'title_scene = "res://tests/fixtures/startup/nested_instance_recursive_title.tscn"' \
+            > "$local_config"
+          nested_recursive_status=0
+          STELLA_EXPORT_PROBE_MODE="source-fallback" \
+            STELLA_EXPORT_PROBE_EXPECTED_TITLE="Stella Demo" \
+            STELLA_EXPORT_PROBE_MARKER="$marker" \
+            godot --headless --path . --quit-after 60 \
+            res://tests/fixtures/pck_smoke/export_probe_host.tscn \
+            >"$fallback_log" 2>&1 || nested_recursive_status=$?
+          cat "$fallback_log"
+          if (( nested_recursive_status != 0 )); then
+            exit "$nested_recursive_status"
+          fi
+          if ! grep -Fxq 'fallback-ok' "$marker"; then
+            echo "::error::nested recursive override did not finish on the built-in title"
+            exit 1
+          fi
+
+          rm -f -- "$local_config" "$marker"
+          printf '%s\n' \
+            '[game]' \
+            'title_bgm = ""' \
+            '[overrides]' \
+            'title_scene = "res://addons/stella/scenes/title.tscn"' \
+            > "$local_config"
+          degraded_status=0
+          STELLA_EXPORT_PROBE_MODE="degraded-title-fallback" \
+            STELLA_EXPORT_PROBE_MARKER="$marker" \
+            godot --headless --path . --quit-after 600 \
+            res://tests/fixtures/pck_smoke/export_probe_host.tscn \
+            >"$fallback_log" 2>&1 || degraded_status=$?
+          cat "$fallback_log"
+          if (( degraded_status != 0 )); then
+            exit "$degraded_status"
+          fi
+          if grep -Fq 'PRIVATE_DEGRADED_TITLE_DEPENDENCY' "$fallback_log"; then
+            echo "::error::title dependency preflight leaked a raw missing path"
+            exit 1
+          fi
+          if ! grep -Fxq 'degraded-fallback-ok' "$marker"; then
+            echo "::error::degraded title dependencies did not use the built-in fallback"
+            exit 1
+          fi
+
+          rm -f -- "$marker"
+          ready_return_status=0
+          STELLA_EXPORT_PROBE_MODE="ready-return" \
+            STELLA_EXPORT_PROBE_MARKER="$marker" \
+            godot --headless --path . --quit-after 60 \
+            res://tests/fixtures/pck_smoke/export_probe_host.tscn \
+            >"$fallback_log" 2>&1 || ready_return_status=$?
+          cat "$fallback_log"
+          if (( ready_return_status != 0 )); then
+            exit "$ready_return_status"
+          fi
+          if ! grep -Fxq 'ready-return-ok' "$marker"; then
+            echo "::error::return_to_title was not safe from a root _ready callback"
+            exit 1
+          fi
+
+          rm -f -- "$marker"
+          navigation_status=0
+          STELLA_EXPORT_PROBE_MODE="navigation-interleaving" \
+            STELLA_EXPORT_PROBE_MARKER="$marker" \
+            godot --headless --path . --quit-after 600 \
+            res://tests/fixtures/pck_smoke/export_probe_host.tscn \
+            >"$fallback_log" 2>&1 || navigation_status=$?
+          cat "$fallback_log"
+          if (( navigation_status != 0 )); then
+            exit "$navigation_status"
+          fi
+          if ! grep -Fxq 'navigation-interleaving-ok' "$marker"; then
+            echo "::error::Runtime navigation ownership was not last-call-wins"
+            exit 1
+          fi
+
+          cleanup
+          trap - EXIT
+        timeout-minutes: 2
+
+      - name: Probe custom main initialization and title fallback
+        shell: bash
+        run: |
+          local_config="stella.local.cfg"
+          marker="$RUNNER_TEMP/stella-custom-main-probe.ok"
+          probe_log="$RUNNER_TEMP/stella-custom-main-probe.log"
+          cleanup() {
+            rm -f -- "$local_config" "$marker"
+          }
+          trap cleanup EXIT
+
+          if test -e "$local_config"; then
+            echo "::error::$local_config must not exist before the custom-main probe"
+            exit 1
+          fi
+          printf '%s\n' \
+            '[game]' \
+            'title = "Synthetic Custom Main Probe"' \
+            'title_bgm = ""' \
+            '[overrides]' \
+            'title_scene = "res://tests/fixtures/startup/required_init_title.tscn"' \
+            > "$local_config"
+
+          probe_status=0
+          STELLA_CUSTOM_MAIN_PROBE_MARKER="$marker" \
+            godot --headless --path . --quit-after 60 \
+            res://tests/fixtures/startup/custom_main.tscn \
+            >"$probe_log" 2>&1 || probe_status=$?
+          cat "$probe_log"
+          if (( probe_status != 0 )); then
+            exit "$probe_status"
+          fi
+          if ! grep -Fxq 'ok' "$marker"; then
+            echo "::error::custom main did not observe config before construction"
+            exit 1
+          fi
+
+          cleanup
+          trap - EXIT
+        timeout-minutes: 2
+
+      - name: Probe exported PCK startup
+        run: tests/pck_smoke/run_export_smoke.sh
+        timeout-minutes: 5
+
+      - name: Create synthetic local override
+        shell: bash
+        run: |
+          if git ls-files --error-unmatch stella.local.cfg >/dev/null 2>&1; then
+            echo "::error::stella.local.cfg must not be tracked"
+            exit 1
+          fi
+          if test -e stella.local.cfg; then
+            echo "::error::stella.local.cfg must not exist before the isolation test"
+            exit 1
+          fi
+          printf '%s\n' \
+            '[game]' \
+            'title = "CI_LOCAL_CONFIG_POISON"' \
+            > stella.local.cfg
+
       - name: Run tests
+        env:
+          STELLA_DISABLE_LOCAL_CONFIG: "1"
         run: godot -s addons/gut/gut_cmdln.gd --headless 2>&1
         timeout-minutes: 5
 
@@ -63,6 +311,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          clean: true
 
       - name: Setup Godot
         uses: chickensoft-games/setup-godot@v2
@@ -82,8 +332,25 @@ jobs:
       - name: Verify Lavapipe ICD
         run: test -f /usr/share/vulkan/icd.d/lvp_icd.json
 
+      - name: Create synthetic local override
+        shell: bash
+        run: |
+          if git ls-files --error-unmatch stella.local.cfg >/dev/null 2>&1; then
+            echo "::error::stella.local.cfg must not be tracked"
+            exit 1
+          fi
+          if test -e stella.local.cfg; then
+            echo "::error::stella.local.cfg must not exist before the isolation test"
+            exit 1
+          fi
+          printf '%s\n' \
+            '[game]' \
+            'title = "CI_LOCAL_CONFIG_POISON"' \
+            > stella.local.cfg
+
       - name: Run pixel tests with Mesa Lavapipe
         env:
+          STELLA_DISABLE_LOCAL_CONFIG: "1"
           STELLA_EXPECT_RENDERING_METHOD: mobile
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
         run: >-

@@ -12,13 +12,10 @@ static func reset_for_test(runtime: Node, tree: SceneTree) -> void:
 	if not SignalBus.dialogue_requested.is_connected(_capture_dialogue_request):
 		SignalBus.dialogue_requested.connect(_capture_dialogue_request)
 	_active_dialogue_request = null
-	# Detach the context before waking a blocking handler. ScenarioEngine.run()
-	# uses identity as its generation guard; reversing these steps can let the
-	# old run reach scenario_ended and trigger title navigation / auto-save.
-	var old_context: ScenarioContext = runtime.engine.context
-	runtime.engine.context = null
-	if old_context != null:
-		old_context.is_finished = true
+	# Detach and invalidate the run before waking a blocking handler. Reversing
+	# these steps can let an old continuation publish lifecycle events into the
+	# replacement test session.
+	runtime.engine.cancel_current_run()
 	SignalBus.engine_abort_requested.emit()
 
 	runtime.settings_manager.reset_to_default()

@@ -1,7 +1,17 @@
 ## Top-level scenario structure containing metadata and an ordered list of scenes.
 class_name ScenarioData extends RefCounted
 
+const SOURCE_IDENTITY_VERSION := 1
+const AUTHORED_IDENTITY_VERSION := 1
+
 var id: String = ""
+## Versioned identity of the authored source location. Runtime derives this
+## from the normalized scenario path and stores only its SHA-256 digest, so two
+## files with the same basename cannot share saves while private paths are not
+## copied into save JSON. An empty value means the ScenarioData was constructed
+## programmatically and is not eligible for scenario-aware disk restore until
+## the author assigns a stable key with set_authored_identity().
+var source_identity: String = ""
 var title: String = ""
 ## Canonical authored source used by persistent command identities. Parsed
 ## scenarios keep their full resource path so equal basenames in different
@@ -28,6 +38,32 @@ var dialogue_profile_provenance: Dictionary = {}
 ## StellaRuntime surfaces these messages through push_error / push_warning after
 ## parsing; the parser itself remains silent so tests can assert against this list.
 var diagnostics: Array = []
+
+
+static func make_source_identity(source_path: String) -> String:
+	var normalized_path := source_path.replace("\\", "/")
+	if normalized_path.is_empty():
+		return ""
+	normalized_path = normalized_path.simplify_path()
+	return "stella-source-v%d:sha256:%s" % [
+		SOURCE_IDENTITY_VERSION,
+		normalized_path.sha256_text(),
+	]
+
+
+## Assign a stable, author-controlled identity to ScenarioData constructed by
+## an extension instead of DslParser. The authored key is hashed before it is
+## persisted; callers must keep the same non-secret key across releases that
+## should share saves and deliberately change it for incompatible content.
+func set_authored_identity(authored_key: String) -> Error:
+	var normalized_key := authored_key.strip_edges()
+	if normalized_key.is_empty():
+		return ERR_INVALID_PARAMETER
+	source_identity = "stella-authored-v%d:sha256:%s" % [
+		AUTHORED_IDENTITY_VERSION,
+		normalized_key.sha256_text(),
+	]
+	return OK
 
 
 func get_dialogue_profile(profile_name: String) -> Dictionary:

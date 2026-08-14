@@ -44,6 +44,61 @@ class MockProvider:
 		data = snapshot.duplicate()
 
 
+func _make_validation_scenario() -> ScenarioData:
+	var data := ScenarioData.new()
+	data.id = "save_validation"
+	data.source_identity = ScenarioData.make_source_identity(
+		"res://tests/save_validation.stla",
+	)
+	var scene := SceneData.new()
+	scene.id = "start"
+	scene.commands = [CommandData.new(), CommandData.new()]
+	data.scenes = [scene]
+	return data
+
+
+func _make_valid_save_snapshot() -> Dictionary:
+	return {
+		"scenario_context": {
+			"scenario_id": "save_validation",
+			"scenario_source_identity": ScenarioData.make_source_identity(
+				"res://tests/save_validation.stla",
+			),
+			"scene_index": 0,
+			"command_index": 1,
+			"is_finished": false,
+			"return_stack": [{"scene_index": 0, "command_index": 2}],
+			"dialogue_mode": "nvl",
+			"nvl_page_epoch": 1,
+			"nvl_page_entries": [{
+				"command_uid": 1,
+				"scene_index": 0,
+				"command_index": 1,
+				"profile_name": "",
+				"character": "probe",
+				"segments": [{"text": "safe", "voice": ""}],
+			}],
+		},
+		"variable_store": {"scenario": {}, "global": {}},
+		"presentation_state": {
+			"bg": "",
+			"stage_layers": {},
+			"bgm": "",
+		},
+		"read_flags": {"save_validation:start:0": true},
+		"unlocks": {"cg": ["safe"]},
+		"flowchart_visited": {
+			"visited_chapters": {},
+			"visited_chapter_edges": {},
+		},
+		"flowchart_state": {
+			"current_path": [],
+			"chapter_snapshots": {},
+		},
+		"timestamp": 1.0,
+	}
+
+
 func test_register_provider():
 	var provider = MockProvider.new("test")
 	_manager.register_provider(provider)
@@ -147,6 +202,181 @@ func test_load_merges_real_monotonic_providers():
 
 func test_load_nonexistent_slot_returns_false():
 	assert_false(_manager.load_save(999))
+
+
+func test_read_save_data_rejects_non_dictionary_provider_snapshot():
+	var provider := MockProvider.new("vars")
+	provider.data = {"preserved": true}
+	_manager.register_provider(provider)
+	_manager._ensure_dir()
+	var file := FileAccess.open(_save_dir + "save_1.json", FileAccess.WRITE)
+	file.store_string('{"vars":"invalid","timestamp":1}')
+	file.close()
+
+	assert_null(_manager.read_save_data(1))
+	assert_false(_manager.load_save(1))
+	assert_eq(provider.data, {"preserved": true})
+
+
+func test_scenario_aware_read_rejects_semantically_invalid_position():
+	_manager._ensure_dir()
+	var invalid := _make_valid_save_snapshot()
+	invalid["scenario_context"]["scene_index"] = 999999
+	var file := FileAccess.open(_save_dir + "save_1.json", FileAccess.WRITE)
+	file.store_string(JSON.stringify(invalid))
+	file.close()
+
+	# A generic tool may still inspect a structurally valid snapshot, while the
+	# Runtime transaction always supplies the destination ScenarioData.
+	assert_not_null(_manager.read_save_data(1))
+	assert_null(_manager.read_save_data(1, _make_validation_scenario()))
+
+
+func test_scenario_identity_distinguishes_same_basename_and_rejects_legacy():
+	var scenario_a := _make_validation_scenario()
+	scenario_a.id = "shared"
+	scenario_a.source_identity = ScenarioData.make_source_identity(
+		"res://tests/review_a/shared.stla",
+	)
+	var scenario_b := _make_validation_scenario()
+	scenario_b.id = "shared"
+	scenario_b.source_identity = ScenarioData.make_source_identity(
+		"res://tests/review_b/shared.stla",
+	)
+	var snapshot := _make_valid_save_snapshot()
+	snapshot["scenario_context"]["scenario_id"] = "shared"
+	snapshot["scenario_context"]["scenario_source_identity"] = (
+		scenario_a.source_identity
+	)
+
+	assert_true(scenario_a.source_identity.begins_with(
+		"stella-source-v1:sha256:",
+	))
+	assert_false(scenario_a.source_identity.contains("review_a"),
+		"save identity must not copy the authored source path")
+	assert_eq(
+		scenario_a.source_identity,
+		ScenarioData.make_source_identity(
+			"res://tests/review_a/../review_a/shared.stla",
+		),
+		"equivalent normalized paths must share an identity",
+	)
+	assert_true(_manager.validate_data_for_scenario(snapshot, scenario_a))
+	assert_false(_manager.validate_data_for_scenario(snapshot, scenario_b),
+		"same-basename authored sources must not share persisted state")
+
+	var legacy := snapshot.duplicate(true)
+	legacy["scenario_context"].erase("scenario_source_identity")
+	assert_false(_manager.validate_data_for_scenario(legacy, scenario_a),
+		"pre-v1 saves require explicit migration and must fail closed")
+
+
+func test_public_parser_identity_keeps_extension_saves_eligible():
+	var parsed := DslParser.parse(
+		DslLexer.tokenize('@scene start "Start"\n「one」\n「two」'),
+		"public_parser",
+		"res://extensions/public_parser.stla",
+	)
+	var snapshot := _make_valid_save_snapshot()
+	snapshot["scenario_context"]["scenario_id"] = parsed.id
+	snapshot["scenario_context"]["scenario_source_identity"] = (
+		parsed.source_identity
+	)
+	assert_false(parsed.source_identity.is_empty())
+	assert_true(_manager.validate_data_for_scenario(snapshot, parsed))
+	_manager._ensure_dir()
+	var file := FileAccess.open(_save_dir + "save_1.json", FileAccess.WRITE)
+	file.store_string(JSON.stringify(snapshot))
+	file.close()
+	assert_not_null(_manager.read_save_data(1, parsed),
+		"public-parser scenarios must remain eligible for scenario-aware reads")
+
+
+func test_scenario_aware_read_accepts_current_read_flag_snapshot():
+	var scenario := _make_validation_scenario()
+	var snapshot := _make_valid_save_snapshot()
+	var read_flags := ReadFlagManager.new()
+	read_flags.mark_dialogue_read(
+		scenario.source_identity,
+		"start",
+		1,
+	)
+	snapshot["read_flags"] = read_flags.capture_snapshot()
+	assert_true(_manager.validate_data_for_scenario(snapshot, scenario))
+
+	var invalid_record := snapshot.duplicate(true)
+	invalid_record["read_flags"]["flags"][0]["command_uid"] = -1
+	assert_false(_manager.validate_data_for_scenario(invalid_record, scenario))
+	var invalid_legacy := snapshot.duplicate(true)
+	invalid_legacy["read_flags"]["legacy_flags"] = [1]
+	assert_false(_manager.validate_data_for_scenario(invalid_legacy, scenario))
+	var invalid_version := snapshot.duplicate(true)
+	invalid_version["read_flags"]["version"] = 999
+	assert_false(_manager.validate_data_for_scenario(invalid_version, scenario))
+
+
+func test_programmatic_scenario_can_set_stable_authored_identity():
+	var scenario := _make_validation_scenario()
+	var previous_identity := scenario.source_identity
+	assert_eq(scenario.set_authored_identity("my_extension:route-a:v1"), OK)
+	assert_true(scenario.source_identity.begins_with(
+		"stella-authored-v1:sha256:",
+	))
+	assert_false(scenario.source_identity.contains("my_extension"),
+		"authored key must not be copied into save identity")
+	var snapshot := _make_valid_save_snapshot()
+	snapshot["scenario_context"]["scenario_source_identity"] = (
+		scenario.source_identity
+	)
+	assert_true(_manager.validate_data_for_scenario(snapshot, scenario))
+	_manager._ensure_dir()
+	var file := FileAccess.open(_save_dir + "save_2.json", FileAccess.WRITE)
+	file.store_string(JSON.stringify(snapshot))
+	file.close()
+	assert_not_null(_manager.read_save_data(2, scenario),
+		"programmatic scenarios with an authored identity must remain loadable")
+	var assigned_identity := scenario.source_identity
+	assert_eq(scenario.set_authored_identity("  "), ERR_INVALID_PARAMETER)
+	assert_eq(scenario.source_identity, assigned_identity,
+		"invalid assignment must preserve the existing identity")
+	assert_ne(scenario.source_identity, previous_identity)
+
+
+func test_save_validation_covers_builtin_provider_field_types_atomically():
+	var scenario := _make_validation_scenario()
+	var valid := _make_valid_save_snapshot()
+	assert_true(_manager.validate_data_for_scenario(valid, scenario))
+
+	var corruptions: Array[Dictionary] = []
+	var invalid_command := valid.duplicate(true)
+	invalid_command["scenario_context"]["command_index"] = 999999
+	corruptions.append(invalid_command)
+	var invalid_return_stack := valid.duplicate(true)
+	invalid_return_stack["scenario_context"]["return_stack"] = ["invalid"]
+	corruptions.append(invalid_return_stack)
+	var invalid_nvl := valid.duplicate(true)
+	invalid_nvl["scenario_context"]["nvl_page_entries"][0]["segments"] = [1]
+	corruptions.append(invalid_nvl)
+	var invalid_variables := valid.duplicate(true)
+	invalid_variables["variable_store"]["scenario"] = []
+	corruptions.append(invalid_variables)
+	var invalid_presentation := valid.duplicate(true)
+	invalid_presentation["presentation_state"]["stage_layers"] = {
+		"hero": {"position": [1.0]},
+	}
+	corruptions.append(invalid_presentation)
+	var invalid_unlocks := valid.duplicate(true)
+	invalid_unlocks["unlocks"]["cg"] = "invalid"
+	corruptions.append(invalid_unlocks)
+	var invalid_visited := valid.duplicate(true)
+	invalid_visited["flowchart_visited"]["visited_chapters"] = {"intro": 1}
+	corruptions.append(invalid_visited)
+	var invalid_flowchart := valid.duplicate(true)
+	invalid_flowchart["flowchart_state"]["current_path"] = [1]
+	corruptions.append(invalid_flowchart)
+
+	for invalid: Dictionary in corruptions:
+		assert_false(_manager.validate_data_for_scenario(invalid, scenario))
 
 
 func test_has_save():

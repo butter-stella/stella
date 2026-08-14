@@ -226,9 +226,18 @@ func test_return_to_title_closes_overlay():
 	runtime.show_settings()
 	assert_not_null(runtime._current_overlay)
 
-	# return_to_title should close the overlay
+	# Cleanup is intentionally not committed until the deferred scene transaction
+	# confirms its final current_scene.
 	runtime.return_to_title()
+	assert_not_null(runtime._current_overlay)
+	var completed: bool = await wait_until(
+		func() -> bool: return not runtime._return_to_title_pending,
+		2.0,
+		"return_to_title confirms the new current_scene",
+	)
+	assert_true(completed)
 	assert_null(runtime._current_overlay)
+	assert_eq(runtime.game_state.current_state, GameStateMachine.State.TITLE)
 
 
 func test_start_game_closes_overlay():
@@ -265,10 +274,19 @@ func test_continue_game_falls_back_to_config_scenario_path():
 
 	assert_ne(runtime.config.scenario_path, "", "Config must have scenario_path for this test")
 
-	# Create a quick save so continue has something to load
+	# Create an unfinished real scenario snapshot so continue_game blocks on its
+	# first command instead of immediately emitting scenario_ended and queuing an
+	# unrelated return_to_title transaction into the following test.
+	runtime._cancel_active_gameplay()
+	runtime._prepare_scenario(runtime.config.scenario_path)
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	runtime.quick_save()
-	var result = runtime.continue_game()
+	var result = await runtime.continue_game()
+	assert_true(result)
 	assert_ne(runtime._last_scenario_path, "", "continue_game should resolve scenario path from config")
+	runtime._cancel_active_gameplay()
+	await get_tree().process_frame
+	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
 
 	# Clean up
 	runtime._last_scenario_path = orig_path
@@ -411,7 +429,12 @@ func test_continue_from_save_overlay_not_closed_before_scene_change():
 	var orig_path = runtime._last_scenario_path
 	runtime._last_scenario_path = runtime.config.scenario_path
 
-	# Create a save to load
+	# Create a save from a live unfinished context. SaveManager intentionally
+	# retains the most recently registered provider, so relying on a context left
+	# by an earlier test can persist an already-finished scenario and make the
+	# loaded engine auto-return before this test can observe it.
+	runtime._cancel_active_gameplay()
+	runtime._prepare_scenario(runtime.config.scenario_path)
 	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	runtime.save(60)
 
