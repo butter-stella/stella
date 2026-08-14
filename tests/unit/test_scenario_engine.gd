@@ -127,6 +127,55 @@ func test_engine_executes_multiple_commands_in_order():
 	assert_eq(handler.executed[2].get_string("text"), "Third")
 
 
+func test_parallel_handler_rejects_blocking_dialogue_children_atomically() -> void:
+	var read_flags := ReadFlagManager.new()
+	var dialogue_handler := DialogueHandler.new(read_flags)
+	var parallel_handler := ParallelHandler.new()
+	parallel_handler.set_registry(_registry)
+	_registry.register(dialogue_handler)
+	_registry.register(parallel_handler)
+	var first := _build_cmd("dialogue", {"text": "First"})
+	var second := _build_cmd("dialogue", {"text": "Second"})
+	var parallel := _build_cmd("parallel", {"commands": [first, second]})
+	var scenario := _build_scenario([{"id": "start", "commands": []}])
+	scenario.scenes[0].commands.append(parallel)
+	_engine.load_scenario(scenario)
+	await _engine.run()
+
+	assert_push_warning("ParallelHandler: blocking 'dialogue' child is not allowed")
+	assert_ne(first.uid, second.uid)
+	assert_false(read_flags.is_dialogue_read(
+		"id:test", "test", "start", first.uid, 0))
+	assert_false(read_flags.is_dialogue_read(
+		"id:test", "test", "start", second.uid, 0))
+
+
+func test_dialogue_request_abort_stops_engine_before_next_command() -> void:
+	var read_flags := ReadFlagManager.new()
+	_registry.register(DialogueHandler.new(read_flags))
+	var scenario := _build_scenario([{
+		"id": "start",
+		"commands": [
+			{"type": "dialogue", "params": {"text": "First"}},
+			{"type": "dialogue", "params": {"text": "Must not run"}},
+		],
+	}])
+	var shown: Array[String] = []
+	var on_request := func(request: DialogueRequest) -> void:
+		shown.append(request.get_segments()[0].get("text", ""))
+		request.abort()
+	SignalBus.dialogue_requested.connect(on_request)
+
+	_engine.load_scenario(scenario)
+	await _engine.run()
+	SignalBus.dialogue_requested.disconnect(on_request)
+
+	assert_eq(shown, ["First"])
+	assert_eq(_engine.context.current_command_index, 0,
+		"abort must not look like successful command completion")
+	assert_true(_engine.context.is_finished)
+
+
 func test_engine_advances_to_next_scene():
 	var handler = TrackingHandler.new("dialogue")
 	_registry.register(handler)

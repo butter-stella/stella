@@ -4,6 +4,7 @@ class_name DslParser extends RefCounted
 
 const INTERNAL_DIALOGUE_MODE_EVENT := "__dialogue_mode_event"
 const INTERNAL_IF_NODE := "__if_node"
+const _PARALLEL_BLOCKING_COMMANDS := ["dialogue", "choice", "wait"]
 const _STAGE_TRANSITIONS := [
 	"cut", "none", "fade", "move",
 	"slide_left", "slide_right", "slide_up", "slide_down",
@@ -31,6 +32,7 @@ static func parse(
 	var data = ScenarioData.new()
 	data.id = scenario_id
 	data.source_identity = ScenarioData.make_source_identity(source_path)
+	data.source_path = source_path
 	var profile_collection := DialogueProfileParser.collect(tokens, source_path)
 	var dialogue_profiles: Dictionary = profile_collection["profiles"]
 	_register_dialogue_profiles(data, dialogue_profiles)
@@ -55,6 +57,7 @@ static func parse(
 	var in_parallel: bool = false
 	var parallel_commands: Array = []
 	var parallel_start_line: int = 0
+	var parallel_invalid: bool = false
 
 	# @combine state — groups multiple dialogue lines with per-segment named-stage
 	# cues into a single dialogue command with a `segments` array.
@@ -99,6 +102,7 @@ static func parse(
 					in_parallel = false
 					parallel_commands.clear()
 					parallel_start_line = 0
+					parallel_invalid = false
 				if not if_stack.is_empty():
 					var unclosed_if_line := int(if_stack[0].get("line", 0))
 					_record_diagnostic(
@@ -185,7 +189,12 @@ static func parse(
 						token.line,
 					)
 				elif cmd_name == "choice":
-					choice_cmd = _parse_choice_command(token)
+					if in_parallel:
+						_record_parallel_blocking_diagnostic(
+							data, "choice", token.line)
+						parallel_invalid = true
+					else:
+						choice_cmd = _parse_choice_command(token)
 				elif cmd_name == "if":
 					var nested_if := _create_if_context(token, current_scene, data)
 					if if_stack.size() > 0:
@@ -269,14 +278,18 @@ static func parse(
 						if combine_cmd and current_scene:
 							_add_command(combine_cmd, current_scene, if_stack)
 					elif in_parallel:
-						var parallel_cmd = _make_cmd(
-							"parallel", {"commands": parallel_commands.duplicate()}
-						)
+						var parallel_cmd: CommandData = null
+						if not parallel_invalid:
+							parallel_cmd = _make_cmd(
+								"parallel", {"commands": parallel_commands.duplicate()}
+							)
 						parallel_commands.clear()
 						parallel_start_line = 0
 						in_parallel = false
+						parallel_invalid = false
 						if current_scene:
-							_add_command(parallel_cmd, current_scene, if_stack)
+							if parallel_cmd != null:
+								_add_command(parallel_cmd, current_scene, if_stack)
 					elif if_stack.size() > 0:
 						# One @end closes a complete @if/@elif chain. A nested root
 						# remains as an AST node in its parent's active branch; only a
@@ -315,9 +328,20 @@ static func parse(
 					# profiles may be referenced before their declaration.
 					pass
 				elif cmd_name == "parallel":
-					in_parallel = true
-					parallel_commands.clear()
-					parallel_start_line = token.line
+					if in_parallel:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: nested @parallel is not allowed (line %d)"
+							% token.line,
+							token.line,
+						)
+						parallel_invalid = true
+					else:
+						in_parallel = true
+						parallel_commands.clear()
+						parallel_start_line = token.line
+						parallel_invalid = false
 				elif cmd_name == "combine":
 					in_combine = true
 					combine_segments = []
@@ -337,7 +361,12 @@ static func parse(
 								cmd.params.duplicate(true)
 							)
 						elif in_parallel:
-							parallel_commands.append(cmd)
+							if cmd.type in _PARALLEL_BLOCKING_COMMANDS:
+								_record_parallel_blocking_diagnostic(
+									data, cmd.type, token.line)
+								parallel_invalid = true
+							else:
+								parallel_commands.append(cmd)
 						else:
 							_add_command(cmd, current_scene, if_stack)
 
@@ -362,6 +391,10 @@ static func parse(
 							"stage_ops": combine_pending_stage_ops.duplicate(true),
 						})
 						combine_pending_stage_ops = []
+					elif in_parallel:
+						_record_parallel_blocking_diagnostic(
+							data, "dialogue", token.line)
+						parallel_invalid = true
 					else:
 						_add_command(cmd, current_scene, if_stack)
 
@@ -385,6 +418,10 @@ static func parse(
 							"stage_ops": combine_pending_stage_ops.duplicate(true),
 						})
 						combine_pending_stage_ops = []
+					elif in_parallel:
+						_record_parallel_blocking_diagnostic(
+							data, "dialogue", token.line)
+						parallel_invalid = true
 					else:
 						_add_command(cmd, current_scene, if_stack)
 
@@ -404,7 +441,12 @@ static func parse(
 				else:
 					var cmd = _parse_monologue(token)
 					if cmd and current_scene:
-						_add_command(cmd, current_scene, if_stack)
+						if in_parallel:
+							_record_parallel_blocking_diagnostic(
+								data, "dialogue", token.line)
+							parallel_invalid = true
+						else:
+							_add_command(cmd, current_scene, if_stack)
 
 			DslToken.Type.CHOICE_OPTION:
 				if in_combine:
@@ -415,7 +457,7 @@ static func parse(
 						% token.line,
 						token.line,
 					)
-				else:
+				elif not in_parallel:
 					pending_options.append(_parse_choice_option(token))
 
 		i += 1
@@ -461,8 +503,153 @@ static func parse(
 	# from the in-line scan are already line-ordered, but post-parse errors
 	# (empty chapter) get appended at the end and need reordering.
 	data.diagnostics.sort_custom(func(a, b): return int(a.get("line", 0)) < int(b.get("line", 0)))
+	data.content_fingerprint = _fingerprint_scenario(data)
 
 	return data
+
+
+## Hash normalized validated IR, not source spelling. Comments, line numbers,
+## equivalent whitespace/quotes/numbers, and parser-generated condition scene
+## names cannot change runtime behavior and therefore keep read history. Any
+## change to the resulting commands, profiles, chapters, or scene topology
+## changes the identity and fails closed.
+static func _fingerprint_scenario(data: ScenarioData) -> String:
+	var synthetic_scene_ids: Dictionary = {}
+	var synthetic_index := 0
+	for scene_value in data.scenes:
+		var scene: SceneData = scene_value
+		if (
+			scene.declared_line == 0
+			and (
+				scene.id.begins_with("__if_")
+				or scene.id.begins_with("__elif_")
+			)
+		):
+			synthetic_scene_ids[scene.id] = "@synthetic:%d" % synthetic_index
+			synthetic_index += 1
+
+	var chapters: Array = []
+	for chapter_value in data.chapters:
+		var chapter: ChapterData = chapter_value
+		chapters.append([
+			chapter.id,
+			chapter.display_name,
+			_semantic_value(chapter.scene_ids, synthetic_scene_ids),
+		])
+
+	var scenes: Array = []
+	for scene_value in data.scenes:
+		var scene: SceneData = scene_value
+		var commands: Array = []
+		for command_value in scene.commands:
+			if command_value is CommandData:
+				commands.append(_semantic_command(
+					command_value, synthetic_scene_ids))
+		scenes.append([
+			_normalize_scene_reference(scene.id, synthetic_scene_ids),
+			scene.chapter_id,
+			commands,
+			_semantic_value(
+				scene.dialogue_mode_events_on_exit, synthetic_scene_ids),
+		])
+
+	var semantic_ir := [
+		["chapters", chapters],
+		["dialogue_profiles", _semantic_value(
+			data.dialogue_profiles, synthetic_scene_ids)],
+		["scenes", scenes],
+	]
+	return JSON.stringify(semantic_ir).sha256_text()
+
+
+static func _semantic_command(
+	command: CommandData,
+	synthetic_scene_ids: Dictionary,
+) -> Array:
+	return [
+		command.type,
+		_semantic_value(command.params, synthetic_scene_ids),
+		_semantic_value(
+			command.dialogue_mode_events_before, synthetic_scene_ids),
+		_semantic_value(
+			command.dialogue_mode_events_after, synthetic_scene_ids),
+		_semantic_value(
+			command.dialogue_mode_events_on_true_branch, synthetic_scene_ids),
+		_semantic_value(
+			command.dialogue_mode_events_on_false_branch, synthetic_scene_ids),
+	]
+
+
+static func _semantic_value(
+	value: Variant,
+	synthetic_scene_ids: Dictionary,
+	key_hint: String = "",
+) -> Variant:
+	match typeof(value):
+		TYPE_NIL, TYPE_BOOL, TYPE_INT:
+			return value
+		TYPE_FLOAT:
+			var numeric: float = value
+			return 0.0 if numeric == 0.0 else numeric
+		TYPE_STRING, TYPE_STRING_NAME:
+			var text := String(value)
+			if key_hint in ["target", "then_jump", "else_jump", "jump"]:
+				return _normalize_scene_reference(text, synthetic_scene_ids)
+			if key_hint in ["if", "condition"]:
+				return ExpressionEvaluator.semantic_key(text)
+			return text
+		TYPE_VECTOR2:
+			var vector: Vector2 = value
+			return ["Vector2", vector.x, vector.y]
+		TYPE_VECTOR4:
+			var vector: Vector4 = value
+			return ["Vector4", vector.x, vector.y, vector.z, vector.w]
+		TYPE_COLOR:
+			var color: Color = value
+			return ["Color", color.r, color.g, color.b, color.a]
+		TYPE_ARRAY:
+			var items: Array = []
+			for item in value:
+				items.append(_semantic_value(item, synthetic_scene_ids))
+			return items
+		TYPE_DICTIONARY:
+			var dictionary: Dictionary = value
+			var keys := dictionary.keys()
+			keys.sort_custom(func(a, b): return String(a) < String(b))
+			var entries: Array = []
+			for key_value in keys:
+				var key := String(key_value)
+				entries.append([
+					key,
+					_semantic_value(
+						dictionary[key_value], synthetic_scene_ids, key),
+				])
+			return entries
+		TYPE_OBJECT:
+			if value is CommandData:
+				return _semantic_command(value, synthetic_scene_ids)
+	return ["unsupported", type_string(typeof(value))]
+
+
+static func _normalize_scene_reference(
+	scene_id: String,
+	synthetic_scene_ids: Dictionary,
+) -> String:
+	return String(synthetic_scene_ids.get(scene_id, scene_id))
+
+
+static func _record_parallel_blocking_diagnostic(
+	data: ScenarioData,
+	command_type: String,
+	line: int,
+) -> void:
+	_record_diagnostic(
+		data,
+		"error",
+		"DslParser: blocking '%s' command is not allowed inside @parallel (line %d)"
+		% [command_type, line],
+		line,
+	)
 
 
 static func _add_command(cmd: CommandData, scene: SceneData, if_stack: Array) -> void:

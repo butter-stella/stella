@@ -7,7 +7,26 @@ signal scenario_ended(scenario_id: String)
 signal scene_changed(scene_id: String)
 signal command_executed(command_data: CommandData)
 
-var context: ScenarioContext
+var _context_owner_state: Dictionary = {}
+var context: ScenarioContext:
+	set(value):
+		if context == value:
+			return
+		var previous_context := context
+		if not _context_owner_state.is_empty():
+			_context_owner_state["current"] = false
+		if previous_context != null:
+			previous_context.is_finished = true
+		context = value
+		_context_owner_state = {"current": context != null}
+		if context != null:
+			context.bind_runtime_owner(_context_owner_state)
+		# Resolve the old waiter only after the new property value is visible. Its
+		# synchronous continuation then observes both ownership guards as stale.
+		# ScenarioContext is the execution-generation token, so this one request
+		# cancels dialogue, wait, choice, and extension handlers that joined it.
+		if previous_context != null:
+			previous_context.request_cancellation()
 var registry: CommandRegistry
 var _run_generation: int = 0
 var _emitting_scenario_end_generation: int = -1
@@ -17,7 +36,7 @@ var _emitting_scenario_end_context: ScenarioContext = null
 func stop() -> void:
 	_run_generation += 1
 	if context != null:
-		context.is_finished = true
+		context.request_cancellation()
 
 
 ## Invalidate synchronous or suspended control flow while retaining the active
@@ -61,7 +80,6 @@ func is_emitting_active_scenario_end() -> bool:
 
 
 func load_scenario(data: ScenarioData) -> void:
-	stop()
 	# Assign stable per-command uids so BacklogManager's divergence
 	# detection works against a position-stable identity (issue #88).
 	data.assign_command_uids()
@@ -134,6 +152,8 @@ func run() -> void:
 			await handler.execute(cmd, ctx)
 			if not _owns_run(ctx, generation):
 				return
+			if ctx.is_finished:
+				break
 		ctx.apply_dialogue_mode_events(cmd.dialogue_mode_events_after)
 		if handler:
 			command_executed.emit(cmd)

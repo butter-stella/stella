@@ -22,10 +22,29 @@ func stop() -> void:
 	is_active = false
 
 
-func should_skip(scenario_id: String, scene_id: String, command_index: int,
-		read_flags: ReadFlagManager, skip_only_read: bool) -> bool:
+func should_skip(
+	scenario_id: String,
+	scene_id: String,
+	command_index: int,
+	read_flags: ReadFlagManager,
+	skip_only_read: bool,
+	scenario_identity: String = "",
+	command_uid: int = -1,
+) -> bool:
 	if not is_active:
 		return false
 	if not skip_only_read:
 		return true
+	# Legacy/programmatic SHOW calls may not own a scenario command. Preserve the
+	# historical permissive behavior because there is no authored address to gate.
+	if command_index < 0 and command_uid < 0:
+		return true
+	if not scenario_identity.is_empty() and command_uid >= 0:
+		return read_flags.is_dialogue_read(
+			scenario_identity,
+			scenario_id,
+			scene_id,
+			command_uid,
+			command_index,
+		)
 	return read_flags.is_read(scenario_id, scene_id, command_index)

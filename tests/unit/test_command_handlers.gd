@@ -5,6 +5,7 @@ extends GutTest
 var _registry: CommandRegistry
 var _context: ScenarioContext
 var _bus: Node
+var _read_flags: ReadFlagManager
 
 
 func before_each():
@@ -16,6 +17,7 @@ func before_each():
 	scene.id = "start"
 	scenario.scenes.append(scene)
 	_context = ScenarioContext.new(scenario)
+	_read_flags = ReadFlagManager.new()
 	# Get the autoloaded SignalBus
 	_bus = get_tree().root.get_node("SignalBus")
 
@@ -27,10 +29,33 @@ func _build_cmd(type: String, params: Dictionary = {}) -> CommandData:
 	return cmd
 
 
+func _advance_next_dialogue() -> void:
+	_bus.dialogue_requested.connect(
+		func(request: DialogueRequest): request.advance(),
+		CONNECT_ONE_SHOT,
+	)
+
+
+func _dialogue_is_read(
+	scenario_identity: String = "id:test",
+	legacy_scenario_id: String = "test",
+	scene_id: String = "start",
+	command_uid: int = 0,
+	legacy_command_index: int = 0,
+) -> bool:
+	return _read_flags.is_dialogue_read(
+		scenario_identity,
+		legacy_scenario_id,
+		scene_id,
+		command_uid,
+		legacy_command_index,
+	)
+
+
 # --- DialogueHandler ---
 
 func test_dialogue_handler_emits_signal():
-	var handler = DialogueHandler.new()
+	var handler = DialogueHandler.new(_read_flags)
 	var received: Array = []
 	_bus.show_dialogue.connect(func(c, segs, m):
 		received.append({"character": c, "segments": segs, "mode": m})
@@ -43,8 +68,9 @@ func test_dialogue_handler_emits_signal():
 		"mode": "adv",
 	})
 
-	# Complete advance immediately so handler doesn't block
-	_bus.advance_requested.emit.call_deferred()
+	# Complete synchronously from SHOW so an acknowledgement cannot be lost
+	# between emission and waiter installation.
+	_advance_next_dialogue()
 	await handler.execute(cmd, _context)
 
 	assert_eq(received.size(), 1)
@@ -52,10 +78,174 @@ func test_dialogue_handler_emits_signal():
 	assert_eq(received[0]["segments"].size(), 1)
 	assert_eq(received[0]["segments"][0]["text"], "Hello!")
 	assert_eq(received[0]["segments"][0]["voice"], "voice_001")
+	assert_true(_dialogue_is_read(),
+		"normal dialogue completion records the current command")
+
+
+func test_dialogue_handler_abort_does_not_mark_read() -> void:
+	var handler := DialogueHandler.new(_read_flags)
+	var cmd := _build_cmd("dialogue", {"text": "Interrupted"})
+
+	_bus.dialogue_requested.connect(
+		func(request: DialogueRequest): request.abort(),
+		CONNECT_ONE_SHOT,
+	)
+	await handler.execute(cmd, _context)
+
+	assert_false(_dialogue_is_read(),
+		"an aborted dialogue has not advanced and must stay unread")
+	assert_true(_context.is_finished,
+		"request.abort() cancels the authored command instead of skipping it")
+
+
+func test_dialogue_commit_precedes_compatibility_advance_notification() -> void:
+	var handler := DialogueHandler.new(_read_flags)
+	var cmd := _build_cmd("dialogue", {"text": "Committed first"})
+	cmd.uid = 17
+	var read_during_notification := [false]
+	var on_advance := func() -> void:
+		read_during_notification[0] = _read_flags.is_dialogue_read(
+			"id:test", "test", "start", 17, 0)
+	_bus.advance_requested.connect(on_advance)
+	_bus.dialogue_requested.connect(
+		func(request: DialogueRequest): request.advance(),
+		CONNECT_ONE_SHOT,
+	)
+
+	await handler.execute(cmd, _context)
+	_bus.advance_requested.disconnect(on_advance)
+
+	assert_true(read_during_notification[0],
+		"legacy listeners may run only after owner validation and durable commit")
+
+
+func test_compatibility_listener_reentry_cannot_steal_first_commit() -> void:
+	var handler := DialogueHandler.new(_read_flags)
+	var first := _build_cmd("dialogue", {"text": "First"})
+	first.uid = 20
+	var second := _build_cmd("dialogue", {"text": "Second"})
+	second.uid = 21
+	var requests: Array[DialogueRequest] = []
+	var on_request := func(request: DialogueRequest) -> void:
+		requests.append(request)
+		if requests.size() == 1:
+			request.advance()
+	var reentered := [false]
+	var on_advance := func() -> void:
+		if reentered[0]:
+			return
+		reentered[0] = true
+		handler.execute(second, _context)
+	_bus.dialogue_requested.connect(on_request)
+	_bus.advance_requested.connect(on_advance)
+
+	await handler.execute(first, _context)
+
+	assert_true(_read_flags.is_dialogue_read(
+		"id:test", "test", "start", 20, 0))
+	assert_eq(requests.size(), 2)
+	assert_true(requests[1].get_activation().is_pending())
+	requests[1].abort()
+	_bus.dialogue_requested.disconnect(on_request)
+	_bus.advance_requested.disconnect(on_advance)
+
+
+func test_dialogue_handler_marks_the_position_captured_before_await() -> void:
+	var handler := DialogueHandler.new(_read_flags)
+	var cmd := _build_cmd("dialogue", {"text": "Original"})
+	var second_scene := SceneData.new()
+	second_scene.id = "later"
+	_context.scenario_data.scenes.append(second_scene)
+	var move_then_advance := func(request: DialogueRequest) -> void:
+		_context.current_scene_index = 1
+		_context.current_command_index = 7
+		request.advance()
+	_bus.dialogue_requested.connect(move_then_advance, CONNECT_ONE_SHOT)
+
+	await handler.execute(cmd, _context)
+
+	assert_true(_dialogue_is_read(),
+		"the accepted command identity is stable across an awaited signal")
+	assert_false(_dialogue_is_read("id:test", "test", "later", 7, 7))
+
+
+func test_dialogue_handler_ignores_advance_after_context_was_abandoned() -> void:
+	var handler := DialogueHandler.new(_read_flags)
+	var cmd := _build_cmd("dialogue", {"text": "Abandoned"})
+	var abandon_then_advance := func(request: DialogueRequest) -> void:
+		_context.is_finished = true
+		request.advance()
+	_bus.dialogue_requested.connect(abandon_then_advance, CONNECT_ONE_SHOT)
+
+	await handler.execute(cmd, _context)
+
+	assert_false(_dialogue_is_read(),
+		"a later scenario's advance cannot complete an abandoned context")
+
+
+func test_dialogue_handler_context_replacement_aborts_request_before_late_ack() -> void:
+	var handler := DialogueHandler.new(_read_flags)
+	var engine := ScenarioEngine.new()
+	engine.context = _context
+	var captured: Array[DialogueRequest] = []
+	var replace_context := func(request: DialogueRequest):
+		captured.append(request)
+		engine.context = ScenarioContext.new(_context.scenario_data)
+	_bus.dialogue_requested.connect(replace_context, CONNECT_ONE_SHOT)
+
+	await handler.execute(_build_cmd("dialogue", {"text": "Old"}), _context)
+
+	assert_eq(captured.size(), 1)
+	assert_false(captured[0].advance(),
+		"a replaced context's request stays aborted after a late ack")
+	assert_false(_dialogue_is_read())
+
+
+func test_global_advance_notification_cannot_complete_concurrent_dialogues() -> void:
+	var first_data := ScenarioData.new()
+	first_data.id = "first"
+	var first_scene := SceneData.new()
+	first_scene.id = "start"
+	first_data.scenes = [first_scene]
+	var second_data := ScenarioData.new()
+	second_data.id = "second"
+	var second_scene := SceneData.new()
+	second_scene.id = "start"
+	second_data.scenes = [second_scene]
+	var first_context := ScenarioContext.new(first_data)
+	var second_context := ScenarioContext.new(second_data)
+	var first_command := _build_cmd("dialogue", {"text": "First"})
+	first_command.uid = 5
+	var second_command := _build_cmd("dialogue", {"text": "Second"})
+	second_command.uid = 6
+	var requests: Array[DialogueRequest] = []
+	var capture := func(request: DialogueRequest): requests.append(request)
+	_bus.dialogue_requested.connect(capture)
+	var handler := DialogueHandler.new(_read_flags)
+	handler.execute(first_command, first_context)
+	handler.execute(second_command, second_context)
+	assert_eq(requests.size(), 2)
+
+	_bus.advance_requested.emit()
+	await get_tree().process_frame
+	assert_false(_read_flags.is_dialogue_read(
+		"id:first", "first", "start", 5, 0))
+	assert_false(_read_flags.is_dialogue_read(
+		"id:second", "second", "start", 6, 0))
+
+	assert_true(requests[1].advance())
+	await get_tree().process_frame
+	assert_false(_read_flags.is_dialogue_read(
+		"id:first", "first", "start", 5, 0))
+	assert_true(_read_flags.is_dialogue_read(
+		"id:second", "second", "start", 6, 0),
+		"only the explicitly acknowledged request may commit read state")
+	requests[0].abort()
+	_bus.dialogue_requested.disconnect(capture)
 
 
 func test_dialogue_handler_defaults():
-	var handler = DialogueHandler.new()
+	var handler = DialogueHandler.new(_read_flags)
 	var received: Array = []
 	_bus.show_dialogue.connect(func(_c, segs, m):
 		received.append({
@@ -66,7 +256,7 @@ func test_dialogue_handler_defaults():
 	)
 
 	var cmd = _build_cmd("dialogue", {"text": "Narration"})
-	_bus.advance_requested.emit.call_deferred()
+	_advance_next_dialogue()
 	await handler.execute(cmd, _context)
 
 	assert_eq(received[0]["mode"], "adv")
@@ -75,7 +265,7 @@ func test_dialogue_handler_defaults():
 
 
 func test_dialogue_handler_wraps_single_dialogue_stage_operations():
-	var handler = DialogueHandler.new()
+	var handler = DialogueHandler.new(_read_flags)
 	var received: Array = []
 	_bus.show_dialogue.connect(func(_c, segments, _m): received.append(segments))
 	var stage_ops := [{
@@ -88,7 +278,7 @@ func test_dialogue_handler_wraps_single_dialogue_stage_operations():
 		"stage_ops": stage_ops,
 	})
 
-	_bus.advance_requested.emit.call_deferred()
+	_advance_next_dialogue()
 	await handler.execute(cmd, _context)
 	stage_ops[0]["properties"]["asset"] = "mutated"
 
@@ -99,7 +289,7 @@ func test_dialogue_handler_wraps_single_dialogue_stage_operations():
 
 
 func test_dialogue_handler_passes_segments_through():
-	var handler = DialogueHandler.new()
+	var handler = DialogueHandler.new(_read_flags)
 	var received: Array = []
 	_bus.show_dialogue.connect(func(_c, segs, _m): received.append(segs))
 
@@ -115,7 +305,7 @@ func test_dialogue_handler_passes_segments_through():
 		"segments": segments,
 	})
 
-	_bus.advance_requested.emit.call_deferred()
+	_advance_next_dialogue()
 	await handler.execute(cmd, _context)
 
 	assert_eq(received.size(), 1)
@@ -125,7 +315,7 @@ func test_dialogue_handler_passes_segments_through():
 
 
 func test_dialogue_handler_scopes_compiled_presentation_without_changing_signal_shape():
-	var handler = DialogueHandler.new()
+	var handler = DialogueHandler.new(_read_flags)
 	var received: Array = []
 	_bus.show_dialogue.connect(func(_c, _segments, mode):
 			received.append({
@@ -149,7 +339,7 @@ func test_dialogue_handler_scopes_compiled_presentation_without_changing_signal_
 		},
 	})
 
-	_bus.advance_requested.emit.call_deferred()
+	_advance_next_dialogue()
 	await handler.execute(cmd, _context)
 
 	assert_eq(received.size(), 1)
@@ -172,7 +362,7 @@ func test_dialogue_handler_scopes_compiled_presentation_without_changing_signal_
 
 
 func test_dialogue_handler_keys_nvl_pages_by_runtime_activation() -> void:
-	var handler := DialogueHandler.new()
+	var handler := DialogueHandler.new(_read_flags)
 	var page_keys: Array[String] = []
 	_bus.show_dialogue.connect(func(_c, _segments, mode):
 		if mode == "nvl":
@@ -181,7 +371,7 @@ func test_dialogue_handler_keys_nvl_pages_by_runtime_activation() -> void:
 
 	for mode in ["nvl", "nvl", "adv", "nvl"]:
 		var cmd := _build_cmd("dialogue", {"text": mode, "mode": mode})
-		_bus.advance_requested.emit.call_deferred()
+		_advance_next_dialogue()
 		await handler.execute(cmd, _context)
 
 	var scenario_key := str(_context.get_instance_id())
@@ -340,6 +530,230 @@ func test_mutated_nested_raw_payload_cannot_match_outer_metadata_by_value() -> v
 	_bus.show_dialogue.disconnect(emit_nested)
 	_bus.show_dialogue.disconnect(mutate_nested)
 	_bus.show_dialogue.disconnect(capture_nested)
+
+
+# --- Context-scoped blocking cancellation ---
+
+func test_context_replacement_cancels_click_wait_connections() -> void:
+	var handler := WaitHandler.new()
+	var command := _build_cmd("wait", {"mode": "click"})
+	var advance_connections := SignalBus.advance_requested.get_connections().size()
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	var engine := ScenarioEngine.new()
+	engine.context = _context
+
+	handler.execute(command, _context)
+	assert_eq(SignalBus.advance_requested.get_connections().size(),
+		advance_connections + 1)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1)
+	assert_eq(_context.cancellation_requested.get_connections().size(), 1)
+
+	engine.context = ScenarioContext.new(_context.scenario_data)
+	await get_tree().process_frame
+
+	assert_true(_context.is_cancellation_requested())
+	assert_eq(SignalBus.advance_requested.get_connections().size(),
+		advance_connections,
+		"the retired click wait cannot consume a later run's advance")
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections)
+	assert_eq(_context.cancellation_requested.get_connections().size(), 0)
+
+
+func test_context_replacement_cancels_timer_wait_before_timeout() -> void:
+	var handler := WaitHandler.new()
+	var command := _build_cmd("wait", {"mode": "timer", "duration": 10.0})
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	var engine := ScenarioEngine.new()
+	engine.context = _context
+
+	handler.execute(command, _context)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1)
+	assert_eq(_context.cancellation_requested.get_connections().size(), 1)
+
+	engine.context = ScenarioContext.new(_context.scenario_data)
+	await get_tree().process_frame
+
+	assert_true(_context.is_cancellation_requested())
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections,
+		"a retired timer must release its global abort listener immediately")
+	assert_eq(_context.cancellation_requested.get_connections().size(), 0)
+
+
+func test_context_replacement_cancels_choice_and_rejects_late_selection() -> void:
+	_context.variable_store = VariableStore.new()
+	var handler := ChoiceHandler.new()
+	var command := _build_cmd("choice", {
+		"prompt": "Old choice",
+		"options": [{
+			"id": "old",
+			"label": "Old",
+			"jump": "must_not_apply",
+			"set": {"leaked": "= 1"},
+		}],
+	})
+	var choice_connections := SignalBus.choice_selected.get_connections().size()
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	var engine := ScenarioEngine.new()
+	engine.context = _context
+
+	handler.execute(command, _context)
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections + 1)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1)
+	assert_eq(_context.cancellation_requested.get_connections().size(), 1)
+
+	engine.context = ScenarioContext.new(_context.scenario_data)
+	await get_tree().process_frame
+	SignalBus.choice_selected.emit("old")
+	await get_tree().process_frame
+
+	assert_true(_context.is_cancellation_requested())
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections,
+		"a retired choice cannot consume a later selection")
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections)
+	assert_eq(_context.cancellation_requested.get_connections().size(), 0)
+	assert_eq(_context.pending_jump, "")
+	assert_null(_context.variable_store.get_var("leaked"),
+		"a late selection cannot mutate the retired VariableStore")
+
+
+func test_choice_show_can_select_synchronously_without_losing_completion() -> void:
+	_context.variable_store = VariableStore.new()
+	var handler := ChoiceHandler.new()
+	var command := _build_cmd("choice", {
+		"prompt": "Pick now",
+		"options": [{
+			"id": "picked",
+			"label": "Picked",
+			"jump": "selected_scene",
+		}],
+	})
+	var choice_connections := SignalBus.choice_selected.get_connections().size()
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	SignalBus.choice_show.connect(
+		func(_prompt: String, _options: Array) -> void:
+			SignalBus.choice_selected.emit("picked"),
+		CONNECT_ONE_SHOT,
+	)
+
+	await handler.execute(command, _context)
+
+	assert_eq(_context.pending_jump, "selected_scene",
+		"a synchronous headless selection completes the published choice")
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections)
+	assert_eq(_context.cancellation_requested.get_connections().size(), 0)
+
+
+func test_choice_show_revalidates_owner_after_synchronous_selection() -> void:
+	_context.variable_store = VariableStore.new()
+	var handler := ChoiceHandler.new()
+	var command := _build_cmd("choice", {
+		"prompt": "Retire after selection",
+		"options": [{
+			"id": "picked",
+			"label": "Picked",
+			"jump": "must_not_apply",
+			"set": {"leaked": "= 1"},
+		}],
+	})
+	var hide_count := [0]
+	var on_hide := func() -> void: hide_count[0] += 1
+	SignalBus.choice_hide.connect(on_hide)
+	# Signal callbacks run in connection order: first complete the choice, then
+	# retire its owner before the SHOW emission returns to the handler.
+	SignalBus.choice_show.connect(
+		func(_prompt: String, _options: Array) -> void:
+			SignalBus.choice_selected.emit("picked"),
+		CONNECT_ONE_SHOT,
+	)
+	SignalBus.choice_show.connect(
+		func(_prompt: String, _options: Array) -> void:
+			_context.is_finished = true,
+		CONNECT_ONE_SHOT,
+	)
+
+	await handler.execute(command, _context)
+	SignalBus.choice_hide.disconnect(on_hide)
+
+	assert_eq(hide_count[0], 1,
+		"a published choice is hidden when its owner retires later in SHOW")
+	assert_eq(_context.pending_jump, "",
+		"a cached selection cannot mutate a retired context")
+	assert_null(_context.variable_store.get_var("leaked"),
+		"a cached selection cannot mutate a retired VariableStore")
+
+
+func test_choice_show_can_abort_synchronously_and_hides_presentation() -> void:
+	var handler := ChoiceHandler.new()
+	var command := _build_cmd("choice", {
+		"prompt": "Abort now",
+		"options": [{"id": "stay", "label": "Stay"}],
+	})
+	var choice_connections := SignalBus.choice_selected.get_connections().size()
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	var hide_count := [0]
+	var on_hide := func() -> void: hide_count[0] += 1
+	SignalBus.choice_hide.connect(on_hide)
+	SignalBus.choice_show.connect(
+		func(_prompt: String, _options: Array) -> void:
+			SignalBus.engine_abort_requested.emit(),
+		CONNECT_ONE_SHOT,
+	)
+
+	await handler.execute(command, _context)
+	SignalBus.choice_hide.disconnect(on_hide)
+
+	assert_true(_context.is_cancellation_requested())
+	assert_eq(hide_count[0], 1,
+		"a choice published before synchronous abort must be hidden")
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections)
+	assert_eq(_context.cancellation_requested.get_connections().size(), 0)
+
+
+func test_choice_show_context_replacement_hides_published_choice() -> void:
+	var handler := ChoiceHandler.new()
+	var command := _build_cmd("choice", {
+		"prompt": "Replace now",
+		"options": [{"id": "old", "label": "Old"}],
+	})
+	var engine := ScenarioEngine.new()
+	engine.context = _context
+	var choice_connections := SignalBus.choice_selected.get_connections().size()
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	var hide_count := [0]
+	var on_hide := func() -> void: hide_count[0] += 1
+	SignalBus.choice_hide.connect(on_hide)
+	SignalBus.choice_show.connect(
+		func(_prompt: String, _options: Array) -> void:
+			engine.context = ScenarioContext.new(_context.scenario_data),
+		CONNECT_ONE_SHOT,
+	)
+
+	await handler.execute(command, _context)
+	SignalBus.choice_hide.disconnect(on_hide)
+
+	assert_true(_context.is_cancellation_requested())
+	assert_eq(hide_count[0], 1,
+		"a choice published before synchronous replacement must be hidden")
+	assert_eq(_context.pending_jump, "")
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections)
+	assert_eq(_context.cancellation_requested.get_connections().size(), 0)
 
 
 # --- BgHandler ---

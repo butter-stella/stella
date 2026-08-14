@@ -47,10 +47,10 @@ func test_nvl_profile_accumulates_three_prefixed_entries_and_restores_authored_a
 	_start_scenario_fixture()
 	if not await _wait_for_dialogue(0, "・First"):
 		return
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	if not await _wait_for_dialogue(1, "・First・Second"):
 		return
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	if not await _wait_for_dialogue(2, "・First・Second・Third"):
 		return
 
@@ -77,7 +77,7 @@ func test_nvl_profile_accumulates_three_prefixed_entries_and_restores_authored_a
 	assert_false(adv_chrome.visible)
 	assert_true(quick_menu.visible)
 
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	if not await _wait_for_dialogue(3, "Back in ADV"):
 		return
 
@@ -103,7 +103,7 @@ func test_nvl_profile_accumulates_three_prefixed_entries_and_restores_authored_a
 	assert_eq(text_label.autowrap_mode, TextServer.AUTOWRAP_WORD)
 	assert_false(text_label.clip_contents)
 
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	var finished: bool = await wait_until(
 		func(): return _engine.context.is_finished,
 		1.0,
@@ -121,7 +121,7 @@ func test_nvl_snapshot_restore_rebuilds_the_authored_page() -> void:
 	_start_scenario_fixture()
 	if not await _wait_for_dialogue(0, "・First"):
 		return
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	if not await _wait_for_dialogue(1, "・First・Second"):
 		return
 	var snapshot := _engine.context.capture_snapshot()
@@ -154,7 +154,7 @@ func test_nvl_save_restore_preserves_each_entrys_original_profile_format() -> vo
 	await _start_runtime_fixture_at("cross_profile_restore")
 	if not await _wait_for_runtime_nvl(1, "AOne"):
 		return
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	if not await _wait_for_runtime_nvl(2, "AOne~BTwo"):
 		return
 	var snapshot := _round_trip_context_through_save_file(_engine.context)
@@ -171,7 +171,7 @@ func test_nvl_backlog_rollback_preserves_each_entrys_original_profile_format() -
 	await _start_runtime_fixture_at("cross_profile_restore")
 	if not await _wait_for_runtime_nvl(1, "AOne"):
 		return
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	if not await _wait_for_runtime_nvl(2, "AOne~BTwo"):
 		return
 	var backlog := BacklogManager.new()
@@ -197,7 +197,7 @@ func test_runtime_jump_reentry_starts_a_fresh_nvl_page_after_off() -> void:
 	assert_eq(first_page_key, "%d:1" % _engine.context.get_instance_id())
 	assert_eq(_presenter._active_nvl_page_key, first_page_key)
 
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	if not await _wait_for_runtime_nvl(2, "・Jump page"):
 		return
 	var second_page_key := _runtime_nvl_page_keys[1]
@@ -223,7 +223,7 @@ func test_repeated_call_activates_a_fresh_nvl_page_after_callee_off() -> void:
 	assert_eq(first_page_key, "%d:1" % _engine.context.get_instance_id())
 	assert_eq(_presenter._active_nvl_page_key, first_page_key)
 
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	if not await _wait_for_runtime_nvl(2, "・Called page"):
 		return
 	var second_page_key := _runtime_nvl_page_keys[1]
@@ -245,7 +245,7 @@ func test_true_branch_nvl_page_continues_after_the_conditional() -> void:
 	if not await _wait_for_runtime_nvl(1, "・True branch"):
 		return
 
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	if not await _wait_for_runtime_nvl(2, "・True branch・After branch"):
 		return
 	assert_eq(_presenter._nvl_render_source,
@@ -260,7 +260,7 @@ func test_false_branch_nvl_page_continues_after_the_conditional() -> void:
 	if not await _wait_for_runtime_nvl(1, "・False branch"):
 		return
 
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	if not await _wait_for_runtime_nvl(2, "・False branch・After branch"):
 		return
 	assert_eq(_presenter._nvl_render_source,
@@ -275,7 +275,7 @@ func test_repeated_nvl_directive_without_off_keeps_the_runtime_page() -> void:
 	if not await _wait_for_runtime_nvl(1, "・Repeated one"):
 		return
 
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	if not await _wait_for_runtime_nvl(2, "・Repeated one・Repeated two"):
 		return
 	assert_eq(_presenter._nvl_render_source,
@@ -1081,7 +1081,7 @@ func _assert_nested_runtime_path(
 	var first_page_key := "%d:1" % context_id
 	assert_eq(_runtime_nvl_page_keys[0], first_page_key)
 
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	var branch_visible_text := (
 		"・%s" % branch_text
 		if restarts_page
@@ -1102,7 +1102,7 @@ func _assert_nested_runtime_path(
 	assert_eq(_presenter._active_nvl_page_key, branch_page_key)
 	assert_eq(_engine.context.nvl_page_epoch, expected_epoch)
 
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	var continuation_text := branch_visible_text + "・Nested continuation"
 	if not await _wait_for_runtime_nvl(3, continuation_text):
 		return
@@ -1114,7 +1114,7 @@ func _assert_nested_runtime_path(
 
 
 func _advance_runtime_to_finish(fixture_name: String) -> void:
-	SignalBus.advance_requested.emit()
+	_presenter.request_current_dialogue_advance()
 	var finished: bool = await wait_until(
 		func(): return _engine.context.is_finished,
 		1.0,
