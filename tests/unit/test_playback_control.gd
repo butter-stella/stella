@@ -161,6 +161,35 @@ func test_v2_accepts_exact_json_integer_boundaries() -> void:
 	assert_true(rfm.is_read("max-int", "start", 9007199254740991))
 
 
+func test_public_read_writes_round_trip_through_json_snapshot() -> void:
+	var rfm := ReadFlagManager.new()
+	rfm.mark_read("compat", "start", 0)
+	rfm.mark_dialogue_read(
+		"path:res://story/main.stla", "chapter", 9007199254740991)
+	var decoded: Dictionary = JSON.parse_string(
+		JSON.stringify(rfm.capture_snapshot()))
+	var restored := ReadFlagManager.new()
+	restored.restore_snapshot(decoded)
+
+	assert_true(restored.is_read("compat", "start", 0))
+	assert_true(restored.is_dialogue_read(
+		"path:res://story/main.stla", "main", "chapter",
+		9007199254740991, -1))
+
+
+func test_public_read_writes_reject_uids_outside_snapshot_schema() -> void:
+	var rfm := ReadFlagManager.new()
+	rfm.mark_read("negative", "start", -1)
+	assert_push_error(
+		"ReadFlagManager: command UID must be a non-negative JSON-safe integer")
+	rfm.mark_dialogue_read("unsafe", "start", 9007199254740992)
+	assert_push_error(
+		"ReadFlagManager: command UID must be a non-negative JSON-safe integer")
+
+	assert_eq(rfm.capture_snapshot().get("flags", []), [],
+		"the public API cannot create state that its restore path rejects")
+
+
 func test_equal_basenames_keep_distinct_canonical_read_history() -> void:
 	var rfm := ReadFlagManager.new()
 	rfm.mark_dialogue_read("path:res://route_a/main.stla", "start", 7)

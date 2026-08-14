@@ -4,6 +4,17 @@ class_name ExpressionEvaluator extends RefCounted
 
 
 func evaluate(expr: String, store: VariableStore) -> bool:
+	return _evaluate_ir(_parse_expression(expr), store)
+
+
+## Returns the normalized expression IR used by evaluate(). Fingerprints can
+## therefore distinguish runtime behavior without depending on source spacing
+## or equivalent numeric spelling.
+static func semantic_key(expr: String) -> Array:
+	return _parse_expression(expr)
+
+
+static func _parse_expression(expr: String) -> Array:
 	expr = expr.strip_edges()
 
 	# Logical OR (lowest precedence)
@@ -11,43 +22,76 @@ func evaluate(expr: String, store: VariableStore) -> bool:
 	if or_pos != -1:
 		var left = expr.substr(0, or_pos).strip_edges()
 		var right = expr.substr(or_pos + 2).strip_edges()
-		return evaluate(left, store) or evaluate(right, store)
+		return ["or", _parse_expression(left), _parse_expression(right)]
 
 	# Logical AND
 	var and_pos = expr.find("&&")
 	if and_pos != -1:
 		var left = expr.substr(0, and_pos).strip_edges()
 		var right = expr.substr(and_pos + 2).strip_edges()
-		return evaluate(left, store) and evaluate(right, store)
+		return ["and", _parse_expression(left), _parse_expression(right)]
 
 	# Negation
 	if expr.begins_with("!"):
-		return not evaluate(expr.substr(1).strip_edges(), store)
+		return ["not", _parse_expression(expr.substr(1).strip_edges())]
 
 	# Comparisons (check multi-char operators first)
 	for op in [">=", "<=", "!=", "==", ">", "<"]:
 		var op_pos = expr.find(op)
 		if op_pos != -1:
-			var left = _resolve_value(expr.substr(0, op_pos).strip_edges(), store)
-			var right = _resolve_value(expr.substr(op_pos + op.length()).strip_edges(), store)
-			return _compare(left, right, op)
+			return [
+				"compare",
+				op,
+				_parse_value(expr.substr(0, op_pos)),
+				_parse_value(expr.substr(op_pos + op.length())),
+			]
 
 	# Single value (bool literal or variable)
-	return _is_truthy(_resolve_value(expr, store))
+	return ["value", _parse_value(expr)]
 
 
-func _resolve_value(token: String, store: VariableStore) -> Variant:
+static func _parse_value(token: String) -> Array:
 	token = token.strip_edges()
 	if token == "true":
-		return true
+		return ["literal", true]
 	if token == "false":
-		return false
-	if token.is_valid_int():
-		return token.to_int()
-	if token.is_valid_float():
-		return token.to_float()
-	# Variable lookup
-	return store.get_var(token)
+		return ["literal", false]
+	if token.is_valid_int() or token.is_valid_float():
+		var numeric := token.to_float()
+		if numeric == 0.0:
+			numeric = 0.0
+		return ["number", String.num(numeric, 17)]
+	return ["variable", token]
+
+
+func _evaluate_ir(ir: Array, store: VariableStore) -> bool:
+	match String(ir[0]):
+		"or":
+			return _evaluate_ir(ir[1], store) or _evaluate_ir(ir[2], store)
+		"and":
+			return _evaluate_ir(ir[1], store) and _evaluate_ir(ir[2], store)
+		"not":
+			return not _evaluate_ir(ir[1], store)
+		"compare":
+			return _compare(
+				_resolve_value(ir[2], store),
+				_resolve_value(ir[3], store),
+				String(ir[1]),
+			)
+		"value":
+			return _is_truthy(_resolve_value(ir[1], store))
+	return false
+
+
+func _resolve_value(value_ir: Array, store: VariableStore) -> Variant:
+	match String(value_ir[0]):
+		"literal":
+			return value_ir[1]
+		"number":
+			return String(value_ir[1]).to_float()
+		"variable":
+			return store.get_var(String(value_ir[1]))
+	return null
 
 
 func _compare(left: Variant, right: Variant, op: String) -> bool:

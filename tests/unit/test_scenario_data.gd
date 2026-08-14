@@ -237,6 +237,31 @@ func test_semantic_fingerprint_ignores_documented_inline_comments() -> void:
 	assert_eq(original.get_read_identity(), equivalent.get_read_identity())
 
 
+func test_semantic_fingerprint_uses_normalized_condition_ir() -> void:
+	var original := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@if score==1 && !flag || ratio >= 01.500
+「Same branch」
+@end"""), "main", "res://story/main.stla")
+	var equivalent := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@if score  ==  1.0  &&  ! flag  ||  ratio>=1.5
+「Same branch」
+@end"""), "main", "res://story/main.stla")
+	var changed := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@if score != 1 && !flag || ratio >= 1.5
+「Same branch」
+@end"""), "main", "res://story/main.stla")
+
+	assert_eq(original.diagnostics, [])
+	assert_eq(equivalent.diagnostics, [])
+	assert_eq(original.get_read_identity(), equivalent.get_read_identity(),
+		"condition spacing and equivalent numeric spelling retain read history")
+	assert_ne(original.get_read_identity(), changed.get_read_identity(),
+		"a condition behavior change must still invalidate the fingerprint")
+
+
 func test_semantic_fingerprint_changes_for_authored_behavior() -> void:
 	var original := DslParser.parse(DslLexer.tokenize("""@chapter route
 @scene start

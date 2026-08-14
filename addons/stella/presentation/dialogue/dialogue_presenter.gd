@@ -1037,6 +1037,25 @@ func _abort_dialogue_request(request: Dictionary) -> void:
 		activation.abort()
 
 
+## Returns whether synchronous replacement callbacks gave this request a
+## presenter-owned slot. A superseded incoming activation that is neither
+## current nor queued must be cancelled explicitly so its handler cannot hang.
+func _dialogue_request_is_owned(request: Dictionary) -> bool:
+	var activation := request.get("activation") as DialogueActivation
+	if activation == null:
+		return false
+	if activation == _current_dialogue_activation:
+		return true
+	for queued_request in _queued_dialogue_requests:
+		if not queued_request is Dictionary:
+			continue
+		var queued: Dictionary = queued_request
+		var queued_activation := queued.get("activation") as DialogueActivation
+		if queued_activation == activation:
+			return true
+	return false
+
+
 ## The Presenter owns at most one visible typed request. Any boundary that
 ## replaces or hides that presentation must resolve the old Core waiter before
 ## dropping its reference. Clear first so an abort callback may synchronously
@@ -1075,6 +1094,8 @@ func _accept_dialogue_request(request: Dictionary) -> void:
 	# retain their normal replay deferral semantics.
 	if retirement_survived:
 		_show_dialogue_request(request)
+	elif not _dialogue_request_is_owned(request):
+		_abort_dialogue_request(request)
 	if _boundary_operation_depth == 0:
 		_drain_deferred_presentation_work()
 

@@ -3,6 +3,9 @@ extends GutTest
 ## StellaRuntime autoload, so every test must start from a clean runtime state.
 
 const RuntimeTestSupport = preload("res://tests/helpers/runtime_test_support.gd")
+const LOAD_FIXTURE := \
+	"res://tests/fixtures/scenarios/dialogue/presentation_profile.stla"
+const BOUNDARY_SAVE_DIR := "user://tests/pr175_runtime_boundary/"
 
 var _runtime: Node
 var _scenario_ended_count: Array[int]
@@ -12,6 +15,9 @@ var _scenario_ended_listener: Callable
 func before_each() -> void:
 	_runtime = get_tree().root.get_node("StellaRuntime")
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
+	_runtime.save_manager.save_dir = BOUNDARY_SAVE_DIR
+	_runtime.save_manager.delete_save(1)
+	_runtime.save_manager.delete_quick_save()
 	_scenario_ended_count = [0]
 	_scenario_ended_listener = func(_id: String) -> void:
 		_scenario_ended_count[0] += 1
@@ -30,6 +36,8 @@ func after_each() -> void:
 		old_context.is_finished = true
 	SignalBus.engine_abort_requested.emit()
 	await get_tree().process_frame
+	_runtime.save_manager.delete_save(1)
+	_runtime.save_manager.delete_quick_save()
 
 
 func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
@@ -257,6 +265,61 @@ func test_reset_for_test_does_not_advance_past_aborted_dialogue() -> void:
 	assert_eq(_scenario_ended_count[0], 0)
 
 
+func test_in_game_manual_load_transfers_owner_before_presenter_hide() -> void:
+	var dialogue := await _instantiate_game_dialogue()
+	_prepare_load_snapshot(false)
+	var old_context := _start_blocking_dialogue()
+	assert_true(await _wait_for_pending_activation(dialogue))
+	var old_activation: DialogueActivation = dialogue._current_dialogue_activation
+
+	var loaded: bool = await _runtime.continue_from_save(1)
+	assert_true(loaded)
+	assert_true(await _wait_for_replacement_activation(dialogue, old_activation))
+
+	_assert_load_boundary_owner(old_context, old_activation, dialogue)
+
+
+func test_in_game_quick_load_transfers_owner_before_presenter_hide() -> void:
+	var dialogue := await _instantiate_game_dialogue()
+	_prepare_load_snapshot(true)
+	var old_context := _start_blocking_dialogue()
+	assert_true(await _wait_for_pending_activation(dialogue))
+	var old_activation: DialogueActivation = dialogue._current_dialogue_activation
+
+	var loaded: bool = await _runtime.quick_load()
+	assert_true(loaded)
+	assert_true(await _wait_for_replacement_activation(dialogue, old_activation))
+
+	_assert_load_boundary_owner(old_context, old_activation, dialogue)
+
+
+func test_in_game_rollback_transfers_owner_before_presenter_hide() -> void:
+	var dialogue := await _instantiate_game_dialogue()
+	_runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	_runtime.engine.load_scenario(_build_two_dialogue_scenario())
+	var old_context: ScenarioContext = _runtime.engine.context
+	_runtime.engine.run()
+	assert_true(await _wait_for_pending_activation(dialogue))
+	assert_eq(_runtime.backlog_manager.get_entries().size(), 1)
+	var first_activation: DialogueActivation = dialogue._current_dialogue_activation
+	assert_true(first_activation.advance())
+	assert_true(await _wait_for_replacement_activation(dialogue, first_activation))
+	var second_activation: DialogueActivation = dialogue._current_dialogue_activation
+
+	assert_true(_runtime.jump_from_backlog(0))
+	assert_true(await _wait_for_replacement_activation(dialogue, second_activation))
+
+	assert_true(old_context.is_finished)
+	assert_eq(second_activation.get_outcome(), DialogueActivation.Outcome.ABORTED)
+	assert_not_same(_runtime.engine.context, old_context)
+	assert_eq(_runtime.engine.context.current_command_index, 0)
+	assert_eq(_scenario_ended_count[0], 0,
+		"rollback cancellation must not look like natural scenario completion")
+	assert_eq(_runtime.game_state.current_state, GameStateMachine.State.PLAYING)
+	assert_true(dialogue._current_dialogue_activation.is_pending(),
+		"the restored context remains the final dialogue owner")
+
+
 func test_reset_for_test_invalidates_a_real_dialogue_typewriter() -> void:
 	var game: Node = load("res://addons/stella/scenes/game.tscn").instantiate()
 	add_child_autoqfree(game)
@@ -349,6 +412,76 @@ func test_real_input_routes_dialogue_then_click_wait_then_dialogue() -> void:
 	assert_eq(requests[1].get_segments()[0].get("text"), "second")
 	requests[1].abort()
 	SignalBus.dialogue_requested.disconnect(on_request)
+
+
+func _instantiate_game_dialogue() -> Control:
+	var game: Node = load("res://addons/stella/scenes/game.tscn").instantiate()
+	add_child_autoqfree(game)
+	await get_tree().process_frame
+	var dialogue: Control = game.get_node("UILayer/DialoguePanel")
+	dialogue._char_interval = 0.0
+	return dialogue
+
+
+func _prepare_load_snapshot(quick: bool) -> void:
+	_runtime._last_scenario_path = LOAD_FIXTURE
+	_runtime._prepare_scenario(LOAD_FIXTURE)
+	if quick:
+		_runtime.quick_save()
+	else:
+		_runtime.save(1)
+
+
+func _start_blocking_dialogue() -> ScenarioContext:
+	_runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	_runtime.engine.load_scenario(_build_blocking_scenario())
+	var context: ScenarioContext = _runtime.engine.context
+	_runtime.engine.run()
+	return context
+
+
+func _wait_for_pending_activation(dialogue: Control) -> bool:
+	return await wait_until(
+		func() -> bool:
+			return (
+				dialogue._current_dialogue_activation != null
+				and dialogue._current_dialogue_activation.is_pending()
+			),
+		1.0,
+		"production DialoguePresenter owns the blocking request",
+	)
+
+
+func _wait_for_replacement_activation(
+	dialogue: Control,
+	old_activation: DialogueActivation,
+) -> bool:
+	return await wait_until(
+		func() -> bool:
+			return (
+				dialogue._current_dialogue_activation != null
+				and dialogue._current_dialogue_activation != old_activation
+				and dialogue._current_dialogue_activation.is_pending()
+			),
+		1.0,
+		"replacement context becomes the final Presenter owner",
+	)
+
+
+func _assert_load_boundary_owner(
+	old_context: ScenarioContext,
+	old_activation: DialogueActivation,
+	dialogue: Control,
+) -> void:
+	assert_true(old_context.is_finished)
+	assert_eq(old_activation.get_outcome(), DialogueActivation.Outcome.ABORTED)
+	assert_not_same(_runtime.engine.context, old_context)
+	assert_eq(_runtime.engine.context.scenario_data.id, "presentation_profile")
+	assert_eq(_scenario_ended_count[0], 0,
+		"load cancellation must not look like natural scenario completion")
+	assert_eq(_runtime.game_state.current_state, GameStateMachine.State.PLAYING)
+	assert_true(dialogue._current_dialogue_activation.is_pending(),
+		"the loaded context remains the final dialogue owner")
 
 
 func _build_blocking_scenario() -> ScenarioData:

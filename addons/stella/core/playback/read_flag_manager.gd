@@ -181,6 +181,12 @@ func _store(
 	scene_id: String,
 	command_uid: int,
 ) -> void:
+	if not _is_json_integer(command_uid):
+		push_error(
+			"ReadFlagManager: command UID must be a non-negative "
+			+ "JSON-safe integer"
+		)
+		return
 	var key := _key(scenario_identity, scene_id, command_uid)
 	_flags[key] = {
 		"scenario": scenario_identity,

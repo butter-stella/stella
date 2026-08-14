@@ -594,6 +594,8 @@ static func _semantic_value(
 			var text := String(value)
 			if key_hint in ["target", "then_jump", "else_jump", "jump"]:
 				return _normalize_scene_reference(text, synthetic_scene_ids)
+			if key_hint in ["if", "condition"]:
+				return ExpressionEvaluator.semantic_key(text)
 			return text
 		TYPE_VECTOR2:
 			var vector: Vector2 = value

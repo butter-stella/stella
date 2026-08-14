@@ -198,6 +198,8 @@ registry.register(DialogueHandler.new(read_flags))
 
 `DialogueHandler.new()` 的无参数形式不再可用；内置 `StellaRuntime` 已在 composition root 统一完成注入，并会在测试/session reset 替换 read manager 时重建注册。
 
+扩展若直接调用 `ReadFlagManager.mark_read()` / `mark_dialogue_read()`，command UID 必须是 `0` 到 `2^53 - 1` 范围内的整数。写入与存档恢复使用同一校验；非法 UID 会立即拒绝，不会制造一份可以 capture 却无法 JSON restore 的已读状态。
+
 ### 游戏流程
 
 ```gdscript
@@ -263,6 +265,8 @@ StellaRuntime.has_save(slot_id)      # 检查槽位是否有存档
 StellaRuntime.delete_save(slot_id)   # 删除存档
 StellaRuntime.get_save_list()        # 获取所有有存档的槽位
 ```
+
+在游戏内读档、快读或从 Backlog/选项/流程图回退时，Runtime 会先把 engine context 所有权转交给恢复后的 context，再清理旧画面和阻塞命令。旧对话的取消不会触发自然 `scenario_ended`，恢复后的 context 始终是最终执行 owner；自定义 Presenter 仍只需遵守上文的 request `advance()` / `abort()` 契约。
 
 ### 播放控制
 

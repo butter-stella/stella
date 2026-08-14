@@ -99,3 +99,17 @@ func test_numeric_comparison_with_zero():
 	assert_true(_eval.evaluate("count == 0", _store))
 	assert_true(_eval.evaluate("count >= 0", _store))
 	assert_false(_eval.evaluate("count > 0", _store))
+
+
+func test_semantic_key_normalizes_runtime_equivalent_expression_spelling() -> void:
+	assert_eq(
+		ExpressionEvaluator.semantic_key(
+			"score==1 && !flag || ratio >= 01.500"),
+		ExpressionEvaluator.semantic_key(
+			" score  ==  1.0  &&  ! flag  ||  ratio>=1.5 "),
+		"the fingerprint representation must use the evaluator's normalized IR",
+	)
+	assert_ne(
+		ExpressionEvaluator.semantic_key("score == 1"),
+		ExpressionEvaluator.semantic_key("score != 1"),
+	)

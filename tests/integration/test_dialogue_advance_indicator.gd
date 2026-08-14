@@ -1659,6 +1659,57 @@ func test_typed_replacement_aborts_visible_handler_owner() -> void:
 	second_activation.abort()
 
 
+func test_abort_callback_show_retires_superseded_incoming_activation() -> void:
+	var visible_activation := DialogueActivation.new()
+	var incoming_activation := DialogueActivation.new()
+	var callback_activation := DialogueActivation.new()
+	visible_activation.resolved.connect(
+		func(outcome: int):
+			if outcome == DialogueActivation.Outcome.ABORTED:
+				SignalBus.emit_dialogue_request(DialogueRequest.new(
+					"", [_segment("Callback owner")], "adv", {}, false,
+					"", {}, [], "callback", 3, callback_activation))
+	)
+	SignalBus.emit_dialogue_request(DialogueRequest.new(
+		"", [_segment("Visible owner")], "adv", {}, false,
+		"", {}, [], "visible", 1, visible_activation))
+
+	SignalBus.emit_dialogue_request(DialogueRequest.new(
+		"", [_segment("Superseded incoming")], "adv", {}, false,
+		"", {}, [], "incoming", 2, incoming_activation))
+
+	assert_eq(visible_activation.get_outcome(), DialogueActivation.Outcome.ABORTED)
+	assert_eq(incoming_activation.get_outcome(), DialogueActivation.Outcome.ABORTED,
+		"an incoming SHOW displaced by an abort callback must release its Handler")
+	assert_true(callback_activation.is_pending())
+	assert_same(_presenter._current_dialogue_activation, callback_activation,
+		"the synchronous callback SHOW owns the visible presenter slot")
+	callback_activation.abort()
+
+
+func test_abort_callback_hide_retires_superseded_incoming_activation() -> void:
+	var visible_activation := DialogueActivation.new()
+	var incoming_activation := DialogueActivation.new()
+	visible_activation.resolved.connect(
+		func(outcome: int):
+			if outcome == DialogueActivation.Outcome.ABORTED:
+				SignalBus.hide_dialogue.emit()
+	)
+	SignalBus.emit_dialogue_request(DialogueRequest.new(
+		"", [_segment("Visible before hide")], "adv", {}, false,
+		"", {}, [], "visible", 1, visible_activation))
+
+	SignalBus.emit_dialogue_request(DialogueRequest.new(
+		"", [_segment("Superseded by hide")], "adv", {}, false,
+		"", {}, [], "incoming", 2, incoming_activation))
+
+	assert_eq(visible_activation.get_outcome(), DialogueActivation.Outcome.ABORTED)
+	assert_eq(incoming_activation.get_outcome(), DialogueActivation.Outcome.ABORTED,
+		"an incoming SHOW displaced by an abort callback HIDE must be cancelled")
+	assert_null(_presenter._current_dialogue_activation)
+	assert_false(_presenter.visible)
+
+
 func test_raw_replacement_aborts_visible_typed_owner() -> void:
 	var read_flags := ReadFlagManager.new()
 	var data := _single_dialogue_scenario("raw_replacement", "Typed")

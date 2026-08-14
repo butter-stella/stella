@@ -237,7 +237,6 @@ func continue_from_save(slot_id: int) -> bool:
 
 	# In-game: reload in place
 	_close_current_overlay()
-	_reset_presentation()
 	game_state.transition_to(GameStateMachine.State.PLAYING)
 	_load_scenario_and_restore(scenario_path, slot_id)
 	return true
@@ -332,6 +331,10 @@ func _prepare_scenario(scenario_path: String) -> void:
 ## Load scenario, restore snapshot, restore presentation, then run.
 func _load_scenario_and_restore(scenario_path: String, slot_id: int) -> void:
 	_prepare_scenario(scenario_path)
+	# Installing the replacement context first transfers engine ownership away
+	# from an active dialogue. The following hard HIDE may abort its Presenter
+	# activation, but the stale run can no longer report normal scenario_ended.
+	_reset_presentation()
 	save_manager.load_save(slot_id)
 	presentation_state.apply_to_presenters()
 	engine.run()
@@ -524,6 +527,7 @@ func quick_load() -> bool:
 		await get_tree().process_frame
 		_close_current_overlay()
 		_prepare_scenario(scenario_path)
+		_reset_presentation()
 		var ok = save_manager.quick_load()
 		if ok:
 			presentation_state.apply_to_presenters()
@@ -531,8 +535,8 @@ func quick_load() -> bool:
 		return ok
 
 	# In-game: reload in place
-	_reset_presentation()
 	_prepare_scenario(scenario_path)
+	_reset_presentation()
 	var ok = save_manager.quick_load()
 	if ok:
 		presentation_state.apply_to_presenters()
@@ -595,6 +599,7 @@ func continue_game() -> bool:
 		await get_tree().process_frame
 		_close_current_overlay()
 		_prepare_scenario(scenario_path)
+		_reset_presentation()
 		var ok = _load_continue(continue_type)
 		if ok:
 			presentation_state.apply_to_presenters()
@@ -602,8 +607,8 @@ func continue_game() -> bool:
 		return ok
 
 	# In-game: reload in place
-	_reset_presentation()
 	_prepare_scenario(scenario_path)
+	_reset_presentation()
 	var ok = _load_continue(continue_type)
 	if ok:
 		presentation_state.apply_to_presenters()
@@ -839,27 +844,26 @@ func get_backlog() -> Array:
 ## 1. Close any overlay + transition to PLAYING state.
 ## 2. Build a fresh ScenarioContext that reuses the old VariableStore
 ##    instance — dropping the store would lose Scope.GLOBAL (#98).
-## 3. Reset visuals to a clean slate. bgm_stop triggers the PresentationState
-##    signal listener; restore_snapshot then overwrites it. fade("in",0) drops
-##    any lingering screen-fade overlay.
-## 4. Restore scenario_context + scenario-scope vars + presentation_state
-##    from the snapshot. Scope-only var restore so Scope.GLOBAL stays intact.
-## 5. If override_scene_id is non-empty, set_scene to it AFTER the snapshot
+## 3. Restore scenario_context + scenario-scope vars from the snapshot.
+##    Scope-only var restore keeps Scope.GLOBAL intact.
+## 4. If override_scene_id is non-empty, set_scene to it AFTER the snapshot
 ##    restore. Used by flowchart jump where the snapshot position and the
 ##    chapter entry can differ and we want to be safe against mismatch.
-## 6. apply_to_presenters — snap visuals to the restored state in one shot
-##    before engine.run() re-dispatches the target command.
-## 7. Register the new context as a save provider BEFORE swapping it in.
+## 5. Register the new context as a save provider BEFORE swapping it in.
 ##    Otherwise an autosave triggered by NOTIFICATION_WM_CLOSE_REQUEST in
 ##    the window between swap and register would serialize an inconsistent
 ##    mix (old context provider + new presentation_state).
-## 8. Swap engine.context, mark the old ctx finished (belt-and-braces in
-##    case the old loop is between iterations), and emit
-##    engine_abort_requested. Dialogue owns a request-scoped activation that
-##    subscribes to abort; wait/choice race through CommandHandler helpers. A
-##    single emit therefore cancels every blocking kind without making their
-##    normal completion signals interchangeable.
-## 9. engine.run() — new loop picks up the restored context.
+## 6. Swap engine.context and emit engine_abort_requested. Ownership transfer
+##    happens before any hard presentation boundary so a synchronous Presenter
+##    abort cannot make the stale run report scenario_ended. Dialogue also owns
+##    a request-scoped activation; wait/choice race through CommandHandler
+##    helpers, so the global abort cancels every remaining blocking kind.
+## 7. Reset visuals to a clean slate. bgm_stop triggers the PresentationState
+##    listener; restore_snapshot then overwrites it. fade("in",0) drops any
+##    lingering screen-fade overlay.
+## 8. Restore presentation_state and apply_to_presenters, snapping visuals to
+##    the restored state before the target command is re-dispatched.
+## 9. engine.run() — the new owner picks up the restored context.
 func _restore_runtime_from_snapshot(snap: Dictionary, override_scene_id: String = "") -> void:
 	_close_current_overlay()
 	game_state.transition_to(GameStateMachine.State.PLAYING)
@@ -868,18 +872,10 @@ func _restore_runtime_from_snapshot(snap: Dictionary, override_scene_id: String 
 	var new_ctx = ScenarioContext.new(scenario_data)
 	new_ctx.variable_store = engine.context.variable_store
 
-	SignalBus.reset_stage_visuals()
-	SignalBus.bgm_stop.emit(0.0)
-	SignalBus.hide_dialogue.emit()
-	SignalBus.fade_requested.emit("in", 0.0)
-	presentation_state.clear()
-
 	new_ctx.restore_snapshot(snap.get("scenario_context", {}))
 	new_ctx.variable_store.restore_scenario_scope(snap.get("variable_store", {}))
 	if override_scene_id != "":
 		new_ctx.set_scene(override_scene_id)
-	presentation_state.restore_snapshot(snap.get("presentation_state", {}))
-	presentation_state.apply_to_presenters()
 
 	# Sync the flowchart trajectory to match the restored engine position.
 	# Without this, a cross-chapter rewind leaves current_path ending on a
@@ -898,6 +894,14 @@ func _restore_runtime_from_snapshot(snap: Dictionary, override_scene_id: String 
 	engine.context = new_ctx
 	old_ctx.is_finished = true
 	SignalBus.engine_abort_requested.emit()
+
+	SignalBus.reset_stage_visuals()
+	SignalBus.bgm_stop.emit(0.0)
+	SignalBus.hide_dialogue.emit()
+	SignalBus.fade_requested.emit("in", 0.0)
+	presentation_state.clear()
+	presentation_state.restore_snapshot(snap.get("presentation_state", {}))
+	presentation_state.apply_to_presenters()
 
 	engine.run()
 
