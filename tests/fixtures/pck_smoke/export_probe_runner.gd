@@ -215,6 +215,63 @@ func _probe_numeric_resource_ids(failures: PackedStringArray) -> void:
 			instance.free()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(scene_path))
 
+	_probe_numeric_resource_id_case(
+		failures,
+		"finite_forward",
+		"1e33",
+		'"1000000000000000089690419062898688.0"',
+	)
+	_probe_numeric_resource_id_case(
+		failures,
+		"finite_reverse",
+		'"1000000000000000089690419062898688.0"',
+		"1e33",
+	)
+	_probe_numeric_resource_id_case(
+		failures,
+		"small_forward",
+		"-1e-20",
+		'"-0.0"',
+	)
+	_probe_numeric_resource_id_case(
+		failures,
+		"small_reverse",
+		'"-0.0"',
+		"-1e-20",
+	)
+
+
+func _probe_numeric_resource_id_case(
+	failures: PackedStringArray,
+	name: String,
+	declaration: String,
+	reference: String,
+) -> void:
+	var scene_path := "user://stella_probe_numeric_resource_id_%s.tscn" % name
+	var file := FileAccess.open(scene_path, FileAccess.WRITE)
+	if file == null:
+		failures.append("could not create %s resource-ID fixture" % name)
+		return
+	file.store_string(
+		"[gd_scene load_steps=2 format=3]\n\n"
+		+ "[ext_resource type=\"Texture2D\" "
+		+ "path=\"res://examples/demo/art/backgrounds/bg_cafe.png\" "
+		+ "id=%s]\n\n" % declaration
+		+ "[node name=\"NumericResourceId\" type=\"Sprite2D\"]\n"
+		+ "texture = ExtResource(%s)\n" % reference
+	)
+	file.close()
+	var scene := StellaRuntime._load_title_scene(scene_path)
+	if scene == null:
+		failures.append("%s resource ID was rejected" % name)
+	else:
+		var instance := scene.instantiate() as Sprite2D
+		if instance == null or instance.texture == null:
+			failures.append("%s resource reference did not resolve" % name)
+		if instance != null:
+			instance.free()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(scene_path))
+
 
 func _probe_nested_editable_child_override(failures: PackedStringArray) -> void:
 	var scene: PackedScene = StellaRuntime._load_title_scene(

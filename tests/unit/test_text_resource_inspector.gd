@@ -202,6 +202,18 @@ func test_numeric_resource_id_grammar_matches_godot_loader():
 		{"literal": "-1e309", "reference": '"-inf"', "accepted": true},
 		{"literal": '"inf"', "reference": "1e309", "accepted": true},
 		{"literal": '"-inf"', "reference": "-1e309", "accepted": true},
+		{
+			"literal": "1e33",
+			"reference": '"1000000000000000089690419062898688.0"',
+			"accepted": true,
+		},
+		{
+			"literal": '"1000000000000000089690419062898688.0"',
+			"reference": "1e33",
+			"accepted": true,
+		},
+		{"literal": "-1e-20", "reference": '"-0.0"', "accepted": true},
+		{"literal": '"-0.0"', "reference": "-1e-20", "accepted": true},
 		{"literal": "0x10", "accepted": false},
 	]
 	for case: Dictionary in cases:
@@ -249,19 +261,30 @@ func test_numeric_resource_id_grammar_matches_godot_loader():
 	assert_engine_error_count(0)
 
 
-func test_only_canonical_quoted_nonfinite_resource_ids_are_numeric():
+func test_quoted_resource_ids_share_canonical_domain_without_reparsing():
 	assert_eq(
-		TextResourceInspector._normalized_resource_id_value("inf", true),
-		"n:inf",
+		TextResourceInspector._normalized_resource_id_value("1", false),
+		TextResourceInspector._normalized_resource_id_value("1", true),
 	)
 	assert_eq(
-		TextResourceInspector._normalized_resource_id_value("-inf", true),
-		"n:-inf",
+		TextResourceInspector._normalized_resource_id_value("1e33", false),
+		TextResourceInspector._normalized_resource_id_value(
+			"1000000000000000089690419062898688.0",
+			true,
+		),
 	)
-	for value in ["INF", "Inf", "-INF", "nan", "NaN", "Infinity"]:
+	assert_eq(
+		TextResourceInspector._normalized_resource_id_value("-1e-20", false),
+		TextResourceInspector._normalized_resource_id_value("-0.0", true),
+	)
+	assert_ne(
+		TextResourceInspector._normalized_resource_id_value("1", false),
+		TextResourceInspector._normalized_resource_id_value("01", true),
+	)
+	for value in ["INF", "Inf", "-INF", "nan", "NaN", "Infinity", "1e1"]:
 		assert_eq(
 			TextResourceInspector._normalized_resource_id_value(value, true),
-			"s:" + value,
+			"id:" + value,
 			"ordinary quoted ID: %s" % value,
 		)
 

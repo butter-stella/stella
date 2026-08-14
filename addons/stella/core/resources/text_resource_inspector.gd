@@ -297,15 +297,12 @@ static func _godot_46_resource_integer_string(literal: String) -> String:
 static func _normalized_resource_id_value(value: String, quoted: bool) -> String:
 	if value.is_empty():
 		return ""
-	if quoted and value in ["inf", "-inf"]:
-		return "n:" + value
+	if quoted:
+		return "id:" + value
 	var numeric := _resource_numeric_literal(value)
 	if not numeric.get("ok", false):
-		return "s:" + value if quoted else ""
-	var normalized: String = numeric["value"]
-	if quoted and value != normalized:
-		return "s:" + value
-	return "n:" + normalized
+		return ""
+	return "id:" + String(numeric["value"])
 
 
 func inspect(path: String, expected_type: String = "") -> InspectionResult:
