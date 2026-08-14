@@ -8,6 +8,7 @@ extends PanelContainer
 
 func _ready():
 	SignalBus.choice_show.connect(_on_choice_show)
+	SignalBus.choice_hide.connect(_hide)
 	visible = false
 
 
@@ -36,8 +37,12 @@ func _on_choice_show(prompt: String, options: Array):
 
 
 func _on_option_selected(option_id: String):
+	_hide()
+	SignalBus.choice_selected.emit(option_id)
+
+
+func _hide() -> void:
 	visible = false
 	# Clear buttons
 	for child in options_container.get_children():
 		child.queue_free()
-	SignalBus.choice_selected.emit(option_id)

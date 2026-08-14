@@ -362,6 +362,7 @@ func _reset_presentation() -> void:
 	SignalBus.reset_stage_visuals()
 	SignalBus.bgm_stop.emit(0.0)
 	SignalBus.hide_dialogue.emit()
+	SignalBus.choice_hide.emit()
 	presentation_state.clear()
 	# Backlog is runtime-only state (not in save snapshots) — clear it on
 	# load/restart so the previous run's history doesn't bleed into the new one.
@@ -853,11 +854,11 @@ func get_backlog() -> Array:
 ##    Otherwise an autosave triggered by NOTIFICATION_WM_CLOSE_REQUEST in
 ##    the window between swap and register would serialize an inconsistent
 ##    mix (old context provider + new presentation_state).
-## 6. Swap engine.context and emit engine_abort_requested. Ownership transfer
-##    happens before any hard presentation boundary so a synchronous Presenter
-##    abort cannot make the stale run report scenario_ended. Dialogue also owns
-##    a request-scoped activation; wait/choice race through CommandHandler
-##    helpers, so the global abort cancels every remaining blocking kind.
+## 6. Swap engine.context and emit engine_abort_requested. The swap first asks
+##    the retired context generation to cancel all of its blocking handlers;
+##    the global signal remains for non-context compatibility listeners.
+##    Ownership transfer happens before any hard presentation boundary so a
+##    synchronous Presenter abort cannot make the stale run report scenario_ended.
 ## 7. Reset visuals to a clean slate. bgm_stop triggers the PresentationState
 ##    listener; restore_snapshot then overwrites it. fade("in",0) drops any
 ##    lingering screen-fade overlay.
@@ -890,14 +891,13 @@ func _restore_runtime_from_snapshot(snap: Dictionary, override_scene_id: String 
 
 	save_manager.register_provider(new_ctx)
 	save_manager.register_provider(new_ctx.variable_store)
-	var old_ctx = engine.context
 	engine.context = new_ctx
-	old_ctx.is_finished = true
 	SignalBus.engine_abort_requested.emit()
 
 	SignalBus.reset_stage_visuals()
 	SignalBus.bgm_stop.emit(0.0)
 	SignalBus.hide_dialogue.emit()
+	SignalBus.choice_hide.emit()
 	SignalBus.fade_requested.emit("in", 0.0)
 	presentation_state.clear()
 	presentation_state.restore_snapshot(snap.get("presentation_state", {}))

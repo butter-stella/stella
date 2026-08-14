@@ -2,6 +2,8 @@
 ## Tracks current position and jump requests.
 class_name ScenarioContext extends RefCounted
 
+signal cancellation_requested()
+
 var scenario_data: ScenarioData
 var current_scene_index: int = 0
 var current_command_index: int = 0
@@ -27,6 +29,7 @@ var adv_dialogue_uses_declarative_presentation: bool = false
 var _dialogue_request_serial: int = 0
 var _runtime_owner_state: Dictionary = {}
 var _active_dialogue_activation: DialogueActivation
+var _cancellation_requested: bool = false
 
 
 func _init(data: ScenarioData = null):
@@ -48,6 +51,22 @@ func is_runtime_owner_current() -> bool:
 			or bool(_runtime_owner_state.get("current", false))
 		)
 	)
+
+
+## Cancel every blocking command owned by this execution generation. A context
+## is itself the generation token: replacing it cancels only the retired run,
+## while the newly installed context remains available to synchronous tails.
+func request_cancellation() -> void:
+	if _cancellation_requested:
+		return
+	_cancellation_requested = true
+	is_finished = true
+	abort_active_dialogue()
+	cancellation_requested.emit()
+
+
+func is_cancellation_requested() -> bool:
+	return _cancellation_requested
 
 
 ## Only one blocking dialogue may own a context at a time. A reentrant or

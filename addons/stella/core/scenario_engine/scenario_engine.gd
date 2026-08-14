@@ -23,15 +23,16 @@ var context: ScenarioContext:
 			context.bind_runtime_owner(_context_owner_state)
 		# Resolve the old waiter only after the new property value is visible. Its
 		# synchronous continuation then observes both ownership guards as stale.
+		# ScenarioContext is the execution-generation token, so this one request
+		# cancels dialogue, wait, choice, and extension handlers that joined it.
 		if previous_context != null:
-			previous_context.abort_active_dialogue()
+			previous_context.request_cancellation()
 var registry: CommandRegistry
 
 
 func stop() -> void:
 	if context != null:
-		context.is_finished = true
-		context.abort_active_dialogue()
+		context.request_cancellation()
 
 
 func load_scenario(data: ScenarioData) -> void:

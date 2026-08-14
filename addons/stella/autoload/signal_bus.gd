@@ -749,6 +749,7 @@ signal dialogue_voice_replay_requested(voices: Array, character: String)
 
 # Choice
 signal choice_show(prompt: String, options: Array)
+signal choice_hide()
 signal choice_selected(option_id: String)
 
 # Effects

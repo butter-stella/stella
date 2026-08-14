@@ -18,6 +18,7 @@ func before_each() -> void:
 	_runtime.save_manager.save_dir = BOUNDARY_SAVE_DIR
 	_runtime.save_manager.delete_save(1)
 	_runtime.save_manager.delete_quick_save()
+	_runtime.save_manager.delete_auto_save()
 	_scenario_ended_count = [0]
 	_scenario_ended_listener = func(_id: String) -> void:
 		_scenario_ended_count[0] += 1
@@ -38,6 +39,7 @@ func after_each() -> void:
 	await get_tree().process_frame
 	_runtime.save_manager.delete_save(1)
 	_runtime.save_manager.delete_quick_save()
+	_runtime.save_manager.delete_auto_save()
 
 
 func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
@@ -293,6 +295,102 @@ func test_in_game_quick_load_transfers_owner_before_presenter_hide() -> void:
 	_assert_load_boundary_owner(old_context, old_activation, dialogue)
 
 
+func test_in_game_manual_load_cancels_retired_click_wait_generation() -> void:
+	var dialogue := await _instantiate_game_dialogue()
+	_prepare_load_snapshot(false)
+	var advance_connections := SignalBus.advance_requested.get_connections().size()
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	var old_context := _start_blocking_command(_wait_command("click"))
+	assert_eq(SignalBus.advance_requested.get_connections().size(),
+		advance_connections + 1)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1)
+
+	var loaded: bool = await _runtime.continue_from_save(1)
+	assert_true(loaded)
+	assert_true(await _wait_for_pending_activation(dialogue))
+
+	_assert_blocking_load_boundary(old_context, dialogue)
+	assert_eq(SignalBus.advance_requested.get_connections().size(),
+		advance_connections,
+		"manual load must disconnect the old click waiter")
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1,
+		"only the loaded dialogue activation may remain abortable")
+	var loaded_activation: DialogueActivation = dialogue._current_dialogue_activation
+	SignalBus.advance_requested.emit()
+	await get_tree().process_frame
+	assert_same(dialogue._current_dialogue_activation, loaded_activation,
+		"late input for the retired click wait cannot advance loaded content")
+
+
+func test_in_game_quick_load_cancels_retired_timer_wait_generation() -> void:
+	var dialogue := await _instantiate_game_dialogue()
+	_prepare_load_snapshot(true)
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	var requests: Array[DialogueRequest] = []
+	var on_request := func(request: DialogueRequest) -> void:
+		requests.append(request)
+	SignalBus.dialogue_requested.connect(on_request)
+	var old_context := _start_blocking_command(_wait_command("timer", 0.2))
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1)
+
+	var loaded: bool = await _runtime.quick_load()
+	assert_true(loaded)
+	assert_true(await _wait_for_pending_activation(dialogue))
+	var loaded_activation: DialogueActivation = dialogue._current_dialogue_activation
+
+	_assert_blocking_load_boundary(old_context, dialogue)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1,
+		"quick load must replace the timer waiter with only the loaded dialogue")
+	await get_tree().create_timer(0.25).timeout
+	assert_eq(requests.size(), 1,
+		"the retired timer completion cannot dispatch old scenario content")
+	assert_same(dialogue._current_dialogue_activation, loaded_activation)
+	SignalBus.dialogue_requested.disconnect(on_request)
+
+
+func test_in_game_continue_cancels_retired_choice_generation() -> void:
+	var dialogue := await _instantiate_game_dialogue()
+	var choice_panel: Control = dialogue.get_node("../ChoicePanel")
+	_prepare_load_snapshot(true)
+	var choice_connections := SignalBus.choice_selected.get_connections().size()
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	var command := _choice_command()
+	var old_context := _start_blocking_command(command)
+	var old_store: VariableStore = old_context.variable_store
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections + 1)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1)
+	assert_true(choice_panel.visible,
+		"the production choice presenter owns the old completion")
+
+	var loaded: bool = await _runtime.continue_game()
+	assert_true(loaded)
+	assert_true(await _wait_for_pending_activation(dialogue))
+	var loaded_activation: DialogueActivation = dialogue._current_dialogue_activation
+
+	_assert_blocking_load_boundary(old_context, dialogue)
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections,
+		"continue must disconnect the old choice completion")
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1,
+		"only the continued dialogue activation may remain abortable")
+	assert_false(choice_panel.visible,
+		"context cancellation must retire the old choice presentation")
+	SignalBus.choice_selected.emit("old")
+	await get_tree().process_frame
+	assert_eq(old_context.pending_jump, "")
+	assert_null(old_store.get_var("leaked"),
+		"a late choice completion cannot mutate the retired run")
+	assert_same(dialogue._current_dialogue_activation, loaded_activation,
+		"a retired choice cannot complete the continued dialogue")
+
+
 func test_in_game_rollback_transfers_owner_before_presenter_hide() -> void:
 	var dialogue := await _instantiate_game_dialogue()
 	_runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
@@ -440,6 +538,14 @@ func _start_blocking_dialogue() -> ScenarioContext:
 	return context
 
 
+func _start_blocking_command(command: CommandData) -> ScenarioContext:
+	_runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	_runtime.engine.load_scenario(_build_command_then_dialogue_scenario(command))
+	var context: ScenarioContext = _runtime.engine.context
+	_runtime.engine.run()
+	return context
+
+
 func _wait_for_pending_activation(dialogue: Control) -> bool:
 	return await wait_until(
 		func() -> bool:
@@ -484,6 +590,22 @@ func _assert_load_boundary_owner(
 		"the loaded context remains the final dialogue owner")
 
 
+func _assert_blocking_load_boundary(
+	old_context: ScenarioContext,
+	dialogue: Control,
+) -> void:
+	assert_true(old_context.is_finished)
+	assert_true(old_context.is_cancellation_requested(),
+		"context replacement must cancel the retired execution generation")
+	assert_not_same(_runtime.engine.context, old_context)
+	assert_eq(_runtime.engine.context.scenario_data.id, "presentation_profile")
+	assert_eq(_scenario_ended_count[0], 0,
+		"blocking cancellation must not look like natural scenario completion")
+	assert_eq(_runtime.game_state.current_state, GameStateMachine.State.PLAYING)
+	assert_true(dialogue._current_dialogue_activation.is_pending(),
+		"loaded content remains the final blocking owner")
+
+
 func _build_blocking_scenario() -> ScenarioData:
 	var data := ScenarioData.new()
 	data.id = "runtime_reset_test"
@@ -511,6 +633,38 @@ func _build_two_dialogue_scenario() -> ScenarioData:
 	]
 	data.scenes.append(scene)
 	return data
+
+
+func _build_command_then_dialogue_scenario(command: CommandData) -> ScenarioData:
+	var data := ScenarioData.new()
+	data.id = "runtime_blocking_generation_test"
+	var scene := SceneData.new()
+	scene.id = "start"
+	scene.commands = [command, _dialogue_command("must not start")]
+	data.scenes.append(scene)
+	return data
+
+
+func _wait_command(mode: String, duration: float = 1.0) -> CommandData:
+	var command := CommandData.new()
+	command.type = "wait"
+	command.params = {"mode": mode, "duration": duration}
+	return command
+
+
+func _choice_command() -> CommandData:
+	var command := CommandData.new()
+	command.type = "choice"
+	command.params = {
+		"prompt": "Retired choice",
+		"options": [{
+			"id": "old",
+			"label": "Old",
+			"jump": "must_not_apply",
+			"set": {"leaked": "= 1"},
+		}],
+	}
+	return command
 
 
 func _build_dialogue_wait_dialogue_scenario() -> ScenarioData:

@@ -113,6 +113,8 @@ func get_handler(command_type: String) -> CommandHandler:
 
 新增指令只需继承 `CommandHandler`，注册到 `CommandRegistry`，符合开闭原则。当前框架内置的 handler 见 `addons/stella/core/commands/`，覆盖对话、命名舞台层、背景、音频、选择、跳转、条件、变量赋值、特效、并行和调用等指令。
 
+阻塞型 handler 必须加入传入 `ScenarioContext` 所代表的执行代际。等待普通 Godot signal 时应使用 `await CommandHandler.await_with_abort(target, context)`；这样载入、重启或回滚替换 context 后，只会取消旧代际的等待，不会留下能响应后续输入的旧连接。仅等待全局 `engine_abort_requested` 不能覆盖所有 context 替换路径。
+
 ### 2.2 剧情引擎
 
 主循环：`LoadScenario → SetScene → FetchCommand → Dispatch → WaitForCompletion → Next`

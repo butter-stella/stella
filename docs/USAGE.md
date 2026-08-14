@@ -429,6 +429,16 @@ func execute(data: CommandData, _context: ScenarioContext) -> void:
     SignalBus.effect_requested.emit("shake", {"intensity": intensity})
 ```
 
+如果自定义命令会阻塞等待 signal，应把 `context` 传给统一取消 helper：
+
+```gdscript
+func execute(_data: CommandData, context: ScenarioContext) -> void:
+    if not await CommandHandler.await_with_abort(my_completed, context):
+        return
+```
+
+context 在一次剧情执行期间就是它的代际 token；载入、重启或回滚会取消旧 context 的所有此类等待，避免旧 handler 响应新剧情的输入。
+
 在启动时注册：
 ```gdscript
 StellaRuntime.registry.register(MyShakeHandler.new())

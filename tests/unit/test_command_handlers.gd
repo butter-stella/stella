@@ -532,6 +532,98 @@ func test_mutated_nested_raw_payload_cannot_match_outer_metadata_by_value() -> v
 	_bus.show_dialogue.disconnect(capture_nested)
 
 
+# --- Context-scoped blocking cancellation ---
+
+func test_context_replacement_cancels_click_wait_connections() -> void:
+	var handler := WaitHandler.new()
+	var command := _build_cmd("wait", {"mode": "click"})
+	var advance_connections := SignalBus.advance_requested.get_connections().size()
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	var engine := ScenarioEngine.new()
+	engine.context = _context
+
+	handler.execute(command, _context)
+	assert_eq(SignalBus.advance_requested.get_connections().size(),
+		advance_connections + 1)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1)
+	assert_eq(_context.cancellation_requested.get_connections().size(), 1)
+
+	engine.context = ScenarioContext.new(_context.scenario_data)
+	await get_tree().process_frame
+
+	assert_true(_context.is_cancellation_requested())
+	assert_eq(SignalBus.advance_requested.get_connections().size(),
+		advance_connections,
+		"the retired click wait cannot consume a later run's advance")
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections)
+	assert_eq(_context.cancellation_requested.get_connections().size(), 0)
+
+
+func test_context_replacement_cancels_timer_wait_before_timeout() -> void:
+	var handler := WaitHandler.new()
+	var command := _build_cmd("wait", {"mode": "timer", "duration": 10.0})
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	var engine := ScenarioEngine.new()
+	engine.context = _context
+
+	handler.execute(command, _context)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1)
+	assert_eq(_context.cancellation_requested.get_connections().size(), 1)
+
+	engine.context = ScenarioContext.new(_context.scenario_data)
+	await get_tree().process_frame
+
+	assert_true(_context.is_cancellation_requested())
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections,
+		"a retired timer must release its global abort listener immediately")
+	assert_eq(_context.cancellation_requested.get_connections().size(), 0)
+
+
+func test_context_replacement_cancels_choice_and_rejects_late_selection() -> void:
+	_context.variable_store = VariableStore.new()
+	var handler := ChoiceHandler.new()
+	var command := _build_cmd("choice", {
+		"prompt": "Old choice",
+		"options": [{
+			"id": "old",
+			"label": "Old",
+			"jump": "must_not_apply",
+			"set": {"leaked": "= 1"},
+		}],
+	})
+	var choice_connections := SignalBus.choice_selected.get_connections().size()
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	var engine := ScenarioEngine.new()
+	engine.context = _context
+
+	handler.execute(command, _context)
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections + 1)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1)
+	assert_eq(_context.cancellation_requested.get_connections().size(), 1)
+
+	engine.context = ScenarioContext.new(_context.scenario_data)
+	await get_tree().process_frame
+	SignalBus.choice_selected.emit("old")
+	await get_tree().process_frame
+
+	assert_true(_context.is_cancellation_requested())
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections,
+		"a retired choice cannot consume a later selection")
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections)
+	assert_eq(_context.cancellation_requested.get_connections().size(), 0)
+	assert_eq(_context.pending_jump, "")
+	assert_null(_context.variable_store.get_var("leaked"),
+		"a late selection cannot mutate the retired VariableStore")
+
+
 # --- BgHandler ---
 
 func test_bg_handler_emits_signal():
