@@ -263,6 +263,14 @@ func test_numeric_resource_id_grammar_matches_godot_loader():
 
 func test_quoted_resource_ids_share_canonical_domain_without_reparsing():
 	assert_eq(
+		TextResourceInspector._normalized_resource_id_value("", true),
+		"id:",
+	)
+	assert_eq(
+		TextResourceInspector._normalized_resource_id_value("", false),
+		"",
+	)
+	assert_eq(
 		TextResourceInspector._normalized_resource_id_value("1", false),
 		TextResourceInspector._normalized_resource_id_value("1", true),
 	)
@@ -287,6 +295,40 @@ func test_quoted_resource_ids_share_canonical_domain_without_reparsing():
 			"id:" + value,
 			"ordinary quoted ID: %s" % value,
 		)
+
+
+func test_quoted_empty_ext_and_sub_resource_ids_match_godot_loader():
+	_write_text(
+		OUTER_PATH,
+		(
+			"[gd_scene load_steps=3 format=3]\n\n"
+			+ "[ext_resource type=\"Texture2D\" "
+			+ "path=\"res://examples/demo/art/backgrounds/bg_cafe.png\" "
+			+ "id=\"\"]\n\n"
+			+ "[sub_resource type=\"Gradient\" id=\"\"]\n\n"
+			+ "[node name=\"QuotedEmptyIds\" type=\"Sprite2D\"]\n"
+			+ "texture = ExtResource(\"\")\n"
+			+ "metadata/empty_sub = SubResource(\"\")\n"
+		),
+	)
+
+	var result := _inspector.inspect(OUTER_PATH, "PackedScene")
+	assert_true(result.ok)
+	assert_true(result.matches_expected_type)
+	assert_eq(result.dependencies.size(), 1)
+	var scene := ResourceLoader.load(
+		OUTER_PATH,
+		"PackedScene",
+		ResourceLoader.CACHE_MODE_IGNORE_DEEP,
+	) as PackedScene
+	assert_not_null(scene)
+	var instance := scene.instantiate() as Sprite2D if scene != null else null
+	assert_not_null(instance)
+	if instance != null:
+		assert_not_null(instance.texture)
+		assert_true(instance.get_meta("empty_sub") is Gradient)
+		instance.free()
+	assert_engine_error_count(0)
 
 
 func test_repeated_instances_are_memoized_without_materializing_full_tree():

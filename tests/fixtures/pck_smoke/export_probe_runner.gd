@@ -136,6 +136,7 @@ func _probe_degraded_title_fallbacks() -> void:
 	_probe_nested_editable_child_override(failures)
 	_probe_binary_nested_editable_child_override(failures)
 	_probe_numeric_resource_ids(failures)
+	_probe_quoted_empty_resource_ids(failures)
 	for degraded_path: String in fixtures:
 		# Normal startup must reject each degraded PackedScene before it can
 		# become current_scene.
@@ -268,6 +269,39 @@ func _probe_numeric_resource_id_case(
 		var instance := scene.instantiate() as Sprite2D
 		if instance == null or instance.texture == null:
 			failures.append("%s resource reference did not resolve" % name)
+		if instance != null:
+			instance.free()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(scene_path))
+
+
+func _probe_quoted_empty_resource_ids(failures: PackedStringArray) -> void:
+	var scene_path := "user://stella_probe_quoted_empty_resource_ids.tscn"
+	var file := FileAccess.open(scene_path, FileAccess.WRITE)
+	if file == null:
+		failures.append("could not create quoted empty resource-ID fixture")
+		return
+	file.store_string(
+		"[gd_scene load_steps=3 format=3]\n\n"
+		+ "[ext_resource type=\"Texture2D\" "
+		+ "path=\"res://examples/demo/art/backgrounds/bg_cafe.png\" "
+		+ "id=\"\"]\n\n"
+		+ "[sub_resource type=\"Gradient\" id=\"\"]\n\n"
+		+ "[node name=\"QuotedEmptyIds\" type=\"Sprite2D\"]\n"
+		+ "texture = ExtResource(\"\")\n"
+		+ "metadata/empty_sub = SubResource(\"\")\n"
+	)
+	file.close()
+	var scene := StellaRuntime._load_title_scene(scene_path)
+	if scene == null:
+		failures.append("Godot-valid quoted empty resource ID was rejected")
+	else:
+		var instance := scene.instantiate() as Sprite2D
+		if (
+			instance == null
+			or instance.texture == null
+			or not instance.get_meta("empty_sub") is Gradient
+		):
+			failures.append("quoted empty resource references did not resolve")
 		if instance != null:
 			instance.free()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(scene_path))

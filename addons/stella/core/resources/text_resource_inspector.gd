@@ -295,10 +295,10 @@ static func _godot_46_resource_integer_string(literal: String) -> String:
 
 
 static func _normalized_resource_id_value(value: String, quoted: bool) -> String:
-	if value.is_empty():
-		return ""
 	if quoted:
 		return "id:" + value
+	if value.is_empty():
+		return ""
 	var numeric := _resource_numeric_literal(value)
 	if not numeric.get("ok", false):
 		return ""
