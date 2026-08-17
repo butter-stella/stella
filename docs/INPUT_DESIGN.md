@@ -21,7 +21,7 @@ _input:
   4. 否则 → 当前 pending `DialogueRequest.advance()`；若没有 pending owner，广播兼容 advance（用于 `@wait click`）
 
 _unhandled_input:
-  键盘（空格/回车/Ctrl）→ UI 隐藏时先恢复并消费按键，否则正常处理
+  键盘（空格/回车/Ctrl）→ UI 隐藏时先恢复并消费，否则正常处理
 ```
 
 ### 为什么 `gui_get_hovered_control()` 有效
@@ -66,3 +66,11 @@ Presenter 同时观察 `AutoPlayController` / `SkipController` 的状态变化�
 AVG 标准行为：打字未完成时点击 = 完成打字（不推进），打字完成后点击 = 推进。
 
 实现：`_input` 调用 Presenter 的 `complete_typewriter()`，由 Presenter 同步取消旧的字符/等待协程、应用最终头像状态，并把当前对话剩余的 `@combine` 舞台操作按声明顺序归约后以 cut 投影。成功后输入层再用 `set_input_as_handled()` 消费事件，因此既不会同时推进，也不会留下跨到下一句的 Tween。仅完成打字不会把该行标为已读；`DialogueHandler` 在当前 request 的 `DialogueActivation` 被正常确认、且 engine/context owner 仍有效后写入已读记录，中止则保持未读并终止当前 context，因此无界面执行也遵守相同语义。Presenter 的输入、Auto 与 Skip 都调用当前 `DialogueRequest.advance()`；Core 提交已读后先发送带 activation identity 的内建完成事件，再广播无参数 `advance_requested` 作为扩展/音频兼容通知。若 Presenter 没有 pending dialogue activation，输入层改发该无参通知以解除 `@wait click`。typed owner 被新 SHOW、hard hide 或生命周期边界替换时，Presenter 会在清除其可达性前 `abort()`，不会留下只能由旧 UI 完成的 Core waiter；若 abort 回调同步发布更新的 SHOW/HIDE，使正在接受的外层 request 失去 current/queue 所有权，该 incoming request 也会被明确 abort。扩展直接广播旧信号不会完成任何 DialogueHandler waiter，也不会误推进另一个 activation。
+
+## Chapter indicator fade 与一次输入边界
+
+当没有 pending dialogue owner、当前 blocking command 是 `@chapter_indicator ... transition=fade` 时，普通左键、Space 和 Enter 仍走同一 `advance_requested` 语义：只把**当前已接受**的 fade snap 到 authored final state，并消费该次输入。toolbar Skip 开启也只 finish 当前 exact request；Auto 状态本身不会自动结束 indicator。
+
+每个 Presenter 在接受 request 时记录 `SignalBus` 的 advance dispatch serial。若第一位 Presenter 的 acknowledgement 同步推进引擎并创建下一条 indicator，后一位 Presenter 收到的仍是旧 signal tail；新 request 的接受 serial 与当前 dispatch 相同，因此它必须拒绝这次旧 tail。结果是一次 physical/semantic advance 最多完成一个 blocking command，不会把 chained fade 一起跳过。
+
+既有输入优先级保持不变：soft-hidden UI 先恢复，Button/Slider 左键交给 GUI，非 PLAYING 不处理；Skip/Auto 的既有左键 policy 先于普通推进。成功进入 normal path 后，无论是 typed dialogue advance 还是 chapter/wait fallback 都会 `set_input_as_handled()`。手柄输入与 #133 的可重绑输入系统不属于本卡；与该输入前置叠加后再验证其 parity。

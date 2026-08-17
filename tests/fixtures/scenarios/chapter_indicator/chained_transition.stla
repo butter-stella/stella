@@ -1,0 +1,5 @@
+@chapter chained "chapter.contract.chained"
+@scene start
+@chapter_indicator show transition=fade duration=5.0
+@chapter_indicator hide transition=fade duration=5.0
+narrator「after both chained transitions」

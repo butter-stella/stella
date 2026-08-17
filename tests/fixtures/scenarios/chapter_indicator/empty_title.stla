@@ -1,0 +1,4 @@
+@chapter silent ""
+@scene start
+@chapter_indicator show
+narrator「authored visible without a presentable title」

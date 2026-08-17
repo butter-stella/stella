@@ -1,0 +1,22 @@
+@chapter prologue "chapter.contract.prologue"
+@scene opening
+@chapter_indicator hide
+narrator「opening hidden」
+@chapter_indicator show
+narrator「opening visible」
+
+@scene prologue_tail
+narrator「sequential visible」
+@call aside
+@chapter_indicator show
+narrator「returned visible」
+@jump second_start
+
+@chapter aside_chapter "chapter.contract.aside"
+@scene aside
+@chapter_indicator hide
+narrator「aside hidden」
+
+@chapter second "chapter.contract.second"
+@scene second_start
+narrator「second visible」

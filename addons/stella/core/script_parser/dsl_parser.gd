@@ -4,7 +4,11 @@ class_name DslParser extends RefCounted
 
 const INTERNAL_DIALOGUE_MODE_EVENT := "__dialogue_mode_event"
 const INTERNAL_IF_NODE := "__if_node"
-const _PARALLEL_BLOCKING_COMMANDS := ["dialogue", "choice", "wait"]
+const _PARALLEL_BLOCKING_COMMANDS := [
+	"dialogue", "choice", "wait", "chapter_indicator",
+]
+const _CHAPTER_INDICATOR_ACTIONS := ["show", "hide"]
+const _CHAPTER_INDICATOR_TRANSITIONS := ["cut", "none", "fade"]
 const _STAGE_TRANSITIONS := [
 	"cut", "none", "fade", "move",
 	"slide_left", "slide_right", "slide_up", "slide_down",
@@ -49,6 +53,10 @@ static func parse(
 	# subsequent @scene declarations can be assigned to it. null until the
 	# first @chapter is seen.
 	var current_chapter: ChapterData = null
+	# current_scene intentionally retains the preceding scene while the next
+	# chapter declaration waits for its first @scene. Commands in this gap must
+	# not leak into that preceding scene.
+	var chapter_needs_scene: bool = false
 
 	# @if/@else/@end state
 	var if_stack: Array = []  # Array of IfContext
@@ -117,6 +125,7 @@ static func parse(
 				choice_cmd = null
 				pending_options = []
 				current_scene = _parse_scene_directive(token)
+				chapter_needs_scene = false
 				if not pending_root_mode_events.is_empty():
 					current_scene.commands.append_array(pending_root_mode_events)
 					pending_root_mode_events.clear()
@@ -172,6 +181,7 @@ static func parse(
 					else:
 						current_chapter = new_chapter
 						data.chapters.append(current_chapter)
+						chapter_needs_scene = true
 
 			DslToken.Type.AT_COMMAND:
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
@@ -181,11 +191,19 @@ static func parse(
 				var cmd_name = _get_at_command_name(token.raw_text)
 
 				if in_combine and cmd_name not in ["stage", "end"]:
+					var combine_message := (
+						"DslParser: only @stage is allowed inside @combine block; @%s was ignored (line %d)"
+						% [cmd_name, token.line]
+					)
+					if cmd_name == "chapter_indicator":
+						combine_message = (
+							"DslParser: @chapter_indicator is not allowed inside @combine at %s"
+							% _source_location(data, token.line)
+						)
 					_record_diagnostic(
 						data,
-						"warning",
-						"DslParser: only @stage is allowed inside @combine block; @%s was ignored (line %d)"
-						% [cmd_name, token.line],
+						"error" if cmd_name == "chapter_indicator" else "warning",
+						combine_message,
 						token.line,
 					)
 				elif cmd_name == "choice":
@@ -353,6 +371,19 @@ static func parse(
 					var cmd = _parse_at_command(token, data)
 					if cmd:
 						cmd.declared_line = token.line
+					if (
+						cmd != null
+						and cmd.type == "chapter_indicator"
+						and (current_scene == null or chapter_needs_scene)
+					):
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @chapter_indicator requires an active @scene at %s"
+							% _source_location(data, token.line),
+							token.line,
+						)
+						cmd = null
 					if cmd and current_scene:
 						if in_combine:
 							# Only named-stage operations reach this branch while a
@@ -643,11 +674,19 @@ static func _record_parallel_blocking_diagnostic(
 	command_type: String,
 	line: int,
 ) -> void:
+	var message := (
+		"DslParser: blocking '%s' command is not allowed inside @parallel (line %d)"
+		% [command_type, line]
+	)
+	if command_type == "chapter_indicator":
+		message = (
+			"DslParser: blocking 'chapter_indicator' command is not allowed inside @parallel at %s"
+			% _source_location(data, line)
+		)
 	_record_diagnostic(
 		data,
 		"error",
-		"DslParser: blocking '%s' command is not allowed inside @parallel (line %d)"
-		% [command_type, line],
+		message,
 		line,
 	)
 
@@ -796,6 +835,8 @@ static func _parse_at_command(token: DslToken, data: ScenarioData) -> CommandDat
 	var parts = _split_args(args)
 
 	match name:
+		"chapter_indicator":
+			return _parse_chapter_indicator_command(parts, token.line, data)
 		"stage":
 			return _parse_stage_command(parts, token.line, data)
 		"bg":
@@ -970,6 +1011,190 @@ static func _parse_at_command(token: DslToken, data: ScenarioData) -> CommandDat
 				token.line,
 			)
 			return null
+
+
+static func _parse_chapter_indicator_command(
+	parts: Array,
+	line: int,
+	data: ScenarioData,
+) -> CommandData:
+	var location := _source_location(data, line)
+	if parts.is_empty() or String(parts[0]).contains("="):
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @chapter_indicator requires a show or hide action at %s"
+			% location,
+			line,
+		)
+		return null
+	var action := String(parts[0]).to_lower()
+	if action not in _CHAPTER_INDICATOR_ACTIONS:
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: invalid @chapter_indicator action '%s' at %s"
+			% [parts[0], location],
+			line,
+		)
+		return null
+
+	var transition := "cut"
+	var duration := 0.0
+	var duration_was_set := false
+	var seen: Dictionary = {}
+	var invalid := false
+	for index in range(1, parts.size()):
+		var encoded := String(parts[index])
+		var equals_at := encoded.find("=")
+		if equals_at < 1:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: invalid @chapter_indicator argument '%s' at %s; use key=value"
+				% [encoded, location],
+				line,
+			)
+			invalid = true
+			continue
+		var key := encoded.substr(0, equals_at).strip_edges().to_lower()
+		var raw_value := encoded.substr(equals_at + 1).strip_edges()
+		if seen.has(key):
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: duplicate @chapter_indicator option '%s' at %s"
+				% [key, location],
+				line,
+			)
+			invalid = true
+			continue
+		seen[key] = true
+		match key:
+			"transition":
+				if raw_value.to_lower() not in _CHAPTER_INDICATOR_TRANSITIONS:
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: invalid @chapter_indicator transition '%s' at %s"
+						% [raw_value, location],
+						line,
+					)
+					invalid = true
+				else:
+					transition = raw_value.to_lower()
+			"duration":
+				duration_was_set = true
+				var duration_result := _parse_chapter_indicator_duration(raw_value)
+				if not bool(duration_result.get("valid", false)):
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @chapter_indicator duration must be %s at %s"
+						% [duration_result.get("requirement", "finite"), location],
+						line,
+					)
+					invalid = true
+				else:
+					duration = float(duration_result.get("value", 0.0))
+			_:
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: unknown @chapter_indicator option '%s' at %s"
+					% [key, location],
+					line,
+				)
+				invalid = true
+
+	if invalid:
+		return null
+	if transition == "none":
+		transition = "cut"
+	if transition == "fade" and not duration_was_set:
+		duration = 0.25
+	if transition == "cut" and duration != 0.0:
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @chapter_indicator cut transition requires duration=0 at %s"
+			% location,
+			line,
+		)
+		return null
+	return _make_cmd("chapter_indicator", {
+		"action": action,
+		"transition": transition,
+		"duration": duration,
+	})
+
+
+static func _parse_chapter_indicator_duration(encoded: String) -> Dictionary:
+	if not encoded.is_valid_float():
+		return {"valid": false, "requirement": "finite"}
+	var normalized := encoded.strip_edges().to_lower()
+	var exponent_at := normalized.find("e")
+	if exponent_at >= 0:
+		var exponent_text := normalized.substr(exponent_at + 1)
+		var exponent_negative := exponent_text.begins_with("-")
+		if exponent_text.begins_with("+") or exponent_negative:
+			exponent_text = exponent_text.substr(1)
+		exponent_text = exponent_text.lstrip("0")
+		# Godot reports an engine-level "Exponent too high" before returning INF
+		# for gross positive exponents. Reject lexically before any conversion.
+		var exponent_is_gross := (
+			exponent_text.length() > 3
+			or (
+				exponent_text.length() == 3
+				and exponent_text > "308"
+			)
+		)
+		if exponent_is_gross:
+			# Zero has no representational overflow or underflow regardless of
+			# exponent spelling. Avoid Godot's noisy conversion path while retaining
+			# the canonical legal duration=0 value.
+			if not _float_spelling_has_nonzero_significand(normalized):
+				return {"valid": true, "value": 0.0}
+			if not exponent_negative:
+				return {"valid": false, "requirement": "finite"}
+			if _negative_nonzero_float_spelling(normalized):
+				return {"valid": false, "requirement": "non-negative"}
+			return {"valid": true, "value": 0.0}
+	var value := normalized.to_float()
+	if not is_finite(value):
+		return {"valid": false, "requirement": "finite"}
+	if value < 0.0 or (
+		value == 0.0 and _negative_nonzero_float_spelling(normalized)
+	):
+		return {"valid": false, "requirement": "non-negative"}
+	return {"valid": true, "value": value}
+
+
+static func _negative_nonzero_float_spelling(encoded: String) -> bool:
+	return (
+		encoded.begins_with("-")
+		and _float_spelling_has_nonzero_significand(encoded)
+	)
+
+
+static func _float_spelling_has_nonzero_significand(encoded: String) -> bool:
+	var significand := encoded
+	if significand.begins_with("-") or significand.begins_with("+"):
+		significand = significand.substr(1)
+	var exponent_at := significand.find("e")
+	if exponent_at >= 0:
+		significand = significand.substr(0, exponent_at)
+	for character in significand:
+		if character >= "1" and character <= "9":
+			return true
+	return false
+
+
+static func _source_location(data: ScenarioData, line: int) -> String:
+	var source := data.source_path
+	if source.is_empty():
+		source = data.id
+	return "%s:%d" % [source, line]
 
 
 static func _parse_stage_command(

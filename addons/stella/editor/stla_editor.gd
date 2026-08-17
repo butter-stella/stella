@@ -60,6 +60,7 @@ func _build_ui() -> void:
 	_highlighter.add_color_region("#", " ", Color(0.7, 0.5, 0.9), true)
 	# @ commands
 	_highlighter.add_keyword_color("@stage", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@chapter_indicator", Color(0.4, 0.7, 1.0))
 	_highlighter.add_keyword_color("@bg", Color(0.4, 0.7, 1.0))
 	_highlighter.add_keyword_color("@bgm", Color(0.4, 0.7, 1.0))
 	_highlighter.add_keyword_color("@se", Color(0.4, 0.7, 1.0))

@@ -9,6 +9,9 @@ var current_scene_index: int = 0
 var current_command_index: int = 0
 var pending_jump: String = ""
 var is_finished: bool = false
+## Canonical authored target for the chapter indicator. Chapter metadata and
+## presenter state are derived projections and deliberately are not persisted.
+var chapter_indicator_visible: bool = false
 var variable_store: VariableStore
 var return_stack: Array = []  # Array of {scene_index, command_index} for @call returns
 ## Runtime dialogue mode follows the actually executed control-flow path.
@@ -51,6 +54,18 @@ func is_runtime_owner_current() -> bool:
 			or bool(_runtime_owner_state.get("current", false))
 		)
 	)
+
+
+## Retire only the current execution session while keeping authored Context
+## state available for navigation recovery and autosave. The owner has already
+## been revoked by ScenarioEngine.suspend_current_run(), so abort tails cannot
+## mark the retained Context finished or apply choice effects. A later exact
+## engine capability may bind a fresh owner session to this same Context.
+func retire_runtime_execution_session() -> void:
+	if not _runtime_owner_state.is_empty():
+		_runtime_owner_state["current"] = false
+	abort_active_dialogue()
+	cancellation_requested.emit()
 
 
 ## Cancel every blocking command owned by this execution generation. A context
@@ -135,6 +150,7 @@ func capture_snapshot() -> Dictionary:
 		"scene_index": current_scene_index,
 		"command_index": current_command_index,
 		"is_finished": is_finished,
+		"chapter_indicator_visible": chapter_indicator_visible,
 		"return_stack": return_stack.duplicate(true),
 		"dialogue_mode": current_dialogue_mode,
 		"nvl_page_epoch": nvl_page_epoch,
@@ -154,6 +170,13 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 	current_scene_index = int(snapshot.get("scene_index", 0))
 	current_command_index = int(snapshot.get("command_index", 0))
 	is_finished = snapshot.get("is_finished", false)
+	var raw_indicator_visible: Variant = snapshot.get(
+		"chapter_indicator_visible", false)
+	# SaveManager rejects malformed persisted values before restore. Keep direct
+	# programmatic restores fail-closed as well instead of truthiness-coercing.
+	chapter_indicator_visible = (
+		raw_indicator_visible if raw_indicator_visible is bool else false
+	)
 	var stack = snapshot.get("return_stack", [])
 	return_stack.clear()
 	for entry in stack:

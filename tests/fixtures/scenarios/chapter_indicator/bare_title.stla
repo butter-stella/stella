@@ -1,0 +1,4 @@
+@chapter bare
+@scene start
+@chapter_indicator show
+narrator「bare chapter title falls back to its id」

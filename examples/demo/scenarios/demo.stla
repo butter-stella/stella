@@ -9,13 +9,20 @@
 @stage sakura show kind=character asset=character:sakura/smile position=960,80 origin=720,0 scale=0.8 z=10 transition=fade duration=0.3
 
 sakura「[expr:smile]你好！你就是新来的转校生吧？」 #voice:sakura_001
+@chapter_indicator show transition=fade
 sakura「我叫樱，二年级的。请多关照！」 #voice:sakura_002
+
+@call welcome_note
 
 sakura「今天是你第一天，要不要我带你逛逛校园？」 #voice:sakura_003
 
 @choice "你该怎么回应？"
   - "好啊，拜托你了！" -> tour {affection += 5}
   - "我自己看看就好。" -> decline
+
+@scene welcome_note
+
+「章节标题由执行中的 scene 自动更新；这里演示 @call 返回后仍保持同一章节。」
 
 //========================================
 @chapter campus_tour "校园漫步"
@@ -150,6 +157,7 @@ sakura「教室在二楼最左边那间！」 #voice:sakura_017
 
 @scene ending "尾声"
 
+@chapter_indicator hide transition=fade duration=0.25
 @bgm bgm_ending
 @bg bg_outside slide_up 0.8
 @stage clear transition=fade duration=0.3

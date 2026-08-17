@@ -61,6 +61,32 @@ sakura「真巧，我们又见面了。」
 
 这个例子里 `prologue` 章节有 2 个 scene（`scene_001` 和 `scene_branch_a`），但只有 `scene_001` 是章节入口；`scene_branch_a` 是内部 scene，玩家流程图不可见。
 
+#### 当前章节标题指示器
+
+`@chapter_indicator` 显式控制当前章节标题 UI 的 authored 可见目标：
+
+```stla
+@chapter prologue "chapter.prologue"
+@scene opening
+@chapter_indicator show
+@chapter_indicator hide transition=fade
+@chapter_indicator show transition=fade duration=0.6
+@chapter_indicator hide transition=none
+```
+
+精确语法为：
+
+```text
+@chapter_indicator show|hide [transition=cut|none|fade] [duration=<seconds>]
+```
+
+- 默认转场是 `cut`、时长是 `0.0`；`fade` 省略 `duration` 时默认 `0.25` 秒。
+- `none` 只是 `cut` 的 authoring alias，编译后同样保存为 `transition="cut", duration=0.0`，因此两种写法具有相同的内容 identity。
+- `duration` 必须是有限、非负的浮点秒数；`cut` / `none` 只接受 `0`。未知、重复、缺少等号或额外参数会让整条指令原子失败，并以 `.stla` 的 `source_path:line` 报错。
+- 指令必须写在当前 chapter 的有效 `@scene` 中；可以位于实际执行的 `@if` / `@else` 分支，但不能写在 chapter 与首个 scene 之间，也不能放入 `@parallel` 或 `@combine`。它是独立的 blocking command：所有本次验证通过的 Presenter 都完成后，剧本才继续；没有 Presenter 的 headless runner 会同步成功。当前不能用 wall-clock 等待或把它塞进 `@parallel` 来模拟尚未提供的跨演出 composition/join。
+
+可见性不会在 `@jump`、`@call`、顺序换 scene 或换 chapter 时隐式改变。运行时章节 ID/标题来自实际执行 cursor；标题交给 `TranslationServer` 解析。裸 `@chapter id` 以 ID 作为标题，显式空标题不会渲染 UI，但 authored 可见目标仍按命令与存档保留。
+
 ### 3.2 对话（最高频操作，语法最短）
 
 ```
@@ -546,6 +572,7 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | 对话 | `角色「台词」 #voice:id` | `角色「台词」` |
 | 旁白 | `「文本」` | `「文本」` |
 | 独白 | `角色（文本）` | `角色（文本）` |
+| 章节标题指示器 | `@chapter_indicator show|hide transition=... duration=...` | `@chapter_indicator show` |
 | 背景 | `@bg asset transition duration` | `@bg asset` |
 | 显示舞台层 | `@stage id show key=value...` | `@stage id show` |
 | 更新舞台层 | `@stage id update key=value...` | — |
@@ -577,6 +604,7 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | 背景转场 | `fade 0.5s` | `@bg` 的默认切换方式 |
 | 舞台层动作 | `show` | `@stage id key=value` 等价于 `@stage id show key=value` |
 | 舞台层转场 | `cut 0s` | 通过 `transition` / `duration` 显式启用动画 |
+| 章节标题指示器 | `cut 0s`；`fade` 为 `0.25s` | `none` 规范化为 `cut 0s` |
 | BGM 淡入 | `1.0s` | — |
 | BGM 淡出 | `1.0s` | — |
 | 对话推进 | 等待点击 | 有语音时可配置等语音播完 |

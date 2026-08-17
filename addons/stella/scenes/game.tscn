@@ -7,6 +7,7 @@
 [ext_resource type="Script" uid="uid://dsbqcj0usnsh2" path="res://addons/stella/presentation/input/input_handler.gd" id="5"]
 [ext_resource type="Script" path="res://addons/stella/presentation/effects/fade_presenter.gd" id="7"]
 [ext_resource type="Script" uid="uid://wkgv23f4gu6f" path="res://addons/stella/presentation/effects/screen_effects.gd" id="8"]
+[ext_resource type="Script" path="res://addons/stella/presentation/ui/chapter_indicator_presenter.gd" id="9"]
 
 [node name="Game" type="Node2D" unique_id=2021434320]
 
@@ -54,6 +55,28 @@ mouse_filter = 2
 
 [node name="UILayer" type="CanvasLayer" parent="." unique_id=25130991]
 layer = 3
+
+[node name="ChapterIndicator" type="PanelContainer" parent="UILayer"]
+visible = false
+offset_left = 32.0
+offset_top = 32.0
+offset_right = 410.0
+offset_bottom = 112.0
+mouse_filter = 2
+script = ExtResource("9")
+title_label_path = NodePath("Margin/Title")
+
+[node name="Margin" type="MarginContainer" parent="UILayer/ChapterIndicator"]
+layout_mode = 2
+theme_override_constants/margin_left = 20
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 20
+theme_override_constants/margin_bottom = 12
+
+[node name="Title" type="Label" parent="UILayer/ChapterIndicator/Margin"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 24
+text_overrun_behavior = 3
 
 [node name="DialoguePanel" type="Control" parent="UILayer" unique_id=1870871759]
 unique_name_in_owner = true
