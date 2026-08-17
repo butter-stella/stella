@@ -1,0 +1,4 @@
+@chapter short_transition "chapter.contract.short_transition"
+@scene start
+@chapter_indicator show transition=fade duration=0.05
+narrator「after short transition」

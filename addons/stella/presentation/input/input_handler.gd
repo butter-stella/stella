@@ -117,10 +117,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not StellaRuntime.game_state.is_playing():
 		return
 	if event.keycode == KEY_SPACE or event.keycode == KEY_ENTER:
-		if dialogue and dialogue.complete_typewriter():
-			pass
-		else:
-			_request_dialogue_advance(dialogue)
+		_handle_normal_advance(dialogue)
 
 
 func _get_dialogue():
@@ -130,11 +127,20 @@ func _get_dialogue():
 func _request_dialogue_advance(dialogue) -> void:
 	if dialogue != null and dialogue.has_method("request_current_dialogue_advance"):
 		if bool(dialogue.request_current_dialogue_advance()):
+			get_viewport().set_input_as_handled()
 			return
 	# Compatibility for custom scenes that still expose only the legacy global
 	# input notification, and for non-dialogue blockers such as @wait click.
 	# New DialogueHandler commands require request.advance().
 	SignalBus.emit_advance_requested()
+	get_viewport().set_input_as_handled()
+
+
+func _handle_normal_advance(dialogue) -> void:
+	if dialogue and dialogue.complete_typewriter():
+		get_viewport().set_input_as_handled()
+		return
+	_request_dialogue_advance(dialogue)
 
 
 func _restore_soft_hidden_dialogue(dialogue) -> bool:

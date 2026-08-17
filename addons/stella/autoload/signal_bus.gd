@@ -2,6 +2,9 @@
 ## Registered as an Autoload singleton.
 extends Node
 
+const ChapterIndicatorRequest = preload(
+	"res://addons/stella/core/data/chapter_indicator_request.gd")
+
 # Dialogue
 ## Canonical internal request. Core and built-in presenters consume this typed,
 ## self-contained payload; show_dialogue below remains the extension adapter.
@@ -47,6 +50,7 @@ var _voice_completion_states: Dictionary = {}
 var _voice_request_responses: Dictionary = {}
 var _compatibility_voice_play_echo_pending: int = 0
 var _compatibility_voice_lifecycle_echo_pending: int = 0
+var _current_chapter_event_stack: Array[Dictionary] = []
 
 
 func _init() -> void:
@@ -61,6 +65,7 @@ func _init() -> void:
 	dialogue_voice_started.connect(_on_dialogue_voice_started_dispatch_started)
 	dialogue_voice_progress.connect(_on_dialogue_voice_progress_dispatch_started)
 	dialogue_voice_finished.connect(_on_dialogue_voice_finished_dispatch_started)
+	current_chapter_changed.connect(_on_current_chapter_dispatch_started)
 
 
 func emit_show_dialogue(
@@ -746,6 +751,605 @@ signal dialogue_voice_finished()
 ##   - advancing to the next in-game dialogue cleanly cancels any in-flight
 ##     replay via the same _dialogue_gen mechanism
 signal dialogue_voice_replay_requested(voices: Array, character: String)
+
+# Current chapter presentation
+## Stable public identity/title event. The title is already resolved for the
+## current TranslationServer locale. Identity/title are independent from the
+## authored visibility target below.
+signal current_chapter_changed(chapter_id: String, title: String)
+## Two-phase, all-or-none presenter request. Bound presenters synchronously
+## validate first; accepted presenters then join one exact completion barrier.
+signal chapter_indicator_validate_requested(request: ChapterIndicatorRequest)
+signal chapter_indicator_apply_requested(request: ChapterIndicatorRequest)
+signal chapter_indicator_finish_requested(request_id: int)
+signal chapter_indicator_request_finished(request_id: int, success: bool)
+## Cut-only projection used after restore and when reverting a failed request.
+## The generation lets every built-in presenter reject a stale outer signal tail.
+signal chapter_indicator_state_apply_requested(visible: bool, generation: int)
+## Cut projection for presenters that bind after validation and therefore are
+## deliberately outside the current request's completion barrier.
+signal chapter_indicator_projection_committed(visible: bool, generation: int)
+## Visual lifecycle reset. This cancels the current barrier without changing
+## the ScenarioContext-authored visibility target.
+signal chapter_indicator_reset_requested(epoch: int)
+
+var _next_chapter_indicator_request_id := 1
+var _chapter_indicator_epoch := 1
+var _chapter_indicator_dispatching := false
+var _dispatching_chapter_indicator_request: ChapterIndicatorRequest
+var _active_chapter_indicator_request_id := 0
+var _chapter_indicator_requests: Dictionary = {}
+var _chapter_indicator_projection_active := false
+var _chapter_indicator_projected_visible := false
+var _chapter_indicator_participant_authority := RefCounted.new()
+var _chapter_indicator_registrar_authority: Object
+var _chapter_indicator_participants: Dictionary = {}
+
+
+## The composition root owns concrete-presentation admission. SignalBus keeps
+## only an opaque registrar authority plus exact weak participant identities,
+## preserving the Core/Bus -> Presentation dependency direction.
+func configure_chapter_indicator_registrar(authority: Object) -> bool:
+	if authority == null:
+		return false
+	if _chapter_indicator_registrar_authority == null:
+		_chapter_indicator_registrar_authority = authority
+	return _chapter_indicator_registrar_authority == authority
+
+
+func register_chapter_indicator_presenter(
+	presenter: Object,
+	registrar_authority: Object,
+) -> RefCounted:
+	if (
+		registrar_authority != _chapter_indicator_registrar_authority
+		or presenter == null
+		or not is_instance_valid(presenter)
+		or not presenter is Node
+		or (presenter as Node).is_queued_for_deletion()
+	):
+		return null
+	var presenter_id := presenter.get_instance_id()
+	var existing: Dictionary = _chapter_indicator_participants.get(
+		presenter_id, {})
+	if not existing.is_empty():
+		var existing_presenter: Object = (
+			(existing.get("presenter") as WeakRef).get_ref()
+		)
+		if existing_presenter == presenter:
+			return existing.get("capability") as RefCounted
+	var capability := RefCounted.new()
+	_chapter_indicator_participants[presenter_id] = {
+		"presenter": weakref(presenter),
+		"capability": capability,
+	}
+	return capability
+
+
+func unregister_chapter_indicator_presenter(
+	presenter: Object,
+	capability: RefCounted,
+	registrar_authority: Object,
+) -> void:
+	if (
+		registrar_authority != _chapter_indicator_registrar_authority
+		or presenter == null
+		or not is_instance_valid(presenter)
+	):
+		return
+	var presenter_id := presenter.get_instance_id()
+	if _chapter_indicator_participant_identity_matches(presenter, capability):
+		_chapter_indicator_participants.erase(presenter_id)
+
+
+func reject_chapter_indicator_request(
+	request: ChapterIndicatorRequest,
+	presenter: Object,
+	capability: RefCounted,
+	error: String,
+) -> bool:
+	if (
+		request == null
+		or request != _dispatching_chapter_indicator_request
+		or not _chapter_indicator_participant_is_current(presenter, capability)
+		or not request.is_target(presenter)
+	):
+		return false
+	return request._reject(error, _chapter_indicator_participant_authority)
+
+
+func validate_chapter_indicator_request(
+	request: ChapterIndicatorRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if (
+		request == null
+		or request != _dispatching_chapter_indicator_request
+		or not _chapter_indicator_participant_is_current(presenter, capability)
+		or not request.is_target(presenter)
+	):
+		return false
+	return request._validate(presenter, _chapter_indicator_participant_authority)
+
+
+func accept_chapter_indicator_request(
+	request: ChapterIndicatorRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if (
+		request == null
+		or not _chapter_indicator_participant_is_current(presenter, capability)
+		or not request.is_target(presenter)
+	):
+		return false
+	return request._accept(presenter, _chapter_indicator_participant_authority)
+
+
+func _chapter_indicator_participant_is_current(
+	presenter: Object,
+	capability: Object,
+) -> bool:
+	if (
+		presenter == null
+		or capability == null
+		or not is_instance_valid(presenter)
+		or not presenter is Node
+		or (presenter as Node).is_queued_for_deletion()
+	):
+		return false
+	var entry: Dictionary = _chapter_indicator_participants.get(
+		presenter.get_instance_id(), {})
+	if entry.is_empty() or entry.get("capability") != capability:
+		return false
+	var registered: Object = (entry.get("presenter") as WeakRef).get_ref()
+	return registered == presenter
+
+
+func _chapter_indicator_participant_identity_matches(
+	presenter: Object,
+	capability: Object,
+) -> bool:
+	if presenter == null or capability == null or not is_instance_valid(presenter):
+		return false
+	var entry: Dictionary = _chapter_indicator_participants.get(
+		presenter.get_instance_id(), {})
+	if entry.is_empty() or entry.get("capability") != capability:
+		return false
+	var registered: Object = (entry.get("presenter") as WeakRef).get_ref()
+	return registered == presenter
+
+
+func _chapter_indicator_participant_snapshot() -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for presenter_id: int in _chapter_indicator_participants.keys():
+		var entry: Dictionary = _chapter_indicator_participants[presenter_id]
+		var weak_presenter: WeakRef = entry.get("presenter")
+		var presenter: Object = weak_presenter.get_ref() if weak_presenter != null else null
+		var capability: Object = entry.get("capability")
+		if not _chapter_indicator_participant_is_current(presenter, capability):
+			_chapter_indicator_participants.erase(presenter_id)
+			continue
+		result.append({
+			"presenter": presenter,
+			"capability": capability,
+		})
+	return result
+
+
+## Runtime-owned metadata delivery. The two-argument public signal remains a
+## compatibility surface; built-in presenters consult the stack-scoped owner so
+## a nested context replacement cannot let an outer stale tail overwrite them.
+func emit_current_chapter_changed(
+	chapter_id: String,
+	title: String,
+	owner_validator: Callable,
+) -> bool:
+	if not _chapter_event_owner_is_current(owner_validator):
+		return false
+	_current_chapter_event_stack.append({
+		"chapter_id": chapter_id,
+		"title": title,
+		"owner_validator": owner_validator,
+		"dispatch_started": false,
+		"nested_raw_dispatch_count": 0,
+		"dispatch_consumers": {},
+	})
+	current_chapter_changed.emit(chapter_id, title)
+	_current_chapter_event_stack.pop_back()
+	return _chapter_event_owner_is_current(owner_validator)
+
+
+func current_chapter_event_is_current(
+	chapter_id: String,
+	title: String,
+	consumer_id: int = 0,
+) -> bool:
+	var frame := _current_chapter_event_frame(chapter_id, title)
+	if frame.is_empty() or _chapter_event_dispatch_is_nested_raw(frame, consumer_id):
+		return true
+	return _chapter_event_owner_is_current(
+		frame.get("owner_validator", Callable()))
+
+
+func _on_current_chapter_dispatch_started(
+	chapter_id: String,
+	title: String,
+) -> void:
+	var frame := _current_chapter_event_frame(chapter_id, title)
+	if frame.is_empty():
+		return
+	if not bool(frame.get("dispatch_started", false)):
+		frame["dispatch_started"] = true
+		return
+	frame["nested_raw_dispatch_count"] = int(
+		frame.get("nested_raw_dispatch_count", 0)) + 1
+
+
+func _current_chapter_event_frame(
+	chapter_id: String,
+	title: String,
+) -> Dictionary:
+	if _current_chapter_event_stack.is_empty():
+		return {}
+	var frame: Dictionary = _current_chapter_event_stack[-1]
+	if (
+		String(frame.get("chapter_id", "")) != chapter_id
+		or String(frame.get("title", "")) != title
+	):
+		return {}
+	return frame
+
+
+func _chapter_event_dispatch_is_nested_raw(
+	frame: Dictionary,
+	consumer_id: int,
+) -> bool:
+	var nested_count := int(frame.get("nested_raw_dispatch_count", 0))
+	var consumers: Dictionary = frame.get("dispatch_consumers", {})
+	var consumed_count := int(consumers.get(consumer_id, 0))
+	if consumed_count >= nested_count:
+		return false
+	consumers[consumer_id] = consumed_count + 1
+	return true
+
+
+func _chapter_event_owner_is_current(owner_validator: Callable) -> bool:
+	return owner_validator.is_valid() and bool(owner_validator.call())
+
+
+## Validate and dispatch one authored visibility operation. Core commits its
+## canonical target only after every sealed participant explicitly accepts and
+## the complete apply dispatch survives the epoch. Signal listeners receive a
+## typed value view; mutable copies cannot rewrite authority or shrink quorum.
+func request_chapter_indicator_visibility(
+	visible: bool,
+	transition: String,
+	duration: float,
+	source: Dictionary = {},
+	on_dispatch_accepted: Callable = Callable(),
+) -> ChapterIndicatorRequest:
+	var normalized_transition := transition.strip_edges().to_lower()
+	if normalized_transition == "none":
+		normalized_transition = "cut"
+	var request := ChapterIndicatorRequest.new(
+		visible, normalized_transition, duration, source)
+	request._bind_authority(
+		_chapter_indicator_participant_authority,
+		_chapter_indicator_participant_is_current,
+	)
+	for participant: Dictionary in _chapter_indicator_participant_snapshot():
+		request._snapshot_presenter(
+			participant.get("presenter"),
+			participant.get("capability"),
+			_chapter_indicator_participant_authority,
+		)
+	var errors: Array[String] = []
+	if normalized_transition not in ["cut", "fade"]:
+		errors.append("transition must be cut, none, or fade")
+	if not is_finite(duration) or duration < 0.0:
+		errors.append("duration must be a finite non-negative number")
+	if normalized_transition == "cut" and duration != 0.0:
+		errors.append("cut/none transition requires duration=0")
+	if _chapter_indicator_dispatching or _active_chapter_indicator_request_id > 0:
+		errors.append("another chapter indicator request is already in flight")
+	if not errors.is_empty():
+		for error: String in errors:
+			request._reject(error, _chapter_indicator_participant_authority)
+		request._finish(false, false, _chapter_indicator_participant_authority)
+		_report_chapter_indicator_rejection(source, errors)
+		return request
+
+	_chapter_indicator_epoch += 1
+	_chapter_indicator_dispatching = true
+	_dispatching_chapter_indicator_request = request
+	var dispatch_epoch := _chapter_indicator_epoch
+	chapter_indicator_validate_requested.emit(request)
+	if dispatch_epoch != _chapter_indicator_epoch:
+		_finish_chapter_indicator_dispatch(request)
+		if not request.is_finished():
+			request._finish(
+				false, true, _chapter_indicator_participant_authority)
+		return request
+
+	var request_id := _next_chapter_indicator_request_id
+	if not request._seal_validation(
+		request_id, _chapter_indicator_participant_authority):
+		_finish_chapter_indicator_dispatch(request)
+		errors = request.get_validation_errors()
+		request._finish(false, false, _chapter_indicator_participant_authority)
+		_report_chapter_indicator_rejection(source, errors)
+		return request
+	_next_chapter_indicator_request_id += 1
+	var pending_presenters: Dictionary = {}
+	for presenter_id: int in request.get_presenter_ids():
+		pending_presenters[presenter_id] = true
+	_chapter_indicator_requests[request_id] = {
+		"request": request,
+		"pending_presenters": pending_presenters,
+		"success": true,
+		"dispatching": true,
+	}
+	_active_chapter_indicator_request_id = request_id
+	chapter_indicator_apply_requested.emit(request)
+	_finish_chapter_indicator_dispatch(request)
+	if (
+		dispatch_epoch != _chapter_indicator_epoch
+		or not _chapter_indicator_requests.has(request_id)
+	):
+		return request
+
+	var state: Dictionary = _chapter_indicator_requests[request_id]
+	if not request.all_presenters_accepted() or not request.presenters_are_live():
+		state["success"] = false
+	_chapter_indicator_requests[request_id] = state
+	if not bool(state.get("success", false)):
+		_finalize_chapter_indicator_request(request_id, false)
+		return request
+	if on_dispatch_accepted.is_valid():
+		on_dispatch_accepted.call()
+	if (
+		dispatch_epoch != _chapter_indicator_epoch
+		or not _chapter_indicator_requests.has(request_id)
+	):
+		return request
+	_chapter_indicator_projection_active = true
+	_chapter_indicator_projected_visible = visible
+	chapter_indicator_projection_committed.emit(visible, dispatch_epoch)
+	if (
+		dispatch_epoch != _chapter_indicator_epoch
+		or not _chapter_indicator_requests.has(request_id)
+	):
+		return request
+	state = _chapter_indicator_requests[request_id]
+	if not request.presenters_are_live():
+		state["success"] = false
+	state["dispatching"] = false
+	_chapter_indicator_requests[request_id] = state
+	if not bool(state.get("success", false)):
+		_finalize_chapter_indicator_request(request_id, false)
+		return request
+	var pending: Dictionary = state.get("pending_presenters", {})
+	if pending.is_empty():
+		_finalize_chapter_indicator_request(request_id, true)
+	return request
+
+
+## Acknowledge exactly one accepted presenter. Duplicate, stale, or foreign
+## acknowledgements are ignored, so killed tweens cannot finish a newer request.
+func finish_chapter_indicator_request(
+	request_id: int,
+	presenter: Object,
+	capability: RefCounted,
+	success: bool,
+) -> void:
+	if not _chapter_indicator_requests.has(request_id):
+		return
+	var state: Dictionary = _chapter_indicator_requests[request_id]
+	var request: ChapterIndicatorRequest = state.get("request")
+	if (
+		request == null
+		or not _chapter_indicator_participant_identity_matches(presenter, capability)
+		or not request._has_accepted_identity(
+			presenter,
+			capability,
+			_chapter_indicator_participant_authority,
+		)
+		or (
+			success
+			and not _chapter_indicator_participant_is_current(presenter, capability)
+		)
+	):
+		return
+	var presenter_instance_id := presenter.get_instance_id()
+	var pending: Dictionary = state.get("pending_presenters", {})
+	if not pending.has(presenter_instance_id):
+		return
+	pending.erase(presenter_instance_id)
+	state["pending_presenters"] = pending
+	state["success"] = bool(state.get("success", true)) and success
+	_chapter_indicator_requests[request_id] = state
+	# Apply callbacks are synchronous. Defer completion until the dispatch tail
+	# can verify no listener reset the request epoch before Core commits state.
+	if bool(state.get("dispatching", false)):
+		return
+	if not success:
+		_finalize_chapter_indicator_request(request_id, false)
+	elif pending.is_empty():
+		_finalize_chapter_indicator_request(request_id, true)
+
+
+## Finish only the currently accepted transition (used when skip becomes active).
+## This independent exact-owner signal cannot be confused with a new apply.
+func finish_active_chapter_indicator_transition() -> void:
+	var request_id := _active_chapter_indicator_request_id
+	if request_id <= 0 or not _chapter_indicator_requests.has(request_id):
+		return
+	_finish_chapter_indicator_transition.call_deferred(request_id)
+
+
+func _finish_chapter_indicator_transition(request_id: int) -> void:
+	if (
+		request_id != _active_chapter_indicator_request_id
+		or not _chapter_indicator_requests.has(request_id)
+	):
+		return
+	chapter_indicator_finish_requested.emit(request_id)
+
+
+func cancel_chapter_indicator_request(request_id: int) -> bool:
+	if request_id <= 0 or request_id != _active_chapter_indicator_request_id:
+		return false
+	reset_chapter_indicator_presentation()
+	return true
+
+
+## Reentrant navigation records this before reset emits any public callbacks.
+## The reset return value arrives too late for a nested scene transaction to
+## decide whether the suspended chapter Handler already needs fresh dispatch.
+func has_in_flight_chapter_indicator_request() -> bool:
+	return (
+		(
+			_dispatching_chapter_indicator_request != null
+			and not _dispatching_chapter_indicator_request.is_finished()
+		)
+		or not _chapter_indicator_requests.is_empty()
+	)
+
+
+## Cancel every in-flight authored transition and hard-reset all bound visuals.
+## A lifecycle cancellation is not an authored command failure and never changes
+## the ScenarioContext target captured by save/rollback.
+func reset_chapter_indicator_presentation() -> bool:
+	_chapter_indicator_epoch += 1
+	var reset_epoch := _chapter_indicator_epoch
+	_chapter_indicator_projection_active = false
+	_chapter_indicator_projected_visible = false
+	_chapter_indicator_dispatching = false
+	var validation_request := _dispatching_chapter_indicator_request
+	_dispatching_chapter_indicator_request = null
+	var cancelled: Array = _chapter_indicator_requests.values()
+	var cancelled_waiter := (
+		(validation_request != null and not validation_request.is_finished())
+		or not cancelled.is_empty()
+	)
+	_chapter_indicator_requests.clear()
+	_active_chapter_indicator_request_id = 0
+	chapter_indicator_reset_requested.emit(reset_epoch)
+	if validation_request != null and not validation_request.is_finished():
+		validation_request._finish(
+			false, true, _chapter_indicator_participant_authority)
+	for state_value: Variant in cancelled:
+		var state: Dictionary = state_value
+		var request: ChapterIndicatorRequest = state.get("request")
+		if request == null:
+			continue
+		var request_id := request.get_request_id()
+		request._finish(false, true, _chapter_indicator_participant_authority)
+		chapter_indicator_request_finished.emit(request_id, false)
+	return cancelled_waiter
+
+
+## Publish a cut projection with exact dispatch ownership. If an earlier
+## listener synchronously projects a newer context, later listeners ignore this
+## outer tail instead of overwriting the fresh state.
+func apply_chapter_indicator_state(visible: bool) -> int:
+	# State, reset, and authored requests share one ownership generation. A nested
+	# event on any channel retires every outer signal tail across all channels.
+	_chapter_indicator_epoch += 1
+	var generation := _chapter_indicator_epoch
+	_chapter_indicator_projection_active = true
+	_chapter_indicator_projected_visible = visible
+	_chapter_indicator_dispatching = false
+	var validation_request := _dispatching_chapter_indicator_request
+	_dispatching_chapter_indicator_request = null
+	var cancelled: Array = _chapter_indicator_requests.values()
+	_chapter_indicator_requests.clear()
+	_active_chapter_indicator_request_id = 0
+	if validation_request != null and not validation_request.is_finished():
+		validation_request._finish(
+			false, true, _chapter_indicator_participant_authority)
+	for state_value: Variant in cancelled:
+		var state: Dictionary = state_value
+		var request: ChapterIndicatorRequest = state.get("request")
+		if request != null:
+			request._finish(
+				false, true, _chapter_indicator_participant_authority)
+	chapter_indicator_state_apply_requested.emit(visible, generation)
+	for finished_state_value: Variant in cancelled:
+		var finished_state: Dictionary = finished_state_value
+		var finished_request: ChapterIndicatorRequest = finished_state.get("request")
+		if finished_request != null:
+			chapter_indicator_request_finished.emit(
+				finished_request.get_request_id(), false)
+	return generation
+
+
+func chapter_indicator_projection_is_current(generation: int) -> bool:
+	return generation == _chapter_indicator_epoch
+
+
+func chapter_indicator_reset_is_current(epoch: int) -> bool:
+	return epoch == _chapter_indicator_epoch
+
+
+func is_chapter_indicator_projection_active() -> bool:
+	return _chapter_indicator_projection_active
+
+
+func get_projected_chapter_indicator_visibility() -> bool:
+	return _chapter_indicator_projected_visible
+
+
+func _finalize_chapter_indicator_request(request_id: int, success: bool) -> void:
+	if not _chapter_indicator_requests.has(request_id):
+		return
+	var state: Dictionary = _chapter_indicator_requests[request_id]
+	_chapter_indicator_requests.erase(request_id)
+	if _active_chapter_indicator_request_id == request_id:
+		_active_chapter_indicator_request_id = 0
+	var request: ChapterIndicatorRequest = state.get("request")
+	if request != null:
+		request._finish(
+			success, false, _chapter_indicator_participant_authority)
+		if not success:
+			push_error(
+				"%s chapter indicator presentation request failed after acceptance"
+				% _chapter_indicator_source_label(request.get_source())
+			)
+	chapter_indicator_request_finished.emit(request_id, success)
+
+
+func _finish_chapter_indicator_dispatch(request: ChapterIndicatorRequest) -> void:
+	if _dispatching_chapter_indicator_request != request:
+		return
+	_dispatching_chapter_indicator_request = null
+	_chapter_indicator_dispatching = false
+
+
+func _report_chapter_indicator_rejection(
+	source: Dictionary,
+	errors: Array[String],
+) -> void:
+	push_error(
+		"%s chapter indicator request rejected: %s"
+		% [_chapter_indicator_source_label(source), "; ".join(errors)]
+	)
+
+
+func _chapter_indicator_source_label(source: Dictionary) -> String:
+	var source_path := String(source.get("source_path", "")).strip_edges()
+	var scenario_id := String(source.get("scenario_id", "")).strip_edges()
+	var label := source_path if not source_path.is_empty() else scenario_id
+	var line := int(source.get("line", 0))
+	if not label.is_empty() and line > 0:
+		return "[%s:%d]" % [label, line]
+	if not label.is_empty():
+		return "[%s]" % label
+	if line > 0:
+		return "[line %d]" % line
+	return "[runtime]"
 
 # Choice
 signal choice_show(prompt: String, options: Array)

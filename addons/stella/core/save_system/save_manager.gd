@@ -323,6 +323,11 @@ func _scenario_snapshot_is_valid(
 		return false
 	if snapshot.has("is_finished") and not snapshot["is_finished"] is bool:
 		return false
+	if (
+		snapshot.has("chapter_indicator_visible")
+		and not snapshot["chapter_indicator_visible"] is bool
+	):
+		return false
 	if snapshot.has("return_stack"):
 		if not snapshot["return_stack"] is Array:
 			return false

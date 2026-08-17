@@ -3,7 +3,7 @@
 ## non-blocking commands first, then handle any that need await.
 class_name ParallelHandler extends CommandHandler
 
-const BLOCKING_COMMAND_TYPES := ["dialogue", "choice", "wait"]
+const BLOCKING_COMMAND_TYPES := ["dialogue", "choice", "wait", "chapter_indicator"]
 
 ## CommandRegistry owns this handler, so the back-reference must stay weak.
 ## A strong reference here creates an uncollectable RefCounted cycle.
