@@ -26,10 +26,9 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 		return
 
 	var target_visible := String(validation["action"]) == "show"
-	# Save-during-transition restores the already-committed target at the same
-	# cursor. Re-dispatch must neither replay a tween nor create a new barrier.
-	if context.chapter_indicator_visible == target_visible:
-		return
+	# Canonical equality is not a global visual no-op: a current participant may
+	# still need validation or projection. Always dispatch the typed operation;
+	# each Presenter decides whether its own accepted target has visual work.
 	var previous_visible := context.chapter_indicator_visible
 	var source := _source(data, context)
 	var request: ChapterIndicatorRequest = SignalBus.request_chapter_indicator_visibility(

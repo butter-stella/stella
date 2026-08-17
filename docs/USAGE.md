@@ -307,7 +307,7 @@ SignalBus.current_chapter_changed.connect(
 )
 ```
 
-`is_chapter_indicator_visible()` 返回 `ScenarioContext` 中的 authored target，不是某个 Control 当下的 alpha；导航尚未成功替换 context 时，它仍报告可供 autosave 的旧目标。`@chapter_indicator` 的 fade 会等待该次验证通过的全部 Presenter，零 Presenter 则同步完成。完整 apply tail 全部 accept 后才提交 target，因此 apply 回调内同步存档仍保存旧值，进入 fade 后的存档保存新值；读档、Backlog/流程图回退和 restart 以 cut 恢复目标，不重播旧 Tween。
+`is_chapter_indicator_visible()` 返回 `ScenarioContext` 中的 authored target，不是某个 Control 当下的 alpha；导航尚未成功替换 context 时，它仍报告可供 autosave 的旧目标。`@chapter_indicator` 的 fade 会等待该次验证通过的全部 Presenter，零 Presenter 则同步完成。完整 apply tail 全部 accept 后才提交 target，因此 apply 回调内同步存档仍保存旧值，进入 fade 后的存档保存新值；读档、Backlog/流程图回退和 restart 会先 cut 恢复目标，再从同一 cursor 重新执行完整 typed validation/apply。此时已在目标上的 Presenter 以 no-work 同步确认，不创建或重播旧 Tween。
 
 默认场景挂有 `ChapterIndicatorPresenter`，自定义 game scene 也可以把同一脚本挂到任意项目自有 `Control`，只需提供一个 `Label` 的 `NodePath`：
 

@@ -42,6 +42,28 @@ func _wait_until(predicate: Callable, max_frames: int = 120) -> bool:
 	return bool(predicate.call())
 
 
+func _record_navigation_scene_receipt(
+	serial: int,
+	label: String,
+	results: Array[Dictionary],
+) -> void:
+	var succeeded: bool = await _runtime._await_navigation_scene_receipt(serial)
+	results.append({"label": label, "success": succeeded})
+
+
+func _record_receipt_then_open_next(
+	serial: int,
+	results: Array[Dictionary],
+	next_serial: Array[int],
+) -> void:
+	var succeeded: bool = await _runtime._await_navigation_scene_receipt(serial)
+	results.append({"label": "reentrant", "success": succeeded})
+	next_serial[0] = _runtime._open_navigation_scene_slot(
+		17301,
+		"res://synthetic_reentrant_receipt.tscn",
+	)
+
+
 func _make_presenter(name: String) -> Control:
 	var presenter := Control.new()
 	presenter.name = name
@@ -324,6 +346,146 @@ func test_accepted_slot_waits_for_exact_scene_changed_before_fresh_run() -> void
 	assert_eq(retained_context.current_command_index, 1)
 	_runtime.engine.cancel_current_run()
 	SignalBus.dialogue_requested.disconnect(on_dialogue)
+
+
+func test_three_settled_scene_receipts_leave_no_retained_result_state() -> void:
+	_runtime._navigation_scene_slot_results.clear()
+	var serials: Array[int] = []
+	for index in range(3):
+		var serial: int = _runtime._open_navigation_scene_slot(
+			17000 + index,
+			"res://synthetic_receipt_%d.tscn" % index,
+		)
+		assert_gt(serial, 0)
+		serials.append(serial)
+		assert_true(_runtime._abort_navigation_scene_slot(serial))
+		assert_false(await _runtime._await_navigation_scene_receipt(serial))
+
+	for serial: int in serials:
+		assert_false(_runtime._navigation_scene_slot_results.has(serial),
+			"a fully awaited receipt cannot retain its serial forever")
+	assert_true(_runtime._navigation_scene_slot_results.is_empty(),
+		"serial receipt bookkeeping must stay bounded across navigation")
+
+
+func test_shared_scene_receipt_wakes_every_waiter_before_cleanup() -> void:
+	_runtime._navigation_scene_slot_results.clear()
+	var serial: int = _runtime._open_navigation_scene_slot(
+		17100,
+		"res://synthetic_shared_receipt.tscn",
+	)
+	assert_gt(serial, 0)
+	if serial <= 0:
+		return
+	var results: Array[Dictionary] = []
+	_record_navigation_scene_receipt(serial, "creator", results)
+	_record_navigation_scene_receipt(serial, "superseder", results)
+	assert_eq(results.size(), 0,
+		"both consumers must wait for the exact unsettled receipt")
+	assert_true(_runtime._abort_navigation_scene_slot(serial))
+	assert_true(await _wait_until(func() -> bool: return results.size() == 2),
+		"cleanup cannot erase the receipt before every registered waiter wakes")
+	results.sort_custom(
+		func(left: Dictionary, right: Dictionary) -> bool:
+			return String(left["label"]) < String(right["label"])
+	)
+	assert_eq(results, [
+		{"label": "creator", "success": false},
+		{"label": "superseder", "success": false},
+	])
+	await get_tree().process_frame
+	assert_false(_runtime._navigation_scene_slot_results.has(serial),
+		"the last waiter releases the exact settled receipt")
+
+
+func test_unknown_and_expired_scene_receipts_fail_without_stranding() -> void:
+	_runtime._navigation_scene_slot_results.clear()
+	var unknown_serial: int = (
+		int(_runtime._navigation_scene_slot_serial_counter) + 1000)
+	var results: Array[Dictionary] = []
+	_record_navigation_scene_receipt(unknown_serial, "unknown", results)
+	assert_true(await _wait_until(func() -> bool: return results.size() == 1, 2),
+		"an unknown serial must fail instead of becoming an unowned waiter")
+	if results.is_empty():
+		# Release the intentionally exposed legacy waiter so the red test cannot
+		# leak a coroutine into later cases.
+		_runtime._navigation_scene_slot_results[unknown_serial] = false
+		_runtime._navigation_scene_slot_settled.emit()
+		await get_tree().process_frame
+	_runtime._navigation_scene_slot_results.erase(unknown_serial)
+	assert_eq(results, [{"label": "unknown", "success": false}])
+
+	var serial: int = _runtime._open_navigation_scene_slot(
+		17200,
+		"res://synthetic_expired_receipt.tscn",
+	)
+	assert_gt(serial, 0)
+	assert_true(_runtime._abort_navigation_scene_slot(serial))
+	assert_false(await _runtime._await_navigation_scene_receipt(serial))
+	await get_tree().process_frame
+	assert_false(_runtime._navigation_scene_slot_results.has(serial))
+	results.clear()
+	_record_navigation_scene_receipt(serial, "expired", results)
+	assert_true(await _wait_until(func() -> bool: return results.size() == 1, 2),
+		"a consumed serial must fail instead of reopening a waiter")
+	if results.is_empty():
+		_runtime._navigation_scene_slot_results[serial] = false
+		_runtime._navigation_scene_slot_settled.emit()
+		await get_tree().process_frame
+	_runtime._navigation_scene_slot_results.erase(serial)
+	assert_eq(results, [{"label": "expired", "success": false}])
+
+
+func test_successful_receipt_can_settle_before_its_creator_reads_once() -> void:
+	_runtime._navigation_scene_slot_results.clear()
+	var serial: int = _runtime._open_navigation_scene_slot(
+		17300,
+		"res://synthetic_successful_receipt.tscn",
+	)
+	assert_gt(serial, 0)
+	if serial <= 0:
+		return
+	_runtime._settle_navigation_scene_slot(serial, true)
+	assert_true(_runtime._navigation_scene_slot_results.has(serial),
+		"settlement retains the unique creator reservation until its late read")
+	assert_true(await _runtime._await_navigation_scene_receipt(serial, true))
+	assert_false(_runtime._navigation_scene_slot_results.has(serial),
+		"the creator's exact read releases the last settled reservation")
+	assert_false(await _runtime._await_navigation_scene_receipt(serial, true),
+		"the consumed creator reservation cannot reopen an expired result")
+
+
+func test_old_receipt_cleanup_cannot_erase_a_reentrant_new_serial() -> void:
+	_runtime._navigation_scene_slot_results.clear()
+	var old_serial: int = _runtime._open_navigation_scene_slot(
+		17300,
+		"res://synthetic_old_receipt.tscn",
+	)
+	assert_gt(old_serial, 0)
+	if old_serial <= 0:
+		return
+	var results: Array[Dictionary] = []
+	var next_serial: Array[int] = [0]
+	_record_receipt_then_open_next(old_serial, results, next_serial)
+	_record_navigation_scene_receipt(old_serial, "other", results)
+	assert_true(_runtime._abort_navigation_scene_slot(old_serial))
+	assert_true(await _wait_until(func() -> bool: return results.size() == 2))
+	assert_gt(next_serial[0], old_serial,
+		"a waiter may synchronously reserve the next exact scene slot")
+	assert_false(_runtime._navigation_scene_slot_results.has(old_serial),
+		"all old consumers release only the old settled record")
+	assert_true(_runtime._navigation_scene_slot_results.has(next_serial[0]),
+		"old cleanup cannot erase the reentrantly opened serial")
+	results.sort_custom(
+		func(left: Dictionary, right: Dictionary) -> bool:
+			return String(left["label"]) < String(right["label"])
+	)
+	assert_eq(results, [
+		{"label": "other", "success": false},
+		{"label": "reentrant", "success": false},
+	])
+	assert_true(_runtime._abort_navigation_scene_slot(next_serial[0]))
+	assert_true(_runtime._navigation_scene_slot_results.is_empty())
 
 
 func test_rejected_candidate_retry_keeps_one_paused_execution_session() -> void:

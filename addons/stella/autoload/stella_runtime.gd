@@ -65,6 +65,9 @@ var _navigation_scene_slot_suspension: RefCounted
 var _navigation_scene_slot_context: ScenarioContext
 var _navigation_scene_slot_suspension_retired: bool = false
 var _navigation_scene_slot_run_retired: bool = false
+# Exact broadcast receipts. Each serial owns one creator reservation plus any
+# waiter leases registered before settlement. A settled result is immutable and
+# is erased only after every pre-existing consumer has copied it.
 var _navigation_scene_slot_results: Dictionary = {}
 var _navigation_scene_change_override: Callable
 var _navigation_projection_committed: bool = false
@@ -727,6 +730,14 @@ func _open_navigation_scene_slot(
 		return 0
 	_navigation_scene_slot_serial_counter += 1
 	var serial := _navigation_scene_slot_serial_counter
+	_navigation_scene_slot_results[serial] = {
+		"settled": false,
+		"success": false,
+		"creator_claimed": false,
+		"creator_released": false,
+		"waiter_count": 0,
+		"broadcasting": false,
+	}
 	_navigation_scene_slot_active_serial = serial
 	_navigation_scene_slot_accepted = false
 	_navigation_scene_slot_navigation = navigation
@@ -759,6 +770,7 @@ func _abort_navigation_scene_slot(serial: int) -> bool:
 	):
 		return false
 	_settle_navigation_scene_slot(serial, false)
+	_release_navigation_scene_receipt_creator(serial)
 	return true
 
 
@@ -903,6 +915,14 @@ func _commit_navigation_scene_handoff(serial: int) -> bool:
 func _settle_navigation_scene_slot(serial: int, success: bool) -> void:
 	if serial != _navigation_scene_slot_active_serial:
 		return
+	var receipt_value: Variant = _navigation_scene_slot_results.get(serial)
+	if not receipt_value is Dictionary:
+		return
+	var receipt: Dictionary = receipt_value
+	if bool(receipt.get("settled", false)):
+		return
+	receipt["settled"] = true
+	receipt["success"] = success
 	_navigation_scene_slot_active_serial = 0
 	_navigation_scene_slot_accepted = false
 	_navigation_scene_slot_navigation = 0
@@ -912,8 +932,10 @@ func _settle_navigation_scene_slot(serial: int, success: bool) -> void:
 	_navigation_scene_slot_run_retired = false
 	_navigation_scene_request_pending = false
 	_navigation_pending_scene_path = ""
-	_navigation_scene_slot_results[serial] = success
+	receipt["broadcasting"] = true
 	_navigation_scene_slot_settled.emit()
+	receipt["broadcasting"] = false
+	_cleanup_navigation_scene_receipt(serial, receipt)
 
 
 func _on_navigation_scene_changed() -> void:
@@ -933,12 +955,64 @@ func _on_navigation_scene_changed() -> void:
 	_settle_navigation_scene_slot(serial, succeeded)
 
 
-func _await_navigation_scene_receipt(serial: int) -> bool:
-	if serial <= 0:
+func _await_navigation_scene_receipt(
+	serial: int,
+	consume_creator_reservation: bool = false,
+) -> bool:
+	if serial <= 0 or not _navigation_scene_slot_results.has(serial):
 		return false
-	while not _navigation_scene_slot_results.has(serial):
+	var receipt_value: Variant = _navigation_scene_slot_results.get(serial)
+	if not receipt_value is Dictionary:
+		return false
+	var receipt: Dictionary = receipt_value
+	# Only the unique creator reservation may read a receipt that settled before
+	# its caller reached await. Every other consumer must have registered a lease
+	# while the receipt was still pending; unknown/expired serials fail closed.
+	if consume_creator_reservation:
+		if (
+			bool(receipt.get("creator_released", false))
+			or bool(receipt.get("creator_claimed", false))
+		):
+			return false
+		receipt["creator_claimed"] = true
+	elif bool(receipt.get("settled", false)):
+		return false
+	receipt["waiter_count"] = int(receipt.get("waiter_count", 0)) + 1
+	while not bool(receipt.get("settled", false)):
 		await _navigation_scene_slot_settled
-	return bool(_navigation_scene_slot_results.get(serial, false))
+	var success := bool(receipt.get("success", false))
+	receipt["waiter_count"] = maxi(
+		int(receipt.get("waiter_count", 0)) - 1, 0)
+	if consume_creator_reservation:
+		receipt["creator_released"] = true
+	_cleanup_navigation_scene_receipt(serial, receipt)
+	return success
+
+
+func _release_navigation_scene_receipt_creator(serial: int) -> bool:
+	var receipt_value: Variant = _navigation_scene_slot_results.get(serial)
+	if not receipt_value is Dictionary:
+		return false
+	var receipt: Dictionary = receipt_value
+	if bool(receipt.get("creator_released", false)):
+		return false
+	receipt["creator_released"] = true
+	_cleanup_navigation_scene_receipt(serial, receipt)
+	return true
+
+
+func _cleanup_navigation_scene_receipt(
+	serial: int,
+	receipt: Dictionary,
+) -> void:
+	if (
+		bool(receipt.get("settled", false))
+		and bool(receipt.get("creator_released", false))
+		and int(receipt.get("waiter_count", 0)) == 0
+		and not bool(receipt.get("broadcasting", false))
+		and _navigation_scene_slot_results.get(serial) == receipt
+	):
+		_navigation_scene_slot_results.erase(serial)
 
 
 func _finish_navigation(generation: int) -> void:
@@ -1112,11 +1186,13 @@ func _enter_scene_and_confirm(
 	# Context itself stays available for autosave until the winning transaction
 	# installs/detaches its replacement after scene confirmation.
 	if not _accept_navigation_scene_slot(slot_serial):
+		_release_navigation_scene_receipt_creator(slot_serial)
 		return false
 	if not _owns_navigation(navigation):
+		_release_navigation_scene_receipt_creator(slot_serial)
 		return false
 	var entered_expected_scene := await _await_navigation_scene_receipt(
-		slot_serial)
+		slot_serial, true)
 	# The destination's _ready() runs before SceneTree.scene_changed. It may
 	# install a fresh semantic Context directly, without claiming a Runtime
 	# navigation generation. The accepted receipt still settles centrally, but

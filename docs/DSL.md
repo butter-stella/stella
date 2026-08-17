@@ -83,7 +83,7 @@ sakura「真巧，我们又见面了。」
 - 默认转场是 `cut`、时长是 `0.0`；`fade` 省略 `duration` 时默认 `0.25` 秒。
 - `none` 只是 `cut` 的 authoring alias，编译后同样保存为 `transition="cut", duration=0.0`，因此两种写法具有相同的内容 identity。
 - `duration` 必须是有限、非负的浮点秒数；`cut` / `none` 只接受 `0`。未知、重复、缺少等号或额外参数会让整条指令原子失败，并以 `.stla` 的 `source_path:line` 报错。
-- 指令必须写在当前 chapter 的有效 `@scene` 中；可以位于实际执行的 `@if` / `@else` 分支，但不能写在 chapter 与首个 scene 之间，也不能放入 `@parallel` 或 `@combine`。它是独立的 blocking command：所有本次验证通过的 Presenter 都完成后，剧本才继续；没有 Presenter 的 headless runner 会同步成功。
+- 指令必须写在当前 chapter 的有效 `@scene` 中；可以位于实际执行的 `@if` / `@else` 分支，但不能写在 chapter 与首个 scene 之间，也不能放入 `@parallel` 或 `@combine`。它是独立的 blocking command：所有本次验证通过的 Presenter 都完成后，剧本才继续；没有 Presenter 的 headless runner 会同步成功。当前不能用 wall-clock 等待或把它塞进 `@parallel` 来模拟尚未提供的跨演出 composition/join。
 
 可见性不会在 `@jump`、`@call`、顺序换 scene 或换 chapter 时隐式改变。运行时章节 ID/标题来自实际执行 cursor；标题交给 `TranslationServer` 解析。裸 `@chapter id` 以 ID 作为标题，显式空标题不会渲染 UI，但 authored 可见目标仍按命令与存档保留。
 

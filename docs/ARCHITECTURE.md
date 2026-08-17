@@ -257,7 +257,9 @@ signal settings_changed(key: String, value: Variant)
 
 章节标题指示器使用专用的 typed `ChapterIndicatorRequest`，而不是共享可变 `Dictionary` 收集 quorum。validation 阶段每个 Presenter 以自身对象注册或 reject；Bus seal 参与者集合后向同一 request 派发 apply，每个 sealed participant 必须显式 accept，且 apply-time binding 与实例仍有效。只有整个 apply signal tail 完成并全部 accept 后，Core 才提交 `ScenarioContext.chapter_indicator_visible`，随后等待各 Presenter 的 exact request ID acknowledgement。getter 返回 defensive copy，任意 listener 修改副本、释放别的 Presenter 或同步 reset 都只能使整次请求确定性成功/失败/取消，不会缩小 authoritative barrier 或永久悬挂。
 
-request start、hard reset 与 cut state projection 共用同一个 monotonic presentation generation；metadata 也由 owner-checked dispatch 发布。同步 listener 若在外层 signal 中替换 context、读档或发起新请求，后续 built-in consumer 会拒绝 stale outer tail。普通 advance 还记录 request 的接受 serial，因而一次 physical/semantic dispatch 最多结束一个 blocking command。这个协议仅属于 #170 的 chapter indicator adapter；它不引入 #164 的通用演出 scheduler，也不预先定义 #166 的通用 receipt/extension 协议。
+request start、hard reset 与 cut state projection 共用同一个 monotonic presentation generation；metadata 也由 owner-checked dispatch 发布。同步 listener 若在外层 signal 中替换 context、读档或发起新请求，后续 built-in consumer 会拒绝 stale outer tail。普通 advance 还记录 request 的接受 serial，因而一次 physical/semantic dispatch 最多结束一个 blocking command。这里实现的只是 #170 的 standalone DSL → typed barrier → Presenter 局部链路，#170 仍未完成：还需分别落地 #164 的 stage batch/join 与 #166 的 message-surface visibility，再以 synthetic composed scenario 验证共同 authored scheduling boundary、join、skip/click 和 load/rollback。当前协议不引入通用演出 scheduler，也不预先定义通用 receipt/extension adapter。
+
+SceneTree 导航交接另有一个只属于 `StellaRuntime` 的 per-serial broadcast receipt：open 时保留唯一 creator reservation，superseded navigation 与 recovery continuation 必须在任何 yield/公开重入边界前登记各自 waiter lease。中央 `scene_changed` observer 先封存不可变结果并清除 active slot，再广播唤醒；只有 receipt 已 settled、creator 已释放且 waiter 数归零时才删除记录。creator 可以消费一次 settle-before-await 的结果，其他未知、迟到或已过期 serial 都同步返回失败，不能复活历史或形成无 owner waiter。它只是 SceneTree 生命周期记账，不是 #166 的通用 extension receipt。
 
 ### 2.4 变量系统
 

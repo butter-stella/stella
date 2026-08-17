@@ -357,6 +357,138 @@ func test_composed_handler_commits_headless_cut_and_fade_without_a_presenter() -
 		"headless cut also commits the canonical authored target")
 
 
+func test_initial_hidden_same_target_still_validates_presenter_atomically() -> void:
+	var runtime := _runtime()
+	var registry: Variant = runtime.get("registry")
+	var handler: Variant = (
+		registry.get_handler("chapter_indicator") if registry != null else null
+	)
+	assert_not_null(handler)
+	assert_true(ResourceLoader.exists(PRESENTER_PATH, "Script"))
+	if handler == null or not ResourceLoader.exists(PRESENTER_PATH, "Script"):
+		return
+	SignalBus.reset_chapter_indicator_presentation()
+
+	var presenter := Control.new()
+	presenter.name = "InvalidInitialHiddenSkin"
+	presenter.modulate.a = 0.4
+	presenter.set_script(load(PRESENTER_PATH))
+	var untouched_label := Label.new()
+	untouched_label.name = "ProjectOwnedTitle"
+	untouched_label.text = "untouched"
+	presenter.add_child(untouched_label)
+	presenter.set("title_label_path", NodePath("MissingTitle"))
+	add_child_autoqfree(presenter)
+	await get_tree().process_frame
+
+	var data := _parse("""@chapter c "C"
+@scene start
+@chapter_indicator hide
+""")
+	var commands := _chapter_indicator_commands(data)
+	assert_eq(commands.size(), 1)
+	if commands.size() != 1:
+		return
+	var context := ScenarioContext.new(data)
+	var initial_snapshot := context.capture_snapshot()
+	var initial_visible := presenter.visible
+	var initial_modulate := presenter.modulate
+	var initial_label_text := untouched_label.text
+	var validation_count := [0]
+	var apply_count := [0]
+	var on_validate := func(_request: Variant) -> void:
+		validation_count[0] += 1
+	var on_apply := func(_request: Variant) -> void:
+		apply_count[0] += 1
+	SignalBus.chapter_indicator_validate_requested.connect(on_validate)
+	SignalBus.chapter_indicator_apply_requested.connect(on_apply)
+
+	await handler.execute(commands[0], context)
+	SignalBus.chapter_indicator_validate_requested.disconnect(on_validate)
+	SignalBus.chapter_indicator_apply_requested.disconnect(on_apply)
+	assert_push_error(SYNTHETIC_SOURCE_PATH + ":3")
+	assert_eq(validation_count[0], 1,
+		"same-target commands still validate every snapshotted Presenter")
+	assert_eq(apply_count[0], 0,
+		"a rejected validation cannot enter the apply phase")
+	var expected_snapshot := initial_snapshot.duplicate(true)
+	expected_snapshot["is_finished"] = true
+	assert_eq(context.capture_snapshot(), expected_snapshot,
+		"binding rejection may only fail-close the owning Context")
+	assert_eq(presenter.visible, initial_visible,
+		"same-target validation failure cannot mutate visibility")
+	assert_eq(presenter.modulate, initial_modulate,
+		"same-target validation failure cannot mutate presentation alpha")
+	assert_eq(untouched_label.text, initial_label_text,
+		"same-target validation failure cannot write the unresolved binding")
+
+
+func test_initial_hidden_same_target_is_sync_for_headless_and_valid_presenter() -> void:
+	var runtime := _runtime()
+	var registry: Variant = runtime.get("registry")
+	var handler: Variant = (
+		registry.get_handler("chapter_indicator") if registry != null else null
+	)
+	assert_not_null(handler)
+	assert_true(ResourceLoader.exists(PRESENTER_PATH, "Script"))
+	if handler == null or not ResourceLoader.exists(PRESENTER_PATH, "Script"):
+		return
+	SignalBus.reset_chapter_indicator_presentation()
+	var data := _parse("""@chapter c "C"
+@scene start
+@chapter_indicator hide
+""")
+	var commands := _chapter_indicator_commands(data)
+	assert_eq(commands.size(), 1)
+	if commands.size() != 1:
+		return
+
+	var validation_count := [0]
+	var apply_count := [0]
+	var on_validate := func(_request: Variant) -> void:
+		validation_count[0] += 1
+	var on_apply := func(_request: Variant) -> void:
+		apply_count[0] += 1
+	SignalBus.chapter_indicator_validate_requested.connect(on_validate)
+	SignalBus.chapter_indicator_apply_requested.connect(on_apply)
+	var headless_context := ScenarioContext.new(data)
+	await handler.execute(commands[0], headless_context)
+	assert_false(headless_context.is_finished)
+	assert_false(headless_context.chapter_indicator_visible)
+	assert_false(SignalBus.has_in_flight_chapter_indicator_request(),
+		"a headless same-target operation cannot leave a barrier")
+	assert_eq(validation_count[0], 1)
+	assert_eq(apply_count[0], 1,
+		"headless same-target still completes the typed dispatch synchronously")
+
+	var presenter := Control.new()
+	presenter.name = "ValidInitialHiddenSkin"
+	presenter.set_script(load(PRESENTER_PATH))
+	var label := Label.new()
+	label.name = "ProjectOwnedTitle"
+	label.text = "untouched"
+	presenter.add_child(label)
+	presenter.set("title_label_path", NodePath("ProjectOwnedTitle"))
+	add_child_autoqfree(presenter)
+	await get_tree().process_frame
+	var initial_modulate := presenter.modulate
+	var context := ScenarioContext.new(data)
+	await handler.execute(commands[0], context)
+	SignalBus.chapter_indicator_validate_requested.disconnect(on_validate)
+	SignalBus.chapter_indicator_apply_requested.disconnect(on_apply)
+	assert_false(context.is_finished)
+	assert_false(context.chapter_indicator_visible)
+	assert_false(presenter.visible)
+	assert_eq(presenter.modulate, initial_modulate)
+	assert_null(presenter.get("_active_tween"),
+		"a valid same-target Presenter cannot create a no-work Tween")
+	assert_false(SignalBus.has_in_flight_chapter_indicator_request(),
+		"a valid no-work Presenter must acknowledge synchronously")
+	assert_eq(validation_count[0], 2)
+	assert_eq(apply_count[0], 2,
+		"the valid Presenter participates in the complete typed dispatch")
+
+
 func test_composed_handler_rejects_malformed_programmatic_commands() -> void:
 	# Parser validation is not a trust boundary: extensions can construct
 	# CommandData directly.  This composition test deliberately reaches the
