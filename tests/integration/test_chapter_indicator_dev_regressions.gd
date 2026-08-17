@@ -281,7 +281,7 @@ func test_nested_deferred_failure_fresh_runs_a_cancelled_indicator_cursor() -> v
 			"transferred": (
 				_runtime._navigation_run_suspension == base_suspension),
 			"cancelled_waiter": (
-				_runtime._navigation_indicator_waiter_cancelled),
+				_runtime._navigation_blocking_presentation_waiter_cancelled),
 		}
 		_runtime._finish_navigation(nested_navigation)
 		inside_reset[0] = false

@@ -32,6 +32,7 @@ var read_flags: ReadFlagManager
 var game_state: GameStateMachine
 var unlock_manager: UnlockManager
 var presentation_state: PresentationState
+var presentation_director: PresentationDirector
 var character_config_loader: CharacterConfigLoader
 ## Issue #97: flowchart subsystem
 var flowchart_state: FlowchartState
@@ -77,7 +78,7 @@ var _navigation_run_suspension: RefCounted
 var _navigation_run_suspension_generation: int = 0
 var _navigation_run_suspension_context: ScenarioContext
 var _navigation_run_suspension_retired: bool = false
-var _navigation_indicator_waiter_cancelled: bool = false
+var _navigation_blocking_presentation_waiter_cancelled: bool = false
 var _navigation_run_requires_fresh_dispatch: bool = false
 var _navigation_retired_run_context: ScenarioContext
 var _navigation_recovery_wait_generation: int = 0
@@ -163,6 +164,12 @@ func _ready():
 	unlock_manager = UnlockManager.new()
 	presentation_state = PresentationState.new()
 	presentation_state.connect_signals()
+	presentation_director = PresentationDirector.new(
+		presentation_state,
+		func() -> bool: return skip_controller.is_active,
+	)
+	skip_controller.active_changed.connect(
+		presentation_director.on_skip_active_changed)
 	character_config_loader = CharacterConfigLoader.new()
 	character_config_loader.set_base_path(characters_path)
 
@@ -298,9 +305,11 @@ func _apply_config() -> void:
 
 func _register_handlers():
 	_register_dialogue_handler()
-	registry.register(ChapterIndicatorHandler.new())
+	registry.register(ChapterIndicatorHandler.new(presentation_director))
 	registry.register(BgHandler.new())
 	registry.register(StageLayerHandler.new())
+	registry.register(StageBatchHandler.new(
+		presentation_director, presentation_state))
 	registry.register(JumpHandler.new())
 	registry.register(SetHandler.new())
 	registry.register(ConditionHandler.new())
@@ -577,7 +586,7 @@ func _acquire_navigation_runtime_ownership(
 			_navigation_run_suspension_generation = navigation
 			_navigation_run_suspension_context = expected_context
 			_navigation_run_suspension_retired = false
-			_navigation_indicator_waiter_cancelled = false
+			_navigation_blocking_presentation_waiter_cancelled = false
 		elif engine != null and expected_context != null:
 			engine.invalidate_current_run()
 		_navigation_runtime_ownership_generation = navigation
@@ -586,47 +595,57 @@ func _acquire_navigation_runtime_ownership(
 	if not reset_presentation:
 		return true
 	_navigation_presentation_reset_generation = navigation
-	var suspended_command := (
-		_navigation_run_suspension_context.current_command()
-		if _navigation_run_suspension_context != null
-		else null
-	)
-	var suspended_on_chapter_indicator := (
-		suspended_command != null
-		and suspended_command.type == "chapter_indicator"
-	)
 	# Publish the cancellation fact to the transferable suspension record before
 	# reset emits. A nested deferred navigation may synchronously fail and recover
-	# inside that signal; it must fresh-run rather than revive the soon-cancelled
-	# chapter Handler.
+	# inside that signal; it must fresh-run rather than revive any cancelled
+	# blocking presentation Handler.
+	var suspended_context := _navigation_run_suspension_context
+	var had_blocking_waiter := (
+		presentation_director != null
+		and presentation_director.has_blocking_waiter(suspended_context)
+	)
 	if _navigation_run_suspension_generation == navigation:
-		_navigation_indicator_waiter_cancelled = (
-			_navigation_indicator_waiter_cancelled
-			or (
-				suspended_on_chapter_indicator
-				and SignalBus.has_in_flight_chapter_indicator_request()
-			)
+		_navigation_blocking_presentation_waiter_cancelled = (
+			_navigation_blocking_presentation_waiter_cancelled
+			or had_blocking_waiter
 		)
-	var cancelled_indicator_waiter := (
-		SignalBus.reset_chapter_indicator_presentation())
+	var cancelled_blocking_waiter := (
+		presentation_director.cancel_blocking_waiters(
+			suspended_context,
+			reversible,
+		)
+		if presentation_director != null
+		else false
+	)
 	if _navigation_run_suspension_generation == navigation:
-		_navigation_indicator_waiter_cancelled = (
-			_navigation_indicator_waiter_cancelled
-			or (
-				suspended_on_chapter_indicator
-				and cancelled_indicator_waiter
-			)
+		_navigation_blocking_presentation_waiter_cancelled = (
+			_navigation_blocking_presentation_waiter_cancelled
+			or cancelled_blocking_waiter
 		)
-	if not _owns_navigation(navigation):
-		_discard_navigation_run_suspension(navigation)
+	if not _navigation_reset_owner_survived(navigation, expected_context):
 		return false
-	if (engine.context if engine != null else null) != expected_context:
-		_discard_navigation_run_suspension(navigation)
-		if _owns_navigation(navigation):
-			_retire_navigation_business_owner_after_context_replacement(
-				navigation)
+	SignalBus.reset_stage_visuals()
+	if not _navigation_reset_owner_survived(navigation, expected_context):
+		return false
+	SignalBus.reset_chapter_indicator_presentation()
+	if not _navigation_reset_owner_survived(navigation, expected_context):
 		return false
 	return true
+
+
+func _navigation_reset_owner_survived(
+	navigation: int,
+	expected_context: ScenarioContext,
+) -> bool:
+	if _owns_navigation_context(navigation, expected_context):
+		return true
+	_discard_navigation_run_suspension(navigation)
+	if (
+		_owns_navigation(navigation)
+		and (engine.context if engine != null else null) != expected_context
+	):
+		_retire_navigation_business_owner_after_context_replacement(navigation)
+	return false
 
 
 func _discard_navigation_run_suspension(navigation: int = -1) -> bool:
@@ -691,7 +710,7 @@ func _clear_navigation_run_suspension_record() -> void:
 	_navigation_run_suspension_generation = 0
 	_navigation_run_suspension_context = null
 	_navigation_run_suspension_retired = false
-	_navigation_indicator_waiter_cancelled = false
+	_navigation_blocking_presentation_waiter_cancelled = false
 
 
 func _owns_navigation(generation: int) -> bool:
@@ -1225,7 +1244,7 @@ func _recover_rejected_scene_navigation(navigation: int) -> bool:
 	var suspension := _navigation_run_suspension
 	var suspension_is_retired := _navigation_run_suspension_retired
 	var requires_fresh_dispatch := (
-		_navigation_indicator_waiter_cancelled
+		_navigation_blocking_presentation_waiter_cancelled
 		or _navigation_run_requires_fresh_dispatch
 	)
 	if not _owns_navigation_context(navigation, retained_context):
@@ -1235,7 +1254,7 @@ func _recover_rejected_scene_navigation(navigation: int) -> bool:
 		_clear_navigation_run_suspension_record()
 		_navigation_run_requires_fresh_dispatch = false
 		_navigation_retired_run_context = null
-		if not _apply_chapter_presentation(null):
+		if not _apply_retained_presentation(null):
 			return false
 		_navigation_projection_committed = true
 		return true
@@ -1250,7 +1269,7 @@ func _recover_rejected_scene_navigation(navigation: int) -> bool:
 		_clear_navigation_run_suspension_record()
 		_navigation_run_requires_fresh_dispatch = false
 		_navigation_retired_run_context = null
-		if not _apply_chapter_presentation(retained_context):
+		if not _apply_retained_presentation(retained_context):
 			# Metadata listeners may legitimately complete the restored waiter. The
 			# exact cursor guard then rejects this outer projection tail while the
 			# same navigation/context continues under its next semantic owner; that is
@@ -1267,7 +1286,7 @@ func _recover_rejected_scene_navigation(navigation: int) -> bool:
 	# Retired/fresh recovery deliberately projects while Context execution is
 	# still revoked. Same-stack compatibility listeners therefore cannot consume
 	# the fresh owner; exact reactivation and one new run happen only afterward.
-	if not _apply_chapter_presentation(retained_context):
+	if not _apply_retained_presentation(retained_context):
 		return false
 	if not _owns_navigation_context(navigation, retained_context):
 		return false
@@ -1796,6 +1815,11 @@ func _return_to_title_transaction(navigation: int) -> void:
 
 	if not _cancel_active_gameplay(navigation):
 		return
+	var expected_context := engine.context if engine != null else null
+	presentation_state.clear()
+	SignalBus.reset_and_apply_stage_state({})
+	if not _navigation_reset_owner_survived(navigation, expected_context):
+		return
 	if not _apply_chapter_presentation(null) or not _owns_navigation(navigation):
 		return
 	_navigation_projection_committed = true
@@ -1883,6 +1907,10 @@ func _start_preparsed_scenario(
 		return false
 	_install_scenario(scenario_data, scenario_path)
 	var expected_context := engine.context if engine != null else null
+	if not _owns_navigation_context(navigation, expected_context):
+		return false
+	if presentation_director != null:
+		presentation_director.cancel_all()
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
 	SignalBus.reset_stage_visuals()
@@ -2045,6 +2073,10 @@ func _reset_presentation(
 		expected_context = engine.context if engine != null else null
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
+	if presentation_director != null:
+		presentation_director.cancel_all()
+	if not _owns_navigation_context(navigation, expected_context):
+		return false
 	SignalBus.effect_requested.emit("off", {})
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
@@ -2197,6 +2229,20 @@ func _apply_chapter_presentation(context: ScenarioContext) -> bool:
 		navigation == _navigation_generation
 		and (engine.context if engine != null else null) == expected_context
 	)
+
+
+func _apply_retained_presentation(context: ScenarioContext) -> bool:
+	var navigation := _navigation_generation
+	var expected_context := engine.context if engine != null else null
+	if context != expected_context:
+		return false
+	presentation_state.apply_to_presenters()
+	if (
+		navigation != _navigation_generation
+		or (engine.context if engine != null else null) != expected_context
+	):
+		return false
+	return _apply_chapter_presentation(context)
 
 
 func _on_scene_changed_for_chapter_presentation(_scene_id: String) -> void:

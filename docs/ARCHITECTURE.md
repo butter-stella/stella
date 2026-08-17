@@ -219,10 +219,14 @@ signal chapter_indicator_request_finished(request_id: int, success: bool)
 
 # 动态命名舞台层
 signal stage_operations_requested(operations: Array, force_cut: bool)
+signal stage_operation_request_finished(request_id: int, delivered: bool)
 signal stage_visuals_reset_requested()
 signal stage_state_apply_requested(layers: Dictionary)
 signal stage_transition_started(presenter_instance_id: int, layer_id: String, token: int, operation_request_id: int)
+signal stage_transition_receipt_started(presenter_instance_id: int, layer_id: String, token: int, operation_request_id: int, generation: int)
+signal stage_transition_terminal(presenter_instance_id: int, layer_id: String, token: int, operation_request_id: int, generation: int, outcome: StringName)
 signal stage_transitions_finish_requested(transitions: Array)
+signal stage_transition_receipts_finish_requested(transitions: Array)
 
 # 背景
 signal bg_changed(asset: String, transition: String, duration: float)
@@ -253,11 +257,27 @@ signal variable_changed(var_name: String, value: Variant)
 signal settings_changed(key: String, value: Variant)
 ```
 
-舞台写操作统一通过 `SignalBus.emit_stage_operations()` 提交；该入口会深拷贝并串行派发同步重入的批次。每批有唯一 request ID，转场开始回执携带同一 ID，因此对话补全只会终止自己发出的 Tween。`stage_operations_requested` 是内部投递信号，状态跟踪器和 Presenter 因而始终按相同顺序观察操作，不会因监听器连接顺序产生存档与画面分叉。完整恢复会提升舞台 epoch、取消队列并使正在投递的旧批次对后续消费者失效。
+舞台写操作统一通过 `SignalBus.emit_stage_operations()` 提交；该入口会深拷贝并串行派发同步重入的批次。每批有唯一 request ID，转场开始回执携带同一 ID，因此对话补全只会终止自己发出的 Tween。`stage_operations_requested` 是内部投递信号，状态跟踪器和 Presenter 因而始终按相同顺序观察操作，不会因监听器连接顺序产生存档与画面分叉。`reset_and_apply_stage_state()` 把旧舞台 generation 的 reset 与 canonical state cut 投影放在同一原子边界；恢复会同时取消队列并使正在投递的旧批次对后续消费者失效。旧四参 `stage_transition_started` 与旧三字段 `stage_transitions_finish_requested` 仍是扩展兼容面；`PresentationDirector` 只使用携带 Presenter generation 的 exact companion 信号建立和完成 receipt。
+
+#### PresentationDirector 与 exact Stage composition
+
+`StellaRuntime` 作为唯一 composition root，只构造并持有一个 `PresentationDirector`。该 Director 提供未来可增加 typed adapter 的通用 owner/lifecycle 边界；本期只注册 Stage adapter：
+
+- `PresentationOperation` 是只读 typed operation，暴露 kind、channel 和 deep-copy payload。`StagePresentationOperation` 是当前唯一 concrete kind（`stage`），非 clear channel 为 `stage:<layer_id>`，clear 为 `stage:*`。
+- `PresentationOperationReceipt` 用 `batch_id / presenter_instance_id / channel / token / generation` 五元组唯一标识 Presenter 真正拥有的转场；单独 layer ID 不能完成批次。
+- `PresentationBatchRequest` 的 policy 为 `JOIN` / `FIRE_AND_FORGET`，outcome 为 `COMPLETED` / `CANCELLED` / `FAILED`。operation/receipt getter 返回 defensive container，`settled(batch_id, outcome)` 只发送一次。`_bind_authority()`、`_seal()` 和 `_settle()` 是 Director 内部 authority 方法，不是 caller API。
+
+Parser 把整个 `@stage_batch` 编译为一个 addressable `CommandData(type="stage_batch")`，`declared_line` 是 block opening line，params 精确为 `policy / operations / operation_lines`。`operations` 中每项都是 `action / id / properties / transition / duration` canonical five-field；`operation_lines` 与 child 一一对应，供程序化调用在 runtime fail-close 时定位原始 child source line。
+
+`submit()` 在分配 request ID 之前完成 authoritative preflight：检查 typed operation、Stage canonical five-field schema、重复 layer / clear 冲突，并以 `PresentationState.stage_layers` 做 semantic reduce。invalid 和 no-work 路径都不进入 Bus，也不分配 receipt、token 或 Tween；真实 no-work 会以 `batch_id=0`、`receipts=[]` 同步 `COMPLETED`。
+
+有工作的操作在同一 `SignalBus` dispatch boundary 中向 canonical state tracker 和全部 Presenter 原子派发。`JOIN` 只等待 dispatch tail 封存的 exact receipt set；零 receipt 同步完成，current owner 的任一 superseded/cancelled receipt 都使该 JOIN fail-close。`FIRE_AND_FORGET` 在 dispatch seal 后释放剧情，但 Director 继续持有 receipts 直到 terminal cleanup。连续 batch 经 Bus 串行；同层重叠时由 `StagePresenter` generation 决定 winner，late、foreign 或 duplicate terminal 不能完成新 batch。
+
+Director 还统一拥有 blocking presentation waiter。Stage JOIN 与 chapter indicator 共享 Runtime 的 generic lifecycle 判断，不再各自维护 sibling flag。reset、load、rollback、restart、return-to-title、context 或 SceneTree replacement 都先退休旧 generation/owner，再 reset 并在需要时 cut canonical state；旧 callback 不能复活。可逆导航被拒绝时，Runtime 恢复该命令之前的 canonical state，然后在 retained cursor 重新派发，不会 resume 已取消的 coroutine。
 
 章节标题指示器使用专用的 typed `ChapterIndicatorRequest`，而不是共享可变 `Dictionary` 收集 quorum。validation 阶段每个 Presenter 以自身对象注册或 reject；Bus seal 参与者集合后向同一 request 派发 apply，每个 sealed participant 必须显式 accept，且 apply-time binding 与实例仍有效。只有整个 apply signal tail 完成并全部 accept 后，Core 才提交 `ScenarioContext.chapter_indicator_visible`，随后等待各 Presenter 的 exact request ID acknowledgement。getter 返回 defensive copy，任意 listener 修改副本、释放别的 Presenter 或同步 reset 都只能使整次请求确定性成功/失败/取消，不会缩小 authoritative barrier 或永久悬挂。
 
-request start、hard reset 与 cut state projection 共用同一个 monotonic presentation generation；metadata 也由 owner-checked dispatch 发布。同步 listener 若在外层 signal 中替换 context、读档或发起新请求，后续 built-in consumer 会拒绝 stale outer tail。普通 advance 还记录 request 的接受 serial，因而一次 physical/semantic dispatch 最多结束一个 blocking command。这里实现的只是 #170 的 standalone DSL → typed barrier → Presenter 局部链路，#170 仍未完成：还需分别落地 #164 的 stage batch/join 与 #166 的 message-surface visibility，再以 synthetic composed scenario 验证共同 authored scheduling boundary、join、skip/click 和 load/rollback。当前协议不引入通用演出 scheduler，也不预先定义通用 receipt/extension adapter。
+request start、hard reset 与 cut state projection 共用 owner-checked generation；同步 listener 若在外层 signal 中替换 context、读档或发起新请求，后续 built-in consumer 会拒绝 stale outer tail。普通 advance 还记录 request 的接受 serial，因而一次 physical/semantic dispatch 最多结束一个 blocking command。#164 只交付 Stage adapter 与 generic typed/lifecycle 基础；#166 和 #170 仍然 OPEN，且均为 out of scope。当前不提供 message/non-Stage adapter、heterogeneous/cross-channel scheduler，也不声称关闭 #166 或 #170。
 
 SceneTree 导航交接另有一个只属于 `StellaRuntime` 的 per-serial broadcast receipt：open 时保留唯一 creator reservation，superseded navigation 与 recovery continuation 必须在任何 yield/公开重入边界前登记各自 waiter lease。中央 `scene_changed` observer 先封存不可变结果并清除 active slot，再广播唤醒；只有 receipt 已 settled、creator 已释放且 waiter 数归零时才删除记录。creator 可以消费一次 settle-before-await 的结果，其他未知、迟到或已过期 serial 都同步返回失败，不能复活历史或形成无 owner waiter。它只是 SceneTree 生命周期记账，不是 #166 的通用 extension receipt。
 
@@ -294,9 +314,9 @@ func capture_snapshot() -> Dictionary: ...
 func restore_snapshot(snapshot: Dictionary) -> void: ...
 ```
 
-`SaveManager` 维护 provider 列表，存档时遍历调用 `capture_snapshot()` 聚合为 JSON 写入 `user://saves/save_<slot>.json`，读档时反向恢复。Scenario snapshot 同时保存剧本 ID 与版本化来源 identity；scenario-aware 读取必须二者都与目标 `ScenarioData` 一致，缺少来源 identity 的旧存档由 Runtime 拒绝，不能仅凭同名文件猜测目标。`ScenarioContext` 还只保存 chapter indicator 的 authored visibility `bool`；chapter ID/title 始终从恢复后的执行 cursor 与 `TranslationServer` 重算，Tween、Presenter/Label identity 和 barrier ticket 都不进入 JSON。缺少该 bool 的旧快照按 hidden 恢复，存在但非 bool 的快照在 restore 前原子拒绝。除了变量系统，`PresentationState` 也作为 provider 捕获基础背景、动态舞台层和 BGM 等表现层状态，实现真正的“所见即所存”。运行中读档、快读或回退会先把 `ScenarioEngine.context` 所有权交给新 context，再发 hard hide/全局 abort 清理旧 Presenter；旧阻塞命令的同步取消因此只能观察到 stale owner，不能把取消误报为 `scenario_ended` 或抢回最终 context。导航会先 invalidate engine run generation，再唤醒旧 indicator barrier；winning context 按 reset-hidden → metadata → cut target → `engine.run()` 的顺序投影，failed/superseded navigation 则 cut 恢复保留 context。
+`SaveManager` 维护 provider 列表，存档时遍历调用 `capture_snapshot()` 聚合为 JSON 写入 `user://saves/save_<slot>.json`，读档时反向恢复。Scenario snapshot 同时保存剧本 ID 与版本化来源 identity；scenario-aware 读取必须二者都与目标 `ScenarioData` 一致，缺少来源 identity 的旧存档由 Runtime 拒绝，不能仅凭同名文件猜测目标。`ScenarioContext` 还只保存 chapter indicator 的 authored visibility `bool`；chapter ID/title 始终从恢复后的执行 cursor 与 `TranslationServer` 重算，Tween、Presenter/Label identity 和 barrier ticket 都不进入 JSON。缺少该 bool 的旧快照按 hidden 恢复，存在但非 bool 的快照在 restore 前原子拒绝。除了变量系统，`PresentationState` 也作为 provider 捕获基础背景、动态舞台层和 BGM 等表现层状态，实现真正的“所见即所存”。运行中读档、快读或回退会先把 `ScenarioEngine.context` 所有权交给新 context，再发 hard hide/全局 abort 清理旧 Presenter；旧阻塞命令的同步取消因此只能观察到 stale owner，不能把取消误报为 `scenario_ended` 或抢回最终 context。导航会先 invalidate engine run generation，再取消 Director-owned generic blocking presentation waiter；winning context 按 reset-hidden → metadata → cut target → `engine.run()` 的顺序投影，failed/superseded navigation 则 cut 恢复保留 context。
 
-动态舞台层以 `stage_layers: Dictionary` 保存：键是稳定业务 ID，值是经过 `StageLayerState` 归一化的完整 JSON-safe 状态。人物、事件图和其他舞台图片都使用这一份状态，不存在第二套人物快照。`PresentationState` 与 `StagePresenter` 使用同一 reducer，所以 patch 语义不会漂移。完整恢复先使旧舞台操作失效并清空当前投影，再用 `stage_state_apply_requested` 同步 cut 精确重建全部舞台层；投影信号不回写逻辑状态。
+动态舞台层以 `stage_layers: Dictionary` 保存：键是稳定业务 ID，值是经过 `StageLayerState` 归一化的完整 JSON-safe 状态。人物、事件图和其他舞台图片都使用这一份状态，不存在第二套人物快照。`PresentationState` 与 `StagePresenter` 使用同一 reducer，所以 patch 语义不会漂移。JOIN 动画进行中仍可存档；存档只包含已原子提交的 final canonical `stage_layers` 和 scenario cursor，绝不保存 operation、policy、request/batch、receipt、token、generation、Tween、barrier 或 progress，也不新增 in-flight schema。恢复顺序是 cancel old generation → reset + atomic cut canonical target → same-cursor re-dispatch；目标已满足时以 no-work 同步完成，且零新 batch/receipt/token/Tween，不重播旧动画。
 
 ### 2.6 选择系统
 
@@ -337,7 +357,7 @@ func show_and_wait(data: ChoiceData) -> String:
 `parallel` 只接受非阻塞演出指令。Parser 会原子拒绝包含 dialogue、choice、wait 或
 chapter_indicator 的 block，程序化构造的非法 block 也会在执行任何 child 前被 runtime
 拒绝。合法 child 在同一调用栈内发起，各 Presenter 的 Tween/播放因而并行，
-wrapper 不等待表现动画结束。
+wrapper 不等待表现动画结束。`@parallel` 不 join 任何转场，不是 `@stage_batch` 的别名，也不能用来模拟 Stage JOIN。
 
 ---
 
@@ -520,7 +540,7 @@ enum {
 }
 ```
 
-利用 Godot 内置 `InputMap` + `InputEvent`，PC / 移动 / 手柄自动适配。
+当前内建物理输入面覆盖左键、Space、Enter，以及 Ctrl/工具栏 Skip。语义 advance 会完成当前 exact blocking owner，不会跨越到同一 signal tail 中创建的下一命令。手柄 parity 与 #133 可重绑输入仍属后续工作，不声称已自动适配。
 
 ---
 
@@ -587,6 +607,7 @@ stella/
 │       │   │   ├── wait_handler.gd
 │       │   │   ├── effect_handler.gd
 │       │   │   ├── stage_layer_handler.gd
+│       │   │   ├── stage_batch_handler.gd
 │       │   │   ├── parallel_handler.gd
 │       │   │   └── call_handler.gd
 │       │   ├── data/
@@ -596,7 +617,13 @@ stella/
 │       │   │   ├── choice_data.gd
 │       │   │   ├── character_config.gd
 │       │   │   ├── stage_layer_state.gd
+│       │   │   ├── presentation_operation.gd
+│       │   │   ├── stage_presentation_operation.gd
+│       │   │   ├── presentation_operation_receipt.gd
+│       │   │   ├── presentation_batch_request.gd
 │       │   │   └── character_config_loader.gd
+│       │   ├── presentation/
+│       │   │   └── presentation_director.gd
 │       │   ├── variable_system/
 │       │   │   ├── variable_store.gd
 │       │   │   └── expression_evaluator.gd

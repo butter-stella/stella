@@ -77,9 +77,11 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 ## stale mutation cannot land after the restored checkpoint.
 func apply_to_presenters() -> void:
 	# This is a complete projection, not a patch. Reset invalidates operation
-	# delivery but does not mutate this snapshot's canonical stage_layers.
-	SignalBus.reset_stage_visuals()
-	SignalBus.stage_state_apply_requested.emit(stage_layers.duplicate(true))
+	# delivery but does not mutate this snapshot's canonical stage_layers. Keep
+	# the cut projection inside the same reset transaction so a lifecycle
+	# callback's winning Stage submission is dispatched only after the old
+	# snapshot has finished projecting.
+	SignalBus.reset_and_apply_stage_state(stage_layers)
 	SignalBus.bg_changed.emit(current_bg, "none", 0.0)
 	if current_bgm != "":
 		SignalBus.bgm_play.emit(current_bgm, 0.0)

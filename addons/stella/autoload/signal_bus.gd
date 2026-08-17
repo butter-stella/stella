@@ -596,17 +596,46 @@ signal stage_transition_started(
 	token: int,
 	operation_request_id: int,
 )
+## Internal exact-receipt side channel. The public four-argument started signal
+## remains source compatible; the Director consumes this identity carrying the
+## Presenter-owned per-layer generation.
+signal stage_transition_receipt_started(
+	presenter_instance_id: int,
+	layer_id: String,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+)
+## Exact terminal acknowledgement for one started Stage transition. Outcome is
+## one of completed, superseded, or cancelled. The operation request id and
+## globally monotonic token prevent a retired presenter/layer from satisfying a
+## later batch that happens to reuse the same channel.
+signal stage_transition_terminal(
+	presenter_instance_id: int,
+	layer_id: String,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+	outcome: StringName,
+)
 ## Visual-only completion for transition records previously acknowledged by
 ## stage_transition_started. Each record contains presenter_instance_id,
 ## layer_id, and token; stale or foreign records are ignored by presenters.
 signal stage_transitions_finish_requested(transitions: Array)
+## Strict issue #164 receipt completion channel. Every record contains the
+## exact presenter, layer, token, operation request, and Presenter-owned
+## generation identity. Legacy three-field completion remains above.
+signal stage_transition_receipts_finish_requested(transitions: Array)
 
 var _stage_operation_queue: Array[Dictionary] = []
 var _stage_operation_dispatching := false
 var _stage_operation_dispatch_stack: Array[int] = []
 var _stage_operation_epoch_stack: Array[int] = []
+var _stage_projection_epoch_stack: Array[int] = []
+var _stage_reset_epoch_stack: Array[int] = []
 var _next_stage_operation_request_id := 1
 var _stage_operation_epoch := 1
+var _stage_reset_depth := 0
 
 
 ## Allocate an identity before submission when a caller needs to own the exact
@@ -628,6 +657,24 @@ func is_current_stage_operation_valid() -> bool:
 	if _stage_operation_epoch_stack.is_empty():
 		return true
 	return _stage_operation_epoch_stack.back() == _stage_operation_epoch
+
+
+## Atomic reset projections carry their exact reset generation through the
+## existing state-apply signal. Raw compatibility emits have no frame and
+## therefore remain valid as before.
+func is_current_stage_projection_valid() -> bool:
+	if _stage_projection_epoch_stack.is_empty():
+		return true
+	return _stage_projection_epoch_stack.back() == _stage_operation_epoch
+
+
+## Like projection validity, direct compatibility emits remain valid. Reset
+## transactions carry an exact epoch so a nested newer boundary can stop the
+## stale outer signal tail from clearing later-connected presenters.
+func is_current_stage_reset_valid() -> bool:
+	if _stage_reset_epoch_stack.is_empty():
+		return true
+	return _stage_reset_epoch_stack.back() == _stage_operation_epoch
 
 
 func is_stage_operation_request_active(request_id: int) -> bool:
@@ -654,7 +701,31 @@ func cancel_stage_operation_request(request_id: int) -> bool:
 ## State and visual consumers both consult the same epoch, preventing a reset
 ## listener between them from leaving one side with stale authored state.
 func reset_stage_visuals() -> void:
+	_run_stage_reset_transaction(Callable())
+
+
+## Reset the old Stage generation and cut-project canonical state as one
+## lifecycle transaction. Reentrant authored winners dispatch only after both
+## legacy signals have completed, so the old snapshot cannot overwrite them.
+func reset_and_apply_stage_state(layers: Dictionary) -> void:
+	var defensive_layers := layers.duplicate(true)
+	_run_stage_reset_transaction(func(reset_epoch: int) -> void:
+		if reset_epoch != _stage_operation_epoch:
+			return
+		_stage_projection_epoch_stack.append(reset_epoch)
+		stage_state_apply_requested.emit(defensive_layers.duplicate(true))
+		_stage_projection_epoch_stack.pop_back()
+	)
+
+
+func _run_stage_reset_transaction(after_reset_consumers: Callable) -> void:
+	# Mark the lifecycle boundary before request cancellation or any signal can
+	# re-enter Stage submission. Reentrant winners retain normal request ids and
+	# validation but remain queued until every reset consumer (and an optional
+	# canonical cut projection) has completed.
+	_stage_reset_depth += 1
 	_stage_operation_epoch += 1
+	var reset_epoch := _stage_operation_epoch
 	var cancelled_requests := _stage_operation_queue.duplicate(true)
 	_stage_operation_queue.clear()
 	for request in cancelled_requests:
@@ -662,7 +733,21 @@ func reset_stage_visuals() -> void:
 			int(request.get("request_id", 0)),
 			false,
 		)
-	stage_visuals_reset_requested.emit()
+	# A cancelled-request callback can establish a newer nested lifecycle before
+	# this transaction reaches its reset signal. In that case the old boundary
+	# has no remaining authority and must not publish a stale consumer tail.
+	if reset_epoch == _stage_operation_epoch:
+		_stage_reset_epoch_stack.append(reset_epoch)
+		stage_visuals_reset_requested.emit()
+		_stage_reset_epoch_stack.pop_back()
+	if (
+		after_reset_consumers.is_valid()
+		and reset_epoch == _stage_operation_epoch
+	):
+		after_reset_consumers.call(reset_epoch)
+	_stage_reset_depth -= 1
+	if _stage_reset_depth == 0 and not _stage_operation_dispatching:
+		_drain_stage_operation_queue()
 
 
 ## Serialize authored stage mutations before delivering them to state trackers
@@ -691,9 +776,15 @@ func emit_stage_operations(
 		"epoch": _stage_operation_epoch,
 		"on_dispatch_started": on_dispatch_started,
 	})
-	if _stage_operation_dispatching:
+	if _stage_operation_dispatching or _stage_reset_depth > 0:
 		return request_id
+	_drain_stage_operation_queue()
+	return request_id
 
+
+func _drain_stage_operation_queue() -> void:
+	if _stage_operation_dispatching or _stage_reset_depth > 0:
+		return
 	_stage_operation_dispatching = true
 	while not _stage_operation_queue.is_empty():
 		var request: Dictionary = _stage_operation_queue.pop_front()
@@ -717,7 +808,6 @@ func emit_stage_operations(
 			request_epoch == _stage_operation_epoch,
 		)
 	_stage_operation_dispatching = false
-	return request_id
 
 # Audio
 signal bgm_play(asset: String, fade_duration: float)

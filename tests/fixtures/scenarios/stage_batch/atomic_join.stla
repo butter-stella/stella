@@ -1,0 +1,11 @@
+@chapter stage_batch_atomic "Synthetic atomic stage batch"
+@scene start
+@stage b show kind=character asset=stage:redraw_blur_source position=0,0
+@stage c show kind=overlay asset=stage:redraw_mask opacity=1
+@stage_batch policy=join
+  @stage a show kind=background asset=stage:redraw_source transition=fade duration=10
+  @stage b update position=64,32 transition=move duration=10
+  @stage c hide transition=fade duration=10
+@end
+@bgm off
+「atomic join tail」

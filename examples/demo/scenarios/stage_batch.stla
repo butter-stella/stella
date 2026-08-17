@@ -1,0 +1,33 @@
+// Public synthetic Stage composition example. Uses only redistributable demo assets.
+
+@chapter stage_batch_demo "Stage batch demo"
+@scene stage_batch_start "Stage batch demo"
+
+@stage_batch policy=join
+@stage sakura show kind=character asset=character:sakura/smile position=480,80 origin=720,0 scale=0.8 z=10 transition=fade duration=0.3
+@stage senpai show kind=character asset=character:senpai/default position=1440,80 origin=720,0 scale=0.8 z=11 transition=fade duration=0.3
+@end
+
+「JOIN waits for both named layers before this line.」
+
+@stage_batch policy=fire_and_forget
+@stage sakura update asset=character:sakura/happy position=720,80 transition=move duration=0.4
+@stage senpai update asset=character:senpai/smile transition=fade duration=0.4
+@end
+@se se_select
+「FIRE_AND_FORGET continues after dispatch is sealed; its tweens may still be active.」
+
+@stage_batch policy=fire_and_forget
+@stage sakura update position=840,80 transition=move duration=0.4
+@end
+@stage_batch policy=join
+@stage sakura update position=960,80 transition=move duration=0.2
+@end
+
+「The later same-layer generation owns the final state.」
+
+@stage_batch policy=join
+@stage clear transition=fade duration=0.3
+@end
+
+「The Stage is clear.」

@@ -402,7 +402,7 @@ Advance indicator 是可选的、按 Profile 独立配置的表现节点。`adva
 @jump scene_002
 ```
 
-`@end` 只用于闭合 `@if`、`@parallel` 和 `@combine` 块，不是终止指令。
+`@end` 只用于闭合 `@if`、`@parallel`、`@stage_batch` 和 `@combine` 块，不是终止指令。
 最后一个 scene 的命令执行完毕后，剧本自然结束。
 
 ### 3.11 并行指令
@@ -424,7 +424,33 @@ block 作为错误拒绝，不会只执行剩余兄弟命令。合法的背景�
 子命令会在同一调用栈中依次发起，因此各自的 Tween/播放可同时进行；block
 本身不等待这些表现动画结束。
 
-### 3.12 合并对话（@combine）
+### 3.12 舞台批次组合（@stage_batch）
+
+`@stage_batch` 把同一 authored boundary 中的多个命名 Stage 操作原子提交，并由必填 policy 决定是否等待转场：
+
+```stla
+@stage_batch policy=join
+  @stage sky show asset=stage:sky transition=fade duration=0.3
+  @stage hero update x=900 transition=move duration=0.3
+  @stage haze hide transition=fade duration=0.3
+@end
+
+@stage_batch policy=fire_and_forget
+  @stage hero update x=1100 transition=move duration=0.3
+@end
+```
+
+header 只接受唯一的 `policy` option。它必须出现一次，且值严格区分大小写，只允许 `join` 或 `fire_and_forget`；未知 option、裸 `join`、`JOIN`、`Fire_And_Forget`、重复或空值都会拒绝整块。block 不能为空。
+
+child 只能是经现有 `@stage` parser 完整规范化的 canonical Stage 操作。同一 batch 内每个非 clear layer ID 最多出现一次；`@stage clear` 若出现，必须是唯一 child。dialogue、audio、`@wait`、`@chapter_indicator`、嵌套 `@stage_batch`、`@parallel`、`@combine`、块内 `@if` 或其他 command 都不允许。`@stage_batch` 本身可以位于 active scene，也可以位于实际执行的 `@if` / `@else` 分支；不能出现在 scene 外、chapter 与首个 scene 之间，或 `@parallel` / `@combine` 内。
+
+header、空 block、scene 边界或缺失 `@end` 的错误定位 opening line；duplicate/clear-conflicting canonical `@stage`、其他非法 child 或 nested block 定位 offending child line。canonical child 原本产生 warning 并拒绝命令时，batch 边界会把同一 message/source path/line 升级为 fatal error。缺失 `@end` 在 opening line 报错，且不会吞掉后续 `@scene` 或 `@chapter`。任意错误都使整块 fail-close：不生成 `stage_batch` command，child 不泄漏为 standalone command，runtime 也不发生部分 mutation。
+
+`join` 在本批 dispatch tail 封存 exact receipt set 后，等待全部 receipt 成功 terminal；零 token 同步完成，semantic no-work 更会在任何 request/batch ID、Bus、receipt、token 或 Tween 分配前同步完成。当前 owner 的任一 superseded 或 cancelled receipt 都使 JOIN fail-close。普通左键、Space 或 Enter 只 finish 当前 sealed JOIN，不会跨越到下一命令。`fire_and_forget` 在 dispatch seal 后立即继续，不占用输入，此时 Tween 可仍在运行。连续 batch 按 SignalBus 顺序派发；后来的同层 generation 拥有最终状态，旧 terminal 不能完成新 batch。不得使用计时等待或 `@parallel` 伪造 JOIN。
+
+兼容面保持不变：standalone `@stage` 仍是 nonblocking；`@parallel` 仍只是同栈启动 child，不 join；`@combine` 仍是 dialogue segment cue，不是 batch barrier。公开 reference scenario 见 [`examples/demo/scenarios/stage_batch.stla`](../examples/demo/scenarios/stage_batch.stla)；它用于文档链接，不是默认 Start Game 入口。
+
+### 3.13 合并对话（@combine）
 
 一句台词在演出上是一整句，但声优录音被拆成了多段，每段之间还要切换舞台差分：
 
@@ -459,7 +485,7 @@ sakura「[expr:sad]我数学肯定完蛋了。」 #voice:sakura_019
 - 跟随当前 NVL / overlay 模式及其命名 Profile
 - 在 NVL 中整个块算一条记录，`entry_prefix` 只添加一次
 
-### 3.13 等待
+### 3.14 等待
 
 ```
 @wait 1.5                   // 等待 1.5 秒
@@ -593,6 +619,7 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | 条件 | `@if ... @elif ... @else ... @end` | — |
 | 跳转 | `@jump scene_id` | — |
 | 并行 | `@parallel ... @end` | — |
+| Stage 批次 | `@stage_batch policy=join|fire_and_forget ... @end` | — |
 | 合并 | `@combine ... @end` | 多段语音、头像提示与舞台操作合并为一句对话 |
 | 等待 | `@wait duration/click` | — |
 | 场景 | `@scene id "title"` | `@scene id` |
@@ -612,6 +639,8 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 ## 7. 解析器架构
 
 DSL 是唯一的脚本格式，引擎直接解析 `.stla` 为内部数据结构（ScenarioData）。
+
+整个 `@stage_batch` block 编译为一个 `stage_batch` command，并保留每个 child source line 供 runtime fail-close；内部 IR 的唯一主说明见 [Architecture 的 PresentationDirector 与 exact Stage composition](ARCHITECTURE.md#presentationdirector-与-exact-stage-composition)。
 
 ```
 ScriptParser/
