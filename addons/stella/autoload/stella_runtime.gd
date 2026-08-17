@@ -103,6 +103,10 @@ var _bgm_registrar_authority := RefCounted.new()
 var _quit_requested := false
 var _quit_exit_code := 0
 var _quit_completion_started := false
+var _choice_session_serial: int = 0
+var _active_choice_session: int = -1
+var _active_choice_auto_suspension: bool = false
+var _choice_presentation_dispatch_stack: Array[int] = []
 
 
 func _init() -> void:
@@ -470,7 +474,13 @@ func _register_handlers():
 	registry.register(JumpHandler.new())
 	registry.register(SetHandler.new())
 	registry.register(ConditionHandler.new())
-	registry.register(ChoiceHandler.new())
+	registry.register(ChoiceHandler.new(
+		_begin_choice_policy_session,
+		_resolve_choice_policy_session,
+		_cancel_choice_policy_session,
+		_is_choice_policy_session_current,
+		_publish_choice_policy_session,
+	))
 	registry.register(SeHandler.new())
 	registry.register(VoiceHandler.new())
 	registry.register(FadeHandler.new())
@@ -1298,13 +1308,20 @@ func _cancel_active_gameplay(navigation: int = -1) -> bool:
 		return false
 	if engine == null or engine.context == null:
 		return true
+	var retired_abort_connections := _capture_engine_abort_connections()
+	var retired_choice_session := _begin_choice_hard_boundary()
 	engine.cancel_current_run()
-	# Normal cancellation deliberately detaches the old Context. The following
-	# compatibility signal is the reentrant boundary: if a listener installs a
-	# fresh owner, this retired caller must stop before any later mutation.
+	# Normal cancellation deliberately detaches the old Context. Every following
+	# public abort callback is a reentrant boundary: if it installs a fresh
+	# owner, this retired caller must stop before any later mutation.
 	if not _owns_navigation(navigation) or engine.context != null:
+		_release_retired_choice_boundary_token(retired_choice_session)
 		return false
-	SignalBus.engine_abort_requested.emit()
+	_notify_retired_engine_abort_connections(retired_abort_connections)
+	if not _owns_navigation(navigation) or engine.context != null:
+		_release_retired_choice_boundary_token(retired_choice_session)
+		return false
+	_finish_choice_hard_boundary(true)
 	return _owns_navigation(navigation) and engine.context == null
 
 
@@ -2156,6 +2173,19 @@ func _prepare_scenario(scenario_path: String) -> bool:
 func _install_scenario(data: ScenarioData, scenario_path: String) -> void:
 	var scenario_id := data.id
 
+	# Invalidate semantic policy only when this call itself replaces an execution
+	# owner. Normal start_scenario() already detached any prior owner and must keep
+	# independently authored Auto/Skip intent so the first presentation command
+	# can observe it. Controller signals and the presentation HIDE are delayed
+	# until a stale handler has disconnected.
+	var replaces_execution_owner := (
+		(engine != null and engine.context != null)
+		or is_choice_active()
+	)
+	var retired_abort_connections: Array[Dictionary] = []
+	if replaces_execution_owner:
+		retired_abort_connections = _capture_engine_abort_connections()
+		_begin_choice_hard_boundary()
 	engine.load_scenario(data)
 	save_manager.register_provider(engine.context)
 	save_manager.register_provider(engine.context.variable_store)
@@ -2188,6 +2218,11 @@ func _install_scenario(data: ScenarioData, scenario_path: String) -> void:
 		"dialogue_content": PresentationState._inactive_dialogue_content(),
 	}
 	flowchart_state.initial_snapshot = initial_snapshot
+	# Context ownership is canonical; notify only the pre-transfer abort audience
+	# without broadcasting the retired boundary to replacement handlers.
+	if replaces_execution_owner:
+		_notify_retired_engine_abort_connections(retired_abort_connections)
+		_finish_choice_hard_boundary(true)
 
 
 ## Load scenario, restore snapshot, restore presentation, then run.
@@ -2206,7 +2241,7 @@ func _load_preparsed_scenario_and_restore(
 	# Installing the replacement context first transfers engine ownership away
 	# from an active dialogue. The following hard HIDE may abort its Presenter
 	# activation, but the stale run can no longer report normal scenario_ended.
-	if not _reset_presentation(navigation, expected_context):
+	if not _reset_presentation(navigation, expected_context, true):
 		return false
 	save_manager.restore_data(save_data)
 	if not _owns_navigation_context(navigation, expected_context):
@@ -2258,6 +2293,7 @@ func _is_on_title_screen() -> bool:
 func _reset_presentation(
 	navigation: int = -1,
 	expected_context: ScenarioContext = null,
+	choice_boundary_already_published: bool = false,
 ) -> bool:
 	if navigation < 0:
 		navigation = _navigation_generation
@@ -2288,9 +2324,17 @@ func _reset_presentation(
 	SignalBus.hide_dialogue.emit()
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
-	SignalBus.choice_hide.emit()
-	if not _owns_navigation_context(navigation, expected_context):
+	# A live semantic Choice must be retired only after its execution owner has
+	# transferred. Callers that have not completed that boundary fail closed
+	# instead of clearing sibling presentation while leaving the modal owner live.
+	if not choice_boundary_already_published and is_choice_active():
+		push_error(
+			"StellaRuntime: presentation reset requires retired choice ownership")
 		return false
+	if not choice_boundary_already_published:
+		SignalBus.choice_hide.emit()
+		if not _owns_navigation_context(navigation, expected_context):
+			return false
 	presentation_state.clear()
 	presentation_state.apply_to_presenters({})
 	if not _owns_navigation_context(navigation, expected_context):
@@ -3045,6 +3089,12 @@ func is_auto_playing() -> bool:
 	return auto_play.is_active
 
 
+## Internal playback gate: user intent remains active while a choice-owned
+## suspension temporarily prevents automatic progression.
+func is_auto_play_effective() -> bool:
+	return auto_play.is_effective()
+
+
 ## Whether skip mode is currently active.
 func is_skipping() -> bool:
 	return skip_controller.is_active
@@ -3076,6 +3126,196 @@ func is_chapter_indicator_visible() -> bool:
 		and engine.context != null
 		and engine.context.chapter_indicator_visible
 	)
+
+
+# ─── Internal Choice Playback Policy ───
+
+## Whether an authored choice currently owns modal scenario input.
+func is_choice_active() -> bool:
+	return _active_choice_session >= 0
+
+
+## ChoiceHandler installs policy ownership before publishing choice_show. The
+## settings are intentionally read exactly once here; menu-time changes apply
+## only to the next choice.
+func _begin_choice_policy_session() -> int:
+	# ScenarioEngine dispatch is serial. Reject a malformed concurrent choice
+	# instead of letting it transfer or retire ownership that still belongs to the
+	# current handler.
+	if _active_choice_session >= 0:
+		push_warning("StellaRuntime: rejected concurrent choice policy session")
+		return -1
+	# Capture the independent pair before either controller emits a synchronous
+	# state edge; listeners cannot turn one choice into a mixed-policy snapshot.
+	var pause_auto := bool(get_setting("auto_play_pause_on_choice"))
+	var stop_skip := bool(get_setting("skip_stop_on_choice"))
+	_choice_session_serial += 1
+	var session_id := _choice_session_serial
+	_active_choice_session = session_id
+	_active_choice_auto_suspension = pause_auto
+	if _active_choice_auto_suspension:
+		auto_play.acquire_suspension(session_id)
+	# Controller signals are synchronous. A lifecycle listener can replace the
+	# execution owner and install a fresh choice before this call resumes; never
+	# let the retired begin tail stop playback on behalf of that new generation.
+	if stop_skip and _active_choice_session == session_id:
+		skip_controller.stop()
+	# Return the generation allocated to this caller, not mutable global state.
+	# Its handler can then fail stale without cancelling a reentrant replacement.
+	return session_id
+
+
+## Release only the exact current generation after its selected option effects
+## have committed. A positive effective edge deliberately does not start any
+## old dialogue tail; the next command establishes fresh playback ownership.
+func _resolve_choice_policy_session(session_id: int) -> bool:
+	if session_id < 0 or session_id != _active_choice_session:
+		return false
+	_active_choice_session = -1
+	var had_auto_suspension := _active_choice_auto_suspension
+	_active_choice_auto_suspension = false
+	if had_auto_suspension:
+		auto_play.release_suspension(session_id)
+	# A release edge may synchronously install a replacement choice. The old
+	# handler committed successfully, but its untyped HIDE must then be skipped.
+	return _active_choice_session < 0
+
+
+## Cancellation is fail-closed: invalidate ownership first, stop both user
+## playback intents, then release the retired choice's suspension.
+func _cancel_choice_policy_session(session_id: int) -> bool:
+	if session_id < 0 or session_id != _active_choice_session:
+		return false
+	_active_choice_session = -1
+	var had_auto_suspension := _active_choice_auto_suspension
+	_active_choice_auto_suspension = false
+	auto_play.stop()
+	skip_controller.stop()
+	if had_auto_suspension:
+		auto_play.release_suspension(session_id)
+	# Return-to-title keeps the retired Context available until SceneTree confirms
+	# the destination. Its accepted handoff has already revoked execution owner,
+	# but publishing the public untyped HIDE here would expose that retained old
+	# Context to synchronous listeners. _cancel_active_gameplay() publishes the
+	# deferred HIDE after it detaches Context.
+	if (
+		_navigation_kind == "return_to_title"
+		and engine != null
+		and engine.context != null
+		and not engine.context.is_runtime_owner_current()
+	):
+		return false
+	# Controller callbacks may synchronously SHOW a replacement generation.
+	# Returning false suppresses only the retired handler's public HIDE.
+	return _active_choice_session < 0
+
+
+func _is_choice_policy_session_current(session_id: int) -> bool:
+	return session_id >= 0 and session_id == _active_choice_session
+
+
+## Keep the public choice_show payload while attaching an internal occurrence
+## owner to the synchronous dispatch stack. If a listener replaces the context
+## and publishes a fresh built-in choice recursively, later listeners in the
+## outer emission can reject that stale tail before mutating presentation.
+func _publish_choice_policy_session(
+	session_id: int,
+	prompt: String,
+	options: Array,
+) -> bool:
+	if not _is_choice_policy_session_current(session_id):
+		return false
+	_choice_presentation_dispatch_stack.append(session_id)
+	SignalBus.choice_show.emit(prompt, options)
+	var completed_session := _choice_presentation_dispatch_stack.pop_back()
+	return (
+		completed_session == session_id
+		and _is_choice_policy_session_current(session_id)
+	)
+
+
+## Presenters call this at the beginning of a choice_show callback. An empty
+## stack is a direct extension emission; occurrence ownership for that path
+## remains outside this internal built-in guard.
+func is_choice_presentation_dispatch_current() -> bool:
+	if _choice_presentation_dispatch_stack.is_empty():
+		return true
+	return _is_choice_policy_session_current(
+		_choice_presentation_dispatch_stack.back())
+
+
+## Snapshot the pre-transfer abort audience before ownership changes. Context-aware
+## handlers normally disconnect during ScenarioEngine.context replacement; the
+## remaining snapshot members are persistent presenters or extensions owned by
+## the retired run. A handler installed synchronously by
+## the replacement context is intentionally absent from this generation.
+func _capture_engine_abort_connections() -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for raw_connection in SignalBus.engine_abort_requested.get_connections():
+		if raw_connection is Dictionary:
+			var connection: Dictionary = raw_connection
+			result.append(connection.duplicate())
+	return result
+
+
+func _notify_retired_engine_abort_connections(
+	connections: Array[Dictionary],
+) -> void:
+	for connection in connections:
+		var callback: Callable = connection.get("callable", Callable())
+		if (
+			not callback.is_valid()
+			or not SignalBus.engine_abort_requested.is_connected(callback)
+		):
+			continue
+		var flags := int(connection.get("flags", 0))
+		if flags & CONNECT_DEFERRED:
+			callback.call_deferred()
+		else:
+			callback.call()
+		if (
+			flags & CONNECT_ONE_SHOT
+			and SignalBus.engine_abort_requested.is_connected(callback)
+		):
+			SignalBus.engine_abort_requested.disconnect(callback)
+
+
+## Phase one of a hard boundary is deliberately signal-free. Callers must next
+## replace or clear ScenarioEngine.context so the old ChoiceHandler loses owner
+## status and disconnects before controller/HIDE callbacks can reenter.
+func _begin_choice_hard_boundary() -> int:
+	var retired_session := _active_choice_session
+	_active_choice_session = -1
+	_active_choice_auto_suspension = false
+	return retired_session
+
+
+## When a synchronous replacement takes ownership before phase two, this stale
+## boundary may release only its own exact Auto token. The replacement owns all
+## controller intent and presentation decisions from that point onward.
+func _release_retired_choice_boundary_token(retired_session: int) -> void:
+	if retired_session >= 0:
+		auto_play.release_suspension(retired_session)
+
+
+## Phase two runs only after the execution owner changed. Preserve at most a
+## fresh choice token installed synchronously by the replacement context, clear
+## every retired/orphan token, then fail-close both playback intents. Publishing
+## HIDE last prevents a stale selection callback from completing the old run.
+func _finish_choice_hard_boundary(publish_hide: bool) -> void:
+	# Stop intent while the retired pause still suppresses effective progression;
+	# clearing tokens first would publish a transient true edge to extensions.
+	auto_play.stop()
+	skip_controller.stop()
+	if _active_choice_session >= 0 and _active_choice_auto_suspension:
+		auto_play.clear_suspensions_except(_active_choice_session)
+	else:
+		auto_play.clear_suspensions()
+	# A replacement context may synchronously enter a fresh choice while the old
+	# context is cancelling or a controller edge is delivered. Its SHOW already
+	# replaces the retired visual; an untyped stale HIDE must not target it.
+	if publish_hide and _active_choice_session < 0:
+		SignalBus.choice_hide.emit()
 
 
 # ─── Facade API: Named Stage Layers ───
@@ -3298,9 +3538,10 @@ func get_backlog() -> Array:
 ##    Otherwise an autosave triggered by NOTIFICATION_WM_CLOSE_REQUEST in
 ##    the window between swap and register would serialize an inconsistent
 ##    mix (old context provider + new presentation_state).
-## 6. Swap engine.context and emit engine_abort_requested. The swap first asks
-##    the retired context generation to cancel all of its blocking handlers;
-##    the global signal remains for non-context compatibility listeners.
+## 6. Swap engine.context, which first asks the retired context generation to
+##    cancel all blocking handlers. Then notify only the pre-transfer audience
+##    captured before transfer; listeners installed by a synchronous replacement
+##    are not part of the retired generation's abort.
 ##    Ownership transfer happens before any hard presentation boundary so a
 ##    synchronous Presenter abort cannot make the stale run report scenario_ended.
 ## 7. Reset visuals to a clean slate. The canonical BGM reset is then replaced
@@ -3385,27 +3626,35 @@ func _restore_runtime_from_snapshot(
 
 	save_manager.register_provider(new_ctx)
 	save_manager.register_provider(new_ctx.variable_store)
+	var retired_abort_connections := _capture_engine_abort_connections()
+	var retired_choice_session := _begin_choice_hard_boundary()
 	engine.replace_context(new_ctx)
 	if not _owns_navigation_context(navigation, new_ctx):
+		_release_retired_choice_boundary_token(retired_choice_session)
 		return false
-	SignalBus.engine_abort_requested.emit()
+	_notify_retired_engine_abort_connections(retired_abort_connections)
 	if not _owns_navigation_context(navigation, new_ctx):
+		_release_retired_choice_boundary_token(retired_choice_session)
 		return false
 
 	SignalBus.reset_stage_visuals()
 	if not _owns_navigation_context(navigation, new_ctx):
+		_release_retired_choice_boundary_token(retired_choice_session)
 		return false
 	SignalBus.reset_chapter_indicator_presentation()
 	if not _owns_navigation_context(navigation, new_ctx):
+		_release_retired_choice_boundary_token(retired_choice_session)
 		return false
 	presentation_state.current_bgm.clear()
 	SignalBus.reset_bgm_presentation()
 	if not _owns_navigation_context(navigation, new_ctx):
+		_release_retired_choice_boundary_token(retired_choice_session)
 		return false
 	SignalBus.hide_dialogue.emit()
 	if not _owns_navigation_context(navigation, new_ctx):
+		_release_retired_choice_boundary_token(retired_choice_session)
 		return false
-	SignalBus.choice_hide.emit()
+	_finish_choice_hard_boundary(true)
 	if not _owns_navigation_context(navigation, new_ctx):
 		return false
 	SignalBus.fade_requested.emit("in", 0.0)

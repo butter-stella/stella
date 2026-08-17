@@ -50,11 +50,15 @@ var _queued_effect_requests: Array[Dictionary] = []
 var _effect_mutation_depth := 0
 var _draining_effect_requests := false
 var _accept_effect_requests := false
+var _effects_enabled := true
+var _effect_policy_epoch := 0
 
 
 func _enter_tree() -> void:
 	# `_ready` only runs once unless request_ready() is used. Always reconnect
 	# when an already-initialized presenter is removed and re-added to the tree.
+	_effect_policy_epoch += 1
+	_effects_enabled = _read_effect_enabled()
 	_accept_effect_requests = true
 	_connect_signals()
 	_refresh_existing_flash_canvas_on_enter()
@@ -65,7 +69,8 @@ func _ready() -> void:
 	# in `_enter_tree()` but before this callback runs. Do not pause that shake.
 	if _shake_tween == null:
 		set_process(false)
-	_resolve_flash_canvas()
+	if _effects_enabled:
+		_resolve_flash_canvas()
 
 
 func _process(delta: float) -> void:
@@ -88,6 +93,8 @@ func _exit_tree() -> void:
 		SignalBus.effect_requested.disconnect(_on_effect)
 	if SignalBus.engine_abort_requested.is_connected(_clear_effects):
 		SignalBus.engine_abort_requested.disconnect(_clear_effects)
+	if SignalBus.settings_changed.is_connected(_on_settings_changed):
+		SignalBus.settings_changed.disconnect(_on_settings_changed)
 	_clear_effects()
 
 
@@ -96,14 +103,37 @@ func _connect_signals() -> void:
 		SignalBus.effect_requested.connect(_on_effect)
 	if not SignalBus.engine_abort_requested.is_connected(_clear_effects):
 		SignalBus.engine_abort_requested.connect(_clear_effects)
+	if not SignalBus.settings_changed.is_connected(_on_settings_changed):
+		SignalBus.settings_changed.connect(_on_settings_changed)
+
+
+func _read_effect_enabled() -> bool:
+	return bool(StellaRuntime.get_setting("effect_enabled"))
+
+
+func _on_settings_changed(key: String, _value: Variant) -> void:
+	if key != "effect_enabled":
+		return
+	var enabled := _read_effect_enabled()
+	if enabled == _effects_enabled:
+		return
+	_effects_enabled = enabled
+	_effect_policy_epoch += 1
+	if not enabled:
+		# Suppressed requests are retired, not deferred until a later re-enable.
+		_queued_effect_requests.clear()
+		_neutralize_effects()
 
 
 func _on_effect(effect_type: String, params: Dictionary) -> void:
 	if not _accept_effect_requests:
 		return
+	if _is_policy_controlled_effect(effect_type) and not _effects_enabled:
+		return
 	_queued_effect_requests.append({
 		"type": effect_type,
 		"params": params.duplicate(true),
+		"policy_epoch": _effect_policy_epoch,
 	})
 	_drain_effect_requests()
 
@@ -116,22 +146,54 @@ func _drain_effect_requests() -> void:
 		and _effect_mutation_depth == 0 \
 		and not _queued_effect_requests.is_empty():
 		var request := _queued_effect_requests.pop_front()
+		var effect_type: String = request.get("type", "")
+		var policy_epoch: int = int(request.get("policy_epoch", -1))
+		if (
+			_is_policy_controlled_effect(effect_type)
+			and not _can_start_policy_effect(policy_epoch)
+		):
+			continue
 		_begin_effect_mutation()
-		_execute_effect(request.get("type", ""), request.get("params", {}))
+		_execute_effect(effect_type, request.get("params", {}), policy_epoch)
 		_end_effect_mutation()
 	if not _accept_effect_requests:
 		_queued_effect_requests.clear()
 	_draining_effect_requests = false
 
 
-func _execute_effect(effect_type: String, params: Dictionary) -> void:
+func _execute_effect(
+	effect_type: String,
+	params: Dictionary,
+	policy_epoch: int,
+) -> void:
 	match effect_type:
 		"shake":
-			_shake(params.get("intensity", 10.0), params.get("duration", 0.3))
+			_shake(
+				params.get("intensity", 10.0),
+				params.get("duration", 0.3),
+				policy_epoch,
+			)
 		"flash":
-			_flash(params.get("color", "white"), params.get("duration", 0.2))
+			_flash(
+				params.get("color", "white"),
+				params.get("duration", 0.2),
+				policy_epoch,
+			)
 		"off":
-			_clear_effects()
+			_neutralize_effects()
+
+
+func _is_policy_controlled_effect(effect_type: String) -> bool:
+	return effect_type == "shake" or effect_type == "flash"
+
+
+func _can_start_policy_effect(policy_epoch: int) -> bool:
+	return (
+		_accept_effect_requests
+		and _effects_enabled
+		and policy_epoch == _effect_policy_epoch
+		and is_inside_tree()
+	)
 
 
 func _begin_effect_mutation() -> void:
@@ -144,7 +206,11 @@ func _end_effect_mutation() -> void:
 		_drain_effect_requests()
 
 
-func _shake(intensity_value: Variant, duration_value: Variant) -> void:
+func _shake(
+	intensity_value: Variant,
+	duration_value: Variant,
+	policy_epoch: int,
+) -> void:
 	var parsed_duration: Variant = _finite_number(duration_value, "shake duration")
 	var parsed_intensity: Variant = _finite_number(intensity_value, "shake intensity")
 	if parsed_duration == null or parsed_intensity == null:
@@ -193,7 +259,7 @@ func _shake(intensity_value: Variant, duration_value: Variant) -> void:
 	# Only a completely valid request supersedes the active effect. Resolve the
 	# targets first, then restore the old effect before recording new baselines.
 	_stop_shake()
-	if not is_inside_tree() or not _accept_effect_requests:
+	if not _can_start_policy_effect(policy_epoch):
 		return
 	_shake_targets = targets
 	for target in _shake_targets:
@@ -264,7 +330,11 @@ func _finish_shake(tween: Tween) -> void:
 	_stop_shake()
 
 
-func _flash(color_value: Variant, duration_value: Variant) -> void:
+func _flash(
+	color_value: Variant,
+	duration_value: Variant,
+	policy_epoch: int,
+) -> void:
 	var parsed_duration: Variant = _finite_number(duration_value, "flash duration")
 	if parsed_duration == null:
 		return
@@ -281,17 +351,20 @@ func _flash(color_value: Variant, duration_value: Variant) -> void:
 	else:
 		push_warning("ScreenEffects: flash color must be a string; using white")
 
-	var flash_canvas := _resolve_flash_canvas()
+	if not _can_start_policy_effect(policy_epoch):
+		return
+	var flash_canvas := _resolve_flash_canvas(policy_epoch)
 	if flash_canvas == null \
 		or not is_instance_valid(flash_canvas) \
 		or not flash_canvas.is_inside_tree() \
 		or (flash_canvas == _tracked_flash_canvas and _flash_canvas_exiting):
 		return
+	if not _can_start_policy_effect(policy_epoch):
+		return
 	# Invalid requests above are true no-ops. Only a renderable replacement is
 	# allowed to remove the currently active flash.
 	_clear_flash()
-	if not is_inside_tree() \
-		or not _accept_effect_requests \
+	if not _can_start_policy_effect(policy_epoch) \
 		or not is_instance_valid(flash_canvas) \
 		or not flash_canvas.is_inside_tree():
 		return
@@ -320,7 +393,7 @@ func _flash(color_value: Variant, duration_value: Variant) -> void:
 	tween.tween_callback(_finish_flash.bind(tween))
 
 
-func _resolve_flash_canvas() -> CanvasLayer:
+func _resolve_flash_canvas(policy_epoch: int = -1) -> CanvasLayer:
 	if not flash_canvas_path.is_empty():
 		var configured := get_node_or_null(flash_canvas_path)
 		if configured == null:
@@ -347,11 +420,26 @@ func _resolve_flash_canvas() -> CanvasLayer:
 		_track_flash_canvas(_flash_canvas)
 		return _flash_canvas
 
-	_fallback_flash_canvas = CanvasLayer.new()
-	_fallback_flash_canvas.name = "FlashCanvas"
-	_fallback_flash_canvas.layer = flash_canvas_layer
-	add_child(_fallback_flash_canvas)
-	_flash_canvas = _fallback_flash_canvas
+	var fallback_canvas := CanvasLayer.new()
+	fallback_canvas.name = "FlashCanvas"
+	fallback_canvas.layer = flash_canvas_layer
+	_fallback_flash_canvas = fallback_canvas
+	add_child(fallback_canvas)
+	# Adding a host publishes synchronous tree notifications. A listener may
+	# disable effects (and optionally queue a fresh generation) from that edge;
+	# the stale request must not leave its newly allocated private host behind.
+	if policy_epoch >= 0 and not _can_start_policy_effect(policy_epoch):
+		if _fallback_flash_canvas == fallback_canvas:
+			_fallback_flash_canvas = null
+		if not is_instance_valid(_flash_canvas):
+			_flash_canvas = null
+			_owns_flash_canvas = false
+		if is_instance_valid(fallback_canvas):
+			if fallback_canvas.get_parent() == self:
+				remove_child(fallback_canvas)
+			fallback_canvas.queue_free()
+		return null
+	_flash_canvas = fallback_canvas
 	_owns_flash_canvas = true
 	_track_flash_canvas(_flash_canvas)
 	return _flash_canvas
@@ -463,6 +551,19 @@ func _on_flash_overlay_exiting(tween: Tween) -> void:
 
 
 func _clear_effects() -> void:
+	# Engine abort and scene exit form a hard generation boundary. Temporarily
+	# close admission so visual-change callbacks cannot revive an effect from the
+	# retiring run; later fresh requests remain admissible once the boundary has
+	# synchronously completed.
+	_effect_policy_epoch += 1
+	_queued_effect_requests.clear()
+	var was_accepting := _accept_effect_requests
+	_accept_effect_requests = false
+	_neutralize_effects()
+	_accept_effect_requests = was_accepting and is_inside_tree()
+
+
+func _neutralize_effects() -> void:
 	_begin_effect_mutation()
 	_stop_shake()
 	_clear_flash()

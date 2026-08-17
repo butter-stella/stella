@@ -5,7 +5,7 @@ class_name GameSettings extends RefCounted
 # --- Text display ---
 var character_interval: int = 50       # ms per character (0 = instant)
 var punctuation_pause: int = 200       # extra ms after punctuation
-var click_to_complete: bool = true     # click during typing shows full text
+var click_to_complete: bool = true     # normal advance during typing shows full text
 var text_window_opacity: float = 0.8
 
 # --- Auto play ---
