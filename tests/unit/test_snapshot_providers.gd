@@ -2,6 +2,13 @@ extends GutTest
 ## Tests for snapshot provider implementations (VariableStore, ScenarioContext).
 
 
+func _object_has_property(object: Object, property_name: String) -> bool:
+	for property: Dictionary in object.get_property_list():
+		if String(property.get("name", "")) == property_name:
+			return true
+	return false
+
+
 func test_variable_store_snapshot_protocol():
 	var store = VariableStore.new()
 	store.set_var("hp", 100, VariableStore.Scope.SCENARIO)
@@ -31,6 +38,10 @@ func test_scenario_context_snapshot_protocol():
 	ctx.current_command_index = 5
 	ctx.current_dialogue_mode = "nvl"
 	ctx.nvl_page_epoch = 7
+	assert_true(_object_has_property(ctx, "chapter_indicator_visible"))
+	if not _object_has_property(ctx, "chapter_indicator_visible"):
+		return
+	ctx.chapter_indicator_visible = true
 
 	assert_eq(ctx.get_provider_id(), "scenario_context")
 
@@ -40,6 +51,7 @@ func test_scenario_context_snapshot_protocol():
 	ctx.current_command_index = 0
 	ctx.current_dialogue_mode = "overlay"
 	ctx.nvl_page_epoch = 99
+	ctx.chapter_indicator_visible = false
 
 	ctx.restore_snapshot(snapshot)
 
@@ -47,6 +59,7 @@ func test_scenario_context_snapshot_protocol():
 	assert_eq(ctx.current_command_index, 5)
 	assert_eq(ctx.current_dialogue_mode, "nvl")
 	assert_eq(ctx.nvl_page_epoch, 7)
+	assert_true(ctx.chapter_indicator_visible)
 
 
 func test_scenario_context_snapshot_round_trips_authored_nvl_page_entries():
@@ -165,6 +178,10 @@ func test_scenario_context_old_snapshot_restores_dialogue_mode_defaults():
 	var ctx = ScenarioContext.new(ScenarioData.new())
 	ctx.current_dialogue_mode = "nvl"
 	ctx.nvl_page_epoch = 12
+	assert_true(_object_has_property(ctx, "chapter_indicator_visible"))
+	if not _object_has_property(ctx, "chapter_indicator_visible"):
+		return
+	ctx.chapter_indicator_visible = true
 	ctx.current_dialogue_profile_name = "stale"
 	ctx.current_dialogue_uses_declarative_presentation = true
 	ctx.adv_dialogue_profile_name = "stale_adv"
@@ -181,6 +198,8 @@ func test_scenario_context_old_snapshot_restores_dialogue_mode_defaults():
 		"snapshots created before runtime mode tracking must restore the legacy mode")
 	assert_eq(ctx.nvl_page_epoch, 0,
 		"an old snapshot must not inherit the context's pre-restore page identity")
+	assert_false(ctx.chapter_indicator_visible,
+		"legacy snapshots use the documented hidden indicator default")
 	assert_eq(ctx.current_dialogue_profile_name, "")
 	assert_false(ctx.current_dialogue_uses_declarative_presentation)
 	assert_eq(ctx.adv_dialogue_profile_name, "")

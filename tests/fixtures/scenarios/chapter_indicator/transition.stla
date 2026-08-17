@@ -1,0 +1,6 @@
+@chapter transition "chapter.contract.transition"
+@scene start
+@chapter_indicator show transition=fade duration=5.0
+narrator「after show transition」
+@chapter_indicator hide transition=fade duration=5.0
+narrator「after hide transition」

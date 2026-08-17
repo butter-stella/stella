@@ -12,6 +12,7 @@ var context: ScenarioContext:
 	set(value):
 		if context == value:
 			return
+		_discard_run_suspension_state()
 		var previous_context := context
 		if not _context_owner_state.is_empty():
 			_context_owner_state["current"] = false
@@ -31,10 +32,16 @@ var registry: CommandRegistry
 var _run_generation: int = 0
 var _emitting_scenario_end_generation: int = -1
 var _emitting_scenario_end_context: ScenarioContext = null
+var _run_suspension_token: RefCounted
+var _run_suspension_context: ScenarioContext
+var _run_suspension_previous_generation: int = -1
+var _run_suspension_generation: int = -1
+var _run_suspension_retired: bool = false
 
 
 func stop() -> void:
-	_run_generation += 1
+	_set_context_execution_owner(false)
+	_advance_run_generation()
 	if context != null:
 		context.request_cancellation()
 
@@ -44,14 +51,133 @@ func stop() -> void:
 ## passed side-effect-free validation; final detachment happens after the new
 ## scene is confirmed.
 func invalidate_current_run() -> void:
+	_set_context_execution_owner(false)
+	_advance_run_generation()
+
+
+## Temporarily make the current run lose ownership before a SceneTree request
+## can synchronously remove scene-owned presenters. The opaque token is a
+## single-use compare-and-swap capability: it can restore only the exact
+## retained Context and generation, and any nested run mutation invalidates it.
+func suspend_current_run() -> RefCounted:
+	_discard_run_suspension_state()
+	if context == null:
+		return null
+	var token := RefCounted.new()
+	_run_suspension_token = token
+	_run_suspension_context = context
+	_run_suspension_previous_generation = _run_generation
 	_run_generation += 1
+	_run_suspension_generation = _run_generation
+	_run_suspension_retired = false
+	_set_context_execution_owner(false)
+	return token
+
+
+## Resume the original coroutine only when nothing changed after suspension.
+## A caller that woke the suspended command must discard instead and start one
+## fresh run at the unchanged cursor; resume and run are mutually exclusive.
+func resume_suspended_run(token: RefCounted) -> bool:
+	if (
+		token == null
+		or token != _run_suspension_token
+		or _run_suspension_retired
+		or context != _run_suspension_context
+		or _run_generation != _run_suspension_generation
+	):
+		return false
+	var previous_generation := _run_suspension_previous_generation
+	_set_context_execution_owner(true)
+	_discard_run_suspension_state()
+	_run_generation = previous_generation
+	return true
+
+
+## Permanently retire one exact suspension without reviving its old coroutine.
+func discard_suspended_run(token: RefCounted) -> bool:
+	if (
+		token == null
+		or token != _run_suspension_token
+		or _run_suspension_retired
+		or context != _run_suspension_context
+		or _run_generation != _run_suspension_generation
+	):
+		return false
+	# The original coroutine stays retired and Context execution ownership stays
+	# revoked. Keep the exact token as a one-shot capability so a rejected,
+	# already-accepted SceneTree handoff can reactivate this Context for one fresh
+	# run without reviving the old generation.
+	_run_suspension_retired = true
+	context.retire_runtime_execution_session()
+	# Session retirement is synchronously reentrant (choice_hide, dialogue abort,
+	# extension cancellation listeners). A nested owner may replace Context or
+	# consume this capability; never report acceptance for a stale token.
+	return (
+		token == _run_suspension_token
+		and _run_suspension_retired
+		and context == _run_suspension_context
+		and _run_generation == _run_suspension_generation
+	)
+
+
+## Reactivate a permanently retired suspension for a fresh run. This does not
+## restore the old run generation; callers must invoke run() exactly once after
+## a successful CAS (or omit run for an already-finished retained Context).
+func reactivate_retired_run(token: RefCounted) -> bool:
+	if (
+		token == null
+		or token != _run_suspension_token
+		or not _run_suspension_retired
+		or context != _run_suspension_context
+		or _run_generation != _run_suspension_generation
+	):
+		return false
+	# Bind a new owner dictionary rather than reviving the retired session's
+	# shared token. All old waiter callbacks observed the old dictionary as false
+	# while the session-scoped cancellation signal drained them.
+	_context_owner_state = {"current": true}
+	context.bind_runtime_owner(_context_owner_state)
+	_discard_run_suspension_state()
+	return true
+
+
+## Permanently abandon an accepted handoff's reactivation capability. Context
+## replacement normally does this through its setter; Runtime uses the explicit
+## form when a terminal transaction retains no execution owner.
+func discard_retired_run(token: RefCounted) -> bool:
+	if (
+		token == null
+		or token != _run_suspension_token
+		or not _run_suspension_retired
+	):
+		return false
+	_discard_run_suspension_state()
+	return true
+
+
+func _advance_run_generation() -> void:
+	_discard_run_suspension_state()
+	_run_generation += 1
+
+
+func _discard_run_suspension_state() -> void:
+	_run_suspension_token = null
+	_run_suspension_context = null
+	_run_suspension_previous_generation = -1
+	_run_suspension_generation = -1
+	_run_suspension_retired = false
+
+
+func _set_context_execution_owner(current: bool) -> void:
+	if not _context_owner_state.is_empty():
+		_context_owner_state["current"] = current
 
 
 ## Detach and invalidate the active run without reporting normal completion.
 ## Runtime navigation and test isolation use this before waking abortable
 ## handlers so no suspended continuation can emit lifecycle events afterward.
 func cancel_current_run() -> ScenarioContext:
-	_run_generation += 1
+	_advance_run_generation()
 	var old_context := context
 	context = null
 	if old_context != null:
@@ -60,7 +186,7 @@ func cancel_current_run() -> ScenarioContext:
 
 
 func replace_context(new_context: ScenarioContext) -> ScenarioContext:
-	_run_generation += 1
+	_advance_run_generation()
 	var old_context := context
 	if old_context != null:
 		old_context.is_finished = true
@@ -91,11 +217,15 @@ func load_scenario(data: ScenarioData) -> void:
 func run() -> void:
 	if context == null or context.scenario_data == null:
 		return
+	# A suspended or accepted-retired Context may only be reactivated through its
+	# exact opaque capability. An arbitrary run() call cannot forge ownership.
+	if not context.is_runtime_owner_current():
+		return
 
 	# Every invocation owns a unique generation. A replacement scenario, stop(),
 	# cancellation, or a second run() invalidates all suspended/synchronous work
 	# from the previous owner.
-	_run_generation += 1
+	_advance_run_generation()
 	var generation := _run_generation
 	var ctx := context
 

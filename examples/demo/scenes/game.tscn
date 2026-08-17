@@ -8,6 +8,7 @@
 [ext_resource type="Script" path="res://addons/stella/presentation/effects/fade_presenter.gd" id="7"]
 [ext_resource type="Script" uid="uid://wkgv23f4gu6f" path="res://addons/stella/presentation/effects/screen_effects.gd" id="8"]
 [ext_resource type="Script" path="res://examples/demo/scripts/voice_progress_bar.gd" id="9"]
+[ext_resource type="Script" path="res://addons/stella/presentation/ui/chapter_indicator_presenter.gd" id="10"]
 
 [sub_resource type="StyleBoxFlat" id="voice_bar_fill"]
 bg_color = Color(1, 0.72, 0.77, 0.8)
@@ -26,6 +27,18 @@ corner_radius_top_left = 1
 corner_radius_top_right = 1
 corner_radius_bottom_right = 1
 corner_radius_bottom_left = 1
+
+[sub_resource type="StyleBoxFlat" id="chapter_indicator_panel"]
+bg_color = Color(0.08, 0.04, 0.12, 0.82)
+border_width_left = 2
+border_width_top = 2
+border_width_right = 2
+border_width_bottom = 2
+border_color = Color(1, 0.72, 0.77, 0.75)
+corner_radius_top_left = 12
+corner_radius_top_right = 12
+corner_radius_bottom_right = 12
+corner_radius_bottom_left = 12
 
 [node name="Game" type="Node2D" unique_id=45668777]
 
@@ -73,6 +86,30 @@ mouse_filter = 2
 
 [node name="UILayer" type="CanvasLayer" parent="." unique_id=441214566]
 layer = 3
+
+[node name="ChapterIndicator" type="PanelContainer" parent="UILayer"]
+visible = false
+offset_left = 54.0
+offset_top = 42.0
+offset_right = 534.0
+offset_bottom = 138.0
+mouse_filter = 2
+theme_override_styles/panel = SubResource("chapter_indicator_panel")
+script = ExtResource("10")
+title_label_path = NodePath("Margin/Title")
+
+[node name="Margin" type="MarginContainer" parent="UILayer/ChapterIndicator"]
+layout_mode = 2
+theme_override_constants/margin_left = 28
+theme_override_constants/margin_top = 16
+theme_override_constants/margin_right = 28
+theme_override_constants/margin_bottom = 16
+
+[node name="Title" type="Label" parent="UILayer/ChapterIndicator/Margin"]
+layout_mode = 2
+theme_override_colors/font_color = Color(1, 0.84, 0.88, 1)
+theme_override_font_sizes/font_size = 28
+text_overrun_behavior = 3
 
 [node name="DialoguePanel" type="Control" parent="UILayer" unique_id=477075954]
 unique_name_in_owner = true

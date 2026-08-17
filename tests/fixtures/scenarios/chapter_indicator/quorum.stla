@@ -1,0 +1,5 @@
+@chapter quorum "chapter.contract.quorum"
+@scene start
+narrator「before quorum transition」
+@chapter_indicator show transition=fade duration=0.05
+narrator「after quorum transition」

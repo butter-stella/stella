@@ -291,6 +291,41 @@ StellaRuntime.load_game(slot_id)     # 读档并进入游戏
 StellaRuntime.return_to_title()      # 返回标题
 ```
 
+### 当前章节标题与可见目标
+
+当前章节身份来自正在执行的 scene cursor，标题已通过 `TranslationServer` 解析。项目 UI 只需使用三个稳定 Facade getter 和一个公开通知：
+
+```gdscript
+var chapter_id := StellaRuntime.get_current_chapter_id()
+var title := StellaRuntime.get_current_chapter_title()
+var authored_visible := StellaRuntime.is_chapter_indicator_visible()
+
+SignalBus.current_chapter_changed.connect(
+	func(new_id: String, new_title: String) -> void:
+		# 同一 chapter 在 locale 切换后也会重新通知。
+		pass
+)
+```
+
+`is_chapter_indicator_visible()` 返回 `ScenarioContext` 中的 authored target，不是某个 Control 当下的 alpha；导航尚未成功替换 context 时，它仍报告可供 autosave 的旧目标。`@chapter_indicator` 的 fade 会等待该次验证通过的全部 Presenter，零 Presenter 则同步完成。完整 apply tail 全部 accept 后才提交 target，因此 apply 回调内同步存档仍保存旧值，进入 fade 后的存档保存新值；读档、Backlog/流程图回退和 restart 以 cut 恢复目标，不重播旧 Tween。
+
+默认场景挂有 `ChapterIndicatorPresenter`，自定义 game scene 也可以把同一脚本挂到任意项目自有 `Control`，只需提供一个 `Label` 的 `NodePath`：
+
+```gdscript
+# ProjectChapterBadge.gd/scene setup
+var badge := PanelContainer.new()
+badge.set_script(load(
+	"res://addons/stella/presentation/ui/chapter_indicator_presenter.gd"))
+var title_label := Label.new()
+title_label.name = "Title"
+badge.add_child(title_label)
+badge.set("title_label_path", NodePath("Title"))
+```
+
+Presenter 只管理标题文本、可见性和本次转场，不改写项目的 anchors、offset、minimum size、theme 或装饰节点。多个合法 Presenter 会加入同一 barrier；任何 binding 在 validation/apply 间失效都会让整条命令 fail-closed，而不是留下部分 UI。运行中晚加入的 Presenter 只 cut 到 canonical 投影，不加入已经开始的 barrier；导航 reset 后、winning context 尚未投影前加入的节点保持隐藏。
+
+裸 `@chapter id` 的标题回退到 ID；显式 `@chapter id ""` 保持空标题并阻止 badge 渲染，但不会篡改 authored visibility。标题字符串可直接作为翻译 key；locale 改变会刷新标题而不重启 scenario。章节更换本身不隐式 show/hide，必须由 DSL 明确控制。
+
 ### 动态命名舞台层
 
 ```gdscript

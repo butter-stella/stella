@@ -211,6 +211,12 @@ signal hide_dialogue()
 # 已确认 request 的表现层兼容通知；不负责完成剧情命令
 signal advance_requested()
 
+# 当前章节；public metadata 与内部 typed barrier 分离
+signal current_chapter_changed(chapter_id: String, title: String)
+signal chapter_indicator_validate_requested(request: ChapterIndicatorRequest)
+signal chapter_indicator_apply_requested(request: ChapterIndicatorRequest)
+signal chapter_indicator_request_finished(request_id: int, success: bool)
+
 # 动态命名舞台层
 signal stage_operations_requested(operations: Array, force_cut: bool)
 signal stage_visuals_reset_requested()
@@ -249,6 +255,10 @@ signal settings_changed(key: String, value: Variant)
 
 舞台写操作统一通过 `SignalBus.emit_stage_operations()` 提交；该入口会深拷贝并串行派发同步重入的批次。每批有唯一 request ID，转场开始回执携带同一 ID，因此对话补全只会终止自己发出的 Tween。`stage_operations_requested` 是内部投递信号，状态跟踪器和 Presenter 因而始终按相同顺序观察操作，不会因监听器连接顺序产生存档与画面分叉。完整恢复会提升舞台 epoch、取消队列并使正在投递的旧批次对后续消费者失效。
 
+章节标题指示器使用专用的 typed `ChapterIndicatorRequest`，而不是共享可变 `Dictionary` 收集 quorum。validation 阶段每个 Presenter 以自身对象注册或 reject；Bus seal 参与者集合后向同一 request 派发 apply，每个 sealed participant 必须显式 accept，且 apply-time binding 与实例仍有效。只有整个 apply signal tail 完成并全部 accept 后，Core 才提交 `ScenarioContext.chapter_indicator_visible`，随后等待各 Presenter 的 exact request ID acknowledgement。getter 返回 defensive copy，任意 listener 修改副本、释放别的 Presenter 或同步 reset 都只能使整次请求确定性成功/失败/取消，不会缩小 authoritative barrier 或永久悬挂。
+
+request start、hard reset 与 cut state projection 共用同一个 monotonic presentation generation；metadata 也由 owner-checked dispatch 发布。同步 listener 若在外层 signal 中替换 context、读档或发起新请求，后续 built-in consumer 会拒绝 stale outer tail。普通 advance 还记录 request 的接受 serial，因而一次 physical/semantic dispatch 最多结束一个 blocking command。这个协议仅属于 #170 的 chapter indicator adapter；它不引入 #164 的通用演出 scheduler，也不预先定义 #166 的通用 receipt/extension 协议。
+
 ### 2.4 变量系统
 
 三个作用域：
@@ -282,7 +292,7 @@ func capture_snapshot() -> Dictionary: ...
 func restore_snapshot(snapshot: Dictionary) -> void: ...
 ```
 
-`SaveManager` 维护 provider 列表，存档时遍历调用 `capture_snapshot()` 聚合为 JSON 写入 `user://saves/save_<slot>.json`，读档时反向恢复。Scenario snapshot 同时保存剧本 ID 与版本化来源 identity；scenario-aware 读取必须二者都与目标 `ScenarioData` 一致，缺少来源 identity 的旧存档由 Runtime 拒绝，不能仅凭同名文件猜测目标。除了变量系统，`PresentationState` 也作为 provider 捕获基础背景、动态舞台层和 BGM 等表现层状态，实现真正的“所见即所存”。运行中读档、快读或回退会先把 `ScenarioEngine.context` 所有权交给新 context，再发 hard hide/全局 abort 清理旧 Presenter；旧阻塞命令的同步取消因此只能观察到 stale owner，不能把取消误报为 `scenario_ended` 或抢回最终 context。
+`SaveManager` 维护 provider 列表，存档时遍历调用 `capture_snapshot()` 聚合为 JSON 写入 `user://saves/save_<slot>.json`，读档时反向恢复。Scenario snapshot 同时保存剧本 ID 与版本化来源 identity；scenario-aware 读取必须二者都与目标 `ScenarioData` 一致，缺少来源 identity 的旧存档由 Runtime 拒绝，不能仅凭同名文件猜测目标。`ScenarioContext` 还只保存 chapter indicator 的 authored visibility `bool`；chapter ID/title 始终从恢复后的执行 cursor 与 `TranslationServer` 重算，Tween、Presenter/Label identity 和 barrier ticket 都不进入 JSON。缺少该 bool 的旧快照按 hidden 恢复，存在但非 bool 的快照在 restore 前原子拒绝。除了变量系统，`PresentationState` 也作为 provider 捕获基础背景、动态舞台层和 BGM 等表现层状态，实现真正的“所见即所存”。运行中读档、快读或回退会先把 `ScenarioEngine.context` 所有权交给新 context，再发 hard hide/全局 abort 清理旧 Presenter；旧阻塞命令的同步取消因此只能观察到 stale owner，不能把取消误报为 `scenario_ended` 或抢回最终 context。导航会先 invalidate engine run generation，再唤醒旧 indicator barrier；winning context 按 reset-hidden → metadata → cut target → `engine.run()` 的顺序投影，failed/superseded navigation 则 cut 恢复保留 context。
 
 动态舞台层以 `stage_layers: Dictionary` 保存：键是稳定业务 ID，值是经过 `StageLayerState` 归一化的完整 JSON-safe 状态。人物、事件图和其他舞台图片都使用这一份状态，不存在第二套人物快照。`PresentationState` 与 `StagePresenter` 使用同一 reducer，所以 patch 语义不会漂移。完整恢复先使旧舞台操作失效并清空当前投影，再用 `stage_state_apply_requested` 同步 cut 精确重建全部舞台层；投影信号不回写逻辑状态。
 
@@ -322,8 +332,8 @@ func show_and_wait(data: ChoiceData) -> String:
 @end
 ```
 
-`parallel` 只接受非阻塞演出指令。Parser 会原子拒绝包含 dialogue、choice 或
-wait 的 block，程序化构造的非法 block 也会在执行任何 child 前被 runtime
+`parallel` 只接受非阻塞演出指令。Parser 会原子拒绝包含 dialogue、choice、wait 或
+chapter_indicator 的 block，程序化构造的非法 block 也会在执行任何 child 前被 runtime
 拒绝。合法 child 在同一调用栈内发起，各 Presenter 的 Tween/播放因而并行，
 wrapper 不等待表现动画结束。
 
@@ -406,6 +416,12 @@ Core → Presentation 的 canonical 对话与语音链均使用只读 typed DTO�
 - **SE**：多通道并行
 - **Voice**：对话同步，角色独立音量控制；语音未播完可阻止自动推进
 - 提供 `voice_progress` 信号供 UI 实现进度条
+
+#### 当前章节标题 Presenter
+
+`ChapterIndicatorPresenter` 是可复用的 skinnable `Control` binding。项目提供根 Control 的几何、Theme/装饰和一个 exported `title_label_path`；框架只写 Label 文本、目标可见性和 alpha tween。当前 chapter ID/title 来自 Runtime 执行 cursor，标题在发布前由 `TranslationServer` 解析；显式空标题会令视觉保持隐藏，但不改变 Context 中的 authored target。
+
+一条 `@chapter_indicator` 是 standalone blocking command。validation seal 与完整 apply acceptance 之前不改变 Context；接受完成后先提交 bool，再等待 fade barrier。cut、零时长、无视觉工作和零 Presenter 同步完成。左键、Space、Enter、toolbar Skip 都只 finish 当前 exact request；accept advance serial 防止同一 input signal tail顺带 finish 下一条 indicator。手柄 parity 在叠加相应输入前置后验证。Presenter exit、binding mutation、context replacement、load/rollback/restart/title 和 scene exit 都通过统一 generation 取消旧 Tween/owner，迟到 callback 不得覆盖 fresh context。
 
 ### 3.5 游戏设置
 

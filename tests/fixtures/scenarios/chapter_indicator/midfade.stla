@@ -1,0 +1,5 @@
+@chapter midfade "chapter.contract.midfade"
+@scene start
+@chapter_indicator show transition=fade duration=0.3
+@set retired_transition_tail_ran = true
+narrator「after restored midfade command」

@@ -1070,6 +1070,67 @@ func test_chapter_without_display_name_falls_back_to_id():
 	assert_eq(data.chapters[0].display_name, "ch1")
 
 
+# ─── @chapter_indicator directive (issue #170) ───
+
+func test_chapter_indicator_parses_canonical_timeline_commands() -> void:
+	var data := _parse("""@chapter prologue "Prologue"
+@scene start
+@chapter_indicator hide
+@chapter_indicator show transition=none
+@chapter_indicator show transition=fade""")
+
+	assert_eq(data.diagnostics, [])
+	assert_eq(data.scenes[0].commands.size(), 3)
+	if data.scenes[0].commands.size() != 3:
+		return
+	var hidden: CommandData = data.scenes[0].commands[0]
+	assert_eq(hidden.type, "chapter_indicator")
+	assert_eq(hidden.params, {
+		"action": "hide",
+		"transition": "cut",
+		"duration": 0.0,
+	})
+	assert_eq(hidden.declared_line, 3)
+	assert_eq(data.scenes[0].commands[1].params, {
+		"action": "show",
+		"transition": "cut",
+		"duration": 0.0,
+	}, "none is accepted authoring syntax but canonicalizes to cut")
+	assert_eq(data.scenes[0].commands[2].params, {
+		"action": "show",
+		"transition": "fade",
+		"duration": 0.25,
+	})
+
+
+func test_invalid_chapter_indicator_operations_are_rejected_atomically() -> void:
+	var invalid_operations := [
+		"@chapter_indicator",
+		"@chapter_indicator toggle",
+		"@chapter_indicator show fade",
+		"@chapter_indicator show transition=wipe",
+		"@chapter_indicator show transition=cut duration=0.1",
+		"@chapter_indicator show duration=-0.1",
+		"@chapter_indicator show duration=nan",
+		"@chapter_indicator show opacity=0.5",
+		"@chapter_indicator show transition=fade transition=cut",
+		"@chapter_indicator show duration=0.2 duration=0.3",
+	]
+	for operation: String in invalid_operations:
+		var data := _parse("""@chapter prologue
+@scene start
+%s""" % operation)
+		assert_eq(
+			data.scenes[0].commands.size(),
+			0,
+			"invalid operation must not leave partial CommandData: %s" % operation,
+		)
+		assert_true(
+			_has_diagnostic(data, "error", "chapter_indicator"),
+			"invalid operation must retain a source-located diagnostic: %s" % operation,
+		)
+
+
 func test_chapter_groups_following_scenes():
 	var data = _parse("""@chapter prologue
 @scene a
