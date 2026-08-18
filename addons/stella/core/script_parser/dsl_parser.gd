@@ -811,9 +811,12 @@ static func _semantic_command(
 	command: CommandData,
 	synthetic_scene_ids: Dictionary,
 ) -> Array:
+	var semantic_params := command.params.duplicate(true)
+	if command.type == "stage_batch":
+		semantic_params.erase("operation_lines")
 	return [
 		command.type,
-		_semantic_value(command.params, synthetic_scene_ids),
+		_semantic_value(semantic_params, synthetic_scene_ids),
 		_semantic_value(
 			command.dialogue_mode_events_before, synthetic_scene_ids),
 		_semantic_value(

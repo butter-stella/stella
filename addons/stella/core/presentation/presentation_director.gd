@@ -89,11 +89,7 @@ func submit(
 		context.cancellation_requested.connect(on_context_cancel, CONNECT_ONE_SHOT)
 
 	var payloads: Array = preflight["payloads"]
-	var force_cut := (
-		policy == PresentationBatchRequest.Policy.JOIN
-		and _skip_active.is_valid()
-		and bool(_skip_active.call())
-	)
+	var force_cut := _is_skip_active()
 	SignalBus.emit_stage_operations(payloads, force_cut, request_id)
 	return request
 
@@ -338,7 +334,7 @@ func _preflight_stage_operations(
 		"payloads": payloads,
 		"before_state": before_state,
 		"target_state": simulated,
-		"no_work": simulated == before_state,
+		"no_work": simulated == before_state and not saw_clear,
 	}
 
 
@@ -432,6 +428,11 @@ func _on_stage_operation_request_finished(
 		request._settle(PresentationBatchRequest.Outcome.COMPLETED, _authority)
 		_cleanup_entry(request_id)
 		return
+	if (
+		int(entry["policy"]) == PresentationBatchRequest.Policy.JOIN
+		and _is_skip_active()
+	):
+		_finish_join(request_id)
 	_evaluate_terminal_state(request_id)
 
 
@@ -505,6 +506,10 @@ func _on_advance_requested() -> void:
 func on_skip_active_changed(active: bool) -> void:
 	if active:
 		_finish_latest_join(0, false)
+
+
+func _is_skip_active() -> bool:
+	return _skip_active.is_valid() and bool(_skip_active.call())
 
 
 func _finish_latest_join(

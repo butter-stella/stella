@@ -1382,6 +1382,316 @@ func test_a3_fnf_lifecycle_cancel_does_not_fail_close_released_context() -> void
 	assert_true(_presenter._layer_tweens.is_empty())
 
 
+func test_a3_preseal_fnf_cancel_fail_closes_only_its_current_owner() -> void:
+	if not _require_contract():
+		return
+	var director: PresentationDirector = _runtime_director()
+	var reset_once := [false]
+	var exact_starts := [0]
+	var context_holder: Array = [null]
+	var request_holder: Array = [null]
+	var request_id := [0]
+	var source_snapshot: Array[Dictionary] = [{}]
+	var context_was_current := [false]
+	var settlements: Array = []
+	var on_exact_start := func(
+		_presenter_instance_id: int,
+		_layer_id: String,
+		_token: int,
+		_operation_request_id: int,
+		_generation: int,
+	) -> void:
+		exact_starts[0] += 1
+	var on_outer_reset := func() -> void:
+		if reset_once[0]:
+			return
+		reset_once[0] = true
+		context_holder[0] = _start_inline("""@chapter preseal_fnf_cancel
+@scene start
+@stage_batch policy=fire_and_forget
+  @stage queued show asset=stage:redraw_source transition=fade duration=10
+@end
+@bgm off
+「cancelled FNF tail」""", "stage_batch_preseal_fnf_cancel")
+		var context := context_holder[0] as ScenarioContext
+		context_was_current[0] = (
+			context != null and context.is_runtime_owner_current())
+		for request_id_value: Variant in director._entries:
+			var entry: Dictionary = director._entries[request_id_value]
+			var source: Dictionary = entry.get("source", {})
+			if (
+				String(source.get("source_path", ""))
+				!= "res://synthetic/stage_batch_preseal_fnf_cancel.stla"
+			):
+				continue
+			request_id[0] = int(request_id_value)
+			request_holder[0] = entry.get("request")
+			source_snapshot[0] = source.duplicate(true)
+		var request := request_holder[0] as PresentationBatchRequest
+		if request != null:
+			request.settled.connect(func(
+				batch_id: int,
+				outcome: int,
+			) -> void:
+				settlements.append([batch_id, outcome])
+			, CONNECT_ONE_SHOT)
+		# This nested boundary revokes the request while it is still queued behind
+		# the outer reset. No Stage consumer can have observed the authored batch.
+		SignalBus.reset_stage_visuals()
+	SignalBus.stage_transition_receipt_started.connect(on_exact_start)
+	SignalBus.stage_visuals_reset_requested.connect(on_outer_reset)
+	SignalBus.reset_stage_visuals()
+	SignalBus.stage_visuals_reset_requested.disconnect(on_outer_reset)
+	SignalBus.stage_transition_receipt_started.disconnect(on_exact_start)
+
+	assert_true(reset_once[0])
+	assert_true(context_was_current[0],
+		"the cancelled pre-seal request belonged to the current Runtime owner")
+	assert_gt(request_id[0], 0)
+	assert_not_null(request_holder[0])
+	if request_holder[0] == null:
+		return
+	var request := request_holder[0] as PresentationBatchRequest
+	assert_true(await _wait_until(request.is_settled))
+	assert_true(request.is_settled(),
+		"the default outcome value is not settlement evidence")
+	assert_eq(request.get_batch_id(), request_id[0])
+	assert_eq(request.get_receipts(), [])
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.CANCELLED)
+	assert_eq(settlements, [[
+		request_id[0], PresentationBatchRequest.Outcome.CANCELLED,
+	]], "the queued FNF settles exactly once as genuinely CANCELLED")
+	assert_eq(source_snapshot[0], {
+		"source_path": "res://synthetic/stage_batch_preseal_fnf_cancel.stla",
+		"scenario_id": "stage_batch_preseal_fnf_cancel",
+		"line": 3,
+	})
+	assert_false(director._entries.has(request_id[0]))
+	assert_same(_runtime.engine.context, context_holder[0])
+	assert_true((context_holder[0] as ScenarioContext).is_finished,
+		"a still-current Handler must fail-close a pre-seal cancelled FNF")
+	assert_eq(_batch_observations, [],
+		"the cancelled queue entry never reaches Stage dispatch")
+	assert_eq(exact_starts[0], 0)
+	assert_eq(_started_transitions, [])
+	assert_eq(_runtime.presentation_state.stage_layers, {})
+	assert_null(_presenter.get_layer_node("queued"))
+	assert_true(_presenter._layer_tweens.is_empty())
+	assert_true(_presenter._layer_transition_tokens.is_empty())
+	assert_eq(_bgm_stop_count, 0)
+	assert_eq(_dialogue_requests, [],
+		"the failed command cannot release its audio/dialogue tail")
+
+
+func test_a3_clear_owns_pending_remove_and_true_empty_dispatches() -> void:
+	if not _require_contract():
+		return
+	var director: PresentationDirector = _runtime_director()
+	SignalBus.emit_stage_operations([{
+		"action": "show",
+		"id": "ghost",
+		"properties": {"asset": "stage:redraw_source"},
+		"transition": "cut",
+		"duration": 0.0,
+	}], true)
+	assert_true(_runtime.presentation_state.stage_layers.has("ghost"))
+	assert_not_null(_presenter.get_layer_node("ghost"))
+	_clear_observations()
+
+	var requests: Dictionary = {}
+	var exact_records: Array[Dictionary] = []
+	var settlements: Array = []
+	var terminal_events: Array[Dictionary] = []
+	var pending_remove_snapshot: Array[Dictionary] = [{}]
+	var on_settled := func(batch_id: int, outcome: int) -> void:
+		settlements.append([batch_id, outcome])
+	var on_exact_start := func(
+		presenter_instance_id: int,
+		layer_id: String,
+		token: int,
+		operation_request_id: int,
+		generation: int,
+	) -> void:
+		if presenter_instance_id != _presenter.get_instance_id() or layer_id != "ghost":
+			return
+		exact_records.append({
+			"presenter_instance_id": presenter_instance_id,
+			"layer_id": layer_id,
+			"token": token,
+			"operation_request_id": operation_request_id,
+			"generation": generation,
+		})
+		if requests.has(operation_request_id):
+			return
+		var entry: Dictionary = director._entries.get(operation_request_id, {})
+		var request: PresentationBatchRequest = entry.get("request")
+		if request != null:
+			requests[operation_request_id] = request
+			request.settled.connect(on_settled, CONNECT_ONE_SHOT)
+	var on_operations := func(operations: Array, _force_cut: bool) -> void:
+		if operations.size() != 1:
+			return
+		var operation: Dictionary = operations[0]
+		if String(operation.get("action", "")) != "remove":
+			return
+		var old_tween := _active_tween("ghost")
+		pending_remove_snapshot[0] = {
+			"canonical": _runtime.presentation_state.stage_layers.duplicate(true),
+			"node": _presenter.get_layer_node("ghost"),
+			"tween": old_tween,
+			"tween_was_valid": old_tween != null and old_tween.is_valid(),
+			"token": int(_presenter._layer_transition_tokens.get("ghost", 0)),
+			"generation": int(
+				_presenter._layer_transition_generations.get("ghost", 0)),
+			"request_id": SignalBus.current_stage_operation_request_id(),
+		}
+	var on_terminal := func(
+		presenter_instance_id: int,
+		layer_id: String,
+		token: int,
+		operation_request_id: int,
+		generation: int,
+		outcome: StringName,
+	) -> void:
+		if presenter_instance_id != _presenter.get_instance_id() or layer_id != "ghost":
+			return
+		terminal_events.append({
+			"presenter_instance_id": presenter_instance_id,
+			"layer_id": layer_id,
+			"token": token,
+			"operation_request_id": operation_request_id,
+			"generation": generation,
+			"outcome": outcome,
+		})
+	SignalBus.stage_transition_receipt_started.connect(on_exact_start)
+	SignalBus.stage_operations_requested.connect(on_operations)
+	SignalBus.stage_transition_terminal.connect(on_terminal)
+	_start_inline("""@chapter pending_clear
+@scene start
+@stage_batch policy=fire_and_forget
+  @stage ghost remove transition=fade duration=10
+@end
+@stage_batch policy=join
+  @stage clear transition=fade duration=10
+@end
+「clear tail」""", "stage_batch_pending_clear")
+	assert_true(await _wait_until(func() -> bool:
+		return exact_records.size() == 2))
+	SignalBus.stage_transition_receipt_started.disconnect(on_exact_start)
+	SignalBus.stage_operations_requested.disconnect(on_operations)
+
+	assert_eq(pending_remove_snapshot[0].get("canonical"), {},
+		"remove commits canonical absence before its visual fade completes")
+	assert_not_null(pending_remove_snapshot[0].get("node"))
+	assert_true(bool(pending_remove_snapshot[0].get("tween_was_valid", false)))
+	assert_gt(int(pending_remove_snapshot[0].get("token", 0)), 0)
+	assert_gt(int(pending_remove_snapshot[0].get("generation", 0)), 0)
+	var old_record: Dictionary = exact_records[0].duplicate(true)
+	var clear_record: Dictionary = exact_records[1].duplicate(true)
+	assert_eq(int(pending_remove_snapshot[0].get("request_id", 0)),
+		int(old_record["operation_request_id"]))
+	assert_ne(old_record["operation_request_id"],
+		clear_record["operation_request_id"])
+	assert_ne(old_record["token"], clear_record["token"])
+	assert_ne(old_record["generation"], clear_record["generation"])
+	var old_tween: Tween = pending_remove_snapshot[0].get("tween")
+	assert_not_null(old_tween)
+	if old_tween != null:
+		assert_false(old_tween.is_valid(),
+			"clear retires the pending remove tween before claiming its owner")
+	var old_request: PresentationBatchRequest = requests.get(
+		int(old_record["operation_request_id"]))
+	var clear_request: PresentationBatchRequest = requests.get(
+		int(clear_record["operation_request_id"]))
+	assert_not_null(old_request)
+	assert_not_null(clear_request)
+	if old_request == null or clear_request == null:
+		SignalBus.stage_transition_terminal.disconnect(on_terminal)
+		return
+	assert_true(old_request.is_settled())
+	assert_eq(old_request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(old_request.get_receipts().size(), 1)
+	assert_gt(clear_request.get_batch_id(), 0)
+	assert_eq(clear_request.get_receipts().size(), 1)
+	assert_false(clear_request.is_settled())
+	assert_eq(_runtime.presentation_state.stage_layers, {})
+	assert_not_null(_presenter.get_layer_node("ghost"))
+	assert_true(_presenter._layer_tweens.has("ghost"))
+	assert_eq(int(_presenter._layer_transition_tokens["ghost"]),
+		int(clear_record["token"]))
+	assert_eq(terminal_events.filter(func(event: Dictionary) -> bool:
+		return (
+			int(event["operation_request_id"])
+			== int(old_record["operation_request_id"])
+			and event["outcome"] == &"superseded"
+		)
+	).size(), 1, "clear supersedes the pending remove's exact owner")
+
+	var clear_tween := _active_tween("ghost")
+	_finish_records([old_record])
+	assert_same(_active_tween("ghost"), clear_tween,
+		"the old remove identity cannot finish the clear owner")
+	assert_false(clear_request.is_settled())
+	assert_eq(_dialogue_requests, [])
+	_finish_records([clear_record])
+	assert_true(await _wait_until(func() -> bool:
+		return _dialogue_requests.size() == 1))
+	assert_true(clear_request.is_settled())
+	assert_eq(clear_request.get_outcome(),
+		PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(settlements, [
+		[old_request.get_batch_id(), PresentationBatchRequest.Outcome.COMPLETED],
+		[clear_request.get_batch_id(), PresentationBatchRequest.Outcome.COMPLETED],
+	], "FNF release and JOIN completion each settle exactly once")
+	assert_false(director._entries.has(old_request.get_batch_id()))
+	assert_false(director._entries.has(clear_request.get_batch_id()))
+	assert_null(_presenter.get_layer_node("ghost"))
+	assert_false(_presenter._layer_tweens.has("ghost"))
+	assert_false(_presenter._layer_transition_tokens.has("ghost"))
+	assert_eq(terminal_events.filter(func(event: Dictionary) -> bool:
+		return (
+			int(event["operation_request_id"])
+			== int(clear_record["operation_request_id"])
+			and event["outcome"] == &"completed"
+		)
+	).size(), 1, "clear publishes its exact completed terminal once")
+	assert_true(_dialogue_requests[0].get_activation().is_pending())
+	var terminal_count := terminal_events.size()
+	_finish_records([old_record, clear_record])
+	await get_tree().process_frame
+	SignalBus.stage_transition_terminal.disconnect(on_terminal)
+	assert_eq(_dialogue_requests.size(), 1)
+	assert_eq(settlements.size(), 2)
+	assert_eq(terminal_events.size(), terminal_count,
+		"late old and duplicate clear identities publish no new terminal")
+
+	var batches_before_empty := _batch_observations.size()
+	var starts_before_empty := _started_transitions.size()
+	var empty_clear := director.submit(_typed_operations([
+		StagePresentationOperation.new({
+			"action": "clear", "id": "", "properties": {},
+			"transition": "fade", "duration": 10.0,
+		}),
+	]), PresentationBatchRequest.Policy.JOIN,
+		_programmatic_context(CommandData.new()), {
+			"source_path": "res://synthetic/true_empty_clear.stla",
+			"line": 3,
+		})
+	assert_gt(empty_clear.get_batch_id(), 0,
+		"true-empty clear still owns a positive typed dispatch")
+	assert_true(empty_clear.is_settled())
+	assert_eq(empty_clear.get_outcome(),
+		PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(empty_clear.get_receipts(), [])
+	assert_eq(_batch_observations.size(), batches_before_empty + 1)
+	assert_eq((_batch_observations[-1]["operations"] as Array)[0]["action"],
+		"clear")
+	assert_eq(_started_transitions.size(), starts_before_empty)
+	assert_null(_presenter.get_layer_node("ghost"))
+	assert_true(_presenter._layer_tweens.is_empty())
+	assert_true(_presenter._layer_transition_tokens.is_empty())
+
+
 func test_a4_semantic_left_space_and_enter_finish_only_the_current_join() -> void:
 	if not _require_contract():
 		return
@@ -1460,14 +1770,92 @@ func test_a4_skip_finishes_once_auto_and_fnf_do_not_claim_completion() -> void:
 	_assert_lifecycle_final()
 
 	await _reset_live_run()
+	var director: PresentationDirector = _runtime_director()
+	var persistent_requests: Array[PresentationBatchRequest] = []
+	var persistent_exact_starts := [0]
+	var on_persistent_dispatch := func(
+		_operations: Array,
+		force_cut: bool,
+	) -> void:
+		if not force_cut:
+			return
+		var request_id := SignalBus.current_stage_operation_request_id()
+		var entry: Dictionary = director._entries.get(request_id, {})
+		var request: PresentationBatchRequest = entry.get("request")
+		if request != null:
+			persistent_requests.append(request)
+	var on_persistent_exact := func(
+		_presenter_instance_id: int,
+		_layer_id: String,
+		_token: int,
+		_operation_request_id: int,
+		_generation: int,
+	) -> void:
+		persistent_exact_starts[0] += 1
+	SignalBus.stage_operations_requested.connect(on_persistent_dispatch)
+	SignalBus.stage_transition_receipt_started.connect(on_persistent_exact)
 	_runtime.skip_controller.is_active = true
 	_runtime.start_scenario(LIFECYCLE_JOIN_PATH)
 	assert_true(await _wait_until(
 		func() -> bool: return _dialogue_requests.size() == 1))
+	assert_eq(_batch_observations.size(), 1)
+	assert_true(bool(_batch_observations[0]["force_cut"]))
+	assert_eq(persistent_requests.size(), 1)
+	if persistent_requests.size() == 1:
+		assert_eq(persistent_requests[0].get_policy(),
+			PresentationBatchRequest.Policy.JOIN)
+		assert_gt(persistent_requests[0].get_batch_id(), 0)
+		assert_eq(persistent_requests[0].get_receipts(), [])
+		assert_true(persistent_requests[0].is_settled())
+		assert_eq(persistent_requests[0].get_outcome(),
+			PresentationBatchRequest.Outcome.COMPLETED)
 	assert_eq(_started_transitions, [],
-		"already-active Skip force-cuts before token allocation")
+		"already-active Skip force-cuts JOIN before token allocation")
+	assert_eq(persistent_exact_starts[0], 0)
 	assert_false(_presenter._layer_tweens.has("lifecycle"))
+	assert_false(_presenter._layer_transition_tokens.has("lifecycle"))
 	_assert_lifecycle_final()
+	assert_true(_dialogue_requests[0].get_activation().is_pending())
+
+	await _reset_live_run()
+	_runtime.skip_controller.is_active = true
+	_runtime.start_scenario(FIRE_AND_FORGET_PATH)
+	assert_true(await _wait_until(func() -> bool:
+		return (
+			_dialogue_requests.size() == 1
+			and _batch_observations.size() == 2
+		)))
+	SignalBus.stage_operations_requested.disconnect(on_persistent_dispatch)
+	SignalBus.stage_transition_receipt_started.disconnect(on_persistent_exact)
+	assert_eq(persistent_requests.size(), 3,
+		"persistent Skip force-cuts the JOIN and both FNF batches")
+	for index in range(1, persistent_requests.size()):
+		var request: PresentationBatchRequest = persistent_requests[index]
+		assert_eq(request.get_policy(),
+			PresentationBatchRequest.Policy.FIRE_AND_FORGET)
+		assert_gt(request.get_batch_id(), 0)
+		assert_eq(request.get_receipts(), [])
+		assert_true(request.is_settled())
+		assert_eq(request.get_outcome(),
+			PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(_batch_observations.size(), 2)
+	for observation: Dictionary in _batch_observations:
+		assert_true(bool(observation["force_cut"]))
+	assert_eq(persistent_exact_starts[0], 0,
+		"persistent Skip cuts every policy before exact receipt allocation")
+	assert_eq(_started_transitions, [],
+		"persistent Skip cuts every policy before legacy start publication")
+	assert_true(_presenter._layer_tweens.is_empty())
+	assert_true(_presenter._layer_transition_tokens.is_empty())
+	var runner := _presenter.get_layer_node("runner")
+	assert_not_null(runner)
+	if runner != null:
+		assert_eq(runner.position, Vector2(96.0, 48.0))
+	assert_eq(_runtime.presentation_state.stage_layers["runner"]["asset"],
+		"stage:redraw_blur_source")
+	assert_eq(_runtime.presentation_state.stage_layers["runner"]["position"],
+		[96.0, 48.0])
+	assert_true(_dialogue_requests[0].get_activation().is_pending())
 
 	await _reset_live_run()
 	assert_true(await _start_fixture_until(
@@ -1483,6 +1871,105 @@ func test_a4_skip_finishes_once_auto_and_fnf_do_not_claim_completion() -> void:
 	await get_tree().process_frame
 	assert_same(_active_tween("runner"), fnf_tween,
 		"FNF never claims normal advance as a batch barrier")
+
+
+func test_a4_skip_edge_during_dispatch_finishes_newly_sealed_join_once() -> void:
+	if not _require_contract():
+		return
+	var director: PresentationDirector = _runtime_director()
+	var exact_record: Array[Dictionary] = [{}]
+	var request_holder: Array = [null]
+	var preseal_snapshot: Array[Dictionary] = [{}]
+	var settlements: Array = []
+	var finish_requests: Array = []
+	var on_finish_requested := func(records: Array) -> void:
+		finish_requests.append(records.duplicate(true))
+	var on_exact_start := func(
+		presenter_instance_id: int,
+		layer_id: String,
+		token: int,
+		operation_request_id: int,
+		generation: int,
+	) -> void:
+		if presenter_instance_id != _presenter.get_instance_id() or layer_id != "lifecycle":
+			return
+		exact_record[0] = {
+			"presenter_instance_id": presenter_instance_id,
+			"layer_id": layer_id,
+			"token": token,
+			"operation_request_id": operation_request_id,
+			"generation": generation,
+		}
+		var entry: Dictionary = director._entries.get(operation_request_id, {})
+		var request: PresentationBatchRequest = entry.get("request")
+		request_holder[0] = request
+		preseal_snapshot[0] = {
+			"sealed": bool(entry.get("sealed", true)),
+			"settled": request == null or request.is_settled(),
+		}
+		if request != null:
+			request.settled.connect(func(
+				batch_id: int,
+				outcome: int,
+			) -> void:
+				settlements.append([batch_id, outcome])
+			, CONNECT_ONE_SHOT)
+		# Ordinary advance and the Skip edge both arrive before dispatch seal.
+		# Only persistent Skip state may be re-read at the request-finished tail.
+		SignalBus.emit_advance_requested()
+		_runtime.skip_controller.is_active = true
+	SignalBus.stage_transition_receipts_finish_requested.connect(
+		on_finish_requested)
+	SignalBus.stage_transition_receipt_started.connect(on_exact_start)
+	_start_inline("""@chapter skip_dispatch_edge
+@scene start
+@stage_batch policy=join
+  @stage lifecycle show kind=overlay asset=stage:redraw_source transition=fade duration=10
+@end
+「Skip edge tail」""", "stage_batch_skip_dispatch_edge")
+	assert_true(await _wait_until(func() -> bool:
+		return _dialogue_requests.size() == 1))
+	SignalBus.stage_transition_receipt_started.disconnect(on_exact_start)
+
+	assert_eq(preseal_snapshot[0], {"sealed": false, "settled": false},
+		"the observer fires while the JOIN is still pre-seal")
+	assert_false(exact_record[0].is_empty())
+	assert_not_null(request_holder[0])
+	if request_holder[0] == null:
+		SignalBus.stage_transition_receipts_finish_requested.disconnect(
+			on_finish_requested)
+		return
+	var request := request_holder[0] as PresentationBatchRequest
+	assert_eq(_batch_observations.size(), 1)
+	assert_false(bool(_batch_observations[0]["force_cut"]),
+		"Skip became active only after submit allocated the live transition")
+	assert_eq(finish_requests, [[exact_record[0]]],
+		"the dispatch tail exact-finishes only the just-sealed JOIN")
+	assert_true(request.is_settled())
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(request.get_receipts().size(), 1)
+	assert_eq(settlements, [[
+		request.get_batch_id(), PresentationBatchRequest.Outcome.COMPLETED,
+	]], "the Skip edge settles the newly sealed JOIN exactly once")
+	assert_false(director._entries.has(request.get_batch_id()))
+	assert_false(_presenter._layer_tweens.has("lifecycle"))
+	assert_false(_presenter._layer_transition_tokens.has("lifecycle"))
+	_assert_lifecycle_final()
+	assert_true(_dialogue_requests[0].get_activation().is_pending(),
+		"the pre-seal ordinary advance cannot replay into the new dialogue")
+
+	var finish_count := finish_requests.size()
+	director.on_skip_active_changed(true)
+	await get_tree().process_frame
+	assert_eq(finish_requests.size(), finish_count,
+		"late duplicate Skip callbacks cannot republish an exact finish")
+	SignalBus.stage_transition_receipts_finish_requested.disconnect(
+		on_finish_requested)
+	_finish_records([exact_record[0], exact_record[0]])
+	await get_tree().process_frame
+	assert_eq(settlements.size(), 1)
+	assert_eq(_dialogue_requests.size(), 1)
+	assert_true(_dialogue_requests[0].get_activation().is_pending())
 
 
 func test_a5_abort_and_reset_revoke_old_generation_before_late_callbacks() -> void:
@@ -3130,7 +3617,7 @@ func test_a8_load_cancels_old_generation_then_dry_runs_without_tokens() -> void:
 		"old generation cannot replay or advance the restored owner")
 
 
-func test_a8_idempotent_update_hide_remove_absent_and_clear_empty_are_no_work() -> void:
+func test_a8_idempotent_update_hide_and_remove_absent_are_no_work() -> void:
 	if not _require_contract():
 		return
 	var operations := [
@@ -3154,10 +3641,6 @@ func test_a8_idempotent_update_hide_remove_absent_and_clear_empty_are_no_work() 
 		{
 			"setup": null,
 			"authored": "@stage absent remove transition=fade duration=10",
-		},
-		{
-			"setup": null,
-			"authored": "@stage clear",
 		},
 	]
 	for index in range(operations.size()):

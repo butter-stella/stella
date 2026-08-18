@@ -78,8 +78,7 @@ func _finish_request(
 	context: ScenarioContext,
 ) -> void:
 	if (
-		request.get_policy() == PresentationBatchRequest.Policy.JOIN
-		and request.get_outcome() in [
+		request.get_outcome() in [
 			PresentationBatchRequest.Outcome.FAILED,
 			PresentationBatchRequest.Outcome.CANCELLED,
 		]
@@ -275,7 +274,7 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 		"operations": operations.duplicate(true),
 		"before_state": before_state,
 		"target_state": simulated,
-		"no_work": simulated == before_state,
+		"no_work": simulated == before_state and not saw_clear,
 	}
 
 

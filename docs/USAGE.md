@@ -447,7 +447,7 @@ legacy_snapshot["scenario_context"]["scenario_source_identity"] = (
 
 在游戏内读档、快读或从 Backlog/选项/流程图回退时，Runtime 会先把 engine context 所有权转交给恢复后的 context，再清理旧画面和阻塞命令。旧对话的取消不会触发自然 `scenario_ended`，恢复后的 context 始终是最终执行 owner；自定义 Presenter 仍只需遵守上文的 request `advance()` / `abort()` 契约。
 
-JOIN 动画进行中可以存档。存档只记录已原子提交的 final canonical Stage target 和 scenario cursor；operation、policy、request/batch、receipt、token、generation、Tween、barrier 与 progress 都不入档。恢复时先 cancel old generation，再 reset + atomic cut canonical target，最后在 same cursor 重新派发。若 target 已满足，该 batch 以 no-work 同步完成，不分配新 batch/receipt/token/Tween，也不重放已满足的动画。
+JOIN 动画进行中可以存档。存档只记录已原子提交的 final canonical Stage target 和 scenario cursor；operation、policy、request/batch、receipt、token、generation、Tween、barrier 与 progress 都不入档。恢复时先 cancel old generation，再 reset + atomic cut canonical target，最后在 same cursor 重新派发。若非 clear target 已满足，该 batch 以 no-work 同步完成，不分配新 batch/receipt/token/Tween，也不重放已满足的动画。canonical clear 例外：它必须经过 typed dispatch，以接管 canonical state 已为空但仍在 remove transition 中的 live projection；Presenter 真正为空时仍取得 positive batch ID，并以零 receipt 同步完成。
 
 ### 播放控制
 
