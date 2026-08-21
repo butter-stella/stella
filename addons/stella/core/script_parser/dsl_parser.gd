@@ -76,9 +76,183 @@ static func parse(
 	var combine_pending_stage_ops: Array = []
 	var combine_start_line: int = 0
 
+	# @stage_batch state. Children are accumulated as canonical Dictionary
+	# operations and published only when the complete block closes validly.
+	var in_stage_batch: bool = false
+	var stage_batch_policy: String = ""
+	var stage_batch_operations: Array = []
+	var stage_batch_operation_lines: Array = []
+	var stage_batch_layer_ids: Dictionary = {}
+	var stage_batch_start_line: int = 0
+	var stage_batch_invalid: bool = false
+	var stage_batch_nested_depth: int = 0
+
 	var i = 0
 	while i < tokens.size():
 		var token: DslToken = tokens[i]
+
+		# A stage batch owns every token until its matching @end. Invalid nested
+		# blocks are consumed structurally so their @end cannot accidentally close
+		# the outer batch and leak a following sibling command.
+		if in_stage_batch:
+			if token.type in [
+				DslToken.Type.SCENE_DIRECTIVE,
+				DslToken.Type.CHAPTER_DIRECTIVE,
+			]:
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: @stage_batch block opened at %s is missing @end before the next @scene/@chapter"
+					% _source_location(data, stage_batch_start_line),
+					stage_batch_start_line,
+				)
+				in_stage_batch = false
+				stage_batch_policy = ""
+				stage_batch_operations.clear()
+				stage_batch_operation_lines.clear()
+				stage_batch_layer_ids.clear()
+				stage_batch_start_line = 0
+				stage_batch_invalid = false
+				stage_batch_nested_depth = 0
+				# Continue into normal @scene handling below.
+			elif token.type == DslToken.Type.AT_COMMAND:
+				var batch_child_name := _get_at_command_name(token.raw_text)
+				if stage_batch_nested_depth > 0:
+					if batch_child_name in ["stage_batch", "parallel", "combine", "if"]:
+						stage_batch_nested_depth += 1
+					elif batch_child_name == "end":
+						stage_batch_nested_depth -= 1
+					i += 1
+					continue
+				if batch_child_name == "stage":
+					var diagnostics_before: int = data.diagnostics.size()
+					var stage_child := _parse_at_command(token, data)
+					if stage_child == null or stage_child.type != "stage_layer":
+						stage_batch_invalid = true
+						var diagnostics_after: int = data.diagnostics.size()
+						if diagnostics_after > diagnostics_before:
+							for diagnostic_index in range(
+								diagnostics_before, diagnostics_after
+							):
+								var diagnostic: Dictionary = (
+									data.diagnostics[diagnostic_index]
+								)
+								if String(diagnostic.get("level", "")) != "error":
+									diagnostic["level"] = "error"
+									data.diagnostics[diagnostic_index] = diagnostic
+						else:
+							_record_diagnostic(
+								data,
+								"error",
+								"DslParser: invalid @stage child in @stage_batch at %s"
+								% _source_location(data, token.line),
+								token.line,
+							)
+					else:
+						var operation: Dictionary = stage_child.params.duplicate(true)
+						var action := String(operation.get("action", ""))
+						var layer_id := String(operation.get("id", ""))
+						if action != "clear" and layer_id == "*":
+							_record_diagnostic(
+								data,
+								"error",
+								"DslParser: stage layer '*' is reserved for @stage clear at %s"
+								% _source_location(data, token.line),
+								token.line,
+							)
+							stage_batch_invalid = true
+						if action == "clear":
+							if not stage_batch_operations.is_empty():
+								_record_diagnostic(
+									data,
+									"error",
+									"DslParser: @stage clear must be the only @stage_batch child at %s"
+									% _source_location(data, token.line),
+									token.line,
+								)
+								stage_batch_invalid = true
+						elif (
+							stage_batch_layer_ids.has(layer_id)
+							or (
+								not stage_batch_operations.is_empty()
+								and String((stage_batch_operations[0] as Dictionary).get(
+									"action", "")) == "clear"
+							)
+						):
+							_record_diagnostic(
+								data,
+								"error",
+								"DslParser: duplicate or clear-conflicting stage layer '%s' at %s"
+								% [layer_id, _source_location(data, token.line)],
+								token.line,
+							)
+							stage_batch_invalid = true
+						if action != "clear":
+							stage_batch_layer_ids[layer_id] = true
+						stage_batch_operations.append(operation)
+						stage_batch_operation_lines.append(token.line)
+				elif batch_child_name == "end":
+					if stage_batch_operations.is_empty():
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @stage_batch cannot be empty at %s"
+							% _source_location(data, stage_batch_start_line),
+							stage_batch_start_line,
+						)
+						stage_batch_invalid = true
+					if (
+						not stage_batch_invalid
+						and current_scene != null
+						and not chapter_needs_scene
+					):
+						var stage_batch_command := _make_cmd("stage_batch", {
+							"policy": stage_batch_policy,
+							"operations": stage_batch_operations.duplicate(true),
+							"operation_lines": stage_batch_operation_lines.duplicate(),
+						})
+						stage_batch_command.declared_line = stage_batch_start_line
+						_add_command(stage_batch_command, current_scene, if_stack)
+					in_stage_batch = false
+					stage_batch_policy = ""
+					stage_batch_operations.clear()
+					stage_batch_operation_lines.clear()
+					stage_batch_layer_ids.clear()
+					stage_batch_start_line = 0
+					stage_batch_invalid = false
+					stage_batch_nested_depth = 0
+				elif batch_child_name in ["stage_batch", "parallel", "combine", "if"]:
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @%s is not allowed inside @stage_batch at %s"
+						% [batch_child_name, _source_location(data, token.line)],
+						token.line,
+					)
+					stage_batch_invalid = true
+					stage_batch_nested_depth = 1
+				else:
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: only canonical @stage children are allowed inside @stage_batch; found @%s at %s"
+						% [batch_child_name, _source_location(data, token.line)],
+						token.line,
+					)
+					stage_batch_invalid = true
+				i += 1
+				continue
+			else:
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: only canonical @stage children are allowed inside @stage_batch at %s"
+					% _source_location(data, token.line),
+					token.line,
+				)
+				stage_batch_invalid = true
+				i += 1
+				continue
 
 		match token.type:
 			DslToken.Type.SCENE_DIRECTIVE:
@@ -190,7 +364,39 @@ static func parse(
 
 				var cmd_name = _get_at_command_name(token.raw_text)
 
-				if in_combine and cmd_name not in ["stage", "end"]:
+				if cmd_name == "stage_batch":
+					in_stage_batch = true
+					stage_batch_start_line = token.line
+					stage_batch_operations.clear()
+					stage_batch_operation_lines.clear()
+					stage_batch_layer_ids.clear()
+					stage_batch_nested_depth = 0
+					stage_batch_invalid = false
+					var name_position := token.raw_text.find(cmd_name, 1)
+					var batch_args := _strip_inline_comment(
+						token.raw_text.substr(
+							name_position + cmd_name.length()
+						).strip_edges()
+					)
+					var header := _parse_stage_batch_header(
+						_split_args(batch_args), token.line, data)
+					stage_batch_policy = String(header.get("policy", ""))
+					stage_batch_invalid = not bool(header.get("valid", false))
+					if (
+						current_scene == null
+						or chapter_needs_scene
+						or in_parallel
+						or in_combine
+					):
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @stage_batch requires an active @scene and cannot be nested in @parallel/@combine at %s"
+							% _source_location(data, token.line),
+							token.line,
+						)
+						stage_batch_invalid = true
+				elif in_combine and cmd_name not in ["stage", "end"]:
 					var combine_message := (
 						"DslParser: only @stage is allowed inside @combine block; @%s was ignored (line %d)"
 						% [cmd_name, token.line]
@@ -494,6 +700,14 @@ static func parse(
 		i += 1
 
 	_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
+	if in_stage_batch:
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @stage_batch block opened at %s is missing @end"
+			% _source_location(data, stage_batch_start_line),
+			stage_batch_start_line,
+		)
 	if in_combine:
 		_record_diagnostic(
 			data,
@@ -597,9 +811,12 @@ static func _semantic_command(
 	command: CommandData,
 	synthetic_scene_ids: Dictionary,
 ) -> Array:
+	var semantic_params := command.params.duplicate(true)
+	if command.type == "stage_batch":
+		semantic_params.erase("operation_lines")
 	return [
 		command.type,
-		_semantic_value(command.params, synthetic_scene_ids),
+		_semantic_value(semantic_params, synthetic_scene_ids),
 		_semantic_value(
 			command.dialogue_mode_events_before, synthetic_scene_ids),
 		_semantic_value(
@@ -1586,6 +1803,72 @@ static func _invalid_stage_redraw_arguments(
 		line,
 	)
 	return null
+
+
+static func _parse_stage_batch_header(
+	parts: Array,
+	line: int,
+	data: ScenarioData,
+) -> Dictionary:
+	var policy := ""
+	var policy_seen := false
+	var valid := true
+	for raw_part: Variant in parts:
+		var encoded := String(raw_part)
+		var equals_at := encoded.find("=")
+		if equals_at < 1:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: invalid @stage_batch argument '%s' at %s; use policy=value"
+				% [encoded, _source_location(data, line)],
+				line,
+			)
+			valid = false
+			continue
+		var key := encoded.substr(0, equals_at).strip_edges()
+		var value := encoded.substr(equals_at + 1).strip_edges()
+		if key != "policy":
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: unknown @stage_batch option '%s' at %s"
+				% [key, _source_location(data, line)],
+				line,
+			)
+			valid = false
+			continue
+		if policy_seen:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: duplicate @stage_batch policy at %s"
+				% _source_location(data, line),
+				line,
+			)
+			valid = false
+			continue
+		policy_seen = true
+		policy = value
+	if not policy_seen or policy.is_empty():
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @stage_batch policy is required at %s"
+			% _source_location(data, line),
+			line,
+		)
+		valid = false
+	elif policy not in ["join", "fire_and_forget"]:
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: invalid @stage_batch policy '%s' at %s"
+			% [policy, _source_location(data, line)],
+			line,
+		)
+		valid = false
+	return {"valid": valid, "policy": policy}
 
 
 static func _invalid_stage_redraw_value(

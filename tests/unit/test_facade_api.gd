@@ -516,6 +516,7 @@ func test_continue_from_save_overlay_not_closed_before_scene_change():
 
 ## Helper: disconnect game scene presenters from SignalBus to prevent test contamination.
 func _disconnect_game_presenters():
+	var runtime_director: PresentationDirector = StellaRuntime.presentation_director
 	var global_audio_presenter := StellaRuntime.get_node_or_null("AudioPresenter")
 	for sig_name in ["bg_changed", "stage_operations_requested",
 			"stage_operation_request_finished", "stage_visuals_reset_requested",
@@ -550,6 +551,7 @@ func _disconnect_game_presenters():
 				)
 				if obj != null and not obj is GutTest and obj != StellaRuntime \
 						and obj != StellaRuntime.presentation_state \
+						and obj != runtime_director \
 						and obj != global_audio_presenter \
 						and obj != SignalBus:
 					sig.disconnect(callable)
@@ -578,8 +580,33 @@ func _disconnect_game_presenters():
 				if callback_owner_id != 0 else null
 			)
 			if callback_owner != null and callback_owner != StellaRuntime \
+					and callback_owner != runtime_director \
 					and not callback_owner is GutTest:
 				controller_signal.disconnect(callback)
+	assert_not_null(runtime_director,
+		"game presenter cleanup must preserve the Runtime-owned Director")
+	if runtime_director != null:
+		assert_true(SignalBus.stage_transition_receipt_started.is_connected(
+			runtime_director._on_stage_transition_receipt_started),
+			"game presenter cleanup must preserve Director receipt authority")
+		assert_true(SignalBus.stage_operation_request_finished.is_connected(
+			runtime_director._on_stage_operation_request_finished),
+			"game presenter cleanup must preserve Director dispatch-tail authority")
+		assert_true(SignalBus.stage_transition_terminal.is_connected(
+			runtime_director._on_stage_transition_terminal),
+			"game presenter cleanup must preserve Director terminal authority")
+		assert_true(SignalBus.advance_requested.is_connected(
+			runtime_director._on_advance_requested),
+			"game presenter cleanup must preserve Director advance authority")
+		assert_true(SignalBus.stage_visuals_reset_requested.is_connected(
+			runtime_director._on_stage_visuals_reset_requested),
+			"game presenter cleanup must preserve Director reset authority")
+		assert_true(SignalBus.engine_abort_requested.is_connected(
+			runtime_director._on_engine_abort_requested),
+			"game presenter cleanup must preserve Director abort authority")
+		assert_true(StellaRuntime.skip_controller.active_changed.is_connected(
+			runtime_director.on_skip_active_changed),
+			"game presenter cleanup must preserve Director Skip authority")
 ## --- Overlay Config ---
 
 func test_config_has_overlay_scene_overrides():

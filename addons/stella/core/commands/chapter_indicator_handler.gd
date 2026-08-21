@@ -8,6 +8,12 @@ class_name ChapterIndicatorHandler extends CommandHandler
 const ChapterIndicatorRequest = preload(
 	"res://addons/stella/core/data/chapter_indicator_request.gd")
 
+var _presentation_director: PresentationDirector
+
+
+func _init(presentation_director: PresentationDirector = null) -> void:
+	_presentation_director = presentation_director
+
 
 func get_command_type() -> String:
 	return "chapter_indicator"
@@ -45,15 +51,28 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 	if request.get_request_id() <= 0:
 		context.is_finished = true
 		return
+	if _presentation_director != null:
+		_presentation_director._register_blocking_waiter(
+			context,
+			request,
+			func() -> void:
+				SignalBus.cancel_chapter_indicator_request(
+					request.get_request_id()),
+		)
 
 	while not request.is_finished():
 		if not await CommandHandler.await_with_abort(
 			SignalBus.chapter_indicator_request_finished,
 			context,
 		):
+			if _presentation_director != null:
+				_presentation_director._unregister_blocking_waiter(
+					context, request)
 			SignalBus.cancel_chapter_indicator_request(request.get_request_id())
 			return
 
+	if _presentation_director != null:
+		_presentation_director._unregister_blocking_waiter(context, request)
 	if request.was_cancelled():
 		return
 	if request.was_successful():

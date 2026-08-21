@@ -1,0 +1,10 @@
+@chapter stage_batch_fnf "Synthetic fire-and-forget stage batches"
+@scene start
+@stage_batch policy=fire_and_forget
+  @stage runner show kind=character asset=stage:redraw_source transition=fade duration=10
+@end
+@stage_batch policy=fire_and_forget
+  @stage runner update asset=stage:redraw_blur_source position=96,48 transition=move duration=10
+@end
+@bgm off
+「fire-and-forget tail」

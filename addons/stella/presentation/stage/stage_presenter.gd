@@ -50,15 +50,23 @@ var _layers: Dictionary = {}
 var _states: Dictionary = {}
 var _layer_tweens: Dictionary = {}
 var _layer_transition_tokens: Dictionary = {}
+var _layer_transition_request_ids: Dictionary = {}
+var _layer_transition_generations: Dictionary = {}
 var _layer_generations: Dictionary = {}
+var _layer_generation_counters: Dictionary = {}
 var _next_node_index: int = 0
 var _redraw_shader: Shader
 var _redraw_box_horizontal_shader: Shader
 var _redraw_box_vertical_shader: Shader
 var _redraw_texture_shader: Shader
 var _completion_batch_depth: int = 0
+var _queued_transition_starts: Array[Dictionary] = []
+var _flushing_transition_starts: bool = false
 var _queued_transition_completions: Array = []
 var _flushing_transition_completions: bool = false
+var _completion_lifecycle_epoch: int = 1
+var _queued_stage_terminals: Array[Dictionary] = []
+var _flushing_stage_terminals: bool = false
 var _active_stage_operation_request_id: int = 0
 
 
@@ -78,6 +86,9 @@ func _ready() -> void:
 	SignalBus.stage_state_apply_requested.connect(_on_stage_state_apply_requested)
 	SignalBus.stage_transitions_finish_requested.connect(
 		_on_stage_transitions_finish_requested
+	)
+	SignalBus.stage_transition_receipts_finish_requested.connect(
+		_on_stage_transition_receipts_finish_requested
 	)
 	SignalBus.engine_abort_requested.connect(_on_engine_abort_requested)
 
@@ -228,6 +239,8 @@ func _cut_batch_affected_ids(before: Dictionary, operations: Array) -> Dictionar
 ## in one synchronous, transition-free pass. Matching ids retain their nodes and
 ## resident textures; absent ids are removed.
 func _on_stage_state_apply_requested(layers: Dictionary) -> void:
+	if not SignalBus.is_current_stage_projection_valid():
+		return
 	_begin_completion_batch()
 	# Build the exact target first, then update matching ids in place.
 	# Save/load still removes ids absent from the snapshot, while dialogue
@@ -270,11 +283,25 @@ func _on_stage_state_apply_requested(layers: Dictionary) -> void:
 ## Layer ids alone are insufficient: a later command may have replaced a
 ## dialogue-owned tween on the same id before the dialogue completes.
 func _on_stage_transitions_finish_requested(transitions: Array) -> void:
+	_finish_stage_transitions(transitions, false)
+
+
+## Strict batch receipts must match the complete Presenter-owned transition
+## identity. Missing or malformed fields can never degrade to legacy matching.
+func _on_stage_transition_receipts_finish_requested(
+	transitions: Array,
+) -> void:
+	_finish_stage_transitions(transitions, true)
+
+
+func _finish_stage_transitions(transitions: Array, strict: bool) -> void:
 	_begin_completion_batch()
 	for raw_transition in transitions:
 		if not raw_transition is Dictionary:
 			continue
 		var transition_record: Dictionary = raw_transition
+		if strict and not _is_strict_transition_receipt(transition_record):
+			continue
 		if (
 			int(transition_record.get("presenter_instance_id", -1))
 			!= get_instance_id()
@@ -286,9 +313,20 @@ func _on_stage_transitions_finish_requested(transitions: Array) -> void:
 			layer_id == ""
 			or token < 1
 			or int(_layer_transition_tokens.get(layer_id, -1)) != token
+			or (
+				strict
+				and int(transition_record.get("operation_request_id", -1))
+				!= int(_layer_transition_request_ids.get(layer_id, -2))
+			)
+			or (
+				strict
+				and int(transition_record.get("generation", -1))
+				!= int(_layer_transition_generations.get(layer_id, -2))
+			)
 			or not _layer_tweens.has(layer_id)
 		):
 			continue
+		var identity := _take_active_transition(layer_id)
 		if _states.has(layer_id):
 			var target_state: Dictionary = _states[layer_id]
 			_apply_layer(
@@ -302,16 +340,61 @@ func _on_stage_transitions_finish_requested(transitions: Array) -> void:
 			# A fading remove has already left canonical state but still owns a
 			# live node until its transition finishes.
 			_remove_layer(layer_id, "cut", 0.0)
+		_publish_stage_transition_terminal(identity, &"completed")
 	_end_completion_batch()
 
 
+func _is_strict_transition_receipt(record: Dictionary) -> bool:
+	const EXACT_KEYS := [
+		"generation",
+		"layer_id",
+		"operation_request_id",
+		"presenter_instance_id",
+		"token",
+	]
+	var keys := record.keys()
+	keys.sort()
+	if keys != EXACT_KEYS:
+		return false
+	if (
+		not record["presenter_instance_id"] is int
+		or not record["layer_id"] is String
+		or not record["token"] is int
+		or not record["operation_request_id"] is int
+		or not record["generation"] is int
+	):
+		return false
+	var layer_id := String(record["layer_id"])
+	return (
+		int(record["presenter_instance_id"]) > 0
+		and layer_id == layer_id.strip_edges()
+		and not layer_id.is_empty()
+		and layer_id != "*"
+		and int(record["token"]) > 0
+		and int(record["operation_request_id"]) > 0
+		and int(record["generation"]) > 0
+	)
+
+
 func _on_stage_visuals_reset_requested() -> void:
-	_clear_visuals()
+	if not SignalBus.is_current_stage_reset_valid():
+		return
+	# Retire every frozen legacy completion before teardown can re-enter and
+	# create a same-layer owner. Persistent per-layer counters handle ordinary
+	# replacement; this epoch also invalidates absent remove completions.
+	_completion_lifecycle_epoch += 1
+	_begin_completion_batch()
+	var cancelled := _clear_visuals(false)
 	_states.clear()
 	_layer_tweens.clear()
 	_layer_transition_tokens.clear()
+	_layer_transition_request_ids.clear()
+	_layer_transition_generations.clear()
 	_layer_generations.clear()
 	_queued_transition_completions.clear()
+	for identity: Dictionary in cancelled:
+		_publish_stage_transition_terminal(identity, &"cancelled")
+	_end_completion_batch()
 
 
 func _apply_layer(
@@ -322,7 +405,8 @@ func _apply_layer(
 	duration: float,
 ) -> void:
 	var record := _ensure_layer(layer_id)
-	var generation := _begin_layer_change(layer_id)
+	var change := _begin_layer_change(layer_id)
+	var generation := int(change["generation"])
 	var root := record["root"] as Node2D
 	var composite := record["composite"] as CanvasGroup
 	var was_visible := root.visible and composite.self_modulate.a > 0.0001
@@ -342,6 +426,7 @@ func _apply_layer(
 		root.visible = target_visible
 		composite.self_modulate.a = target_opacity
 		_emit_or_queue_transition_finished(layer_id, generation, true)
+		_publish_superseded_transition(change)
 		return
 
 	root.visible = true
@@ -403,10 +488,12 @@ func _apply_layer(
 			duration,
 		)
 
-	var token := _claim_layer_transition(layer_id)
+	var token := _claim_layer_transition(layer_id, generation)
 	tween.finished.connect(func() -> void:
 		if generation != int(_layer_generations.get(layer_id, -1)):
 			return
+		_begin_completion_batch()
+		var identity := _active_transition_identity(layer_id)
 		_layer_tweens.erase(layer_id)
 		_clear_layer_transition_token(layer_id, token)
 		_cleanup_outgoing(record)
@@ -425,21 +512,26 @@ func _apply_layer(
 		composite.self_modulate.a = target_opacity
 		root.visible = target_visible
 		_emit_or_queue_transition_finished(layer_id, generation, true)
+		_publish_stage_transition_terminal(identity, &"completed")
+		_end_completion_batch()
 	)
 	_emit_stage_transition_started(layer_id, token)
+	_publish_superseded_transition(change)
 
 
 func _remove_layer(layer_id: String, transition: String, duration: float) -> void:
 	if not _layers.has(layer_id):
 		return
 	var record: Dictionary = _layers[layer_id]
-	var generation := _begin_layer_change(layer_id)
+	var change := _begin_layer_change(layer_id)
+	var generation := int(change["generation"])
 	var root := record["root"] as Node2D
 	var composite := record["composite"] as CanvasGroup
 
 	if duration <= 0.0 or transition in ["cut", "none"]:
 		_free_layer(layer_id)
 		_emit_or_queue_transition_finished(layer_id, generation, false)
+		_publish_superseded_transition(change)
 		return
 
 	var tween := create_tween().set_parallel(true)
@@ -454,16 +546,21 @@ func _remove_layer(layer_id: String, transition: String, duration: float) -> voi
 	else:
 		tween.tween_property(composite, "self_modulate:a", 0.0, duration)
 
-	var token := _claim_layer_transition(layer_id)
+	var token := _claim_layer_transition(layer_id, generation)
 	tween.finished.connect(func() -> void:
 		if generation != int(_layer_generations.get(layer_id, -1)):
 			return
+		_begin_completion_batch()
+		var identity := _active_transition_identity(layer_id)
 		_layer_tweens.erase(layer_id)
 		_clear_layer_transition_token(layer_id, token)
 		_free_layer(layer_id)
 		_emit_or_queue_transition_finished(layer_id, generation, false)
+		_publish_stage_transition_terminal(identity, &"completed")
+		_end_completion_batch()
 	)
 	_emit_stage_transition_started(layer_id, token)
+	_publish_superseded_transition(change)
 
 
 func _begin_completion_batch() -> void:
@@ -472,8 +569,12 @@ func _begin_completion_batch() -> void:
 
 func _end_completion_batch() -> void:
 	_completion_batch_depth = maxi(0, _completion_batch_depth - 1)
-	if _completion_batch_depth == 0 and not _flushing_transition_completions:
-		_flush_transition_completions()
+	# Receipt starts are part of the submitting batch's synchronous dispatch
+	# contract. A batch installed from an outer completion/terminal callback must
+	# still publish its exact receipts before its own SignalBus dispatch tail.
+	if _completion_batch_depth == 0 and not _flushing_transition_starts:
+		_flush_transition_starts()
+	_drain_presentation_events()
 
 
 func _emit_or_queue_transition_finished(
@@ -485,20 +586,19 @@ func _emit_or_queue_transition_finished(
 		"id": layer_id,
 		"generation": generation,
 		"expects_layer": expects_layer,
+		"lifecycle_epoch": _completion_lifecycle_epoch,
 	}
-	if _completion_batch_depth > 0 or _flushing_transition_completions:
-		_queued_transition_completions.append(completion)
-		return
-	if _is_transition_completion_current(completion):
-		layer_transition_finished.emit(layer_id)
+	_queued_transition_completions.append(completion)
+	_drain_presentation_events()
 
 
 func _flush_transition_completions() -> void:
 	if _flushing_transition_completions:
 		return
 	_flushing_transition_completions = true
-	while not _queued_transition_completions.is_empty():
-		var completion: Dictionary = _queued_transition_completions.pop_front()
+	var snapshot := _queued_transition_completions.duplicate(true)
+	_queued_transition_completions.clear()
+	for completion: Dictionary in snapshot:
 		if _is_transition_completion_current(completion):
 			layer_transition_finished.emit(String(completion["id"]))
 	_flushing_transition_completions = false
@@ -506,12 +606,18 @@ func _flush_transition_completions() -> void:
 
 func _is_transition_completion_current(completion: Dictionary) -> bool:
 	var layer_id := String(completion.get("id", ""))
+	var generation := int(completion.get("generation", -2))
+	if (
+		int(completion.get("lifecycle_epoch", -1))
+			!= _completion_lifecycle_epoch
+		or int(_layer_generation_counters.get(layer_id, -1)) != generation
+	):
+		return false
 	if bool(completion.get("expects_layer", false)):
 		return (
 			_states.has(layer_id)
 			and _layers.has(layer_id)
-			and int(_layer_generations.get(layer_id, -1))
-				== int(completion.get("generation", -2))
+			and int(_layer_generations.get(layer_id, -1)) == generation
 		)
 	return not _states.has(layer_id) and not _layers.has(layer_id)
 
@@ -573,19 +679,12 @@ func _ensure_layer(layer_id: String) -> Dictionary:
 		"redraw_dynamic_size_signature": [],
 	}
 	_layers[layer_id] = record
-	_layer_generations[layer_id] = 0
 	return record
 
 
-func _begin_layer_change(layer_id: String) -> int:
-	var generation := int(_layer_generations.get(layer_id, 0)) + 1
-	_layer_generations[layer_id] = generation
-	_layer_transition_tokens.erase(layer_id)
-	if _layer_tweens.has(layer_id):
-		var tween = _layer_tweens[layer_id]
-		if tween and tween.is_valid():
-			tween.kill()
-		_layer_tweens.erase(layer_id)
+func _begin_layer_change(layer_id: String) -> Dictionary:
+	var superseded := _take_active_transition(layer_id)
+	var generation := _claim_next_layer_generation(layer_id)
 	if _layers.has(layer_id):
 		var record: Dictionary = _layers[layer_id]
 		_cleanup_outgoing(record)
@@ -595,28 +694,186 @@ func _begin_layer_change(layer_id: String) -> int:
 			record,
 			bool(record.get("redraw_pipeline_dynamic", false)),
 		)
+	return {
+		"generation": generation,
+		"superseded": superseded,
+	}
+
+
+func _claim_next_layer_generation(layer_id: String) -> int:
+	var generation := int(_layer_generation_counters.get(layer_id, 0)) + 1
+	_layer_generation_counters[layer_id] = generation
+	_layer_generations[layer_id] = generation
 	return generation
 
 
-func _claim_layer_transition(layer_id: String) -> int:
+## Publish only after the replacement owner is fully installed. While an
+## atomic Stage dispatch is still mutating other members, defer the callback to
+## the batch tail so a reentrant listener cannot overwrite a partial batch.
+func _publish_superseded_transition(change: Dictionary) -> void:
+	var identity: Dictionary = change.get("superseded", {})
+	if identity.is_empty():
+		return
+	_publish_stage_transition_terminal(identity, &"superseded")
+
+
+func _publish_stage_transition_terminal(
+	identity: Dictionary,
+	outcome: StringName,
+) -> void:
+	if identity.is_empty():
+		return
+	_queued_stage_terminals.append({
+		"identity": identity.duplicate(true),
+		"outcome": outcome,
+	})
+	_drain_presentation_events()
+
+
+func _flush_stage_terminals() -> void:
+	if _flushing_stage_terminals:
+		return
+	_flushing_stage_terminals = true
+	var snapshot := _queued_stage_terminals.duplicate(true)
+	_queued_stage_terminals.clear()
+	for terminal: Dictionary in snapshot:
+		_emit_stage_transition_terminal(
+			terminal["identity"], StringName(terminal["outcome"]))
+	_flushing_stage_terminals = false
+
+
+func _drain_presentation_events() -> void:
+	if (
+		_completion_batch_depth > 0
+		or _flushing_transition_starts
+		or _flushing_transition_completions
+		or _flushing_stage_terminals
+	):
+		return
+	while true:
+		if not _queued_transition_starts.is_empty():
+			_flush_transition_starts()
+			continue
+		if not _queued_transition_completions.is_empty():
+			_flush_transition_completions()
+			continue
+		if not _queued_stage_terminals.is_empty():
+			_flush_stage_terminals()
+			continue
+		break
+
+
+func _claim_layer_transition(layer_id: String, generation: int) -> int:
 	var token := _next_transition_token
 	_next_transition_token += 1
 	_layer_transition_tokens[layer_id] = token
+	_layer_transition_request_ids[layer_id] = _active_stage_operation_request_id
+	_layer_transition_generations[layer_id] = generation
 	return token
 
 
 func _emit_stage_transition_started(layer_id: String, token: int) -> void:
-	SignalBus.stage_transition_started.emit(
-		get_instance_id(),
-		layer_id,
-		token,
-		_active_stage_operation_request_id,
+	var identity := _active_transition_identity(layer_id)
+	if identity.is_empty() or int(identity.get("token", 0)) != token:
+		return
+	_queued_transition_starts.append(identity.duplicate(true))
+	_drain_presentation_events()
+
+
+func _flush_transition_starts() -> void:
+	if _flushing_transition_starts:
+		return
+	_flushing_transition_starts = true
+	var snapshot := _queued_transition_starts.duplicate(true)
+	_queued_transition_starts.clear()
+	for identity: Dictionary in snapshot:
+		if not _transition_identity_is_current(identity):
+			continue
+		SignalBus.stage_transition_receipt_started.emit(
+			int(identity["presenter_instance_id"]),
+			String(identity["layer_id"]),
+			int(identity["token"]),
+			int(identity["operation_request_id"]),
+			int(identity["generation"]),
+		)
+		# An exact-start listener may synchronously reset or replace this owner.
+		# Never publish the legacy companion for a transition that died in that
+		# callback, and never continue mutating the retired outer batch.
+		if not _transition_identity_is_current(identity):
+			continue
+		SignalBus.stage_transition_started.emit(
+			int(identity["presenter_instance_id"]),
+			String(identity["layer_id"]),
+			int(identity["token"]),
+			int(identity["operation_request_id"]),
+		)
+	_flushing_transition_starts = false
+
+
+func _transition_identity_is_current(identity: Dictionary) -> bool:
+	var layer_id := String(identity.get("layer_id", ""))
+	return (
+		SignalBus.is_current_stage_operation_valid()
+		and int(identity.get("presenter_instance_id", 0)) == get_instance_id()
+		and not layer_id.is_empty()
+		and int(identity.get("token", 0))
+			== int(_layer_transition_tokens.get(layer_id, -1))
+		and int(identity.get("operation_request_id", 0))
+			== int(_layer_transition_request_ids.get(layer_id, -1))
+		and int(identity.get("generation", 0))
+			== int(_layer_transition_generations.get(layer_id, -1))
+		and _layer_tweens.has(layer_id)
 	)
 
 
 func _clear_layer_transition_token(layer_id: String, token: int) -> void:
 	if int(_layer_transition_tokens.get(layer_id, -1)) == token:
 		_layer_transition_tokens.erase(layer_id)
+		_layer_transition_request_ids.erase(layer_id)
+		_layer_transition_generations.erase(layer_id)
+
+
+func _active_transition_identity(layer_id: String) -> Dictionary:
+	var token := int(_layer_transition_tokens.get(layer_id, 0))
+	if token <= 0:
+		return {}
+	return {
+		"presenter_instance_id": get_instance_id(),
+		"layer_id": layer_id,
+		"token": token,
+		"operation_request_id": int(
+			_layer_transition_request_ids.get(layer_id, 0)),
+		"generation": int(_layer_transition_generations.get(layer_id, 0)),
+	}
+
+
+func _take_active_transition(layer_id: String) -> Dictionary:
+	var identity := _active_transition_identity(layer_id)
+	var token := int(identity.get("token", 0))
+	if _layer_tweens.has(layer_id):
+		var tween := _layer_tweens[layer_id] as Tween
+		if tween != null and tween.is_valid():
+			tween.kill()
+		_layer_tweens.erase(layer_id)
+	if token > 0:
+		_clear_layer_transition_token(layer_id, token)
+	return identity
+
+
+func _emit_stage_transition_terminal(
+	identity: Dictionary,
+	outcome: StringName,
+) -> void:
+	if identity.is_empty():
+		return
+	SignalBus.stage_transition_terminal.emit(
+		int(identity.get("presenter_instance_id", 0)),
+		String(identity.get("layer_id", "")),
+		int(identity.get("token", 0)),
+		int(identity.get("operation_request_id", 0)),
+		int(identity.get("generation", 0)),
+		outcome,
+	)
 
 
 func _cleanup_outgoing(record: Dictionary) -> void:
@@ -630,15 +887,12 @@ func _cleanup_outgoing(record: Dictionary) -> void:
 	record["outgoing"] = []
 
 
-func _free_layer(layer_id: String) -> void:
-	_layer_transition_tokens.erase(layer_id)
+func _free_layer(layer_id: String, emit_terminal: bool = true) -> Dictionary:
+	var cancelled := _take_active_transition(layer_id)
 	if not _layers.has(layer_id):
-		return
-	if _layer_tweens.has(layer_id):
-		var tween = _layer_tweens[layer_id]
-		if tween and tween.is_valid():
-			tween.kill()
-		_layer_tweens.erase(layer_id)
+		if emit_terminal:
+			_publish_stage_transition_terminal(cancelled, &"cancelled")
+		return cancelled
 	var record: Dictionary = _layers[layer_id]
 	_cleanup_outgoing(record)
 	var root := record["root"] as Node2D
@@ -648,11 +902,23 @@ func _free_layer(layer_id: String) -> void:
 		root.queue_free()
 	_layers.erase(layer_id)
 	_layer_generations.erase(layer_id)
+	if emit_terminal:
+		_publish_stage_transition_terminal(cancelled, &"cancelled")
+	return cancelled
 
 
-func _clear_visuals() -> void:
-	for layer_id in _layers.keys().duplicate():
-		_free_layer(String(layer_id))
+func _clear_visuals(emit_terminals: bool = true) -> Array[Dictionary]:
+	var cancelled: Array[Dictionary] = []
+	var layer_ids := {}
+	for layer_id: Variant in _layers:
+		layer_ids[String(layer_id)] = true
+	for layer_id: Variant in _layer_transition_tokens:
+		layer_ids[String(layer_id)] = true
+	for layer_id: Variant in layer_ids:
+		var identity := _free_layer(String(layer_id), emit_terminals)
+		if not identity.is_empty():
+			cancelled.append(identity)
+	return cancelled
 
 
 func _apply_channels_cut(record: Dictionary, state: Dictionary) -> void:
@@ -1750,8 +2016,14 @@ func _reproject_dynamic_texture_size(layer_id: String) -> void:
 		return
 	var had_active_transition := _layer_tweens.has(layer_id)
 	var generation := int(_layer_generations.get(layer_id, 0))
-	if had_active_transition or not _states.has(layer_id):
-		generation = _begin_layer_change(layer_id)
+	var completed_transition: Dictionary = {}
+	var change: Dictionary = {}
+	if had_active_transition:
+		completed_transition = _take_active_transition(layer_id)
+		generation = _claim_next_layer_generation(layer_id)
+	elif not _states.has(layer_id):
+		change = _begin_layer_change(layer_id)
+		generation = int(change["generation"])
 
 	# A pending remove has no canonical projection to resize. Finish it exactly
 	# like a viewport-resize boundary, invalidating the old tween token first.
@@ -1759,6 +2031,9 @@ func _reproject_dynamic_texture_size(layer_id: String) -> void:
 		_free_layer(layer_id)
 		if had_active_transition:
 			_emit_or_queue_transition_finished(layer_id, generation, false)
+			_publish_stage_transition_terminal(
+				completed_transition, &"completed")
+		_publish_superseded_transition(change)
 		return
 
 	var record: Dictionary = _layers[layer_id]
@@ -1783,6 +2058,9 @@ func _reproject_dynamic_texture_size(layer_id: String) -> void:
 	)
 	if had_active_transition:
 		_emit_or_queue_transition_finished(layer_id, generation, true)
+		_publish_stage_transition_terminal(
+			completed_transition, &"completed")
+	_publish_superseded_transition(change)
 
 
 func _viewport_size() -> Vector2:
@@ -1796,8 +2074,14 @@ func _on_viewport_size_changed() -> void:
 		var layer_id := String(raw_layer_id)
 		var had_active_transition := _layer_tweens.has(layer_id)
 		var generation := int(_layer_generations.get(layer_id, 0))
-		if had_active_transition or not _states.has(layer_id):
-			generation = _begin_layer_change(layer_id)
+		var completed_transition: Dictionary = {}
+		var change: Dictionary = {}
+		if had_active_transition:
+			completed_transition = _take_active_transition(layer_id)
+			generation = _claim_next_layer_generation(layer_id)
+		elif not _states.has(layer_id):
+			change = _begin_layer_change(layer_id)
+			generation = int(change["generation"])
 
 		# A remove drops canonical state before its visual fade finishes. A
 		# viewport resize is a new projection boundary, so finish that removal
@@ -1806,6 +2090,9 @@ func _on_viewport_size_changed() -> void:
 			_free_layer(layer_id)
 			if had_active_transition:
 				_emit_or_queue_transition_finished(layer_id, generation, false)
+				_publish_stage_transition_terminal(
+					completed_transition, &"completed")
+			_publish_superseded_transition(change)
 			continue
 
 		var record: Dictionary = _layers[layer_id]
@@ -1826,16 +2113,27 @@ func _on_viewport_size_changed() -> void:
 		)
 		if had_active_transition:
 			_emit_or_queue_transition_finished(layer_id, generation, true)
+			_publish_stage_transition_terminal(
+				completed_transition, &"completed")
+		_publish_superseded_transition(change)
 	_end_completion_batch()
 
 ## Cancel visual work without changing authored target state. Removed layers
 ## finish removal immediately; retained layers snap to their current target.
 func _on_engine_abort_requested() -> void:
+	# Abort is a lifecycle boundary even when no live transition exists. Retire
+	# frozen completion snapshots before any teardown or terminal callback.
+	_completion_lifecycle_epoch += 1
+	_begin_completion_batch()
+	var cancelled_identities: Array[Dictionary] = []
 	for layer_id in _layers.keys().duplicate():
 		var id := String(layer_id)
-		_begin_layer_change(id)
+		var cancelled := _take_active_transition(id)
+		if not cancelled.is_empty():
+			cancelled_identities.append(cancelled)
+		_claim_next_layer_generation(id)
 		if not _states.has(id):
-			_free_layer(id)
+			_free_layer(id, false)
 			continue
 		var record: Dictionary = _layers[id]
 		var state: Dictionary = _states[id]
@@ -1847,3 +2145,6 @@ func _on_engine_abort_requested() -> void:
 		(record["composite"] as CanvasGroup).self_modulate.a = clampf(
 			float(state.get("opacity", 1.0)), 0.0, 1.0
 		)
+	for identity: Dictionary in cancelled_identities:
+		_publish_stage_transition_terminal(identity, &"cancelled")
+	_end_completion_batch()
