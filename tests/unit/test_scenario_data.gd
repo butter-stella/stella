@@ -237,6 +237,64 @@ func test_semantic_fingerprint_ignores_documented_inline_comments() -> void:
 	assert_eq(original.get_read_identity(), equivalent.get_read_identity())
 
 
+func test_stage_batch_fingerprint_excludes_only_operation_line_metadata() -> void:
+	var original := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@stage_batch policy=join
+  @stage hero show asset=stage:redraw_source transition=fade duration=0.3
+@end"""), "main", "res://story/main.stla")
+	var format_shifted := DslParser.parse(DslLexer.tokenize("""// lead note
+
+@chapter route
+@scene start
+@stage_batch policy=join
+
+// child note
+  @stage hero show asset=stage:redraw_source transition=fade duration=0.3
+@end"""), "main", "res://story/main.stla")
+	var changed_policy := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@stage_batch policy=fire_and_forget
+  @stage hero show asset=stage:redraw_source transition=fade duration=0.3
+@end"""), "main", "res://story/main.stla")
+	var changed_operation := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@stage_batch policy=join
+  @stage hero show asset=stage:redraw_blur_source transition=fade duration=0.3
+@end"""), "main", "res://story/main.stla")
+	var scenarios := [
+		original, format_shifted, changed_policy, changed_operation,
+	]
+	var batches: Array[CommandData] = []
+	for scenario: ScenarioData in scenarios:
+		assert_eq(scenario.diagnostics, [])
+		assert_eq(scenario.scenes.size(), 1)
+		assert_eq(scenario.scenes[0].commands.size(), 1)
+		var batch: CommandData = scenario.scenes[0].commands[0]
+		var keys := batch.params.keys()
+		keys.sort()
+		assert_eq(keys, ["operation_lines", "operations", "policy"])
+		batches.append(batch)
+
+	assert_ne(batches[0].declared_line, batches[1].declared_line,
+		"formatting must move the retained opening-line diagnostic metadata")
+	assert_ne(batches[0].params["operation_lines"],
+		batches[1].params["operation_lines"],
+		"formatting must move the retained child-line diagnostic metadata")
+	assert_eq(batches[0].params["policy"], batches[1].params["policy"])
+	assert_eq(batches[0].params["operations"], batches[1].params["operations"])
+	assert_eq(original.content_fingerprint, format_shifted.content_fingerprint,
+		"diagnostic-only Stage child lines cannot change semantic identity")
+	assert_eq(original.get_read_identity(), format_shifted.get_read_identity())
+	assert_ne(original.content_fingerprint, changed_policy.content_fingerprint,
+		"batch policy remains semantic")
+	assert_ne(original.get_read_identity(), changed_policy.get_read_identity())
+	assert_ne(original.content_fingerprint,
+		changed_operation.content_fingerprint,
+		"canonical Stage operation behavior remains semantic")
+	assert_ne(original.get_read_identity(), changed_operation.get_read_identity())
+
+
 func test_semantic_fingerprint_uses_normalized_condition_ir() -> void:
 	var original := DslParser.parse(DslLexer.tokenize("""@chapter route
 @scene start

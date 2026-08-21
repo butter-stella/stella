@@ -373,6 +373,36 @@ StellaRuntime.clear_stage_layers()                    # 删除全部命名舞台
 
 Godot 4.6 的 redraw 像素管线使用 Forward+ 或 Mobile renderer。macOS 上如需使用 Compatibility renderer，请升级到 Godot 4.7 或更新版本，以避开 4.6 的 CanvasGroup screen-backbuffer 缺陷。
 
+### 声明式 Stage 批次：JOIN 与 fire-and-forget
+
+当多个命名 Stage 层必须在同一 authored boundary 提交，且后续对话或音频必须等待全部转场到达终态时，使用 `policy=join`：
+
+```stla
+@stage_batch policy=join
+  @stage sakura show kind=character asset=character:sakura/smile position=480,80 transition=fade duration=0.3
+  @stage senpai show kind=character asset=character:senpai/default position=1440,80 transition=fade duration=0.3
+@end
+
+「两层都已到达 authored 终态。」
+```
+
+若只需要保证整批操作已经完整 dispatch 并 seal，允许剧情立即继续、Tween 仍在运行，使用 `policy=fire_and_forget`：
+
+```stla
+@stage_batch policy=fire_and_forget
+  @stage sakura update position=720,80 transition=move duration=0.4
+  @stage senpai update asset=character:senpai/smile transition=fade duration=0.4
+@end
+@se se_select
+「这行可在 Tween 运行时开始。」
+```
+
+普通左键、Space 或 Enter 只会把当前 sealed JOIN 的 exact receipts snap 到 authored endpoint；`FIRE_AND_FORGET` 不 claim input。Skip 从 false 切换为 true 时 exact-finish 当前 JOIN 一次；Skip 是持续模式，新 batch 提交时已 active 则直接 force-cut。Auto 状态本身不结束 Stage JOIN。完整语法、ordering 与 fail-close 规则见 [DSL 文档](DSL.md#312-舞台批次组合stage_batch)；公开的 reference scenario 见 [`examples/demo/scenarios/stage_batch.stla`](../examples/demo/scenarios/stage_batch.stla)，它不是默认 Start Game 入口。
+
+高级 typed surface 由 `PresentationOperation`、`StagePresentationOperation`、`PresentationOperationReceipt`、`PresentationBatchRequest` 和 `PresentationDirector` 组成。唯一 owner 是 `StellaRuntime.presentation_director`；项目不应自行 `new()` 第二个 Director，也不应调用 `_bind_authority()`、`_seal()` 或 `_settle()` 等下划线内部方法。当前 typed adapter 只支持 Stage；#166 与 #170 仍 OPEN 且 out of scope，它们所需的 message/non-Stage 与 cross-channel adapter 尚未实现。
+
+既有 `StellaRuntime.apply_stage_operations(operations, force_cut) -> void` 仍是 raw 兼容 Facade：它不返回 receipt、不等待 Tween，也不等价于 authored `@stage_batch`。standalone `@stage`、`@parallel` 和 `@combine` 的既有语义同样保持不变。
+
 ### 存档/读档
 
 ```gdscript
@@ -416,6 +446,8 @@ legacy_snapshot["scenario_context"]["scenario_source_identity"] = (
 ```
 
 在游戏内读档、快读或从 Backlog/选项/流程图回退时，Runtime 会先把 engine context 所有权转交给恢复后的 context，再清理旧画面和阻塞命令。旧对话的取消不会触发自然 `scenario_ended`，恢复后的 context 始终是最终执行 owner；自定义 Presenter 仍只需遵守上文的 request `advance()` / `abort()` 契约。
+
+JOIN 动画进行中可以存档。存档只记录已原子提交的 final canonical Stage target 和 scenario cursor；operation、policy、request/batch、receipt、token、generation、Tween、barrier 与 progress 都不入档。恢复时先 cancel old generation，再 reset + atomic cut canonical target，最后在 same cursor 重新派发。若非 clear target 已满足，该 batch 以 no-work 同步完成，不分配新 batch/receipt/token/Tween，也不重放已满足的动画。canonical clear 例外：它必须经过 typed dispatch，以接管 canonical state 已为空但仍在 remove transition 中的 live projection；Presenter 真正为空时仍取得 positive batch ID，并以零 receipt 同步完成。
 
 ### 播放控制
 
@@ -526,6 +558,17 @@ sakura（内心独白）
 @stage sakura hide
 @stage sakura remove
 @stage clear
+
+// 原子提交多个命名 Stage 层，并等待 exact receipts
+@stage_batch policy=join
+  @stage sakura update position=720,80 transition=move duration=0.3
+  @stage senpai hide transition=fade duration=0.3
+@end
+
+// dispatch seal 后继续，Tween 可仍在运行
+@stage_batch policy=fire_and_forget
+  @stage sakura update position=960,80 transition=move duration=0.4
+@end
 
 // 方括号只更新对话框头像；舞台图片只由 @stage 改变
 sakura「[expr:sad]我有点担心。」

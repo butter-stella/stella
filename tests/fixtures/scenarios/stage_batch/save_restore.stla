@@ -1,0 +1,30 @@
+@chapter stage_batch_save "Synthetic stage batch save and restore"
+@scene start
+@stage_batch policy=join
+  @stage saved show kind=character asset=stage:redraw_source transition=fade duration=10
+@end
+「show tail」
+@stage_batch policy=join
+  @stage saved update position=128,64 transition=move duration=10
+@end
+「update tail」
+@stage_batch policy=join
+  @stage saved hide transition=fade duration=10
+@end
+「hide tail」
+@stage_batch policy=join
+  @stage saved remove transition=fade duration=10
+@end
+「remove tail」
+@stage_batch policy=join
+  @stage saved remove transition=fade duration=10
+@end
+「remove absent tail」
+@stage_batch policy=join
+  @stage clear
+@end
+「clear tail」
+@stage_batch policy=join
+  @stage clear
+@end
+「clear empty tail」
