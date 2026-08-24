@@ -2,6 +2,321 @@ extends GutTest
 ## Tests for StellaRuntime facade API and overlay management.
 
 
+const DIALOGUE_VISIBILITY_SIGNALS := {
+	"dialogue_visibility_operations_requested": [
+		["operations", TYPE_ARRAY], ["force_cut", TYPE_BOOL],
+	],
+	"presentation_operation_request_finished": [
+		["request_id", TYPE_INT], ["delivered", TYPE_BOOL],
+	],
+	"dialogue_visibility_transition_receipt_started": [
+		["presenter_instance_id", TYPE_INT], ["target", TYPE_STRING],
+		["token", TYPE_INT], ["operation_request_id", TYPE_INT],
+		["generation", TYPE_INT],
+	],
+	"dialogue_visibility_transition_terminal": [
+		["presenter_instance_id", TYPE_INT], ["target", TYPE_STRING],
+		["token", TYPE_INT], ["operation_request_id", TYPE_INT],
+		["generation", TYPE_INT], ["outcome", TYPE_STRING_NAME],
+	],
+	"dialogue_visibility_transition_receipts_finish_requested": [
+		["transitions", TYPE_ARRAY],
+	],
+	"dialogue_visibility_visuals_reset_requested": [],
+	"dialogue_visibility_state_apply_requested": [
+		["visibility", TYPE_DICTIONARY], ["content", TYPE_DICTIONARY],
+		["runtime_binding", TYPE_DICTIONARY],
+	],
+}
+
+const DIALOGUE_VISIBILITY_DIRECTOR_CALLBACKS := {
+	"presentation_operation_request_finished": [
+		"_on_presentation_operation_request_finished",
+		[["request_id", TYPE_INT], ["delivered", TYPE_BOOL]],
+	],
+	"dialogue_visibility_transition_receipt_started": [
+		"_on_dialogue_visibility_transition_receipt_started",
+		[
+			["presenter_instance_id", TYPE_INT], ["target", TYPE_STRING],
+			["token", TYPE_INT], ["operation_request_id", TYPE_INT],
+			["generation", TYPE_INT],
+		],
+	],
+	"dialogue_visibility_transition_terminal": [
+		"_on_dialogue_visibility_transition_terminal",
+		[
+			["presenter_instance_id", TYPE_INT], ["target", TYPE_STRING],
+			["token", TYPE_INT], ["operation_request_id", TYPE_INT],
+			["generation", TYPE_INT], ["outcome", TYPE_STRING_NAME],
+		],
+	],
+	"dialogue_visibility_visuals_reset_requested": [
+		"_on_dialogue_visibility_visuals_reset_requested", [],
+	],
+	"dialogue_visibility_state_apply_requested": [
+		"_on_dialogue_visibility_state_apply_requested",
+		[
+			["visibility", TYPE_DICTIONARY], ["content", TYPE_DICTIONARY],
+			["runtime_binding", TYPE_DICTIONARY],
+		],
+	],
+}
+
+
+class _DialogueVisibilitySceneProbe extends Node:
+	var calls := 0
+
+	func on_finish(_transitions: Array) -> void:
+		calls += 1
+
+
+func _signal_contract(signal_name: String) -> Array:
+	for signal_value: Variant in SignalBus.get_signal_list():
+		var signal_info: Dictionary = signal_value
+		if String(signal_info.get("name", "")) != signal_name:
+			continue
+		var contract: Array = []
+		for argument_value: Variant in signal_info.get("args", []):
+			var argument: Dictionary = argument_value
+			contract.append([
+				String(argument.get("name", "")),
+				int(argument.get("type", TYPE_NIL)),
+			])
+		return contract
+	return []
+
+
+func _method_contract(object: Object, method_name: String) -> Array:
+	for method_value: Variant in object.get_method_list():
+		var method: Dictionary = method_value
+		if String(method.get("name", "")) != method_name:
+			continue
+		var contract: Array = []
+		for argument_value: Variant in method.get("args", []):
+			var argument: Dictionary = argument_value
+			contract.append([
+				String(argument.get("name", "")),
+				int(argument.get("type", TYPE_NIL)),
+			])
+		assert_eq(int(method.get("return", {}).get("type", TYPE_NIL)), TYPE_NIL,
+			"Director callback returns void: %s" % method_name)
+		return contract
+	return []
+
+
+func _assert_reduced_snapshot_families_validate(
+	runtime,
+	raw_data: Variant,
+	parsed_config,
+	label: String
+) -> void:
+	assert_true(raw_data is Dictionary, "%s should be raw-readable" % label)
+	if not raw_data is Dictionary or parsed_config == null:
+		return
+	var raw_dict: Dictionary = raw_data
+	assert_true(raw_dict.has("scenario_context"),
+		"%s reduced validation must include scenario_context" % label)
+	var base := {"scenario_context": raw_dict.get("scenario_context")}
+	assert_true(runtime.save_manager.validate_data_for_scenario(base, parsed_config),
+		"%s reduced validation should accept scenario_context" % label)
+	for family: String in [
+		"presentation_state",
+		"read_flags",
+		"variable_store",
+		"unlocks",
+		"flowchart_visited",
+		"flowchart_state",
+		"timestamp",
+	]:
+		var probe: Dictionary = base.duplicate(true)
+		if raw_dict.has(family):
+			if family == "presentation_state":
+				var presentation_state: Variant = raw_dict.get(family)
+				assert_true(presentation_state is Dictionary,
+					"%s presentation_state should be a Dictionary" % label)
+				if not presentation_state is Dictionary:
+					return
+				var presentation_dict: Dictionary = presentation_state
+				if presentation_dict.has("bg"):
+					assert_true(presentation_dict.get("bg") is String,
+						"%s presentation_state.bg should be a String" % label)
+				if presentation_dict.has("bgm"):
+					assert_true(presentation_dict.get("bgm") is String,
+						"%s presentation_state.bgm should be a String" % label)
+				if presentation_dict.has("stage_layers"):
+					var stage_layers: Variant = presentation_dict.get("stage_layers")
+					assert_true(stage_layers is Dictionary,
+						"%s presentation_state.stage_layers should be a Dictionary" % label)
+					if not stage_layers is Dictionary:
+						return
+					for layer_id_value: Variant in (stage_layers as Dictionary).keys():
+						assert_true(layer_id_value is String and not String(layer_id_value).is_empty(),
+							"%s presentation_state.stage_layers keys should be non-empty Strings" % label)
+						var layer_state: Variant = (stage_layers as Dictionary).get(layer_id_value)
+						assert_true(StageLayerState.validate_snapshot_state(layer_state, false),
+							"%s presentation_state.stage_layers[%s] should validate" % [
+								label,
+								String(layer_id_value),
+							])
+				var has_visibility := presentation_dict.has("dialogue_visibility")
+				var has_content := presentation_dict.has("dialogue_content")
+				assert_eq(has_visibility, has_content,
+					"%s presentation_state dialogue_visibility/dialogue_content presence must be paired" % label)
+				if has_visibility != has_content:
+					return
+				if has_visibility and has_content:
+					var visibility: Variant = presentation_dict.get("dialogue_visibility")
+					var content: Variant = presentation_dict.get("dialogue_content")
+					assert_true(DialogueVisibilityState.validate_snapshot_state(visibility, false),
+						"%s presentation_state dialogue_visibility should validate" % label)
+					if content is Dictionary:
+						var content_dict: Dictionary = content
+						var content_keys: Array[String] = []
+						for key_value: Variant in content_dict.keys():
+							content_keys.append(String(key_value))
+						content_keys.sort()
+						assert_eq(content_keys, [
+							"active",
+							"avatar_expression",
+							"character",
+							"declarative_presentation",
+							"mode",
+							"nvl_entries",
+							"profile_name",
+							"segments",
+							"version",
+						], "%s presentation_state dialogue_content keys should match the exact schema" % label)
+						var version_value: Variant = content_dict.get("version", null)
+						assert_true(
+							version_value is int or version_value is float,
+							"%s presentation_state dialogue_content.version should be JSON-compatible numeric 1" % label
+						)
+						if version_value is int or version_value is float:
+							assert_eq(int(version_value), 1,
+								"%s presentation_state dialogue_content.version should equal numeric 1" % label)
+						assert_true(content_dict.get("active", null) is bool,
+							"%s presentation_state dialogue_content.active should be a bool" % label)
+						assert_true(content_dict.get("mode", null) is String,
+							"%s presentation_state dialogue_content.mode should be a String" % label)
+						assert_true(content_dict.get("profile_name", null) is String,
+							"%s presentation_state dialogue_content.profile_name should be a String" % label)
+						assert_true(content_dict.get("character", null) is String,
+							"%s presentation_state dialogue_content.character should be a String" % label)
+						assert_true(content_dict.get("avatar_expression", null) is String,
+							"%s presentation_state dialogue_content.avatar_expression should be a String" % label)
+						assert_true(
+							content_dict.get("declarative_presentation", null) is bool,
+							"%s presentation_state dialogue_content.declarative_presentation should be a bool" % label
+						)
+						assert_true(content_dict.get("segments", null) is Array,
+							"%s presentation_state dialogue_content.segments should be an Array" % label)
+						assert_true(content_dict.get("nvl_entries", null) is Array,
+							"%s presentation_state dialogue_content.nvl_entries should be an Array" % label)
+						var mode_value := String(content_dict.get("mode", ""))
+						assert_true(mode_value in ["adv", "nvl", "overlay", "monologue"],
+							"%s presentation_state dialogue_content.mode should be one of adv/nvl/overlay/monologue" % label)
+						if content_dict.get("segments", null) is Array:
+							var top_segments: Array = content_dict.get("segments", [])
+							for segment_value: Variant in top_segments:
+								assert_true(segment_value is Dictionary,
+									"%s presentation_state dialogue_content.segments entries should be Dictionaries" % label)
+								if not segment_value is Dictionary:
+									return
+								var segment_dict: Dictionary = segment_value
+								var segment_keys: Array[String] = []
+								for key_value: Variant in segment_dict.keys():
+									segment_keys.append(String(key_value))
+								segment_keys.sort()
+								assert_eq(segment_keys, ["text"],
+									"%s presentation_state dialogue_content.segments entries should use the exact [text] schema" % label)
+								assert_true(segment_dict.get("text", null) is String,
+									"%s presentation_state dialogue_content.segments text should be a String" % label)
+						if content_dict.get("nvl_entries", null) is Array:
+							var nvl_entries: Array = content_dict.get("nvl_entries", [])
+							for entry_value: Variant in nvl_entries:
+								assert_true(entry_value is Dictionary,
+									"%s presentation_state dialogue_content.nvl_entries entries should be Dictionaries" % label)
+								if not entry_value is Dictionary:
+									return
+								var entry_dict: Dictionary = entry_value
+								var entry_keys: Array[String] = []
+								for key_value: Variant in entry_dict.keys():
+									entry_keys.append(String(key_value))
+								entry_keys.sort()
+								assert_eq(entry_keys, ["character", "profile_name", "segments"],
+									"%s presentation_state dialogue_content.nvl_entries entries should use the exact [character,profile_name,segments] schema" % label)
+								assert_true(entry_dict.get("character", null) is String,
+									"%s presentation_state dialogue_content.nvl_entries character should be a String" % label)
+								assert_true(entry_dict.get("profile_name", null) is String,
+									"%s presentation_state dialogue_content.nvl_entries profile_name should be a String" % label)
+								assert_true(entry_dict.get("segments", null) is Array,
+									"%s presentation_state dialogue_content.nvl_entries segments should be an Array" % label)
+								if entry_dict.get("segments", null) is Array:
+									for nested_segment_value: Variant in entry_dict.get("segments", []):
+										assert_true(nested_segment_value is Dictionary,
+											"%s presentation_state dialogue_content.nvl_entries segments entries should be Dictionaries" % label)
+										if not nested_segment_value is Dictionary:
+											return
+										var nested_segment_dict: Dictionary = nested_segment_value
+										var nested_segment_keys: Array[String] = []
+										for key_value: Variant in nested_segment_dict.keys():
+											nested_segment_keys.append(String(key_value))
+										nested_segment_keys.sort()
+										assert_eq(nested_segment_keys, ["text"],
+											"%s presentation_state dialogue_content.nvl_entries segments should use the exact [text] schema" % label)
+										assert_true(nested_segment_dict.get("text", null) is String,
+											"%s presentation_state dialogue_content.nvl_entries segments text should be a String" % label)
+						if content_dict.get("active", null) is bool:
+							var is_active: bool = content_dict.get("active", false)
+							if not is_active:
+								assert_true(mode_value == "adv",
+									"%s presentation_state inactive dialogue_content.mode should stay canonical adv" % label)
+								assert_true(String(content_dict.get("profile_name", null)) == "",
+									"%s presentation_state inactive dialogue_content.profile_name should stay canonical empty" % label)
+								assert_true(not bool(content_dict.get("declarative_presentation", true)),
+									"%s presentation_state inactive dialogue_content.declarative_presentation should stay canonical false" % label)
+								assert_true(String(content_dict.get("character", null)) == "",
+									"%s presentation_state inactive dialogue_content.character should stay canonical empty" % label)
+								assert_true(String(content_dict.get("avatar_expression", null)) == "",
+									"%s presentation_state inactive dialogue_content.avatar_expression should stay canonical empty" % label)
+								if content_dict.get("segments", null) is Array:
+									assert_true((content_dict.get("segments", []) as Array).is_empty(),
+										"%s presentation_state inactive dialogue_content.segments should stay canonical empty" % label)
+								if content_dict.get("nvl_entries", null) is Array:
+									assert_true((content_dict.get("nvl_entries", []) as Array).is_empty(),
+										"%s presentation_state inactive dialogue_content.nvl_entries should stay canonical empty" % label)
+							elif content_dict.get("segments", null) is Array:
+								var top_segments: Array = content_dict.get("segments", [])
+								assert_true(not top_segments.is_empty(),
+									"%s presentation_state active dialogue_content should keep at least one segment" % label)
+								if mode_value == "nvl" and content_dict.get("nvl_entries", null) is Array:
+									var nvl_entries: Array = content_dict.get("nvl_entries", [])
+									assert_true(not nvl_entries.is_empty(),
+										"%s presentation_state active nvl dialogue_content should keep at least one NVL entry" % label)
+									if not nvl_entries.is_empty():
+										var tail_value: Variant = nvl_entries[-1]
+										if tail_value is Dictionary:
+											var tail_entry: Dictionary = tail_value
+											assert_true(
+												tail_entry.get("profile_name", null) == content_dict.get("profile_name", null)
+												and tail_entry.get("character", null) == content_dict.get("character", null)
+												and tail_entry.get("segments", null) == content_dict.get("segments", null),
+												"%s presentation_state active nvl dialogue_content tail should match top-level profile_name/character/segments" % label
+											)
+								elif content_dict.get("nvl_entries", null) is Array:
+									assert_true((content_dict.get("nvl_entries", []) as Array).is_empty(),
+										"%s presentation_state non-nvl dialogue_content should keep nvl_entries empty" % label)
+						assert_true(PresentationState._validate_dialogue_content(content, false),
+							"%s presentation_state dialogue_content anchors should validate" % label)
+						assert_true(PresentationState.dialogue_content_profiles_exist(
+							content_dict,
+							parsed_config
+						), "%s presentation_state dialogue_content profile_name/mode/active anchors should exist" % label)
+			probe[family] = raw_dict.get(family)
+		assert_true(runtime.save_manager.validate_data_for_scenario(probe, parsed_config),
+			"%s reduced validation should accept %s" % [label, family])
+
+
 ## --- Save/Load Facade ---
 
 func test_has_save_returns_false_for_empty():
@@ -281,6 +596,37 @@ func test_continue_game_falls_back_to_config_scenario_path():
 	runtime._prepare_scenario(runtime.config.scenario_path)
 	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	runtime.quick_save()
+	assert_true(runtime.has_continue_save(), "continue_game setup must create a continue save")
+	assert_eq(runtime.save_manager.get_latest_continue_type(), "quick",
+		"continue_game should read the quick continue slot")
+	var parsed_config = runtime._parse_scenario(runtime.config.scenario_path)
+	assert_not_null(parsed_config, "config scenario should parse before continue_game")
+	var quick_raw = runtime.save_manager.read_quick_save_data()
+	_assert_reduced_snapshot_families_validate(
+		runtime,
+		quick_raw,
+		parsed_config,
+		"quick continue snapshot"
+	)
+	var quick_save_data = runtime.save_manager.read_quick_save_data(parsed_config)
+	assert_true(quick_save_data is Dictionary,
+		"quick continue snapshot should be readable for the configured scenario")
+	if quick_save_data is Dictionary:
+		assert_true(runtime.save_manager.validate_data_for_scenario(quick_save_data, parsed_config),
+			"quick continue snapshot should validate before continue_game")
+	assert_ne(runtime.config.scenario_path, "", "config scenario path must stay non-empty")
+	assert_eq(runtime._last_scenario_path, "", "setup should keep last scenario path empty before continue_game")
+	assert_false(runtime._navigation_scene_request_pending,
+		"continue_game setup must not already have a pending navigation scene request")
+	assert_false(runtime._return_to_title_pending,
+		"continue_game setup must not already be returning to title")
+	assert_not_null(runtime.engine.context, "continue_game setup must keep a live engine context")
+	assert_true(runtime.engine.context.is_runtime_owner_current(),
+		"continue_game setup context must remain the current runtime owner")
+	assert_not_null(get_tree().current_scene,
+		"continue_game setup must retain a concrete current scene")
+	assert_false(runtime._is_on_title_screen(),
+		"PLAYING continue_game setup must not report title-screen semantics")
 	var result = await runtime.continue_game()
 	assert_true(result)
 	assert_ne(runtime._last_scenario_path, "", "continue_game should resolve scenario path from config")
@@ -437,12 +783,39 @@ func test_continue_from_save_overlay_not_closed_before_scene_change():
 	runtime._prepare_scenario(runtime.config.scenario_path)
 	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	runtime.save(60)
+	var parsed_config = runtime._parse_scenario(runtime.config.scenario_path)
+	assert_not_null(parsed_config, "save slot scenario should parse before continue_from_save")
+	var slot_raw = runtime.save_manager.read_save_data(60)
+	_assert_reduced_snapshot_families_validate(
+		runtime,
+		slot_raw,
+		parsed_config,
+		"save slot"
+	)
+	var slot_data = runtime.save_manager.read_save_data(60, parsed_config)
+	assert_true(slot_data is Dictionary,
+		"save slot should be readable before continue_from_save")
+	if slot_data is Dictionary:
+		assert_true(runtime.save_manager.validate_data_for_scenario(slot_data, parsed_config),
+			"save slot should validate before continue_from_save")
 
 	# Simulate: title → open save/load overlay → state=SAVE_LOAD, prev=TITLE
 	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
 	runtime.show_save_load("load")
 	assert_not_null(runtime._current_overlay, "overlay should exist before continue_from_save")
 	var context_before_continue: ScenarioContext = runtime.engine.context
+	assert_not_null(context_before_continue,
+		"continue_from_save setup must begin with a live scenario context")
+	assert_true(context_before_continue.is_runtime_owner_current(),
+		"continue_from_save setup context must remain current before replacement")
+	assert_true(runtime._is_on_title_screen(),
+		"continue_from_save overlay setup should still report title-screen semantics")
+	assert_false(runtime._navigation_scene_request_pending,
+		"continue_from_save setup must not begin with a pending navigation scene request")
+	assert_false(runtime._return_to_title_pending,
+		"continue_from_save setup must not begin with a pending return_to_title")
+	assert_not_null(get_tree().current_scene,
+		"continue_from_save setup must retain a current scene")
 	var loaded_contexts: Array[ScenarioContext] = []
 	var scenario_ended_ids: Array[String] = []
 	var dialogue_started := func(_character: String, _segments: Array, _mode: String) -> void:
@@ -522,6 +895,13 @@ func _disconnect_game_presenters():
 			"stage_operation_request_finished", "stage_visuals_reset_requested",
 			"stage_state_apply_requested", "stage_transition_started",
 			"stage_transitions_finish_requested",
+			"dialogue_visibility_operations_requested",
+			"presentation_operation_request_finished",
+			"dialogue_visibility_transition_receipt_started",
+			"dialogue_visibility_transition_terminal",
+			"dialogue_visibility_transition_receipts_finish_requested",
+			"dialogue_visibility_visuals_reset_requested",
+			"dialogue_visibility_state_apply_requested",
 			"bgm_play", "bgm_stop", "se_play", "se_stop",
 			"dialogue_requested", "dialogue_backlog_effects_resolved",
 			"voice_play", "voice_playback_requested", "voice_playback_event",
@@ -535,6 +915,8 @@ func _disconnect_game_presenters():
 			"scenario_started_event", "scene_changed_event",
 			"engine_abort_requested",
 			"scenario_ended_event"]:
+		if not SignalBus.has_signal(sig_name):
+			continue
 		var sig = SignalBus.get(sig_name)
 		if sig is Signal:
 			for conn in sig.get_connections():
@@ -607,6 +989,119 @@ func _disconnect_game_presenters():
 		assert_true(StellaRuntime.skip_controller.active_changed.is_connected(
 			runtime_director.on_skip_active_changed),
 			"game presenter cleanup must preserve Director Skip authority")
+
+
+func _runtime_director_connection_fingerprint() -> Array[String]:
+	var director: PresentationDirector = StellaRuntime.presentation_director
+	var fingerprint: Array[String] = []
+	if director == null:
+		return fingerprint
+	for signal_value: Variant in SignalBus.get_signal_list():
+		var signal_info: Dictionary = signal_value
+		var signal_name := StringName(signal_info.get("name", &""))
+		if signal_name.is_empty():
+			continue
+		var bus_signal: Variant = SignalBus.get(signal_name)
+		if not bus_signal is Signal:
+			continue
+		for connection_value: Variant in (bus_signal as Signal).get_connections():
+			var connection: Dictionary = connection_value
+			var callback: Callable = connection.get("callable", Callable())
+			if not callback.is_valid():
+				continue
+			var owner_id := callback.get_object_id()
+			if owner_id == 0 or instance_from_id(owner_id) != director:
+				continue
+			fingerprint.append("SignalBus.%s->%s" % [
+				String(signal_name), String(callback.get_method()),
+			])
+	for controller_value: Variant in [
+		StellaRuntime.game_state,
+		StellaRuntime.auto_play,
+		StellaRuntime.skip_controller,
+	]:
+		var controller: Object = controller_value
+		for signal_value: Variant in controller.get_signal_list():
+			var signal_info: Dictionary = signal_value
+			var signal_name := StringName(signal_info.get("name", &""))
+			var controller_signal: Variant = controller.get(signal_name)
+			if not controller_signal is Signal:
+				continue
+			for connection_value: Variant in (
+				controller_signal as Signal).get_connections():
+				var callback: Callable = (connection_value as Dictionary).get(
+					"callable", Callable())
+				if not callback.is_valid():
+					continue
+				var owner_id := callback.get_object_id()
+				if owner_id == 0 or instance_from_id(owner_id) != director:
+					continue
+				fingerprint.append("%s.%s->%s" % [
+					controller.get_class(), String(signal_name),
+					String(callback.get_method()),
+				])
+	fingerprint.sort()
+	return fingerprint
+
+
+func test_game_presenter_cleanup_preserves_every_runtime_director_authority() -> void:
+	var before := _runtime_director_connection_fingerprint()
+	assert_gt(before.size(), 0,
+		"the Runtime-owned Director must expose persistent authority connections")
+	_disconnect_game_presenters()
+	assert_eq(_runtime_director_connection_fingerprint(), before,
+		"facade cleanup cannot disconnect Stage or Dialogue Director authority")
+
+
+func test_dialogue_visibility_signals_and_runtime_director_authority_are_exact() -> void:
+	var director: PresentationDirector = StellaRuntime.presentation_director
+	assert_not_null(director)
+	var missing: Array[String] = []
+	for signal_name: String in DIALOGUE_VISIBILITY_SIGNALS:
+		if not SignalBus.has_signal(signal_name):
+			missing.append(signal_name)
+	assert_eq(missing, [], "missing issue #166 SignalBus surface")
+	if not missing.is_empty() or director == null:
+		return
+	for signal_name: String in DIALOGUE_VISIBILITY_SIGNALS:
+		assert_eq(_signal_contract(signal_name),
+			DIALOGUE_VISIBILITY_SIGNALS[signal_name],
+			"exact SignalBus argument contract: %s" % signal_name)
+	for signal_name: String in DIALOGUE_VISIBILITY_DIRECTOR_CALLBACKS:
+		var callback_spec: Array = DIALOGUE_VISIBILITY_DIRECTOR_CALLBACKS[signal_name]
+		var callback_name := String(callback_spec[0])
+		assert_true(director.has_method(callback_name),
+			"missing Director callback: %s" % callback_name)
+		if not director.has_method(callback_name):
+			continue
+		assert_eq(_method_contract(director, callback_name), callback_spec[1],
+			"exact Director callback contract: %s" % callback_name)
+		var bus_signal: Signal = SignalBus.get(signal_name)
+		var callback := Callable(director, callback_name)
+		assert_true(bus_signal.is_connected(callback),
+			"Runtime-owned Director keeps %s authority" % signal_name)
+
+	var finish_signal: Signal = SignalBus.get(
+		"dialogue_visibility_transition_receipts_finish_requested")
+	var probe := _DialogueVisibilitySceneProbe.new()
+	add_child_autoqfree(probe)
+	finish_signal.connect(probe.on_finish)
+	assert_true(finish_signal.is_connected(probe.on_finish))
+	for connection_value: Variant in finish_signal.get_connections():
+		var callback: Callable = (connection_value as Dictionary).get(
+			"callable", Callable())
+		if callback.is_valid():
+			assert_ne(instance_from_id(callback.get_object_id()), director,
+				"exact-finish is presenter authority, never a Director consumer")
+	_disconnect_game_presenters()
+	assert_false(finish_signal.is_connected(probe.on_finish),
+		"facade cleanup removes the scene-owned exact-finish consumer")
+	for signal_name: String in DIALOGUE_VISIBILITY_DIRECTOR_CALLBACKS:
+		var callback_name := String(
+			(DIALOGUE_VISIBILITY_DIRECTOR_CALLBACKS[signal_name] as Array)[0])
+		assert_true((SignalBus.get(signal_name) as Signal).is_connected(
+			Callable(director, callback_name)),
+			"facade cleanup preserves Runtime authority: %s" % signal_name)
 ## --- Overlay Config ---
 
 func test_config_has_overlay_scene_overrides():

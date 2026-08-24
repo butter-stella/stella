@@ -310,6 +310,8 @@ func _register_handlers():
 	registry.register(StageLayerHandler.new())
 	registry.register(StageBatchHandler.new(
 		presentation_director, presentation_state))
+	registry.register(PresentationBatchHandler.new(
+		presentation_director, presentation_state))
 	registry.register(JumpHandler.new())
 	registry.register(SetHandler.new())
 	registry.register(ConditionHandler.new())
@@ -1997,6 +1999,11 @@ func _install_scenario(data: ScenarioData, scenario_path: String) -> void:
 		"bg": "",
 		"stage_layers": {},
 		"bgm": "",
+		"dialogue_visibility": {
+			"surface": true,
+			"quick_menu": true,
+		},
+		"dialogue_content": PresentationState._inactive_dialogue_content(),
 	}
 	flowchart_state.initial_snapshot = initial_snapshot
 
@@ -2022,7 +2029,9 @@ func _load_preparsed_scenario_and_restore(
 	save_manager.restore_data(save_data)
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
-	presentation_state.apply_to_presenters()
+	presentation_state.apply_to_presenters(
+		_runtime_dialogue_visibility_binding(expected_context)
+	)
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
 	if not _apply_chapter_presentation(expected_context):
@@ -2073,10 +2082,14 @@ func _reset_presentation(
 		expected_context = engine.context if engine != null else null
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
-	if presentation_director != null:
-		presentation_director.cancel_all()
-	if not _owns_navigation_context(navigation, expected_context):
-		return false
+	if (
+		engine != null
+		and expected_context != null
+		and presentation_director != null
+		and engine.context == expected_context
+		and presentation_director.has_blocking_waiter(expected_context)
+	):
+		engine.invalidate_current_run()
 	SignalBus.effect_requested.emit("off", {})
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
@@ -2096,6 +2109,16 @@ func _reset_presentation(
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
 	presentation_state.clear()
+	presentation_state.apply_to_presenters({})
+	if not _owns_navigation_context(navigation, expected_context):
+		return false
+	if presentation_director != null:
+		presentation_director.cancel_all()
+	if not _owns_navigation_context(navigation, expected_context):
+		return false
+	presentation_state.apply_to_presenters({})
+	if not _owns_navigation_context(navigation, expected_context):
+		return false
 	# Backlog is runtime-only state (not in save snapshots) — clear it on
 	# load/restart so the previous run's history doesn't bleed into the new one.
 	backlog_manager.clear()
@@ -2236,13 +2259,78 @@ func _apply_retained_presentation(context: ScenarioContext) -> bool:
 	var expected_context := engine.context if engine != null else null
 	if context != expected_context:
 		return false
-	presentation_state.apply_to_presenters()
+	presentation_state.apply_to_presenters(
+		_runtime_dialogue_visibility_binding(context)
+	)
 	if (
 		navigation != _navigation_generation
 		or (engine.context if engine != null else null) != expected_context
 	):
 		return false
 	return _apply_chapter_presentation(context)
+
+
+func _runtime_dialogue_visibility_binding(
+	context: ScenarioContext,
+) -> Dictionary:
+	var default_binding := {
+		"profile_name": "",
+		"profile": {},
+		"provenance": {},
+		"surface_groups": ["dialogue_surface"],
+		"quick_menu_groups": ["quick_menu"],
+	}
+	if context == null:
+		return {
+			"current": default_binding.duplicate(true),
+			"default": default_binding.duplicate(true),
+			"nvl_entries": [],
+		}
+	var current := default_binding.duplicate(true)
+	var profile := context.resolve_current_dialogue_profile()
+	if not profile.is_empty():
+		current["profile"] = profile.duplicate(true)
+		current["surface_groups"] = (
+			profile.get("surface_groups", current["surface_groups"]) as Array
+		).duplicate()
+		current["quick_menu_groups"] = (
+			profile.get("quick_menu_groups", current["quick_menu_groups"]) as Array
+		).duplicate()
+	var provenance := context.resolve_current_dialogue_profile_provenance()
+	current["profile_name"] = String(context.current_dialogue_profile_name)
+	current["provenance"] = provenance.duplicate(true)
+	var nvl_entries: Array = []
+	for entry_value: Variant in context.nvl_page_entries:
+		if not entry_value is Dictionary:
+			continue
+		var entry: Dictionary = entry_value
+		var entry_profile_name := String(entry.get("profile_name", ""))
+		var entry_profile := (
+			context.scenario_data.get_dialogue_profile(entry_profile_name)
+			if context.scenario_data != null and not entry_profile_name.is_empty()
+			else {}
+		)
+		var entry_provenance := (
+			context.scenario_data.get_dialogue_profile_provenance(entry_profile_name)
+			if context.scenario_data != null and not entry_profile_name.is_empty()
+			else {}
+		)
+		nvl_entries.append({
+			"profile_name": entry_profile_name,
+			"profile": entry_profile.duplicate(true),
+			"provenance": entry_provenance.duplicate(true),
+			"surface_groups": (
+				entry_profile.get("surface_groups", default_binding["surface_groups"]) as Array
+			).duplicate(),
+			"quick_menu_groups": (
+				entry_profile.get("quick_menu_groups", default_binding["quick_menu_groups"]) as Array
+			).duplicate(),
+		})
+	return {
+		"current": current,
+		"default": default_binding.duplicate(true),
+		"nvl_entries": nvl_entries,
+	}
 
 
 func _on_scene_changed_for_chapter_presentation(_scene_id: String) -> void:
@@ -2297,7 +2385,7 @@ func _on_scene_changed_for_flowchart(scene_id: String) -> void:
 	# chapter_id field reflects the chapter the player will be IN after
 	# restore, not the old one (flowchart_state.current_path hasn't been
 	# updated yet at this point).
-	var snapshot = _capture_rollback_snapshot(new_chapter_id)
+	var snapshot = _capture_flowchart_chapter_snapshot(scene_id, new_chapter_id)
 	flowchart_state.enter_chapter(new_chapter_id, snapshot)
 	flowchart_visited.mark_chapter_visited(new_chapter_id)
 
@@ -2319,6 +2407,7 @@ func _on_dialogue_for_backlog(
 ) -> void:
 	if engine == null or engine.context == null:
 		return
+	presentation_state.record_dialogue_content(request, engine.context)
 	backlog_manager.add_entry(
 		request.get_character(),
 		request.get_segments(),
@@ -2373,13 +2462,7 @@ func _on_choice_for_history(_prompt: String, _options: Array) -> void:
 ## to flowchart_state's current value, which is correct for mid-chapter
 ## captures (backlog entry, choice menu).
 func _capture_rollback_snapshot(chapter_override: String = "") -> Dictionary:
-	var snap: Dictionary = {}
-	if engine and engine.context:
-		snap["scenario_context"] = engine.context.capture_snapshot()
-		if engine.context.variable_store:
-			snap["variable_store"] = engine.context.variable_store.capture_scenario_scope()
-	if presentation_state:
-		snap["presentation_state"] = presentation_state.capture_snapshot()
+	var snap := _capture_runtime_checkpoint()
 	# Chapter id is used by _restore_runtime_from_snapshot to keep the
 	# flowchart line in sync with the restored engine position — crucial
 	# for cross-chapter rewinds (otherwise current_path grows on every
@@ -2392,10 +2475,142 @@ func _capture_rollback_snapshot(chapter_override: String = "") -> Dictionary:
 	return snap
 
 
+func _capture_runtime_checkpoint() -> Dictionary:
+	var snap: Dictionary = {}
+	if engine and engine.context:
+		snap["scenario_context"] = engine.context.capture_snapshot()
+		if engine.context.variable_store:
+			snap["variable_store"] = (
+				engine.context.variable_store.capture_scenario_scope()
+			)
+	if presentation_state:
+		snap["presentation_state"] = _capture_effective_presentation_snapshot()
+	return snap
+
+
+func _capture_effective_presentation_snapshot() -> Dictionary:
+	var snapshot := presentation_state.capture_snapshot()
+	if engine == null or engine.context == null:
+		return snapshot
+	var command := engine.context.current_command()
+	if command == null or command.type != "presentation_batch":
+		return snapshot
+	var params := command.params if command.params is Dictionary else {}
+	var operations: Array = params.get("operations", [])
+	if operations.is_empty():
+		return snapshot
+	var stage_layers := (
+		snapshot.get("stage_layers", {}) as Dictionary
+	).duplicate(true)
+	var visibility := (
+		snapshot.get(
+			"dialogue_visibility",
+			DialogueVisibilityState.default_state(),
+		) as Dictionary
+	).duplicate(true)
+	var stage_payloads: Array = []
+	var visibility_payloads: Array = []
+	for operation_value: Variant in operations:
+		if not operation_value is Dictionary:
+			continue
+		var operation: Dictionary = operation_value
+		var kind := String(operation.get("kind", "")).strip_edges()
+		var payload: Variant = operation.get("payload", {})
+		if not payload is Dictionary:
+			continue
+		if kind == "stage":
+			stage_payloads.append((payload as Dictionary).duplicate(true))
+		elif kind == "dialogue_visibility":
+			visibility_payloads.append((payload as Dictionary).duplicate(true))
+	if not stage_payloads.is_empty():
+		snapshot["stage_layers"] = StageLayerState.reduce(
+			stage_layers,
+			stage_payloads,
+			false,
+		)
+	if not visibility_payloads.is_empty():
+		snapshot["dialogue_visibility"] = DialogueVisibilityState.reduce(
+			visibility,
+			visibility_payloads,
+			false,
+		)
+	return snapshot
+
+
+func _capture_flowchart_chapter_snapshot(
+	scene_id: String,
+	chapter_id: String,
+) -> Dictionary:
+	var snapshot := _capture_runtime_checkpoint()
+	snapshot["chapter_id"] = chapter_id
+	if engine == null or engine.context == null:
+		return snapshot
+	var scenario_data := engine.context.scenario_data
+	if scenario_data == null:
+		return snapshot
+	var entry_scene_id := scene_id
+	var chapter := scenario_data.get_chapter(chapter_id)
+	if chapter != null:
+		var resolved_entry_scene_id := chapter.get_entry_scene_id()
+		if not resolved_entry_scene_id.is_empty():
+			entry_scene_id = resolved_entry_scene_id
+	_normalize_flowchart_chapter_snapshot(
+		snapshot,
+		scenario_data,
+		entry_scene_id,
+		chapter_id,
+	)
+	return snapshot
+
+
+func _normalize_flowchart_chapter_snapshot(
+	snapshot: Dictionary,
+	scenario_data: ScenarioData,
+	scene_id: String,
+	chapter_id: String,
+) -> void:
+	if scenario_data == null:
+		return
+	var scene_index := -1
+	for index in range(scenario_data.scenes.size()):
+		var candidate: SceneData = scenario_data.scenes[index]
+		if candidate != null and candidate.id == scene_id:
+			scene_index = index
+			break
+	if scene_index < 0:
+		return
+	var scenario_snapshot := (
+		snapshot.get("scenario_context", {}) as Dictionary
+	).duplicate(true)
+	scenario_snapshot["scene_index"] = scene_index
+	scenario_snapshot["command_index"] = 0
+	scenario_snapshot["is_finished"] = false
+	snapshot["scenario_context"] = scenario_snapshot
+	snapshot["chapter_id"] = chapter_id
+
+
+func _refresh_current_flowchart_chapter_snapshot_for_save() -> void:
+	if flowchart_state == null or engine == null or engine.context == null:
+		return
+	var scenario_data := engine.context.scenario_data
+	if scenario_data == null:
+		return
+	var chapter_id := flowchart_state.get_current_chapter_id()
+	if chapter_id.is_empty():
+		return
+	var scene := engine.context.current_scene()
+	if scene == null:
+		return
+	flowchart_state.chapter_snapshots[chapter_id] = (
+		_capture_flowchart_chapter_snapshot(scene.id, chapter_id)
+	)
+
+
 # ─── Facade API: Save/Load ───
 
 ## Quick save (separate from manual save slots).
 func quick_save() -> void:
+	_refresh_current_flowchart_chapter_snapshot_for_save()
 	save_manager.quick_save()
 
 
@@ -2484,6 +2699,7 @@ func delete_quick_save() -> void:
 func auto_save() -> void:
 	if game_state.current_state != GameStateMachine.State.PLAYING:
 		return
+	_refresh_current_flowchart_chapter_snapshot_for_save()
 	save_manager.auto_save()
 
 
@@ -2599,6 +2815,7 @@ func _read_continue_data(
 
 ## Save to a specific slot.
 func save(slot_id: int) -> void:
+	_refresh_current_flowchart_chapter_snapshot_for_save()
 	save_manager.save(slot_id)
 
 
@@ -2909,6 +3126,22 @@ func _restore_runtime_from_snapshot(
 	if engine == null or engine.context == null:
 		return false
 	var retained_context := engine.context
+	var raw_presentation: Variant = snap.get("presentation_state", {})
+	if not raw_presentation is Dictionary:
+		return false
+	var presentation_snapshot: Dictionary = raw_presentation
+	var dialogue_content: Variant = presentation_snapshot.get(
+		"dialogue_content",
+		PresentationState._inactive_dialogue_content(),
+	)
+	if (
+		not PresentationState._validate_dialogue_content(dialogue_content, false)
+		or not PresentationState.dialogue_content_profiles_exist(
+			dialogue_content as Dictionary,
+			retained_context.scenario_data,
+		)
+	):
+		return false
 	# Every rollback facade invocation owns a distinct generation. A synchronous
 	# state/reset listener may start another rollback; only that newest call may
 	# build, install, or run a replacement Context.
@@ -2988,8 +3221,10 @@ func _restore_runtime_from_snapshot(
 	if not _owns_navigation_context(navigation, new_ctx):
 		return false
 	presentation_state.clear()
-	presentation_state.restore_snapshot(snap.get("presentation_state", {}))
-	presentation_state.apply_to_presenters()
+	presentation_state.restore_snapshot(presentation_snapshot)
+	presentation_state.apply_to_presenters(
+		_runtime_dialogue_visibility_binding(new_ctx)
+	)
 	if not _owns_navigation_context(navigation, new_ctx):
 		return false
 	if not _apply_chapter_presentation(new_ctx):

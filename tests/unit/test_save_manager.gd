@@ -54,6 +54,11 @@ func _make_validation_scenario() -> ScenarioData:
 	scene.id = "start"
 	scene.commands = [CommandData.new(), CommandData.new()]
 	data.scenes = [scene]
+	data.dialogue_profiles = {
+		"message": {"line_spacing": 4},
+		"novel_first": {"entry_prefix": "A"},
+		"novel_second": {"entry_prefix": "B"},
+	}
 	return data
 
 
@@ -97,6 +102,52 @@ func _make_valid_save_snapshot() -> Dictionary:
 		},
 		"timestamp": 1.0,
 	}
+
+
+func _make_valid_dialogue_save_snapshot(mode: String = "adv") -> Dictionary:
+	var snapshot := _make_valid_save_snapshot()
+	snapshot["presentation_state"]["dialogue_visibility"] = {
+		"surface": false,
+		"quick_menu": true,
+	}
+	var content := {
+		"version": 1,
+		"active": true,
+		"mode": "adv",
+		"profile_name": "message",
+		"declarative_presentation": true,
+		"character": "sakura",
+		"segments": [{"text": "Stable ADV"}],
+		"avatar_expression": "happy",
+		"nvl_entries": [],
+	}
+	if mode == "nvl":
+		content = {
+			"version": 1,
+			"active": true,
+			"mode": "nvl",
+			"profile_name": "novel_second",
+			"declarative_presentation": true,
+			"character": "senpai",
+			"segments": [{"text": "Second"}],
+			"avatar_expression": "smile",
+			"nvl_entries": [
+				{
+					"profile_name": "novel_first",
+					"character": "sakura",
+					"segments": [{"text": "First"}],
+				},
+				{
+					"profile_name": "novel_second",
+					"character": "senpai",
+					"segments": [{"text": "Second"}],
+				},
+			],
+		}
+	elif mode in ["overlay", "monologue"]:
+		content["mode"] = mode
+	snapshot["presentation_state"]["dialogue_content"] = content
+	return snapshot
 
 
 func test_register_provider():
@@ -377,6 +428,172 @@ func test_save_validation_covers_builtin_provider_field_types_atomically():
 
 	for invalid: Dictionary in corruptions:
 		assert_false(_manager.validate_data_for_scenario(invalid, scenario))
+
+
+func test_dialogue_projection_adv_and_nvl_snapshots_validate_exactly() -> void:
+	var scenario := _make_validation_scenario()
+	var adv := _make_valid_dialogue_save_snapshot("adv")
+	var nvl := _make_valid_dialogue_save_snapshot("nvl")
+	var overlay := _make_valid_dialogue_save_snapshot("overlay")
+	var monologue := _make_valid_dialogue_save_snapshot("monologue")
+	assert_true(_manager.validate_data_for_scenario(adv, scenario),
+		"stable ADV content and visibility are valid save inputs")
+	assert_true(_manager.validate_data_for_scenario(nvl, scenario),
+		"ordered NVL content and per-entry profiles are valid save inputs")
+	assert_true(_manager.validate_data_for_scenario(overlay, scenario),
+		"the existing public overlay visual mode has a stable projection")
+	assert_true(_manager.validate_data_for_scenario(monologue, scenario),
+		"the existing public monologue visual mode has a stable projection")
+	var round_tripped: Variant = JSON.parse_string(JSON.stringify(nvl))
+	assert_true(round_tripped is Dictionary)
+	if round_tripped is Dictionary:
+		assert_true(_manager.validate_data_for_scenario(round_tripped, scenario))
+
+
+func test_save_without_dialogue_projection_remains_a_valid_old_save() -> void:
+	var scenario := _make_validation_scenario()
+	var old_save := _make_valid_save_snapshot()
+	assert_false(old_save["presentation_state"].has("dialogue_visibility"))
+	assert_false(old_save["presentation_state"].has("dialogue_content"))
+	assert_true(_manager.validate_data_for_scenario(old_save, scenario),
+		"missing issue #166 fields use read-time defaults without rewriting disk")
+
+
+func test_dialogue_visibility_schema_is_exact_and_never_truthy_coerced() -> void:
+	var scenario := _make_validation_scenario()
+	var invalid_values: Array[Variant] = [
+		[],
+		{"surface": 1, "quick_menu": true},
+		{"surface": false, "quick_menu": "true"},
+		{"surface": false},
+		{"surface": false, "quick_menu": true, "extra": false},
+	]
+	for invalid_visibility: Variant in invalid_values:
+		var snapshot := _make_valid_dialogue_save_snapshot()
+		snapshot["presentation_state"]["dialogue_visibility"] = (
+			invalid_visibility
+		)
+		assert_false(_manager.validate_data_for_scenario(snapshot, scenario),
+			"invalid visibility is rejected atomically: %s" % str(invalid_visibility))
+
+
+func test_dialogue_content_exact_schema_rejects_transient_or_malformed_data() -> void:
+	var scenario := _make_validation_scenario()
+	var invalid_contents: Array[Dictionary] = []
+	var extra_key: Dictionary = _make_valid_dialogue_save_snapshot()[
+		"presentation_state"]["dialogue_content"].duplicate(true)
+	extra_key["token"] = 7
+	invalid_contents.append(extra_key)
+	var missing_key := extra_key.duplicate(true)
+	missing_key.erase("token")
+	missing_key.erase("avatar_expression")
+	invalid_contents.append(missing_key)
+	var bad_version := extra_key.duplicate(true)
+	bad_version.erase("token")
+	bad_version["version"] = 2
+	invalid_contents.append(bad_version)
+	var bad_mode := extra_key.duplicate(true)
+	bad_mode.erase("token")
+	bad_mode["mode"] = "future_mode"
+	invalid_contents.append(bad_mode)
+	var empty_active := extra_key.duplicate(true)
+	empty_active.erase("token")
+	empty_active["segments"] = []
+	invalid_contents.append(empty_active)
+	var bad_segment := extra_key.duplicate(true)
+	bad_segment.erase("token")
+	bad_segment["segments"] = [{"text": "safe", "voice": "forbidden"}]
+	invalid_contents.append(bad_segment)
+	var non_string_text := extra_key.duplicate(true)
+	non_string_text.erase("token")
+	non_string_text["segments"] = [{"text": 7}]
+	invalid_contents.append(non_string_text)
+	var string_name_profile := extra_key.duplicate(true)
+	string_name_profile.erase("token")
+	string_name_profile["profile_name"] = &"message"
+	invalid_contents.append(string_name_profile)
+	var truthy_active := extra_key.duplicate(true)
+	truthy_active.erase("token")
+	truthy_active["active"] = 1
+	invalid_contents.append(truthy_active)
+	var unknown_profile := extra_key.duplicate(true)
+	unknown_profile.erase("token")
+	unknown_profile["profile_name"] = "missing_profile"
+	invalid_contents.append(unknown_profile)
+	var non_nvl_entries := extra_key.duplicate(true)
+	non_nvl_entries.erase("token")
+	non_nvl_entries["nvl_entries"] = [{
+		"profile_name": "message",
+		"character": "sakura",
+		"segments": [{"text": "forbidden"}],
+	}]
+	invalid_contents.append(non_nvl_entries)
+	var bad_nvl_tail: Dictionary = _make_valid_dialogue_save_snapshot("nvl")[
+		"presentation_state"]["dialogue_content"].duplicate(true)
+	bad_nvl_tail["segments"] = [{"text": "not the tail"}]
+	invalid_contents.append(bad_nvl_tail)
+	var bad_entry_profile: Dictionary = _make_valid_dialogue_save_snapshot("nvl")[
+		"presentation_state"]["dialogue_content"].duplicate(true)
+	bad_entry_profile["nvl_entries"][0]["profile_name"] = "missing_profile"
+	invalid_contents.append(bad_entry_profile)
+
+	for invalid_content: Dictionary in invalid_contents:
+		var snapshot := _make_valid_dialogue_save_snapshot()
+		snapshot["presentation_state"]["dialogue_content"] = invalid_content
+		assert_false(_manager.validate_data_for_scenario(snapshot, scenario),
+			"invalid Dialogue projection rejects the entire save")
+
+
+func test_inactive_dialogue_projection_must_be_the_exact_canonical_default() -> void:
+	var scenario := _make_validation_scenario()
+	var valid := _make_valid_dialogue_save_snapshot()
+	valid["presentation_state"]["dialogue_content"] = {
+		"version": 1,
+		"active": false,
+		"mode": "adv",
+		"profile_name": "",
+		"declarative_presentation": false,
+		"character": "",
+		"segments": [],
+		"avatar_expression": "",
+		"nvl_entries": [],
+	}
+	assert_true(_manager.validate_data_for_scenario(valid, scenario))
+	var smuggled := valid.duplicate(true)
+	smuggled["presentation_state"]["dialogue_content"]["character"] = "hidden"
+	assert_false(_manager.validate_data_for_scenario(smuggled, scenario),
+		"inactive content cannot smuggle a hidden visual document")
+	var round_tripped: Variant = JSON.parse_string(JSON.stringify(valid))
+	assert_true(round_tripped is Dictionary)
+	if round_tripped is Dictionary:
+		assert_true(_manager.validate_data_for_scenario(round_tripped, scenario),
+			"canonical inactive dialogue content survives a persisted JSON round-trip")
+	var noncanonical_mode := valid.duplicate(true)
+	noncanonical_mode["presentation_state"]["dialogue_content"]["mode"] = "overlay"
+	assert_false(_manager.validate_data_for_scenario(noncanonical_mode, scenario),
+		"inactive content must fail closed when the canonical mode drifts")
+	var noncanonical_version := valid.duplicate(true)
+	noncanonical_version["presentation_state"]["dialogue_content"]["version"] = 2.0
+	assert_false(_manager.validate_data_for_scenario(noncanonical_version, scenario),
+		"inactive content must fail closed when the canonical version drifts")
+
+
+func test_invalid_dialogue_projection_never_mutates_registered_provider() -> void:
+	var scenario := _make_validation_scenario()
+	var provider := MockProvider.new("presentation_state")
+	provider.data = {"preserved": true}
+	_manager.register_provider(provider)
+	_manager._ensure_dir()
+	var invalid := _make_valid_dialogue_save_snapshot()
+	invalid["presentation_state"]["dialogue_content"]["segments"] = [1]
+	var file := FileAccess.open(_save_dir + "save_1.json", FileAccess.WRITE)
+	file.store_string(JSON.stringify(invalid))
+	file.close()
+
+	assert_null(_manager.read_save_data(1, scenario))
+	assert_false(_manager.load_save(1, scenario))
+	assert_eq(provider.data, {"preserved": true},
+		"complete validation precedes every provider restore mutation")
 
 
 func test_has_save():

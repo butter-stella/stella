@@ -130,6 +130,21 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 		"bg": "",
 		"stage_layers": {},
 		"bgm": "",
+		"dialogue_visibility": {
+			"surface": true,
+			"quick_menu": true,
+		},
+		"dialogue_content": {
+			"version": 1,
+			"active": false,
+			"mode": "adv",
+			"profile_name": "",
+			"declarative_presentation": false,
+			"character": "",
+			"segments": [],
+			"avatar_expression": "",
+			"nvl_entries": [],
+		},
 	})
 
 	assert_not_same(_runtime.read_flags, old_read_flags)

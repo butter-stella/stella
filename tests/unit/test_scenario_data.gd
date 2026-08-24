@@ -295,6 +295,82 @@ func test_stage_batch_fingerprint_excludes_only_operation_line_metadata() -> voi
 	assert_ne(original.get_read_identity(), changed_operation.get_read_identity())
 
 
+func test_presentation_batch_fingerprint_excludes_only_operation_lines() -> void:
+	var original := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@presentation_batch policy=join
+  @stage hero show asset=stage:redraw_source transition=fade duration=0.3
+  @dialogue_visibility surface hide transition=fade duration=0.3
+@end"""), "main", "res://story/dialogue_visibility.stla")
+	var format_shifted := DslParser.parse(DslLexer.tokenize("""// lead note
+
+@chapter route
+@scene start
+@presentation_batch policy=join
+
+// child note
+  @stage hero show asset=stage:redraw_source transition=fade duration=0.3
+
+  @dialogue_visibility surface hide transition=fade duration=0.3
+@end"""), "main", "res://story/dialogue_visibility.stla")
+	var changed_policy := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@presentation_batch policy=fire_and_forget
+  @stage hero show asset=stage:redraw_source transition=fade duration=0.3
+  @dialogue_visibility surface hide transition=fade duration=0.3
+@end"""), "main", "res://story/dialogue_visibility.stla")
+	var changed_visibility := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@presentation_batch policy=join
+  @stage hero show asset=stage:redraw_source transition=fade duration=0.3
+  @dialogue_visibility surface show transition=fade duration=0.3
+@end"""), "main", "res://story/dialogue_visibility.stla")
+	var changed_order := DslParser.parse(DslLexer.tokenize("""@chapter route
+@scene start
+@presentation_batch policy=join
+  @dialogue_visibility surface hide transition=fade duration=0.3
+  @stage hero show asset=stage:redraw_source transition=fade duration=0.3
+@end"""), "main", "res://story/dialogue_visibility.stla")
+	var scenarios := [
+		original, format_shifted, changed_policy, changed_visibility, changed_order,
+	]
+	var batches: Array[CommandData] = []
+	for scenario: ScenarioData in scenarios:
+		assert_eq(scenario.diagnostics, [], str(scenario.diagnostics))
+		assert_eq(scenario.scenes.size(), 1)
+		if scenario.scenes.size() != 1:
+			continue
+		assert_eq(scenario.scenes[0].commands.size(), 1)
+		if scenario.scenes[0].commands.size() != 1:
+			continue
+		var batch: CommandData = scenario.scenes[0].commands[0]
+		var keys := batch.params.keys()
+		keys.sort()
+		assert_eq(batch.type, "presentation_batch")
+		assert_eq(keys, ["operation_lines", "operations", "policy"])
+		if batch.type != "presentation_batch" \
+				or keys != ["operation_lines", "operations", "policy"]:
+			continue
+		batches.append(batch)
+	if batches.size() != scenarios.size():
+		return
+
+	assert_ne(batches[0].declared_line, batches[1].declared_line)
+	assert_ne(batches[0].params["operation_lines"],
+		batches[1].params["operation_lines"])
+	assert_eq(batches[0].params["policy"], batches[1].params["policy"])
+	assert_eq(batches[0].params["operations"], batches[1].params["operations"])
+	assert_eq(original.content_fingerprint, format_shifted.content_fingerprint,
+		"presentation child lines remain diagnostic-only metadata")
+	assert_eq(original.get_read_identity(), format_shifted.get_read_identity())
+	for changed: ScenarioData in [
+		changed_policy, changed_visibility, changed_order,
+	]:
+		assert_ne(original.content_fingerprint, changed.content_fingerprint,
+			"policy, payload, and authored operation order remain semantic")
+		assert_ne(original.get_read_identity(), changed.get_read_identity())
+
+
 func test_semantic_fingerprint_uses_normalized_condition_ir() -> void:
 	var original := DslParser.parse(DslLexer.tokenize("""@chapter route
 @scene start

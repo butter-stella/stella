@@ -43,6 +43,47 @@ func _method_names(script: Script) -> Array[String]:
 	return names
 
 
+func _script_method(script: Script, method_name: String) -> Dictionary:
+	if script == null:
+		return {}
+	for method_value: Variant in script.get_script_method_list():
+		var method: Dictionary = method_value
+		if String(method.get("name", "")) == method_name:
+			return method
+	return {}
+
+
+func _argument_contract(method: Dictionary) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for argument_value: Variant in method.get("args", []):
+		var argument: Dictionary = argument_value
+		result.append({
+			"name": String(argument.get("name", "")),
+			"type": int(argument.get("type", TYPE_NIL)),
+			"class_name": String(argument.get("class_name", "")),
+		})
+	return result
+
+
+func _programmatic_context(command: CommandData) -> ScenarioContext:
+	var data := ScenarioData.new()
+	data.id = "presentation_batch_handler_contract"
+	data.source_path = "res://synthetic/presentation_batch_handler.stla"
+	var scene := SceneData.new()
+	scene.id = "start"
+	scene.commands = [command]
+	data.scenes = [scene]
+	var context := ScenarioContext.new(data)
+	context.bind_runtime_owner({"current": true})
+	return context
+
+
+func _signal_by_name(signal_name: StringName) -> Variant:
+	if not SignalBus.has_signal(signal_name):
+		return null
+	return SignalBus.get(signal_name)
+
+
 func _assert_no_public_setter(script: Script, field_names: Array[String]) -> void:
 	var methods := _method_names(script)
 	for field_name: String in field_names:
@@ -298,3 +339,452 @@ func test_legacy_raw_stage_facade_remains_void_and_untyped() -> void:
 	var return_info: Dictionary = method_info.get("return", {})
 	assert_eq(int(return_info.get("type", TYPE_NIL)), TYPE_NIL,
 		"the old Dictionary facade remains fire-and-forget void")
+
+
+func test_dialogue_visibility_is_the_second_typed_operation_adapter() -> void:
+	var base_operation := _global_class_script("PresentationOperation")
+	var visibility_operation := _global_class_script(
+		"DialogueVisibilityPresentationOperation")
+	assert_not_null(visibility_operation,
+		"missing issue #166 typed Dialogue visibility adapter")
+	if base_operation == null or visibility_operation == null:
+		return
+	assert_same(visibility_operation.get_base_script(), base_operation)
+	var operation: Object = visibility_operation.new({
+		"target": "quick_menu",
+		"action": "hide",
+		"transition": "fade",
+		"duration": 0.25,
+	})
+	assert_eq(operation.call("get_kind"), &"dialogue_visibility")
+	assert_eq(operation.call("get_channel"), &"dialogue:quick_menu")
+
+
+func test_batch_request_defensively_preserves_mixed_authored_order() -> void:
+	var visibility_script := _global_class_script(
+		"DialogueVisibilityPresentationOperation")
+	assert_not_null(visibility_script,
+		"missing issue #166 typed Dialogue visibility adapter")
+	if visibility_script == null:
+		return
+	var stage := StagePresentationOperation.new({
+		"action": "show",
+		"id": "mixed",
+		"properties": {"asset": "stage:redraw_source"},
+		"transition": "cut",
+		"duration": 0.0,
+	})
+	var surface: PresentationOperation = visibility_script.new({
+		"target": "surface",
+		"action": "hide",
+		"transition": "fade",
+		"duration": 0.25,
+	}) as PresentationOperation
+	var quick_menu: PresentationOperation = visibility_script.new({
+		"target": "quick_menu",
+		"action": "show",
+		"transition": "cut",
+		"duration": 0.0,
+	}) as PresentationOperation
+	var authored: Array[PresentationOperation] = [stage, surface, quick_menu]
+	var request := PresentationBatchRequest.new(
+		PresentationBatchRequest.Policy.JOIN, authored)
+	authored.clear()
+	var operations := request.get_operations()
+	assert_eq(operations.map(
+		func(operation: PresentationOperation) -> StringName:
+			return operation.get_kind()
+	), [&"stage", &"dialogue_visibility", &"dialogue_visibility"])
+	assert_eq(operations.map(
+		func(operation: PresentationOperation) -> StringName:
+			return operation.get_channel()
+	), [&"stage:mixed", &"dialogue:surface", &"dialogue:quick_menu"])
+	operations.clear()
+	assert_eq(request.get_operations().size(), 3,
+		"mixed operation container remains defensive")
+
+
+func test_director_accepts_true_empty_visibility_as_positive_zero_receipt_batch() -> void:
+	var visibility_script := _global_class_script(
+		"DialogueVisibilityPresentationOperation")
+	assert_not_null(visibility_script,
+		"missing issue #166 typed Dialogue visibility adapter")
+	if visibility_script == null:
+		return
+	var runtime := get_tree().root.get_node("StellaRuntime")
+	var director: PresentationDirector = runtime.presentation_director
+	assert_not_null(director)
+	var snapshot: Dictionary = runtime.presentation_state.capture_snapshot()
+	runtime.presentation_state.clear()
+	var context := ScenarioContext.new(ScenarioData.new())
+	var operation: PresentationOperation = visibility_script.new({
+		"target": "surface",
+		"action": "hide",
+		"transition": "cut",
+		"duration": 0.0,
+	}) as PresentationOperation
+	var operations: Array[PresentationOperation] = [operation]
+	var request := director.submit(
+		operations,
+		PresentationBatchRequest.Policy.JOIN,
+		context,
+		{
+			"source_path": "res://synthetic/empty_visibility.stla",
+			"scenario_id": "empty_visibility",
+			"line": 3,
+		},
+	)
+	assert_gt(request.get_batch_id(), 0,
+		"true empty Presenter completion still crosses the dispatch boundary")
+	assert_eq(request.get_receipts(), [])
+	assert_true(request.is_settled())
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(runtime.presentation_state.capture_snapshot().get(
+		"dialogue_visibility", {}).get("surface"), false)
+	runtime.presentation_state.restore_snapshot(snapshot)
+
+
+func test_malformed_dialogue_child_rejects_the_entire_mixed_batch_preallocation() -> void:
+	var visibility_script := _global_class_script(
+		"DialogueVisibilityPresentationOperation")
+	assert_not_null(visibility_script,
+		"missing issue #166 typed Dialogue visibility adapter")
+	if visibility_script == null:
+		return
+	var runtime := get_tree().root.get_node("StellaRuntime")
+	var before: Dictionary = runtime.presentation_state.capture_snapshot()
+	var stage := StagePresentationOperation.new({
+		"action": "show",
+		"id": "must_not_commit",
+		"properties": {"asset": "stage:redraw_source"},
+		"transition": "cut",
+		"duration": 0.0,
+	})
+	var malformed: PresentationOperation = visibility_script.new({
+		"target": "surface",
+		"action": "hide",
+		"transition": "fade",
+		"duration": NAN,
+	}) as PresentationOperation
+	var operations: Array[PresentationOperation] = [stage, malformed]
+	var request := (runtime.presentation_director as PresentationDirector).submit(
+		operations,
+		PresentationBatchRequest.Policy.JOIN,
+		ScenarioContext.new(ScenarioData.new()),
+		{
+			"source_path": "res://synthetic/malformed_visibility.stla",
+			"scenario_id": "malformed_visibility",
+			"line": 29,
+		},
+	)
+	assert_push_error("res://synthetic/malformed_visibility.stla:29")
+	assert_true(request.is_settled())
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	assert_eq(request.get_batch_id(), 0,
+		"invalid mixed content fails before request-id allocation")
+	assert_eq(request.get_receipts(), [])
+	assert_eq(runtime.presentation_state.capture_snapshot(), before,
+		"invalid Dialogue content cannot partially commit its Stage sibling")
+
+
+func test_presentation_batch_handler_exact_api_registration_and_single_runtime_owner() -> void:
+	var handler_script := _global_class_script("PresentationBatchHandler")
+	assert_not_null(handler_script, "missing issue #166 PresentationBatchHandler")
+	if handler_script == null:
+		return
+	var init_method := _script_method(handler_script, "_init")
+	assert_eq(_argument_contract(init_method), [
+		{
+			"name": "director", "type": TYPE_OBJECT,
+			"class_name": "PresentationDirector",
+		},
+		{
+			"name": "presentation_state", "type": TYPE_OBJECT,
+			"class_name": "PresentationState",
+		},
+	])
+	assert_eq(init_method.get("default_args", []), [null, null])
+	assert_eq(int(init_method.get("return", {}).get("type", TYPE_NIL)), TYPE_NIL,
+		"PresentationBatchHandler._init returns void")
+	var command_type_method := _script_method(handler_script, "get_command_type")
+	assert_false(command_type_method.is_empty())
+	if not command_type_method.is_empty():
+		assert_eq(int(command_type_method.get("return", {}).get(
+			"type", TYPE_NIL)), TYPE_STRING)
+	var execute_method := _script_method(handler_script, "execute")
+	assert_eq(_argument_contract(execute_method), [
+		{"name": "data", "type": TYPE_OBJECT, "class_name": "CommandData"},
+		{
+			"name": "context", "type": TYPE_OBJECT,
+			"class_name": "ScenarioContext",
+		},
+	])
+	assert_eq(int(execute_method.get("return", {}).get("type", TYPE_NIL)),
+		TYPE_NIL, "PresentationBatchHandler.execute returns void")
+	var runtime := get_tree().root.get_node("StellaRuntime")
+	assert_not_null(runtime.engine)
+	assert_not_null(runtime.engine.registry)
+	if runtime.engine == null or runtime.engine.registry == null:
+		return
+	assert_true(runtime.engine.registry.has_handler("presentation_batch"))
+	var registered: Object = runtime.engine.registry.get_handler(
+		"presentation_batch")
+	assert_not_null(registered)
+	if registered == null:
+		return
+	assert_same(registered.get_script(), handler_script)
+	assert_eq(registered.call("get_command_type"), "presentation_batch")
+	var owned_count := 0
+	for handler_value: Variant in runtime.engine.registry._handlers.values():
+		if handler_value is Object and (handler_value as Object).get_script() == handler_script:
+			owned_count += 1
+	assert_eq(owned_count, 1,
+		"StellaRuntime registers exactly one generic batch handler")
+
+
+func test_presentation_batch_handler_preflight_is_atomic_source_located_and_current_owned() -> void:
+	var handler_script := _global_class_script("PresentationBatchHandler")
+	assert_not_null(handler_script, "missing issue #166 PresentationBatchHandler")
+	if handler_script == null:
+		return
+	var runtime := get_tree().root.get_node("StellaRuntime")
+	var handler: Object = handler_script.new(
+		runtime.presentation_director, runtime.presentation_state)
+	var command := CommandData.new()
+	command.type = "presentation_batch"
+	command.declared_line = 43
+	command.params = {
+		"policy": "join",
+		"operations": [
+			{
+				"kind": "stage",
+				"payload": {
+					"action": "show", "id": "must_not_commit",
+					"properties": {"asset": "stage:redraw_source"},
+					"transition": "cut", "duration": 0.0,
+				},
+			},
+			{
+				"kind": "dialogue_visibility",
+				"payload": {
+					"target": "surface", "action": "hide",
+					"transition": "fade", "duration": NAN,
+				},
+			},
+		],
+		"operation_lines": [44, 71],
+	}
+	var context := _programmatic_context(command)
+	var before_state: Dictionary = runtime.presentation_state.capture_snapshot()
+	var before_entries: Dictionary = runtime.presentation_director._entries.duplicate(true)
+	var before_request_id := int(SignalBus._next_stage_operation_request_id)
+	var stage_dispatches := [0]
+	var visibility_dispatches := [0]
+	var generic_tails := [0]
+	var receipt_starts := [0]
+	var on_stage := func(_operations: Array, _force_cut: bool) -> void:
+		stage_dispatches[0] += 1
+	var on_visibility := func(_operations: Array, _force_cut: bool) -> void:
+		visibility_dispatches[0] += 1
+	var on_tail := func(_request_id: int, _delivered: bool) -> void:
+		generic_tails[0] += 1
+	var on_receipt := func(
+		_presenter_id: int,
+		_target: String,
+		_token: int,
+		_request_id: int,
+		_generation: int,
+	) -> void:
+		receipt_starts[0] += 1
+	SignalBus.stage_operations_requested.connect(on_stage)
+	var visibility_signal: Variant = _signal_by_name(
+		&"dialogue_visibility_operations_requested")
+	var tail_signal: Variant = _signal_by_name(&"presentation_operation_request_finished")
+	var receipt_signal: Variant = _signal_by_name(
+		&"dialogue_visibility_transition_receipt_started")
+	if visibility_signal is Signal:
+		(visibility_signal as Signal).connect(on_visibility)
+	if tail_signal is Signal:
+		(tail_signal as Signal).connect(on_tail)
+	if receipt_signal is Signal:
+		(receipt_signal as Signal).connect(on_receipt)
+	handler.call("execute", command, context)
+	assert_push_error("res://synthetic/presentation_batch_handler.stla:71")
+	assert_true(context.is_finished,
+		"the current invalid authored command fail-closes its owner")
+	assert_eq(runtime.presentation_state.capture_snapshot(), before_state)
+	assert_eq(runtime.presentation_director._entries, before_entries)
+	assert_eq(int(SignalBus._next_stage_operation_request_id), before_request_id)
+	assert_eq(stage_dispatches[0], 0)
+	assert_eq(visibility_dispatches[0], 0)
+	assert_eq(generic_tails[0], 0)
+	assert_eq(receipt_starts[0], 0)
+	assert_null(runtime.get_node_or_null("must_not_commit"))
+	SignalBus.stage_operations_requested.disconnect(on_stage)
+	if visibility_signal is Signal:
+		(visibility_signal as Signal).disconnect(on_visibility)
+	if tail_signal is Signal:
+		(tail_signal as Signal).disconnect(on_tail)
+	if receipt_signal is Signal:
+		(receipt_signal as Signal).disconnect(on_receipt)
+
+	for lines_value: Variant in [
+		[44],
+		[44, 0],
+		[44, "71"],
+		[44, 71, 72],
+	]:
+		var lines_command := CommandData.new()
+		lines_command.type = "presentation_batch"
+		lines_command.declared_line = 43
+		lines_command.params = command.params.duplicate(true)
+		lines_command.params["operation_lines"] = lines_value
+		var lines_context := _programmatic_context(lines_command)
+		handler.call("execute", lines_command, lines_context)
+		assert_push_error("res://synthetic/presentation_batch_handler.stla:43")
+		assert_true(lines_context.is_finished, str(lines_value))
+	var missing_lines_command := CommandData.new()
+	missing_lines_command.type = "presentation_batch"
+	missing_lines_command.declared_line = 43
+	missing_lines_command.params = command.params.duplicate(true)
+	missing_lines_command.params.erase("operation_lines")
+	var missing_lines_context := _programmatic_context(missing_lines_command)
+	handler.call("execute", missing_lines_command, missing_lines_context)
+	assert_push_error("res://synthetic/presentation_batch_handler.stla:43")
+	assert_true(missing_lines_context.is_finished)
+	assert_eq(runtime.presentation_state.capture_snapshot(), before_state)
+	assert_eq(runtime.presentation_director._entries, before_entries)
+	assert_eq(int(SignalBus._next_stage_operation_request_id), before_request_id)
+
+	var retired_context := _programmatic_context(command)
+	retired_context.bind_runtime_owner({"current": false})
+	handler.call("execute", command, retired_context)
+	assert_push_error("ScenarioContext is missing, cancelled, or not current")
+	assert_false(retired_context.is_finished,
+		"a deauthorized retained owner cannot be fail-closed by an old tail")
+	var cancelled_context := _programmatic_context(command)
+	cancelled_context.request_cancellation()
+	var cancelled_finished := cancelled_context.is_finished
+	handler.call("execute", command, cancelled_context)
+	assert_push_error("ScenarioContext is missing, cancelled, or not current")
+	assert_eq(cancelled_context.is_finished, cancelled_finished)
+	assert_eq(runtime.presentation_state.capture_snapshot(), before_state)
+	assert_eq(runtime.presentation_director._entries, before_entries)
+	assert_eq(int(SignalBus._next_stage_operation_request_id), before_request_id)
+
+
+func test_signal_bus_generic_projection_defers_and_serializes_cross_queue_dispatch() -> void:
+	var dispatches: Array[String] = []
+	var stage_finishes: Array[String] = []
+	var generic_finishes: Array[String] = []
+	var stale_mixed_request_id := [0]
+	var mixed_request_id := [0]
+	var stage_request_id := [0]
+	var dialogue_request_id := [0]
+	var reentrant_dialogue_request_id := [0]
+	var reentrant_enqueued := [false]
+	var on_stage := func(_operations: Array, _force_cut: bool) -> void:
+		var request_id := SignalBus.current_stage_operation_request_id()
+		dispatches.append("stage:%s" % request_id)
+		if request_id != stage_request_id[0] or reentrant_enqueued[0]:
+			return
+		reentrant_enqueued[0] = true
+		reentrant_dialogue_request_id[0] = SignalBus.emit_dialogue_visibility_operations([{
+			"target": "surface",
+			"action": "show",
+			"transition": "cut",
+			"duration": 0.0,
+		}])
+	var on_dialogue := func(_operations: Array, _force_cut: bool) -> void:
+		dispatches.append("dialogue:%s" % SignalBus.current_dialogue_visibility_request_id())
+	var on_stage_tail := func(request_id: int, delivered: bool) -> void:
+		stage_finishes.append("%s:%s" % [request_id, delivered])
+	var on_generic_tail := func(request_id: int, delivered: bool) -> void:
+		generic_finishes.append("%s:%s" % [request_id, delivered])
+	SignalBus.stage_operations_requested.connect(on_stage)
+	var visibility_signal: Variant = _signal_by_name(
+		&"dialogue_visibility_operations_requested")
+	var generic_tail_signal: Variant = _signal_by_name(
+		&"presentation_operation_request_finished")
+	if visibility_signal is Signal:
+		(visibility_signal as Signal).connect(on_dialogue)
+	SignalBus.stage_operation_request_finished.connect(on_stage_tail)
+	if generic_tail_signal is Signal:
+		(generic_tail_signal as Signal).connect(on_generic_tail)
+	SignalBus.run_presentation_projection(func() -> void:
+		stale_mixed_request_id[0] = SignalBus.emit_presentation_operations(
+			[{
+				"action": "show",
+				"id": "stale",
+				"properties": {"asset": "stage:redraw_source"},
+				"transition": "cut",
+				"duration": 0.0,
+			}],
+			[{
+				"target": "surface",
+				"action": "hide",
+				"transition": "cut",
+				"duration": 0.0,
+			}],
+			false,
+		)
+		SignalBus.reset_dialogue_visibility_visuals()
+		mixed_request_id[0] = SignalBus.emit_presentation_operations(
+			[{
+				"action": "show",
+				"id": "mixed",
+				"properties": {"asset": "stage:redraw_source"},
+				"transition": "cut",
+				"duration": 0.0,
+			}],
+			[{
+				"target": "quick_menu",
+				"action": "hide",
+				"transition": "cut",
+				"duration": 0.0,
+			}],
+			false,
+		)
+		stage_request_id[0] = SignalBus.emit_stage_operations([{
+			"action": "show",
+			"id": "stage_only",
+			"properties": {"asset": "stage:redraw_source"},
+			"transition": "cut",
+			"duration": 0.0,
+		}])
+		dialogue_request_id[0] = SignalBus.emit_dialogue_visibility_operations([{
+			"target": "surface",
+			"action": "hide",
+			"transition": "cut",
+			"duration": 0.0,
+		}])
+		assert_eq(dispatches, [],
+			"generic projection body keeps all queue-backed presentation dispatch deferred")
+		assert_eq(stage_finishes, [],
+			"stage-only request tails are deferred until the outermost projection exits")
+		assert_eq(generic_finishes, [],
+			"mixed/dialogue request tails are deferred until the outermost projection exits")
+	)
+	assert_eq(dispatches, [
+		"stage:%s" % stale_mixed_request_id[0],
+		"stage:%s" % mixed_request_id[0],
+		"dialogue:%s" % mixed_request_id[0],
+		"stage:%s" % stage_request_id[0],
+		"dialogue:%s" % dialogue_request_id[0],
+		"dialogue:%s" % reentrant_dialogue_request_id[0],
+	], "outer unified drain preserves enqueue order, skips stale mixed dialogue halves, and appends reentrant work by serial")
+	assert_eq(stage_finishes, [
+		"%s:true" % stage_request_id[0],
+	], "stage-only queue keeps exact-once terminal delivery")
+	assert_eq(generic_finishes, [
+		"%s:false" % stale_mixed_request_id[0],
+		"%s:true" % mixed_request_id[0],
+		"%s:true" % dialogue_request_id[0],
+		"%s:true" % reentrant_dialogue_request_id[0],
+	], "generic queue preserves stale mixed fail-close and keeps transaction-era entries alive")
+	SignalBus.stage_operations_requested.disconnect(on_stage)
+	if visibility_signal is Signal:
+		(visibility_signal as Signal).disconnect(on_dialogue)
+	SignalBus.stage_operation_request_finished.disconnect(on_stage_tail)
+	if generic_tail_signal is Signal:
+		(generic_tail_signal as Signal).disconnect(on_generic_tail)

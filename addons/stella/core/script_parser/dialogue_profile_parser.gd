@@ -29,10 +29,13 @@ const BOOL_KEYS := [
 	"background_visible",
 ]
 const STRING_KEYS := ["entry_prefix", "entry_separator"]
+const GROUP_LIST_KEYS := ["surface_groups", "quick_menu_groups"]
 const RESOURCE_PATH_KEYS := [
 	"advance_indicator_texture",
 	"advance_indicator_scene",
 ]
+const DEFAULT_SURFACE_GROUPS: Array[String] = ["dialogue_surface"]
+const DEFAULT_QUICK_MENU_GROUPS: Array[String] = ["quick_menu"]
 const ADVANCE_INDICATOR_ANIMATIONS := {
 	"none": "none",
 	"pulse": "pulse",
@@ -174,7 +177,10 @@ static func _parse_declaration(
 			% [profile_name, token.line], token.line)
 		return ""
 	if not profiles.has(profile_name):
-		profiles[profile_name] = {}
+		profiles[profile_name] = {
+			"surface_groups": DEFAULT_SURFACE_GROUPS.duplicate(),
+			"quick_menu_groups": DEFAULT_QUICK_MENU_GROUPS.duplicate(),
+		}
 	var profile: Dictionary = profiles[profile_name]
 	_record_declaration_provenance(
 		profile, profile_name, source_path, token.line)
@@ -198,6 +204,9 @@ static func _parse_declaration(
 		if key in STRING_KEYS:
 			parsed = _parse_string_property(
 				key, assignment_value, token.line, diagnostics)
+		elif key in GROUP_LIST_KEYS:
+			parsed = _parse_group_list_property(
+				key, _unquote(assignment_value), token.line, diagnostics, profile)
 		elif key in RESOURCE_PATH_KEYS:
 			parsed = _parse_resource_path_property(
 				key, assignment_value, token.line, diagnostics)
@@ -271,6 +280,47 @@ static func _parse_property(
 			return _invalid(diagnostics,
 				"DslParser: unknown dialogue profile property '%s' (line %d)"
 				% [key, line], line)
+
+
+static func _parse_group_list_property(
+	key: String,
+	raw_value: String,
+	line: int,
+	diagnostics: Array,
+	profile: Dictionary,
+) -> Dictionary:
+	var groups: Array[String] = []
+	var seen: Dictionary = {}
+	if raw_value.is_empty():
+		return _invalid(diagnostics,
+			"DslParser: dialogue profile %s requires at least one group name (line %d)"
+			% [key, line], line)
+	for group_value in raw_value.split(",", true):
+		var group_name := String(group_value).strip_edges()
+		if group_name.is_empty():
+			return _invalid(diagnostics,
+				"DslParser: dialogue profile %s group names cannot be empty (line %d)"
+				% [key, line], line)
+		if not _valid_group_name(group_name):
+			return _invalid(diagnostics,
+				"DslParser: dialogue profile %s group '%s' is invalid (line %d)"
+				% [key, group_name, line], line)
+		if seen.has(group_name):
+			return _invalid(diagnostics,
+				"DslParser: dialogue profile %s group '%s' is duplicated (line %d)"
+				% [key, group_name, line], line)
+		seen[group_name] = true
+		groups.append(group_name)
+	var other_key := (
+		"quick_menu_groups" if key == "surface_groups" else "surface_groups"
+	)
+	var other_groups: Array = profile.get(other_key, []).duplicate()
+	for group_name in groups:
+		if group_name in other_groups:
+			return _invalid(diagnostics,
+				"DslParser: dialogue profile %s group '%s' overlaps %s (line %d)"
+				% [key, group_name, other_key, line], line)
+	return _valid(groups)
 
 
 static func _store_profile_property(
@@ -551,6 +601,20 @@ static func _valid_profile_name(profile_name: String) -> bool:
 		and not profile_name.contains(",")
 		and not profile_name.contains("/")
 	)
+
+
+static func _valid_group_name(group_name: String) -> bool:
+	if group_name.is_empty():
+		return false
+	var first := group_name.substr(0, 1)
+	if first < "a" or first > "z":
+		return false
+	for character in group_name:
+		var is_letter := character >= "a" and character <= "z"
+		var is_digit := character >= "0" and character <= "9"
+		if not is_letter and not is_digit and character != "_":
+			return false
+	return true
 
 
 static func _command_name(raw: String) -> String:

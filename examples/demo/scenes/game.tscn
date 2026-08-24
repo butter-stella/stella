@@ -125,7 +125,7 @@ mouse_filter = 2
 script = ExtResource("3")
 text_rect_target_path = NodePath("HBox")
 
-[node name="DialogueBg" type="Panel" parent="UILayer/DialoguePanel" unique_id=2104429375]
+[node name="DialogueBg" type="Panel" parent="UILayer/DialoguePanel" unique_id=2104429375 groups=["dialogue_surface"]]
 layout_mode = 1
 anchors_preset = 12
 anchor_top = 1.0
@@ -182,7 +182,7 @@ layout_mode = 2
 layout_mode = 2
 theme_override_constants/separation = 12
 
-[node name="NameLabel" type="Label" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox/NameRow" unique_id=434916363]
+[node name="NameLabel" type="Label" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox/NameRow" unique_id=434916363 groups=["dialogue_surface"]]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.72, 0.77, 1)
@@ -197,7 +197,7 @@ theme_override_styles/fill = SubResource("voice_bar_fill")
 theme_override_styles/background = SubResource("voice_bar_bg")
 script = ExtResource("9")
 
-[node name="TextLabel" type="RichTextLabel" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox" unique_id=1853883713]
+[node name="TextLabel" type="RichTextLabel" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox" unique_id=1853883713 groups=["dialogue_surface"]]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 120)
 layout_mode = 2

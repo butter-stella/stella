@@ -7,6 +7,8 @@ extends GutTest
 
 
 const DEMO_PATH = "res://examples/demo/scenarios/demo.stla"
+const DIALOGUE_VISIBILITY_REFERENCE_PATH = \
+	"res://examples/demo/scenarios/dialogue_visibility.stla"
 
 
 func _parse_demo() -> ScenarioData:
@@ -16,6 +18,14 @@ func _parse_demo() -> ScenarioData:
 	file.close()
 	var tokens = DslLexer.tokenize(source)
 	return DslParser.parse(tokens, "demo")
+
+
+func _profile_groups(value: Variant) -> Array[String]:
+	var result: Array[String] = []
+	if value is Array or value is PackedStringArray:
+		for item: Variant in value:
+			result.append(String(item))
+	return result
 
 
 func test_demo_parses_with_no_diagnostics():
@@ -89,3 +99,106 @@ func test_demo_cafe_flash_is_a_real_command_before_combined_dialogue():
 	assert_gte(flash_index, 0, "demo flash must survive parsing")
 	assert_gte(combine_index, 0, "demo should contain the combined dialogue")
 	assert_lt(flash_index, combine_index, "flash should play when the combined line begins")
+
+
+func test_dialogue_visibility_public_reference_parses_without_private_content() -> void:
+	assert_true(FileAccess.file_exists(DIALOGUE_VISIBILITY_REFERENCE_PATH),
+		"issue #166 publishes one redistributable reference scenario")
+	if not FileAccess.file_exists(DIALOGUE_VISIBILITY_REFERENCE_PATH):
+		return
+	var file := FileAccess.open(
+		DIALOGUE_VISIBILITY_REFERENCE_PATH, FileAccess.READ)
+	assert_not_null(file)
+	if file == null:
+		return
+	var source := file.get_as_text()
+	file.close()
+	var data := DslParser.parse(
+		DslLexer.tokenize(source),
+		"dialogue_visibility_demo",
+		DIALOGUE_VISIBILITY_REFERENCE_PATH,
+	)
+	assert_eq(data.diagnostics, [], str(data.diagnostics))
+	assert_not_null(data.get_chapter("dialogue_visibility_demo"))
+	var scene := data.get_scene("dialogue_visibility_start")
+	assert_not_null(scene)
+	assert_true("@presentation_batch" in source)
+	assert_true("@dialogue_visibility surface" in source)
+	assert_true("@dialogue_visibility quick_menu" in source)
+	var message := data.get_dialogue_profile("message")
+	var novel := data.get_dialogue_profile("novel")
+	assert_eq(_profile_groups(message.get("surface_groups", [])), [
+		"dialogue_surface",
+	])
+	assert_eq(_profile_groups(message.get("quick_menu_groups", [])), [
+		"quick_menu",
+	])
+	assert_eq(_profile_groups(novel.get("surface_groups", [])), [
+		"dialogue_surface",
+	])
+	assert_eq(_profile_groups(novel.get("quick_menu_groups", [])), [
+		"quick_menu",
+	])
+	if scene == null:
+		return
+	var batches: Array[CommandData] = []
+	for command_value: Variant in scene.commands:
+		var command: CommandData = command_value
+		if command.type == "presentation_batch":
+			batches.append(command)
+	assert_eq(batches.size(), 6,
+		"public reference compiles six exact generic batches")
+	if batches.size() != 6:
+		return
+	assert_eq(batches.map(func(batch: CommandData) -> int:
+		return batch.declared_line), [14, 21, 26, 27, 30, 34])
+	assert_eq(batches.map(func(batch: CommandData) -> Array:
+		return batch.params.get("operation_lines", [])), [
+		[15, 16, 17], [22, 23], [26], [27], [31], [35, 36],
+	])
+	assert_eq(batches.map(func(batch: CommandData) -> String:
+		return batch.get_string("policy")), [
+		"join", "join", "join", "join", "join", "join",
+	])
+	assert_eq(batches.map(func(batch: CommandData) -> Array:
+		return (batch.params.get("operations", []) as Array).map(
+			func(operation: Dictionary) -> String:
+				return String(operation.get("kind", ""))
+		)), [
+		["dialogue_visibility", "dialogue_visibility", "stage"],
+		["dialogue_visibility", "dialogue_visibility"],
+		["dialogue_visibility"],
+		["dialogue_visibility"],
+		["dialogue_visibility"],
+		["dialogue_visibility", "stage"],
+	])
+	var expected_visibility := [
+		["surface", "hide", "fade", 0.3],
+		["quick_menu", "hide", "fade", 0.3],
+		["surface", "show", "fade", 0.2],
+		["quick_menu", "show", "fade", 0.2],
+		["surface", "hide", "fade", 0.2],
+		["surface", "show", "fade", 0.2],
+		["quick_menu", "hide", "fade", 0.2],
+		["quick_menu", "show", "fade", 0.2],
+	]
+	var actual_visibility: Array = []
+	for batch: CommandData in batches:
+		for operation_value: Variant in batch.params["operations"]:
+			var operation: Dictionary = operation_value
+			if String(operation.get("kind", "")) != "dialogue_visibility":
+				continue
+			var payload: Dictionary = operation.get("payload", {})
+			actual_visibility.append([
+				payload.get("target"), payload.get("action"),
+				payload.get("transition"), payload.get("duration"),
+			])
+	assert_eq(actual_visibility, expected_visibility)
+	var first_stage: Dictionary = batches[0].params["operations"][2]["payload"]
+	assert_eq(first_stage.get("action"), "update")
+	assert_eq(first_stage.get("transition"), "move")
+	assert_eq(first_stage.get("duration"), 0.3)
+	var clear_stage: Dictionary = batches[5].params["operations"][1]["payload"]
+	assert_eq(clear_stage.get("action"), "clear")
+	assert_eq(clear_stage.get("transition"), "fade")
+	assert_eq(clear_stage.get("duration"), 0.2)

@@ -74,6 +74,18 @@ var _auxiliary_visibility_baseline: Dictionary = {}
 var _profile_warning_keys: Dictionary = {}
 var _active_stla_mode_profile: DialogueModeProfile
 var _active_uses_stla_presentation: bool = false
+var _canonical_dialogue_visibility := {
+	"surface": true,
+	"quick_menu": true,
+}
+var _dialogue_visibility_token_serial: int = 0
+var _dialogue_visibility_generation: Dictionary = {
+	"surface": 1,
+	"quick_menu": 1,
+}
+var _dialogue_visibility_nodes: Dictionary = {}
+var _dialogue_visibility_binding: Dictionary = {}
+var _dialogue_visibility_active: Dictionary = {}
 
 # A configured wait glyph is presentation-only. It is created lazily so
 # projects that do not opt in keep the exact legacy scene tree and visuals.
@@ -177,6 +189,22 @@ func _ready():
 	SignalBus.stage_operation_request_finished.connect(
 		_on_stage_operation_request_finished
 	)
+	if SignalBus.has_signal(&"dialogue_visibility_operations_requested"):
+		(SignalBus.get(&"dialogue_visibility_operations_requested") as Signal).connect(
+			_on_dialogue_visibility_operations_requested
+		)
+	if SignalBus.has_signal(&"dialogue_visibility_state_apply_requested"):
+		(SignalBus.get(&"dialogue_visibility_state_apply_requested") as Signal).connect(
+			_on_dialogue_visibility_state_apply_requested
+		)
+	if SignalBus.has_signal(&"dialogue_visibility_visuals_reset_requested"):
+		(SignalBus.get(&"dialogue_visibility_visuals_reset_requested") as Signal).connect(
+			_on_dialogue_visibility_visuals_reset_requested
+		)
+	if SignalBus.has_signal(&"dialogue_visibility_transition_receipts_finish_requested"):
+		(SignalBus.get(
+			&"dialogue_visibility_transition_receipts_finish_requested"
+		) as Signal).connect(_on_dialogue_visibility_transition_receipts_finish_requested)
 	_config_loader = StellaRuntime.character_config_loader
 	_avatar_container = get_node_or_null("%AvatarContainer")
 	if _avatar_container:
@@ -192,6 +220,7 @@ func _ready():
 	# were already enabled, so there may be no active_changed edge to repaint it.
 	_update_toggle_buttons()
 	_capture_authored_presentation()
+	_capture_dialogue_visibility_nodes()
 	_validate_configured_profiles()
 	text_label.resized.connect(_on_indicator_layout_changed)
 	text_label.theme_changed.connect(_on_indicator_layout_changed)
@@ -2700,6 +2729,7 @@ func _apply_mode_profile(mode: String, profile: DialogueModeProfile) -> void:
 		for node in nodes:
 			_capture_auxiliary_visibility(node)
 			node.visible = bool(profile.visibility_groups[group_name_value])
+	_apply_canonical_dialogue_visibility()
 
 
 func _apply_legacy_mode_layout(mode: String) -> void:
@@ -2770,6 +2800,7 @@ func _restore_authored_presentation() -> void:
 		var node: CanvasItem = entry["node"]
 		if is_instance_valid(node):
 			node.visible = entry["visible"]
+	_apply_canonical_dialogue_visibility()
 
 
 func _capture_control_rect(control: Control) -> Dictionary:
@@ -2820,6 +2851,475 @@ func _capture_auxiliary_visibility(node: CanvasItem) -> void:
 		"node": node,
 		"visible": node.visible,
 	}
+
+
+func _capture_dialogue_visibility_nodes() -> void:
+	_dialogue_visibility_nodes = {
+		"surface": [],
+		"quick_menu": [],
+	}
+	_resolve_dialogue_visibility_binding({})
+
+
+func _apply_canonical_dialogue_visibility() -> void:
+	for target: String in _canonical_dialogue_visibility.keys():
+		for node_value: Variant in _dialogue_visibility_nodes.get(target, []):
+			var node: CanvasItem = node_value
+			if is_instance_valid(node):
+				_capture_auxiliary_visibility(node)
+				var baseline := (
+					_auxiliary_visibility_baseline.get(
+						node.get_instance_id(),
+						{"visible": node.visible}
+					) as Dictionary
+				)
+				node.visible = (
+					bool(_canonical_dialogue_visibility[target])
+					and bool(baseline.get("visible", true))
+				)
+
+
+func _emit_dialogue_visibility_receipt(
+	target: String,
+	request_id: int,
+) -> Dictionary:
+	_dialogue_visibility_token_serial += 1
+	var generation := int(_dialogue_visibility_generation.get(target, 1))
+	(SignalBus.get(&"dialogue_visibility_transition_receipt_started") as Signal).emit(
+		get_instance_id(),
+		target,
+		_dialogue_visibility_token_serial,
+		request_id,
+		generation,
+	)
+	return {
+		"target": target,
+		"token": _dialogue_visibility_token_serial,
+		"generation": generation,
+		"operation_request_id": request_id,
+	}
+
+
+func _on_dialogue_visibility_operations_requested(
+	operations: Array,
+	force_cut: bool,
+) -> void:
+	var request_id := SignalBus.current_dialogue_visibility_request_id()
+	if not SignalBus.is_current_dialogue_visibility_operation_valid():
+		return
+	for operation_value: Variant in operations:
+		var payload: Dictionary = {}
+		var runtime_binding: Dictionary = {}
+		if operation_value is PresentationOperation:
+			payload = (operation_value as PresentationOperation).get_payload()
+			if operation_value.has_method("get_runtime_binding"):
+				runtime_binding = operation_value.call("get_runtime_binding")
+		elif operation_value is Dictionary:
+			payload = (operation_value as Dictionary).duplicate(true)
+		_resolve_dialogue_visibility_binding(runtime_binding)
+		var target := String(payload.get("target", "")).strip_edges()
+		if target not in ["surface", "quick_menu"]:
+			continue
+		_retire_dialogue_visibility_target(target, &"superseded")
+		_dialogue_visibility_generation[target] = int(
+			_dialogue_visibility_generation.get(target, 1)
+		) + 1
+		_canonical_dialogue_visibility[target] = String(
+			payload.get("action", "show")
+		) == "show"
+		_apply_canonical_dialogue_visibility()
+		if force_cut or (
+			String(payload.get("transition", "cut")) == "cut"
+			and float(payload.get("duration", 0.0)) <= 0.0
+		):
+			continue
+		var identity := _emit_dialogue_visibility_receipt(target, request_id)
+		_dialogue_visibility_active[target] = identity.duplicate(true)
+
+
+func _on_dialogue_visibility_state_apply_requested(
+	visibility: Dictionary,
+	content: Dictionary,
+	runtime_binding: Dictionary,
+) -> void:
+	_canonical_dialogue_visibility = visibility.duplicate(true)
+	_resolve_dialogue_visibility_binding(runtime_binding)
+	_apply_visual_only_dialogue_restore(content, runtime_binding)
+	_apply_canonical_dialogue_visibility()
+
+
+func _on_dialogue_visibility_visuals_reset_requested() -> void:
+	for target_value: Variant in _dialogue_visibility_active.keys().duplicate():
+		_retire_dialogue_visibility_target(String(target_value), &"cancelled")
+	_dialogue_visibility_active.clear()
+	_canonical_dialogue_visibility = {
+		"surface": true,
+		"quick_menu": true,
+	}
+	for target: String in _dialogue_visibility_generation.keys():
+		_dialogue_visibility_generation[target] = int(
+			_dialogue_visibility_generation.get(target, 1)
+		) + 1
+	_apply_canonical_dialogue_visibility()
+
+
+func _on_dialogue_visibility_transition_receipts_finish_requested(
+	transitions: Array,
+) -> void:
+	for transition_value: Variant in transitions:
+		if not transition_value is Dictionary:
+			continue
+		var transition: Dictionary = transition_value
+		var target := String(transition.get("target", "")).strip_edges()
+		if not _dialogue_visibility_active.has(target):
+			continue
+		var active: Dictionary = _dialogue_visibility_active[target]
+		if (
+			int(transition.get("presenter_instance_id", -1)) != get_instance_id()
+			or int(transition.get("token", -1)) != int(active.get("token", -2))
+			or int(transition.get("operation_request_id", -1))
+				!= int(active.get("operation_request_id", -2))
+			or int(transition.get("generation", -1))
+				!= int(active.get("generation", -2))
+		):
+			continue
+		_retire_dialogue_visibility_target(target, &"completed")
+
+
+func _resolve_dialogue_visibility_binding(runtime_binding: Dictionary) -> void:
+	var current := (
+		runtime_binding.get("current", {}) as Dictionary
+	).duplicate(true)
+	var defaults := (
+		runtime_binding.get("default", {
+			"surface_groups": ["dialogue_surface"],
+			"quick_menu_groups": ["quick_menu"],
+		}) as Dictionary
+	).duplicate(true)
+	var profile_name := String(current.get("profile_name", ""))
+	var provenance := (
+		current.get("provenance", {}) as Dictionary
+	).duplicate(true)
+	var resolved := {
+		"surface_groups": _normalize_dialogue_visibility_groups(
+			current.get("surface_groups", defaults.get("surface_groups", [])),
+			"surface_groups",
+			profile_name,
+			provenance,
+			defaults,
+		),
+		"quick_menu_groups": _normalize_dialogue_visibility_groups(
+			current.get("quick_menu_groups", defaults.get("quick_menu_groups", [])),
+			"quick_menu_groups",
+			profile_name,
+			provenance,
+			defaults,
+		),
+	}
+	var surface_nodes := _binding_nodes_for_groups(
+		resolved["surface_groups"] as Array
+	)
+	var quick_nodes := _binding_nodes_for_groups(
+		resolved["quick_menu_groups"] as Array
+	)
+	var overlap_groups := _group_overlap(
+		resolved["surface_groups"] as Array,
+		resolved["quick_menu_groups"] as Array,
+		surface_nodes,
+		quick_nodes,
+	)
+	if not overlap_groups.is_empty():
+		_emit_dialogue_visibility_binding_warning(
+			profile_name,
+			provenance,
+			"surface_groups",
+			"quick_menu_groups",
+			overlap_groups,
+			"overlap",
+		)
+		resolved = defaults.duplicate(true)
+		surface_nodes = _binding_nodes_for_groups(
+			resolved["surface_groups"] as Array
+		)
+		quick_nodes = _binding_nodes_for_groups(
+			resolved["quick_menu_groups"] as Array
+		)
+		if not _group_overlap(
+			resolved["surface_groups"] as Array,
+			resolved["quick_menu_groups"] as Array,
+			surface_nodes,
+			quick_nodes,
+		).is_empty():
+			resolved["surface_groups"] = []
+			resolved["quick_menu_groups"] = []
+			surface_nodes = []
+			quick_nodes = []
+	_dialogue_visibility_binding = {
+		"current": resolved.duplicate(true),
+		"default": defaults.duplicate(true),
+		"profile_name": profile_name,
+		"provenance": provenance.duplicate(true),
+	}
+	_dialogue_visibility_nodes = {
+		"surface": surface_nodes,
+		"quick_menu": quick_nodes,
+	}
+
+
+func _normalize_dialogue_visibility_groups(
+	raw_groups: Variant,
+	field_name: String,
+	profile_name: String,
+	provenance: Dictionary,
+	defaults: Dictionary,
+) -> Array[String]:
+	var normalized: Array[String] = []
+	if raw_groups is Array:
+		for group_value: Variant in raw_groups:
+			var group_name := String(group_value).strip_edges()
+			if group_name.is_empty():
+				continue
+			normalized.append(group_name)
+	if normalized.is_empty():
+		var fallback: Array = defaults.get(field_name, [])
+		for group_value: Variant in fallback:
+			var group_name := String(group_value).strip_edges()
+			if not group_name.is_empty():
+				normalized.append(group_name)
+	if normalized.is_empty():
+		return normalized
+	var resolved_nodes := _binding_nodes_for_groups(normalized)
+	if resolved_nodes.is_empty():
+		for group_name: String in normalized:
+			_emit_dialogue_visibility_binding_warning(
+				profile_name,
+				provenance,
+				field_name,
+				"",
+				[group_name],
+				"missing",
+			)
+		return []
+	return normalized
+
+
+func _binding_nodes_for_groups(group_names: Array) -> Array[CanvasItem]:
+	var result: Array[CanvasItem] = []
+	var seen: Dictionary = {}
+	for group_name_value: Variant in group_names:
+		var group_name := StringName(String(group_name_value))
+		for node in _find_auxiliary_group_nodes(group_name):
+			var instance_id := node.get_instance_id()
+			if seen.has(instance_id):
+				continue
+			seen[instance_id] = true
+			result.append(node)
+	return result
+
+
+func _group_overlap(
+	surface_groups: Array,
+	quick_groups: Array,
+	surface_nodes: Array,
+	quick_nodes: Array,
+) -> Array[String]:
+	var surface_ids: Dictionary = {}
+	for node: CanvasItem in surface_nodes:
+		surface_ids[node.get_instance_id()] = true
+	var overlap: Array[String] = []
+	var has_overlap := false
+	for node: CanvasItem in quick_nodes:
+		if surface_ids.has(node.get_instance_id()):
+			has_overlap = true
+	if has_overlap:
+		for group_name_value: Variant in surface_groups:
+			overlap.append(String(group_name_value))
+		for group_name_value: Variant in quick_groups:
+			var group_name := String(group_name_value)
+			if group_name not in overlap:
+				overlap.append(group_name)
+	return overlap
+
+
+func _emit_dialogue_visibility_binding_warning(
+	profile_name: String,
+	provenance: Dictionary,
+	field_name: String,
+	other_field_name: String,
+	group_names: Array,
+	failure_kind: String,
+) -> void:
+	var source_path := String(provenance.get("source_path", ""))
+	var field_lines := provenance.get("field_lines", {}) as Dictionary
+	var line := int(field_lines.get(field_name, 0))
+	var normalized_groups: Array[String] = []
+	var seen_groups: Dictionary = {}
+	for group_name_value: Variant in group_names:
+		var group_name := String(group_name_value).strip_edges()
+		if group_name.is_empty() or seen_groups.has(group_name):
+			continue
+		seen_groups[group_name] = true
+		normalized_groups.append(group_name)
+	normalized_groups.sort()
+	var other_line := int(field_lines.get(other_field_name, 0))
+	var warning_key := "dialogue-visibility-binding:%s:%s:%s:%d:%s:%d:%s:%s" % [
+		source_path,
+		profile_name,
+		field_name,
+		line,
+		other_field_name,
+		other_line,
+		failure_kind,
+		"|".join(normalized_groups),
+	]
+	var message := (
+		"profile=%s source=%s field=%s line=%d"
+		% [profile_name, source_path, field_name, line]
+	)
+	for group_name in normalized_groups:
+		message += " group=%s" % group_name
+	if not other_field_name.is_empty():
+		message += " field=%s line=%d" % [other_field_name, other_line]
+	message += " failure_kind=%s" % failure_kind
+	if _profile_warning_keys.has(warning_key):
+		return
+	_profile_warning_keys[warning_key] = true
+	push_warning("DialoguePresenter runtime binding: %s" % message)
+
+
+func _apply_visual_only_dialogue_restore(
+	content: Dictionary,
+	runtime_binding: Dictionary,
+) -> void:
+	_abort_current_dialogue_activation()
+	_restore_authored_presentation()
+	_current_voice = ""
+	_current_voice_character = ""
+	_voice_playing = false
+	_active_voice_token = -1
+	_playback_queue_active = false
+	_playback_owner_dialogue_gen = -1
+	_playback_aborted = true
+	_playback_dialogue_finished_emitted = false
+	_playback_total_duration = 0.0
+	_playback_played_duration = 0.0
+	_playback_segment_durations.clear()
+	_playback_voice_token = -1
+	_stage_transition_records.clear()
+	_finalization_transition_records.clear()
+	_stage_operation_request_owners.clear()
+	_stage_operation_request_results.clear()
+	_queued_voice_replay_request.clear()
+	_finalization_pending = false
+	_finalization_in_progress = false
+	_dialogue_ready = false
+	_indicator_candidate_dialogue_gen = -1
+	_skip_pending_dialogue_gen = -1
+	_auto_pending_dialogue_gen = -1
+	_active_uses_stla_presentation = bool(
+		content.get("declarative_presentation", false)
+	)
+	_current_mode = String(content.get("mode", "adv"))
+	_current_character = String(content.get("character", ""))
+	_current_avatar_expression = String(content.get("avatar_expression", ""))
+	_dialogue_segments = (content.get("segments", []) as Array).duplicate(true)
+	_dialogue_voice_character = ""
+	_dialogue_total_duration = 0.0
+	_segment_presentation_complete = false
+	_next_stage_segment_index = 0
+	if not bool(content.get("active", false)):
+		visible = false
+		_reset_nvl_accumulator()
+		name_label.text = ""
+		name_label.visible = false
+		text_label.text = ""
+		text_label.visible_characters = -1
+		if _avatar_container:
+			_avatar_container.visible = false
+			if _avatar_texture:
+				_avatar_texture.texture = null
+		return
+	visible = true
+	var current := (runtime_binding.get("current", {}) as Dictionary).duplicate(true)
+	var profile_dict := (current.get("profile", {}) as Dictionary).duplicate(true)
+	if not profile_dict.is_empty():
+		var mode_profile := DialogueModeProfile.from_dictionary(
+			profile_dict,
+			current.get("provenance", {}) as Dictionary,
+		)
+		_active_stla_mode_profile = mode_profile
+		_apply_mode_profile(_current_mode, mode_profile)
+	else:
+		_active_stla_mode_profile = null
+	if _current_mode == "nvl":
+		name_label.text = ""
+		name_label.visible = false
+		var pieces: Array[String] = []
+		var binding_entries: Array = runtime_binding.get("nvl_entries", [])
+		var content_entries: Array = content.get("nvl_entries", [])
+		for index in range(content_entries.size()):
+			var entry: Dictionary = content_entries[index]
+			var profile_name := String(entry.get("profile_name", ""))
+			var entry_binding := {}
+			for candidate_value: Variant in binding_entries:
+				var candidate: Dictionary = candidate_value
+				if String(candidate.get("profile_name", "")) == profile_name:
+					entry_binding = candidate
+					break
+			var entry_profile := (entry_binding.get("profile", {}) as Dictionary).duplicate(true)
+			var prefix := DEFAULT_NVL_ENTRY_PREFIX
+			var separator := DEFAULT_NVL_ENTRY_SEPARATOR
+			if not entry_profile.is_empty():
+				var entry_mode_profile := DialogueModeProfile.from_dictionary(
+					entry_profile,
+					entry_binding.get("provenance", {}) as Dictionary,
+				)
+				if entry_mode_profile.overrides_property(&"entry_prefix"):
+					prefix = entry_mode_profile.entry_prefix
+				if entry_mode_profile.overrides_property(&"entry_separator"):
+					separator = entry_mode_profile.entry_separator
+			if index > 0:
+				pieces.append(separator)
+			var speaker := String(entry.get("character", ""))
+			var speaker_prefix := "%s：" % speaker if not speaker.is_empty() else ""
+			var segs: Array = entry.get("segments", [])
+			var text := String((segs[0] as Dictionary).get("text", "")) if not segs.is_empty() else ""
+			pieces.append(prefix + speaker_prefix + text)
+		_nvl_render_source = "".join(pieces)
+		_nvl_text = _nvl_render_source
+		_nvl_has_entries = not content_entries.is_empty()
+		text_label.text = _nvl_render_source
+		text_label.visible_characters = -1
+	else:
+		_reset_nvl_accumulator()
+		var full_text := String((_dialogue_segments[0] as Dictionary).get("text", "")) if not _dialogue_segments.is_empty() else ""
+		if _current_mode == "adv" and not _current_character.is_empty():
+			name_label.text = _current_character
+			name_label.visible = true
+		else:
+			name_label.text = ""
+			name_label.visible = false
+		text_label.text = full_text
+		text_label.visible_characters = -1
+	_update_avatar(_current_character, _current_avatar_expression, _current_mode)
+
+
+func _retire_dialogue_visibility_target(
+	target: String,
+	outcome: StringName,
+) -> void:
+	if not _dialogue_visibility_active.has(target):
+		return
+	var active: Dictionary = _dialogue_visibility_active[target]
+	_dialogue_visibility_active.erase(target)
+	(SignalBus.get(&"dialogue_visibility_transition_terminal") as Signal).emit(
+		get_instance_id(),
+		target,
+		int(active.get("token", 0)),
+		int(active.get("operation_request_id", 0)),
+		int(active.get("generation", 0)),
+		outcome,
+	)
 
 
 func _validate_configured_profiles() -> void:
@@ -3174,6 +3674,7 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 	atlas.region = config.avatar_rect
 	_avatar_texture.texture = atlas
 	_avatar_container.visible = true
+	_apply_canonical_dialogue_visibility()
 
 
 func _resolve_avatar_path(

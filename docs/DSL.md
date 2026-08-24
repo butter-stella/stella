@@ -220,6 +220,30 @@ Advance indicator 是可选的、按 Profile 独立配置的表现节点。`adva
 
 `@stage` 是人物立绘、身体/脸部差分、事件图、SD 与前景图片的统一舞台接口。它通过稳定 ID 管理任意数量的动态层，不预建位置槽，也不限制同时显示的人物数量。ID 区分大小写且必须非空；`clear` 是无 ID 的全舞台动作。
 
+### 3.5A Dialogue visibility 与 generic presentation batch
+
+```stla
+@dialogue_visibility surface hide
+@dialogue_visibility quick_menu show transition=fade duration=0.25
+
+@presentation_batch policy=join
+  @stage sakura update asset=character:sakura/happy transition=move duration=0.3
+  @dialogue_visibility surface hide transition=fade duration=0.3
+  @dialogue_visibility quick_menu hide transition=fade duration=0.3
+@end
+```
+
+精确语法：
+
+- `@dialogue_visibility <target> <action> [transition=cut|fade] [duration=<seconds>]`
+- `target` 只接受 `surface` 或 `quick_menu`
+- `action` 只接受 `show` 或 `hide`
+- `transition` 省略时为 `cut`
+- `fade` 省略 `duration` 时为 `0.25`
+- `cut` 只接受 `duration=0`
+
+`@presentation_batch` header 只接受一个严格小写的 `policy=join|fire_and_forget`。block 不能为空，合法 child 只有 canonical `@stage` 与 canonical `@dialogue_visibility`；解析器保留 authored child 顺序和 `operation_lines`，并对 duplicate Stage layer、duplicate visibility target、nested batch/if/parallel/combine、scene gap、非法 child 与缺失 `@end` 做整块 fail-close。既有 `@stage_batch` 继续保持 Stage-only public contract，不会静默扩成 mixed alias。
+
 ```
 @stage <layer-id> show key=value ...
 @stage <layer-id> update key=value ...
