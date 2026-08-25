@@ -275,8 +275,9 @@ func test_prepare_scenario_clears_flowchart_state():
 				"quick_menu": true,
 			},
 			"dialogue_content": {
-				"version": 1,
+				"version": 2,
 				"active": false,
+				"cleared": false,
 				"mode": "adv",
 				"profile_name": "",
 				"declarative_presentation": false,

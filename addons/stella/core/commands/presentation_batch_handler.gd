@@ -9,6 +9,7 @@ const EXACT_STAGE_PAYLOAD_KEYS := [
 const EXACT_VISIBILITY_PAYLOAD_KEYS := [
 	"action", "duration", "target", "transition",
 ]
+const EXACT_DIALOGUE_CLEAR_PAYLOAD_KEYS := ["scope"]
 const EXACT_CHAPTER_INDICATOR_PAYLOAD_KEYS := [
 	"action", "duration", "transition",
 ]
@@ -83,6 +84,15 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 				typed_operations.append(
 					DialogueVisibilityPresentationOperation.new(
 						payload,
+						runtime_binding,
+						operation_source,
+					)
+				)
+			"dialogue_clear":
+				typed_operations.append(
+					DialogueClearPresentationOperation.new(
+						payload,
+						PresentationState.cleared_dialogue_content(context),
 						runtime_binding,
 						operation_source,
 					)
@@ -169,6 +179,7 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 	var canonical_operations: Array = []
 	var stage_operations: Array = []
 	var visibility_operations: Array = []
+	var saw_dialogue_clear := false
 	var saw_chapter_indicator := false
 	var seen_loop_se_channels: Dictionary = {}
 	var loop_se_operations: Array = []
@@ -225,6 +236,14 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 					return {"valid": false, "error": "duplicate dialogue visibility target '%s'" % target, "line": int(operation_lines[index])}
 				seen_targets[target] = true
 				visibility_operations.append(payload.duplicate(true))
+			"dialogue_clear":
+				var clear_keys := payload.keys()
+				clear_keys.sort()
+				if clear_keys != EXACT_DIALOGUE_CLEAR_PAYLOAD_KEYS:
+					return {"valid": false, "error": "dialogue clear payload must use the canonical one-field schema", "line": int(operation_lines[index])}
+				if saw_dialogue_clear or payload.get("scope", null) != "page":
+					return {"valid": false, "error": "invalid or duplicate dialogue clear channel", "line": int(operation_lines[index])}
+				saw_dialogue_clear = true
 			"chapter_indicator":
 				var chapter_keys := payload.keys()
 				chapter_keys.sort()
@@ -327,6 +346,7 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 			and loop_se_operations.is_empty()
 			and bgm_operations.is_empty()
 			and visibility_operations.is_empty()
+			and not saw_dialogue_clear
 			and not saw_chapter_indicator
 		),
 	}

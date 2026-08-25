@@ -79,6 +79,11 @@ AVG 标准行为：打字未完成时点击 = 完成打字（不推进），打�
 
 当没有 pending Dialogue owner，且当前 blocking presentation 使用 `policy=join` 时，左键、Space 和 Enter 进入同一个 `SignalBus` semantic advance boundary。`PresentationDirector` 只向最新 current 且已 sealed JOIN 的五元 exact receipts 发送 finish；对应 Stage/dialogue/chapter/Audio Presenter 将每个仍属于该 owner 的转场 snap 到 authored endpoint，再只 acknowledgement 一次。同一 advance serial 的旧 signal tail 不得完成同栈新建的下一 batch 或 Dialogue；late timer、input 或 terminal 也不得推进已替换的 tail。
 
+`@dialogue_clear` 是同步的 dialogue-content 生命周期边界，不等待 wall-clock，也不把普通
+advance 当成清空确认。它只使旧 typewriter/voice/inline cue callback 失效；已由独立 Stage
+或 mixed presentation owner seal 的 transition 仍由该 owner 接收 input/Skip completion，
+clear 不得冒领或取消它。
+
 `FIRE_AND_FORGET` 从不 claim advance，Auto 状态本身也不结束 JOIN。Skip 从 false 激活为 true 时，只 exact-finish 当前 owner 一次；Skip 已 active 时新 batch 按持续模式 policy 直接 force-cut。普通输入的“一次只结束一个 owner”与持续 Skip policy 是两个不同的边界。
 
 Stage、chapter indicator、dialogue visibility、loop-SE 和固定 `bgm:main` 共享 Director-owned generic blocking presentation waiter。reset、load、rollback、restart、return-to-title 或 context replacement 先退休旧 owner/generation，再重置或 cut canonical 投影；不存在 audio/indicator/stage 并列的私有 scheduler/flag，旧 callback 也不能回来领取新 input。单纯 AudioPresenter replacement 只退休旧音频投影并从 canonical channel+position 唯一重投影，不把 persistent channel 当成 session state 清空。BGM pause/resume/play/stop receipt 被 context/global abort 取消时会 cut 到已经原子提交的 stable target，不能留下仍在 Tween 的无 owner player。

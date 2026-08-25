@@ -9,6 +9,8 @@ extends GutTest
 const DEMO_PATH = "res://examples/demo/scenarios/demo.stla"
 const DIALOGUE_VISIBILITY_REFERENCE_PATH = \
 	"res://examples/demo/scenarios/dialogue_visibility.stla"
+const DIALOGUE_CLEAR_REFERENCE_PATH = \
+	"res://examples/demo/scenarios/dialogue_clear.stla"
 const LOOP_SE_REFERENCE_PATH = "res://examples/demo/scenarios/loop_se.stla"
 const BGM_REFERENCE_PATH = "res://examples/demo/scenarios/bgm_lifecycle.stla"
 const BGM_RESOURCE_PATH = "res://examples/demo/audio/bgm/synthetic_bgm.tres"
@@ -213,6 +215,46 @@ func test_dialogue_visibility_public_reference_parses_without_private_content() 
 	assert_eq(clear_stage.get("action"), "clear")
 	assert_eq(clear_stage.get("transition"), "fade")
 	assert_eq(clear_stage.get("duration"), 0.2)
+
+
+func test_dialogue_clear_public_reference_uses_only_short_canonical_syntax() -> void:
+	assert_true(FileAccess.file_exists(DIALOGUE_CLEAR_REFERENCE_PATH),
+		"issue #169 publishes one redistributable reference scenario")
+	if not FileAccess.file_exists(DIALOGUE_CLEAR_REFERENCE_PATH):
+		return
+	var file := FileAccess.open(DIALOGUE_CLEAR_REFERENCE_PATH, FileAccess.READ)
+	assert_not_null(file)
+	if file == null:
+		return
+	var source := file.get_as_text()
+	file.close()
+	var data := DslParser.parse(
+		DslLexer.tokenize(source),
+		"dialogue_clear_demo",
+		DIALOGUE_CLEAR_REFERENCE_PATH,
+	)
+	assert_eq(data.diagnostics, [], str(data.diagnostics))
+	assert_not_null(data.get_chapter("dialogue_clear_demo"))
+	assert_not_null(data.get_scene("dialogue_clear_start"))
+	assert_true("@dialogue_clear\n" in source)
+	assert_true("  @dialogue_clear\n" in source)
+	assert_false("@dialogue_clear " in source,
+		"dialogue clear has no redundant options or compatibility grammar")
+	var clear_children := 0
+	for scene_value: Variant in data.scenes:
+		for command_value: Variant in (scene_value as SceneData).commands:
+			var command: CommandData = command_value
+			if command.type != "presentation_batch":
+				continue
+			for operation_value: Variant in command.params.get("operations", []):
+				if String((operation_value as Dictionary).get("kind", "")) == "dialogue_clear":
+					clear_children += 1
+					assert_eq(
+						(operation_value as Dictionary).get("payload"),
+						{"scope": "page"},
+					)
+	assert_eq(clear_children, 2,
+		"standalone and mixed forms compile through one canonical child")
 
 
 func test_loop_se_public_reference_uses_canonical_named_channels() -> void:

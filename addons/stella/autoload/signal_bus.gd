@@ -4,6 +4,8 @@ extends Node
 
 const ChapterIndicatorRequest = preload(
 	"res://addons/stella/core/data/chapter_indicator_request.gd")
+const DialogueClearOperationRequest = preload(
+	"res://addons/stella/core/data/dialogue_clear_operation_request.gd")
 const LoopSeOperationRequestType = preload(
 	"res://addons/stella/core/data/loop_se_operation_request.gd")
 const LoopSeStateCaptureRequestType = preload(
@@ -646,6 +648,12 @@ signal dialogue_visibility_state_apply_requested(
 	content: Dictionary,
 	runtime_binding: Dictionary,
 )
+## Content-only cut projection for Director rollback. It preserves all
+## dialogue-visibility transition ownership and canonical gate state.
+signal dialogue_content_state_apply_requested(
+	content: Dictionary,
+	runtime_binding: Dictionary,
+)
 ## Target-scoped cut projection used by Director failure rollback. Unlike a
 ## save/load restore, it does not rebuild dialogue content or runtime binding.
 signal dialogue_visibility_targets_state_apply_requested(
@@ -668,6 +676,167 @@ signal dialogue_visibility_transition_terminal(
 	outcome: StringName,
 )
 signal dialogue_visibility_transition_receipts_finish_requested(transitions: Array)
+## Canonical page-content clear is a synchronous typed participant transaction,
+## independent from visibility and the selected ADV/NVL profile. A clear never
+## creates a transition receipt or wall-clock owner.
+signal dialogue_clear_validate_requested(request: DialogueClearOperationRequest)
+signal dialogue_clear_accept_requested(request: DialogueClearOperationRequest)
+signal dialogue_clear_apply_requested(request: DialogueClearOperationRequest)
+
+var _dispatching_dialogue_clear_request: DialogueClearOperationRequest
+var _applying_dialogue_clear_request: DialogueClearOperationRequest
+var _dialogue_clear_participant_authority := RefCounted.new()
+var _dialogue_clear_registrar_authority: Object
+var _dialogue_clear_participants: Dictionary = {}
+
+
+func configure_dialogue_clear_registrar(authority: Object) -> bool:
+	if authority == null:
+		return false
+	if _dialogue_clear_registrar_authority == null:
+		_dialogue_clear_registrar_authority = authority
+	return _dialogue_clear_registrar_authority == authority
+
+
+func register_dialogue_clear_presenter(
+	presenter: Object,
+	registrar_authority: Object,
+) -> RefCounted:
+	if (
+		registrar_authority != _dialogue_clear_registrar_authority
+		or presenter == null
+		or not is_instance_valid(presenter)
+		or not presenter is Node
+		or (presenter as Node).is_queued_for_deletion()
+	):
+		return null
+	var presenter_id := presenter.get_instance_id()
+	var existing: Dictionary = _dialogue_clear_participants.get(presenter_id, {})
+	if not existing.is_empty():
+		var existing_presenter: Object = (
+			(existing.get("presenter") as WeakRef).get_ref())
+		if existing_presenter == presenter:
+			return existing.get("capability") as RefCounted
+	var capability := RefCounted.new()
+	_dialogue_clear_participants[presenter_id] = {
+		"presenter": weakref(presenter),
+		"capability": capability,
+	}
+	return capability
+
+
+func unregister_dialogue_clear_presenter(
+	presenter: Object,
+	capability: RefCounted,
+	registrar_authority: Object,
+) -> void:
+	if (
+		registrar_authority != _dialogue_clear_registrar_authority
+		or presenter == null
+		or not is_instance_valid(presenter)
+	):
+		return
+	if _dialogue_clear_participant_is_current(presenter, capability):
+		_dialogue_clear_participants.erase(presenter.get_instance_id())
+
+
+func reject_dialogue_clear_request(
+	request: DialogueClearOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	error: String,
+) -> bool:
+	if not _dialogue_clear_request_target_is_current(
+		request, presenter, capability, false):
+		return false
+	return request._reject(error, _dialogue_clear_participant_authority)
+
+
+func validate_dialogue_clear_request(
+	request: DialogueClearOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _dialogue_clear_request_target_is_current(
+		request, presenter, capability, false):
+		return false
+	return request._validate(presenter, _dialogue_clear_participant_authority)
+
+
+func accept_dialogue_clear_request(
+	request: DialogueClearOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _dialogue_clear_request_target_is_current(
+		request, presenter, capability, false):
+		return false
+	return request._accept(presenter, _dialogue_clear_participant_authority)
+
+
+func acknowledge_dialogue_clear_apply(
+	request: DialogueClearOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _dialogue_clear_request_target_is_current(
+		request, presenter, capability, true):
+		return false
+	return request._apply(presenter, _dialogue_clear_participant_authority)
+
+
+func _dialogue_clear_request_target_is_current(
+	request: DialogueClearOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	applying: bool,
+) -> bool:
+	return (
+		request != null
+		and request == (
+			_applying_dialogue_clear_request
+			if applying else _dispatching_dialogue_clear_request)
+		and _dialogue_clear_participant_is_current(presenter, capability)
+		and request.is_target(presenter)
+	)
+
+
+func _dialogue_clear_participant_is_current(
+	presenter: Object,
+	capability: Object,
+) -> bool:
+	if (
+		presenter == null
+		or capability == null
+		or not is_instance_valid(presenter)
+		or not presenter is Node
+		or (presenter as Node).is_queued_for_deletion()
+	):
+		return false
+	var entry: Dictionary = _dialogue_clear_participants.get(
+		presenter.get_instance_id(), {})
+	if entry.is_empty() or entry.get("capability") != capability:
+		return false
+	var registered: Object = (entry.get("presenter") as WeakRef).get_ref()
+	return registered == presenter
+
+
+func _dialogue_clear_participant_snapshot() -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for presenter_id: int in _dialogue_clear_participants.keys():
+		var entry: Dictionary = _dialogue_clear_participants[presenter_id]
+		var weak_presenter: WeakRef = entry.get("presenter")
+		var presenter: Object = (
+			weak_presenter.get_ref() if weak_presenter != null else null)
+		var capability: Object = entry.get("capability")
+		if not _dialogue_clear_participant_is_current(presenter, capability):
+			_dialogue_clear_participants.erase(presenter_id)
+			continue
+		result.append({
+			"presenter": presenter,
+			"capability": capability,
+		})
+	return result
 
 # Persistent named loop-SE channels
 ## A loop operation is validated and accepted by the single Runtime-owned
@@ -1506,12 +1675,18 @@ func emit_presentation_operations(
 				and not StageLayerState.validate_operation(payload, true))
 			or (operation is DialogueVisibilityPresentationOperation
 				and not DialogueVisibilityState.validate_operation(payload, true))
+			or (operation is DialogueClearPresentationOperation
+				and (
+					payload.keys() != ["scope"]
+					or payload.get("scope", null) != "page"
+				))
 			or (operation is LoopSePresentationOperation
 				and not LoopSeChannelState.validate_operation(payload, true))
 			or (operation is BgmPresentationOperation
 				and not BgmChannelState.validate_operation(payload, true))
 			or not operation is StagePresentationOperation
 				and not operation is DialogueVisibilityPresentationOperation
+				and not operation is DialogueClearPresentationOperation
 				and not operation is ChapterIndicatorPresentationOperation
 				and not operation is LoopSePresentationOperation
 				and not operation is BgmPresentationOperation
@@ -1612,6 +1787,14 @@ func apply_dialogue_visibility_state(
 		content.duplicate(true),
 		runtime_binding.duplicate(true),
 	)
+
+
+func apply_dialogue_content_state(
+	content: Dictionary,
+	runtime_binding: Dictionary = {},
+) -> void:
+	dialogue_content_state_apply_requested.emit(
+		content.duplicate(true), runtime_binding.duplicate(true))
 
 
 func apply_dialogue_visibility_targets_state(
@@ -1750,6 +1933,8 @@ func _drain_presentation_operation_queue_once() -> void:
 			uses_stage = true
 		elif operation_value is DialogueVisibilityPresentationOperation:
 			uses_dialogue_visibility = true
+		elif operation_value is DialogueClearPresentationOperation:
+			uses_dialogue_visibility = true
 		elif operation_value is ChapterIndicatorPresentationOperation:
 			uses_chapter_indicator = true
 		elif operation_value is LoopSePresentationOperation:
@@ -1762,12 +1947,43 @@ func _drain_presentation_operation_queue_once() -> void:
 	_dialogue_visibility_epoch_stack.append(visibility_epoch)
 	_loop_se_epoch_stack.append(loop_se_epoch)
 	_bgm_epoch_stack.append(bgm_epoch)
+	var dialogue_clear_requests: Dictionary = {}
 	var chapter_requests: Dictionary = {}
 	var loop_se_requests: Dictionary = {}
 	var bgm_requests: Dictionary = {}
 	var preflight_valid := true
 	for operation_value: Variant in operations:
-		if operation_value is ChapterIndicatorPresentationOperation:
+		if operation_value is DialogueClearPresentationOperation:
+			var operation: DialogueClearPresentationOperation = operation_value
+			var clear_request := DialogueClearOperationRequest.new(operation)
+			clear_request._bind_authority(
+				_dialogue_clear_participant_authority,
+				_dialogue_clear_participant_is_current,
+			)
+			for participant: Dictionary in _dialogue_clear_participant_snapshot():
+				clear_request._snapshot_presenter(
+					participant.get("presenter"),
+					participant.get("capability"),
+					_dialogue_clear_participant_authority,
+				)
+			dialogue_clear_requests[operation.get_instance_id()] = clear_request
+			_dispatching_dialogue_clear_request = clear_request
+			dialogue_clear_validate_requested.emit(clear_request)
+			if (
+				visibility_epoch != _dialogue_visibility_epoch
+				or not clear_request._seal_validation(
+					request_id, _dialogue_clear_participant_authority)
+			):
+				preflight_valid = false
+				break
+			dialogue_clear_accept_requested.emit(clear_request)
+			if (
+				not clear_request.all_presenters_accepted()
+				or not clear_request.presenters_are_live()
+			):
+				preflight_valid = false
+				break
+		elif operation_value is ChapterIndicatorPresentationOperation:
 			var operation: ChapterIndicatorPresentationOperation = operation_value
 			var payload := operation.get_payload()
 			var chapter_request := ChapterIndicatorRequest.new(
@@ -1881,6 +2097,7 @@ func _drain_presentation_operation_queue_once() -> void:
 				preflight_valid = false
 				break
 			bgm_requests[operation.get_instance_id()] = bgm_request
+	_dispatching_dialogue_clear_request = null
 	_dispatching_chapter_indicator_request = null
 	_dispatching_loop_se_request = null
 	_dispatching_bgm_request = null
@@ -1897,6 +2114,9 @@ func _drain_presentation_operation_queue_once() -> void:
 		uses_bgm,
 	)
 	if not preflight_valid or not epochs_valid:
+		for clear_request_value: Variant in dialogue_clear_requests.values():
+			(clear_request_value as DialogueClearOperationRequest)._finish(
+				false, false, _dialogue_clear_participant_authority)
 		for chapter_request_value: Variant in chapter_requests.values():
 			(chapter_request_value as ChapterIndicatorRequest)._finish(
 				false, false, _chapter_indicator_participant_authority)
@@ -1950,6 +2170,23 @@ func _drain_presentation_operation_queue_once() -> void:
 				apply_started_callback.call(visibility_channels)
 			dialogue_visibility_operations_requested.emit(
 				visibility_run, force_cut)
+		elif operation is DialogueClearPresentationOperation:
+			var clear_request: DialogueClearOperationRequest = (
+				dialogue_clear_requests.get(operation.get_instance_id()))
+			if apply_started_callback.is_valid():
+				apply_started_callback.call([operation.get_channel()])
+			_applying_dialogue_clear_request = clear_request
+			dialogue_clear_apply_requested.emit(clear_request)
+			_applying_dialogue_clear_request = null
+			if (
+				clear_request == null
+				or not clear_request.all_presenters_applied()
+				or not clear_request.presenters_are_live()
+				or visibility_epoch != _dialogue_visibility_epoch
+			):
+				delivered = false
+				break
+			operation_index += 1
 		elif operation is ChapterIndicatorPresentationOperation:
 			var chapter_request: ChapterIndicatorRequest = chapter_requests.get(
 				operation.get_instance_id())
@@ -2018,6 +2255,9 @@ func _drain_presentation_operation_queue_once() -> void:
 		):
 			delivered = false
 			break
+	for clear_request_value: Variant in dialogue_clear_requests.values():
+		(clear_request_value as DialogueClearOperationRequest)._finish(
+			delivered, false, _dialogue_clear_participant_authority)
 	for chapter_request_value: Variant in chapter_requests.values():
 		(chapter_request_value as ChapterIndicatorRequest)._finish(
 			delivered, false, _chapter_indicator_participant_authority)

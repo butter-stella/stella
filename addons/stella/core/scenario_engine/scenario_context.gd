@@ -218,6 +218,52 @@ func apply_dialogue_mode(mode: String) -> void:
 		nvl_page_epoch += 1
 
 
+## Clear only the live authored page. Mode and selected presentation profiles
+## remain canonical context; backlog and unrelated presentation domains live
+## outside ScenarioContext and are deliberately untouched.
+func clear_dialogue_page() -> void:
+	nvl_page_entries.clear()
+	_nvl_snapshot_replay_pending = false
+	if current_dialogue_mode == "nvl":
+		nvl_page_epoch += 1
+
+
+## Director uses this page-scoped checkpoint for atomic mixed-batch rollback.
+func capture_dialogue_page_state() -> Dictionary:
+	return {
+		"nvl_page_epoch": nvl_page_epoch,
+		"nvl_page_entries": nvl_page_entries.duplicate(true),
+		"nvl_snapshot_replay_pending": _nvl_snapshot_replay_pending,
+	}
+
+
+func restore_dialogue_page_state(snapshot: Dictionary) -> bool:
+	var keys := snapshot.keys()
+	keys.sort()
+	if keys != [
+		"nvl_page_entries",
+		"nvl_page_epoch",
+		"nvl_snapshot_replay_pending",
+	]:
+		return false
+	if (
+		not snapshot.get("nvl_page_epoch", null) is int
+		or int(snapshot["nvl_page_epoch"]) < 0
+		or not snapshot.get("nvl_page_entries", null) is Array
+		or not snapshot.get("nvl_snapshot_replay_pending", null) is bool
+	):
+		return false
+	var restored_entries: Array = []
+	for entry_value: Variant in snapshot["nvl_page_entries"]:
+		if not entry_value is Dictionary:
+			return false
+		restored_entries.append(_sanitize_nvl_page_entry(entry_value))
+	nvl_page_epoch = int(snapshot["nvl_page_epoch"])
+	nvl_page_entries = restored_entries
+	_nvl_snapshot_replay_pending = bool(snapshot["nvl_snapshot_replay_pending"])
+	return true
+
+
 ## Record the authored input for an NVL entry. Ordinary live playback returns an
 ## empty Array so each SHOW can use the Presenter's incremental accumulator.
 ## Only the first command re-executed after snapshot restore returns the complete

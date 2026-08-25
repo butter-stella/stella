@@ -139,8 +139,9 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 			"quick_menu": true,
 		},
 		"dialogue_content": {
-			"version": 1,
+			"version": 2,
 			"active": false,
+			"cleared": false,
 			"mode": "adv",
 			"profile_name": "",
 			"declarative_presentation": false,

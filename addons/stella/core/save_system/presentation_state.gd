@@ -153,8 +153,9 @@ func record_dialogue_content(
 		dialogue_content = _inactive_dialogue_content()
 		return
 	var content := {
-		"version": 1,
+		"version": 2,
 		"active": true,
+		"cleared": false,
 		"mode": mode if mode in ["adv", "nvl", "overlay", "monologue"] else "adv",
 		"profile_name": String(context.current_dialogue_profile_name),
 		"declarative_presentation": bool(
@@ -182,6 +183,29 @@ func record_dialogue_content(
 		if _validate_dialogue_content(content, false)
 		else _inactive_dialogue_content()
 	)
+
+
+func commit_dialogue_clear(context: ScenarioContext) -> void:
+	dialogue_content = cleared_dialogue_content(context)
+
+
+static func cleared_dialogue_content(context: ScenarioContext) -> Dictionary:
+	if context == null:
+		return _inactive_dialogue_content()
+	var mode := String(context.current_dialogue_mode)
+	return {
+		"version": 2,
+		"active": true,
+		"cleared": true,
+		"mode": mode if mode in ["adv", "nvl", "overlay"] else "adv",
+		"profile_name": String(context.current_dialogue_profile_name),
+		"declarative_presentation": bool(
+			context.current_dialogue_uses_declarative_presentation),
+		"character": "",
+		"segments": [],
+		"avatar_expression": "",
+		"nvl_entries": [],
+	}
 
 
 func apply_to_presenters(runtime_binding: Dictionary = {}) -> void:
@@ -286,8 +310,9 @@ func _on_dialogue_visibility_operations(
 
 static func _inactive_dialogue_content() -> Dictionary:
 	return {
-		"version": 1,
+		"version": 2,
 		"active": false,
+		"cleared": false,
 		"mode": "adv",
 		"profile_name": "",
 		"declarative_presentation": false,
@@ -311,6 +336,7 @@ static func _validate_dialogue_content(
 		"active",
 		"avatar_expression",
 		"character",
+		"cleared",
 		"declarative_presentation",
 		"mode",
 		"nvl_entries",
@@ -319,9 +345,11 @@ static func _validate_dialogue_content(
 		"version",
 	]:
 		return false
-	if int(content.get("version", -1)) != 1:
+	if int(content.get("version", -1)) != 2:
 		return false
 	if not content.get("active", null) is bool:
+		return false
+	if not content.get("cleared", null) is bool:
 		return false
 	if not content.get("declarative_presentation", null) is bool:
 		return false
@@ -352,9 +380,19 @@ static func _validate_dialogue_content(
 			return false
 	if not bool(content["active"]):
 		return (
+			not bool(content["cleared"])
+			and
 			String(content["mode"]) == "adv"
 			and String(content["profile_name"]) == ""
 			and not bool(content["declarative_presentation"])
+			and String(content["character"]) == ""
+			and String(content["avatar_expression"]) == ""
+			and (content["segments"] as Array).is_empty()
+			and (content["nvl_entries"] as Array).is_empty()
+		)
+	if bool(content["cleared"]):
+		return (
+			String(content["mode"]) in ["adv", "nvl", "overlay"]
 			and String(content["character"]) == ""
 			and String(content["avatar_expression"]) == ""
 			and (content["segments"] as Array).is_empty()
@@ -382,8 +420,9 @@ static func _normalize_dialogue_content(content: Dictionary) -> Dictionary:
 	if not bool(content.get("active", false)):
 		return _inactive_dialogue_content()
 	return {
-		"version": 1,
+		"version": 2,
 		"active": true,
+		"cleared": bool(content.get("cleared", false)),
 		"mode": String(content.get("mode", "adv")),
 		"profile_name": String(content.get("profile_name", "")),
 		"declarative_presentation": bool(content.get("declarative_presentation", false)),

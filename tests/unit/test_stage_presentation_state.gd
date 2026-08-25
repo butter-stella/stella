@@ -144,8 +144,9 @@ func test_dialogue_projection_defaults_and_restore_are_stable() -> void:
 		"quick_menu": true,
 	})
 	assert_eq(snapshot.get("dialogue_content"), {
-		"version": 1,
+		"version": 2,
 		"active": false,
+		"cleared": false,
 		"mode": "adv",
 		"profile_name": "",
 		"declarative_presentation": false,
@@ -161,8 +162,9 @@ func test_dialogue_projection_defaults_and_restore_are_stable() -> void:
 		"loop_se_channels": {},
 		"dialogue_visibility": {"surface": false, "quick_menu": true},
 		"dialogue_content": {
-			"version": 1,
+			"version": 2,
 			"active": true,
+			"cleared": false,
 			"mode": "adv",
 			"profile_name": "message",
 			"declarative_presentation": true,

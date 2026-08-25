@@ -11,6 +11,7 @@ const EXACT_STAGE_OPERATION_KEYS := [
 const EXACT_DIALOGUE_VISIBILITY_KEYS := [
 	"action", "duration", "target", "transition",
 ]
+const EXACT_DIALOGUE_CLEAR_KEYS := ["scope"]
 const EXACT_CHAPTER_INDICATOR_KEYS := [
 	"action", "duration", "transition",
 ]
@@ -31,6 +32,7 @@ var _dialogue_visibility_reset_allows_next_apply: bool = false
 var _retired_presentation_projection_lifecycle_id: int = 0
 var _latest_stage_owner_request_id: int = 0
 var _latest_dialogue_owner_request_ids: Dictionary = {}
+var _latest_dialogue_content_owner_request_id: int = 0
 var _latest_chapter_owner_request_id: int = 0
 var _latest_loop_se_owner_request_ids: Dictionary = {}
 var _latest_bgm_owner_request_id: int = 0
@@ -140,6 +142,17 @@ func submit(
 			preflight["before_state"] as Dictionary).duplicate(true),
 		"previous_dialogue_visibility": (
 			preflight["before_visibility"] as Dictionary).duplicate(true),
+		"previous_dialogue_content": (
+			preflight["before_dialogue_content"] as Dictionary).duplicate(true),
+		"previous_dialogue_page": (
+			preflight["before_dialogue_page"] as Dictionary).duplicate(true),
+		"target_dialogue_content": (
+			preflight["target_dialogue_content"] as Dictionary).duplicate(true),
+		"dialogue_runtime_binding": (
+			preflight["dialogue_runtime_binding"] as Dictionary).duplicate(true),
+		"has_dialogue_clear": bool(preflight["has_dialogue_clear"]),
+		"dialogue_clear_source": (
+			preflight.get("dialogue_clear_source", {}) as Dictionary).duplicate(true),
 		"previous_chapter_indicator_visible": bool(
 			preflight["before_chapter_indicator_visible"]),
 		"previous_loop_se_channels": (
@@ -179,6 +192,7 @@ func submit(
 			preflight.get("bgm_source", {}) as Dictionary).duplicate(true),
 		"applied_stage": false,
 		"applied_dialogue_targets": {},
+		"applied_dialogue_content": false,
 		"applied_chapter": false,
 		"applied_loop_se_channels": {},
 		"applied_bgm": false,
@@ -246,8 +260,12 @@ func cancel_blocking_waiters(
 	var had_blocking_waiter := false
 	var restore_state: Dictionary = {}
 	var restore_visibility: Dictionary = {}
+	var restore_dialogue_content: Dictionary = {}
+	var restore_dialogue_page: Dictionary = {}
+	var restore_dialogue_binding: Dictionary = {}
 	var has_stage_restore := false
 	var has_visibility_restore := false
+	var has_dialogue_content_restore := false
 	var restore_chapter_indicator_visible := false
 	var has_chapter_indicator_restore := false
 	var restore_loop_se := (
@@ -285,6 +303,21 @@ func cancel_blocking_waiters(
 						previous_visibility as Dictionary
 					).duplicate(true)
 					has_visibility_restore = true
+			if (
+				restore_for_replay
+				and not has_dialogue_content_restore
+				and _entry_owns_dialogue_content(entry)
+			):
+				restore_dialogue_content = (
+					entry.get("previous_dialogue_content", {}) as Dictionary
+				).duplicate(true)
+				restore_dialogue_page = (
+					entry.get("previous_dialogue_page", {}) as Dictionary
+				).duplicate(true)
+				restore_dialogue_binding = (
+					entry.get("dialogue_runtime_binding", {}) as Dictionary
+				).duplicate(true)
+				has_dialogue_content_restore = true
 			if (
 				restore_for_replay
 				and not has_chapter_indicator_restore
@@ -340,6 +373,9 @@ func cancel_blocking_waiters(
 			_presentation_state.dialogue_visibility = restore_visibility.duplicate(
 				true
 			)
+		if has_dialogue_content_restore:
+			_presentation_state.dialogue_content = (
+				restore_dialogue_content.duplicate(true))
 		if not restore_loop_se_targets.is_empty():
 			_presentation_state.loop_se_channels = restore_loop_se.duplicate(true)
 		if has_bgm_restore:
@@ -351,6 +387,15 @@ func cancel_blocking_waiters(
 		and context.is_runtime_owner_current()
 	):
 		context.chapter_indicator_visible = restore_chapter_indicator_visible
+	if (
+		restore_for_replay
+		and has_dialogue_content_restore
+		and context != null
+		and context.is_runtime_owner_current()
+	):
+		context.restore_dialogue_page_state(restore_dialogue_page)
+		SignalBus.apply_dialogue_content_state(
+			restore_dialogue_content, restore_dialogue_binding)
 	if restore_for_replay and not restore_loop_se_targets.is_empty():
 		SignalBus.apply_loop_se_targets_state(
 			restore_loop_se, restore_loop_se_targets)
@@ -455,6 +500,10 @@ func _preflight_operations(
 	var stage_typed_operations: Array[StagePresentationOperation] = []
 	var visibility_payloads: Array = []
 	var visibility_canonical_payloads: Array = []
+	var saw_dialogue_clear := false
+	var target_dialogue_content: Dictionary = {}
+	var dialogue_runtime_binding: Dictionary = {}
+	var dialogue_clear_source: Dictionary = {}
 	var loop_se_payloads: Array = []
 	var bgm_payloads: Array = []
 	var seen_layers := {}
@@ -556,6 +605,31 @@ func _preflight_operations(
 			saw_visibility = true
 			visibility_canonical_payloads.append(payload.duplicate(true))
 			visibility_payloads.append(operation)
+		elif operation is DialogueClearPresentationOperation:
+			if (
+				saw_dialogue_clear
+				or payload_keys != EXACT_DIALOGUE_CLEAR_KEYS
+				or payload.get("scope", null) != "page"
+				or String(operation.get_channel()) != "dialogue:content"
+			):
+				return _preflight_failure(
+					"invalid or duplicate typed dialogue clear ownership",
+					operation,
+				)
+			target_dialogue_content = operation.get_target_content()
+			dialogue_runtime_binding = operation.get_runtime_binding()
+			if (
+				not PresentationState._validate_dialogue_content(
+					target_dialogue_content, false)
+				or not bool(target_dialogue_content.get("active", false))
+				or not bool(target_dialogue_content.get("cleared", false))
+				or not PresentationState.dialogue_content_profiles_exist(
+					target_dialogue_content, context.scenario_data)
+			):
+				return _preflight_failure(
+					"dialogue clear target content is not canonical", operation)
+			saw_dialogue_clear = true
+			dialogue_clear_source = operation.get_source()
 		elif operation is ChapterIndicatorPresentationOperation:
 			if payload_keys != EXACT_CHAPTER_INDICATOR_KEYS:
 				return _preflight_failure(
@@ -627,6 +701,8 @@ func _preflight_operations(
 
 	var before_state := _presentation_state.stage_layers.duplicate(true)
 	var before_visibility := _presentation_state.dialogue_visibility.duplicate(true)
+	var before_dialogue_content := _presentation_state.dialogue_content.duplicate(true)
+	var before_dialogue_page := context.capture_dialogue_page_state()
 	var simulated := before_state.duplicate(true)
 	for stage_index in range(stage_payloads.size()):
 		var payload: Dictionary = stage_payloads[stage_index]
@@ -651,6 +727,12 @@ func _preflight_operations(
 		},
 		"before_state": before_state,
 		"before_visibility": before_visibility,
+		"before_dialogue_content": before_dialogue_content,
+		"before_dialogue_page": before_dialogue_page,
+		"target_dialogue_content": target_dialogue_content,
+		"dialogue_runtime_binding": dialogue_runtime_binding,
+		"has_dialogue_clear": saw_dialogue_clear,
+		"dialogue_clear_source": dialogue_clear_source,
 		"before_chapter_indicator_visible": context.chapter_indicator_visible,
 		"before_loop_se_channels": before_loop_se_channels,
 		"before_bgm": before_bgm,
@@ -673,6 +755,7 @@ func _preflight_operations(
 			and loop_se_payloads.is_empty()
 			and bgm_payloads.is_empty()
 			and not saw_clear
+			and not saw_dialogue_clear
 			and not saw_chapter_indicator
 		),
 	}
@@ -846,6 +929,12 @@ func _on_generic_request_finished(
 		_cleanup_entry(request_id)
 		return
 	entry["sealed"] = true
+	if bool(entry.get("has_dialogue_clear", false)):
+		context.clear_dialogue_page()
+		if _presentation_state != null:
+			_presentation_state.dialogue_content = (
+				entry.get("target_dialogue_content", {}) as Dictionary
+			).duplicate(true)
 	if bool(entry.get("has_chapter_indicator", false)):
 		var target_visible := bool(
 			entry.get("target_chapter_indicator_visible", false))
@@ -1086,6 +1175,9 @@ func _on_presentation_operation_apply_started(
 			if target in ["surface", "quick_menu"]:
 				(entry["applied_dialogue_targets"] as Dictionary)[target] = true
 				_latest_dialogue_owner_request_ids[target] = request_id
+			elif target == "content":
+				entry["applied_dialogue_content"] = true
+				_latest_dialogue_content_owner_request_id = request_id
 		elif channel == "chapter:indicator":
 			entry["applied_chapter"] = true
 			_latest_chapter_owner_request_id = request_id
@@ -1228,7 +1320,8 @@ func _report_entry_participant_failure(
 	failed_receipt_key: String = "",
 ) -> void:
 	if (
-		not bool(entry.get("has_chapter_indicator", false))
+		not bool(entry.get("has_dialogue_clear", false))
+		and not bool(entry.get("has_chapter_indicator", false))
 		and not bool(entry.get("has_loop_se_operations", false))
 		and not bool(entry.get("has_bgm_operation", false))
 	):
@@ -1253,6 +1346,8 @@ func _report_entry_participant_failure(
 			elif failed_channel == "bgm:main":
 				failure_source = entry.get("bgm_source", failure_source)
 			break
+	elif bool(entry.get("has_dialogue_clear", false)):
+		failure_source = entry.get("dialogue_clear_source", failure_source)
 	elif bool(entry.get("has_loop_se_operations", false)):
 		var applied_channels: Dictionary = entry.get(
 			"applied_loop_se_channels", {})
@@ -1277,12 +1372,14 @@ func _rollback_entry(entry: Dictionary) -> void:
 		return
 	var rollback_stage := _entry_owns_stage(entry)
 	var rollback_dialogue_targets := _entry_owned_dialogue_targets(entry)
+	var rollback_dialogue_content := _entry_owns_dialogue_content(entry)
 	var rollback_chapter := _entry_owns_chapter(entry)
 	var rollback_loop_se_channels := _entry_owned_loop_se_channels(entry)
 	var rollback_bgm := _entry_owns_bgm(entry)
 	if (
 		not rollback_stage
 		and rollback_dialogue_targets.is_empty()
+		and not rollback_dialogue_content
 		and not rollback_chapter
 		and rollback_loop_se_channels.is_empty()
 		and not rollback_bgm
@@ -1292,6 +1389,12 @@ func _rollback_entry(entry: Dictionary) -> void:
 		entry.get("previous_stage_layers", {}) as Dictionary).duplicate(true)
 	var previous_visibility := (
 		entry.get("previous_dialogue_visibility", {}) as Dictionary).duplicate(true)
+	var previous_content := (
+		entry.get("previous_dialogue_content", {}) as Dictionary).duplicate(true)
+	var previous_page := (
+		entry.get("previous_dialogue_page", {}) as Dictionary).duplicate(true)
+	var runtime_binding := (
+		entry.get("dialogue_runtime_binding", {}) as Dictionary).duplicate(true)
 	var previous_visible := bool(
 		entry.get("previous_chapter_indicator_visible", false))
 	var previous_loop_se := (
@@ -1327,6 +1430,12 @@ func _rollback_entry(entry: Dictionary) -> void:
 					rollback_visibility.duplicate(true))
 			SignalBus.apply_dialogue_visibility_targets_state(
 				rollback_visibility, targets_to_restore)
+		if rollback_dialogue_content and _entry_owns_dialogue_content(entry):
+			context.restore_dialogue_page_state(previous_page)
+			if _presentation_state != null:
+				_presentation_state.dialogue_content = previous_content.duplicate(true)
+			SignalBus.apply_dialogue_content_state(
+				previous_content, runtime_binding)
 		if rollback_chapter and _entry_owns_chapter(entry):
 			context.chapter_indicator_visible = previous_visible
 			SignalBus.apply_chapter_indicator_state(previous_visible)
@@ -1366,7 +1475,10 @@ func _entry_dispatch_epochs_are_current(entry: Dictionary) -> bool:
 				== SignalBus.current_stage_operation_epoch()
 		)
 		and (
-			(entry.get("dialogue_targets", []) as Array).is_empty()
+			(
+				(entry.get("dialogue_targets", []) as Array).is_empty()
+				and not bool(entry.get("has_dialogue_clear", false))
+			)
 			or int(entry.get("dialogue_visibility_epoch", -1))
 				== SignalBus.current_dialogue_visibility_epoch()
 		)
@@ -1392,6 +1504,7 @@ func _entry_owns_any_rollback_domain(entry: Dictionary) -> bool:
 	return (
 		_entry_owns_stage(entry)
 		or not _entry_owned_dialogue_targets(entry).is_empty()
+		or _entry_owns_dialogue_content(entry)
 		or _entry_owns_chapter(entry)
 		or not _entry_owned_loop_se_channels(entry).is_empty()
 		or _entry_owns_bgm(entry)
@@ -1425,6 +1538,17 @@ func _entry_owned_dialogue_targets(entry: Dictionary) -> Array[String]:
 		if int(_latest_dialogue_owner_request_ids.get(target, 0)) == request_id:
 			result.append(target)
 	return result
+
+
+func _entry_owns_dialogue_content(entry: Dictionary) -> bool:
+	return (
+		_entry_is_current(entry)
+		and bool(entry.get("applied_dialogue_content", false))
+		and int(entry.get("request_id", 0))
+			== _latest_dialogue_content_owner_request_id
+		and int(entry.get("dialogue_visibility_epoch", -1))
+			== SignalBus.current_dialogue_visibility_epoch()
+	)
 
 
 func _entry_owns_chapter(entry: Dictionary) -> bool:
