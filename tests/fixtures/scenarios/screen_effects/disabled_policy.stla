@@ -1,0 +1,6 @@
+// Disabled built-ins remain non-blocking and reach the explicit checkpoint.
+@chapter screen_effects_disabled "Screen Effects — Disabled"
+@scene start
+@effect shake 28 5.0
+@effect flash red 5.0
+@wait click

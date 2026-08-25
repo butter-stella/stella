@@ -13,6 +13,29 @@ func _input(event: InputEvent) -> void:
 	var dialogue = _get_dialogue()
 
 	if event.button_index == MOUSE_BUTTON_LEFT:
+		# An active choice owns normal story input before hidden-dialogue,
+		# typewriter, or wait-click fallbacks. Interactive controls still receive
+		# the click through GUI propagation so an option or toolbar action remains
+		# an explicit user selection/action.
+		if StellaRuntime.is_choice_active():
+			var choice_hovered = get_viewport().gui_get_hovered_control()
+			if choice_hovered is Button or choice_hovered is Slider:
+				return
+			if not StellaRuntime.game_state.is_playing():
+				return
+			if StellaRuntime.is_skipping():
+				StellaRuntime.skip_controller.stop()
+				if dialogue:
+					dialogue._ctrl_held = false
+					dialogue._update_toggle_buttons()
+					dialogue.cancel_pending_skip()
+			elif StellaRuntime.auto_play.is_active:
+				if StellaRuntime.get_setting("auto_play_click_interrupt"):
+					StellaRuntime.auto_play.stop()
+					if dialogue:
+						dialogue._update_toggle_buttons()
+			get_viewport().set_input_as_handled()
+			return
 		# UI hidden: restore
 		if _restore_soft_hidden_dialogue(dialogue):
 			return
@@ -44,19 +67,11 @@ func _input(event: InputEvent) -> void:
 			StellaRuntime.auto_play.stop()
 			if dialogue:
 				dialogue._update_toggle_buttons()
-			if dialogue and dialogue.complete_typewriter():
-				get_viewport().set_input_as_handled()
-				return
-			_request_dialogue_advance(dialogue)
-			get_viewport().set_input_as_handled()
+			_handle_normal_advance(dialogue)
 			return
 
 		# Normal mode
-		if dialogue and dialogue.complete_typewriter():
-			get_viewport().set_input_as_handled()
-			return
-
-		_request_dialogue_advance(dialogue)
+		_handle_normal_advance(dialogue)
 
 	elif event.button_index == MOUSE_BUTTON_RIGHT:
 		if not StellaRuntime.game_state.is_playing():
@@ -72,18 +87,32 @@ func _input(event: InputEvent) -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventJoypadButton:
-		if not event.pressed or event.button_index != JOY_BUTTON_A:
-			return
-		var joypad_dialogue = _get_dialogue()
-		if _restore_soft_hidden_dialogue(joypad_dialogue):
-			return
-		if not StellaRuntime.game_state.is_playing():
-			return
-		_handle_normal_advance(joypad_dialogue)
+		_handle_joypad_advance(event)
 		return
 	if not event is InputEventKey:
 		return
 	var dialogue = _get_dialogue()
+	# ui_accept on a focused option Button is consumed by GUI before reaching
+	# _unhandled_input. Every remaining normal advance key is modal-owned and
+	# cannot restore/complete/advance content behind the choice.
+	if StellaRuntime.is_choice_active():
+		if event.keycode == KEY_CTRL:
+			if dialogue:
+				dialogue._ctrl_held = false
+				dialogue.cancel_pending_skip()
+			if event.pressed and not event.echo:
+				get_viewport().set_input_as_handled()
+			return
+		if (
+			event.pressed
+			and not event.echo
+			and event.keycode in [KEY_SPACE, KEY_ENTER]
+		):
+			if StellaRuntime.game_state.is_playing():
+				if _activate_focused_choice_option():
+					return
+				get_viewport().set_input_as_handled()
+			return
 	# Ctrl release is cleanup and remains unconditional. Ctrl press, however,
 	# must not reach the dialogue beneath a system overlay.
 	if event.keycode == KEY_CTRL:
@@ -130,8 +159,72 @@ func _unhandled_input(event: InputEvent) -> void:
 		_handle_normal_advance(dialogue)
 
 
+func _handle_joypad_advance(event: InputEventJoypadButton) -> void:
+	if not event.pressed or event.button_index != JOY_BUTTON_A:
+		return
+	var dialogue = _get_dialogue()
+	if StellaRuntime.is_choice_active():
+		if StellaRuntime.game_state.is_playing():
+			if _activate_focused_choice_option():
+				return
+			get_viewport().set_input_as_handled()
+		return
+	if _restore_soft_hidden_dialogue(dialogue):
+		return
+	if not StellaRuntime.game_state.is_playing():
+		return
+	_handle_normal_advance(dialogue)
+
+
 func _get_dialogue():
 	return get_node_or_null("%DialoguePanel")
+
+
+## Ask only the focused option's presenter to translate ui_accept into its
+## semantic activation. Walking ancestors keeps toolbar/unrelated Buttons on
+## their native GUI path and avoids assuming the default ChoicePanel layout.
+func _activate_focused_choice_option() -> bool:
+	var focused := get_viewport().gui_get_focus_owner()
+	if not focused is Button:
+		return false
+	var owner: Node = focused
+	while owner != null:
+		if owner.has_method("activate_focused_choice_option"):
+			var activated := bool(
+				owner.call("activate_focused_choice_option"))
+			if activated:
+				get_viewport().set_input_as_handled()
+			return activated
+		owner = owner.get_parent()
+	return false
+
+
+## Resolve one accepted normal advance event to exactly one owner/result, then
+## stop propagation before synchronous completion can expose a new UI/owner to
+## the tail of the same physical event.
+func _handle_normal_advance(dialogue) -> void:
+	if not _consume_typewriter_advance(dialogue):
+		_request_dialogue_advance(dialogue)
+	get_viewport().set_input_as_handled()
+
+
+## Give the active typewriter first ownership of each normal advance event.
+## click_to_complete is intentionally read here, at the input boundary, so a
+## direct set/reset/load applies to the next event even on the current line.
+func _consume_typewriter_advance(dialogue) -> bool:
+	if dialogue == null:
+		return false
+	var allow_completion := bool(StellaRuntime.get_setting("click_to_complete"))
+	if dialogue.has_method("consume_typewriter_advance"):
+		return bool(dialogue.consume_typewriter_advance(allow_completion))
+	# Custom dialogue scenes may implement the established
+	# _is_typing/complete_typewriter presentation seam without the atomic helper.
+	# Disabled completion still consumes the input instead of leaking it onward.
+	if not dialogue._is_typing:
+		return false
+	if allow_completion:
+		dialogue.complete_typewriter()
+	return true
 
 
 func _request_dialogue_advance(dialogue) -> void:
@@ -139,18 +232,11 @@ func _request_dialogue_advance(dialogue) -> void:
 		if bool(dialogue.request_current_dialogue_advance()):
 			get_viewport().set_input_as_handled()
 			return
-	# Compatibility for custom scenes that still expose only the legacy global
-	# input notification, and for non-dialogue blockers such as @wait click.
+	# Custom scenes may expose only the public global input notification; it also
+	# owns non-dialogue blockers such as @wait click.
 	# New DialogueHandler commands require request.advance().
 	SignalBus.emit_advance_requested()
 	get_viewport().set_input_as_handled()
-
-
-func _handle_normal_advance(dialogue) -> void:
-	if dialogue and dialogue.complete_typewriter():
-		get_viewport().set_input_as_handled()
-		return
-	_request_dialogue_advance(dialogue)
 
 
 func _restore_soft_hidden_dialogue(dialogue) -> bool:

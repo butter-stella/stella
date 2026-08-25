@@ -270,7 +270,7 @@ func _on_dialogue_requested(request: DialogueRequest) -> void:
 	# 若该次显示被关闭/取消，则改用 request.abort()
 ```
 
-`advance()` / `abort()` 只有第一次调用成功，迟到的另一结果返回 `false`，也不能影响替换后的 request。正常 `advance()` 会先由 Core 验证 owner 并提交已读，再广播兼容通知；`abort()` 会取消当前 scenario context，不会跳过当前行继续执行下一条。自定义 Presenter 只能保留一个可见 owner；若 typed request 被另一条 typed/raw SHOW 替换，或 hard hide/场景退出令它不可达，必须在丢失引用前调用旧 request 的 `abort()`。`show_dialogue(character, segments, mode)` 与 `advance_requested()` 仍会作为扩展兼容通知发出，但不拥有 DialogueHandler 的命令完成权；没有 pending 对话时，内置输入会用旧 advance 通知解除 `@wait click`。
+`advance()` / `abort()` 只有第一次调用成功，迟到的另一结果返回 `false`，也不能影响替换后的 request。正常 `advance()` 会先由 Core 验证 owner 并提交已读，再广播兼容通知；`abort()` 会取消当前 scenario context，不会跳过当前行继续执行下一条。自定义 Presenter 只能保留一个可见 owner；若 typed request 被另一条 typed/raw SHOW 替换，或 hard hide/场景退出令它不可达，必须在丢失引用前调用旧 request 的 `abort()`。`show_dialogue(character, segments, mode)` 与 `advance_requested()` 仍会作为扩展兼容通知发出，但不拥有 DialogueHandler 的命令完成权；没有 pending 对话时，内置输入会用旧 advance 通知解除 `@wait click` 或带 `skippable=true` 的定时 wait。
 
 直接组装 `CommandRegistry` 的扩展需把同一个已读管理器注入 handler：
 
@@ -588,6 +588,54 @@ StellaRuntime.get_setting(key)       # 读取设置值
 StellaRuntime.set_setting(key, val)  # 修改设置值
 StellaRuntime.save_settings()        # 保存设置到磁盘
 ```
+
+`SettingsManager.load_settings()` 对有效 JSON object 先完成整份候选合并，再按
+`GameSettings.to_dict()` 的规范顺序只通知真实变化；每个通知都携带触发时的当前值，
+监听器不会看到半载入状态。省略项保留当前值，未知项忽略。`effect_enabled` 只接受
+布尔值：direct set 的非法值会被拒绝，持久化候选中的非法值会拒绝整次载入，均不产生
+伪通知或部分写入。
+
+`character_interval` 与 `punctuation_pause` 都是非负整数毫秒，默认分别为
+`50` 和 `200`，`0` 合法且不设上限。前者是每个可见字符的基础间隔；后者只对
+固定集合 `，。！？；：、,.!?;:…—` 中的每个 Unicode codepoint 增加额外停顿。
+通过 `set_setting()` 或持久化 load 提供负数、非整数或非数值时，框架会 warning
+并把对应项恢复为其独立默认值；JSON 中可无损表示整数毫秒的数值会归一化为整数。
+Presenter 在一条对话真正开始显示时快照两项设置，因此当前行中途调用
+`set_setting()`、恢复默认或载入设置不会改变剩余字符，下一条 active 对话才采用
+新值；启动时在创建游戏场景/DialoguePresenter 前载入的值会用于首行。句内
+`{speed:...}` 只覆盖当前行的基础间隔，`{wait:...}` 保持为字符前的独立 authored
+停顿，两者均与标点停顿相加。
+
+`click_to_complete` 是布尔设置，默认 `true`。左键、Space、Enter 和手柄 A 每次
+进入正常推进路径时都会实时读取它：打字中且为 `true` 时，该次输入只补全当前句；
+为 `false` 时，该次输入仍被消费，但不会改变可见字符、退休 timer，也绝不会回退到
+当前 owner 或全局 advance。文本自然完成后，下一次正常输入照常推进。由此
+`set_setting()`、reset 或 load 的新值会从下一次输入起生效，即使当前句已经在
+打字。UI 隐藏恢复、交互 Button/Slider、非 `PLAYING` 状态，以及左键的 Skip/Auto
+策略仍优先处理；程序化 `DialoguePresenter.complete_typewriter()` 是强制完成接口，
+不读取这一设置。
+
+`effect_enabled` 是布尔设置，默认 `true`。它在 `ScreenEffects` 进入场景时读取，并
+实时响应 direct set、成功 load 与 reset。切到 `false` 会同步停止活动 shake/flash，
+恢复 shake 的 position/scale/pivot 与 resize/process 状态，并移除 flash overlay；
+禁用期间的新 shake/flash 被直接丢弃，重新开启不会重放。公开
+`SignalBus.effect_requested`、自定义 effect、`@fade`、舞台、对话和音频链路不受影响，
+`@effect off` 始终可以清理。
+
+Choice 菜单是独立于 `click_to_complete` 的 hard modal boundary。每次菜单显示前分别
+快照 `auto_play_pause_on_choice` 与 `skip_stop_on_choice`（默认都为 `true`）：Auto
+pause 保留 `auto_play.is_active` / `is_auto_playing()` 的用户 intent，只暂停内部
+effective progression，并在有效选择 effects 提交后释放；它不会重启 choice 前旧句的
+timer。Skip stop 会同步停止且不在选择后恢复。任一设置为 `false` 都只表示保留对应
+intent，绝不自动选项或穿透 choice。菜单期间修改这两个设置从下一次 choice 起生效。
+
+Choice 显示时，背景左键、Space、Enter、手柄 A 都被消费，不会恢复隐藏 UI、补全文字
+或解除 `@wait`；只有聚焦 option Button 的 GUI `ui_accept` 或直接点击 option Button
+才会选择。toolbar Button 仍交给 GUI：菜单期间可以更改 Auto/Skip intent，但当前菜单
+继续阻断旧 dialogue tail。读档、回退、restart、abort 和返回标题会取消当前 choice、
+停止两个 controller 并拒绝旧 listener/timer；这些 hard boundary 会先转移或清空 engine
+owner，再发布旧 choice HIDE，因此同步回调不能推进旧剧情或误关替换 context 的新菜单。
+普通 save 不会关闭菜单。
 
 > 高级用户也可以直接访问子系统对象：`StellaRuntime.save_manager`、`StellaRuntime.settings_manager` 等。
 

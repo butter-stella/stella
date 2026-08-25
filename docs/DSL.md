@@ -110,7 +110,9 @@ sakura「那个人就是..{wait:500}{speed:30}你吗？」
 ```
 
 **默认行为**：
-- 打字机速度使用全局设置
+- 打字机速度使用全局 `character_interval` 设置；固定标点停顿使用
+  `punctuation_pause` 设置（均为非负整数毫秒，默认分别为 50 / 200，`0`
+  表示不增加对应延迟）
 - 自动等待玩家点击后推进
 - 如有语音，自动播放
 
@@ -119,6 +121,16 @@ sakura「那个人就是..{wait:500}{speed:30}你吗？」
 `{wait:...}` 与 `{speed:...}` 都使用毫秒：`{wait:500}` 暂停 500ms，
 `{speed:30}` 把后续每字间隔设为 30ms。未知标签、非数字或负数会产生
 warning，并按普通文本显示。
+
+每个可见字符的基础延迟来自该句开始显示时取得的
+`character_interval`；字符属于固定集合 `，。！？；：、,.!?;:…—` 时，再加上
+同一时刻取得的 `punctuation_pause`。每个标点 codepoint 都会独立累计，因此连续
+标点会逐个停顿。设置在当前句打字途中修改或重置，只影响下一条真正开始显示的
+对话；尚在队列中的对话也到开始显示时才取值。`{speed:...}` 只修改当前句后续
+字符的基础间隔，不取消标点停顿；`{wait:...}` 是字符前的独立停顿，所以三者的
+时间相加。点击补全、Skip、隐藏或替换对话会通过同一 generation 边界退休当前句
+尚未完成的计时；Auto 则只在同一 active generation 自然完成后继续推进，两条路径
+都不会让旧计时影响下一句。
 
 ### 3.3 对话框模式切换
 
@@ -478,6 +490,13 @@ JOIN 只等待该 batch 的 exact receipts；点击或持续 Skip 会 exact-fini
 
 当前内置效果只有 `shake`、`flash` 和 `off`。其它 effect type 会产生 warning，并连同原始位置参数数组 `args` 转发给 `SignalBus.effect_requested`，供项目自定义监听器处理；拼写错误因此不会再静默消失。内置效果如果参数过多会产生 error 并跳过。
 
+`GameSettings.effect_enabled`（默认 `true`）只控制内置 `ScreenEffects` 的 `shake` 与
+`flash` 渲染。设为 `false` 后，新请求仍按 fire-and-forget 语义完成并发布
+`SignalBus.effect_requested`，因此自定义监听器照常收到事件，但内置 Presenter 不修改
+画面、也不缓存请求供以后重放；活动 shake/flash 会被同步恢复为中性状态。重新开启后
+只有新请求会生效。`@effect off` 无论该设置为何值都执行清理；`@fade`、舞台、对话、
+音频和项目自定义 effect 不受此开关影响。
+
 ### 3.8 分支选择
 
 ```
@@ -501,6 +520,17 @@ JOIN 只等待该 batch 的 exact receipts；点击或持续 Skip 会 exact-fini
   - "一起走吧" -> scene_go
   - "今天有点忙..." -> scene_busy
 ```
+
+Choice 是 hard blocking command，始终需要玩家显式选择，不会因 Auto 或 Skip 开启而
+默认选中第一项。`auto_play_pause_on_choice` 与 `skip_stop_on_choice`（均默认 `true`）
+在每次 choice 显示前分别快照：前者暂停 Auto 的 effective progression 但保留用户
+active intent，并在有效选项 effects 提交后恢复；后者同步停止 Skip，选择后也不自动
+恢复。设置为 `false` 时对应 intent 可以保持，但菜单仍阻断所有自动/普通推进。
+
+只有当前菜单中匹配 id 或 label 的首个选择会提交 jump/set；未知、重复或迟到的
+`choice_selected` payload 不会关闭菜单或污染后续 choice。读档、回退、restart、abort
+与返回标题会先退休旧执行 owner，再取消当前菜单并停止 Auto/Skip；同步取消尾不能提交
+旧 effects、继续旧 command tail 或隐藏替换 context 新建的 choice。普通存档不会取消它。
 
 ### 3.9 变量与条件
 

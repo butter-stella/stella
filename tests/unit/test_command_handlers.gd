@@ -29,6 +29,13 @@ func _build_cmd(type: String, params: Dictionary = {}) -> CommandData:
 	return cmd
 
 
+func _normal_advance_connection_snapshot() -> Dictionary:
+	return {
+		"notification": SignalBus.advance_requested.get_connections().size(),
+		"dispatch": SignalBus.advance_dispatch_started.get_connections().size(),
+	}
+
+
 func _advance_next_dialogue() -> void:
 	_bus.dialogue_requested.connect(
 		func(request: DialogueRequest): request.advance(),
@@ -656,6 +663,394 @@ func test_choice_show_can_select_synchronously_without_losing_completion() -> vo
 	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
 		abort_connections)
 	assert_eq(_context.cancellation_requested.get_connections().size(), 0)
+
+
+func test_choice_ignores_unknown_selection_until_first_valid_option() -> void:
+	_context.variable_store = VariableStore.new()
+	var handler := ChoiceHandler.new()
+	var command := _build_cmd("choice", {
+		"prompt": "Pick one",
+		"options": [{
+			"id": "picked",
+			"label": "Picked",
+			"jump": "selected_scene",
+		}],
+	})
+	var choice_connections := SignalBus.choice_selected.get_connections().size()
+	var completed := [false]
+	var run_choice := func() -> void:
+		await handler.execute(command, _context)
+		completed[0] = true
+	run_choice.call()
+
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections + 1)
+	SignalBus.choice_selected.emit("not-an-option")
+	await get_tree().process_frame
+
+	assert_false(completed[0],
+		"an unknown id cannot retire the current blocking choice")
+	assert_eq(_context.pending_jump, "")
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections + 1,
+		"the first invalid payload must leave the valid-selection owner installed")
+
+	SignalBus.choice_selected.emit("Picked")
+	await get_tree().process_frame
+
+	assert_true(completed[0])
+	assert_eq(_context.pending_jump, "selected_scene",
+		"the first valid id or label resolves and commits the choice")
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections)
+
+
+func test_choice_presentation_cannot_mutate_canonical_option_effects() -> void:
+	_context.variable_store = VariableStore.new()
+	var handler := ChoiceHandler.new()
+	var command := _build_cmd("choice", {
+		"options": [{
+			"id": "authored",
+			"label": "Authored",
+			"jump": "authored_target",
+			"set": {"score": "= 1"},
+		}],
+	})
+	SignalBus.choice_show.connect(
+		func(_prompt: String, presented_options: Array) -> void:
+			presented_options[0]["id"] = "mutated"
+			presented_options[0]["jump"] = "mutated_target"
+			presented_options[0]["set"] = {"score": "= 99"}
+			SignalBus.choice_selected.emit("authored"),
+		CONNECT_ONE_SHOT,
+	)
+
+	await handler.execute(command, _context)
+
+	assert_eq(_context.pending_jump, "authored_target")
+	assert_eq(_context.variable_store.get_var("score"), 1)
+
+
+func test_choice_policy_snapshots_settings_until_the_next_menu() -> void:
+	var original_auto_pause: Variant = StellaRuntime.get_setting(
+		"auto_play_pause_on_choice")
+	var original_skip_stop: Variant = StellaRuntime.get_setting(
+		"skip_stop_on_choice")
+	StellaRuntime.auto_play.stop()
+	StellaRuntime.auto_play.clear_suspensions()
+	StellaRuntime.skip_controller.stop()
+	StellaRuntime.set_setting("auto_play_pause_on_choice", true)
+	StellaRuntime.set_setting("skip_stop_on_choice", true)
+	StellaRuntime.auto_play.is_active = true
+	StellaRuntime.skip_controller.is_active = true
+	var choice_connections := SignalBus.choice_selected.get_connections().size()
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	var handler := StellaRuntime.registry.get_handler("choice") as ChoiceHandler
+	assert_not_null(handler)
+	var command := _build_cmd("choice", {
+		"options": [{"id": "valid", "label": "Valid"}],
+	})
+	var first_context := ScenarioContext.new(_context.scenario_data)
+	var first_finished := [false]
+	var run_first := func() -> void:
+		await handler.execute(command, first_context)
+		first_finished[0] = true
+	run_first.call()
+
+	assert_true(StellaRuntime.auto_play.is_active)
+	assert_false(StellaRuntime.auto_play.is_effective())
+	assert_false(StellaRuntime.skip_controller.is_active)
+	StellaRuntime.set_setting("auto_play_pause_on_choice", false)
+	StellaRuntime.set_setting("skip_stop_on_choice", false)
+	assert_false(StellaRuntime.auto_play.is_effective(),
+		"menu-time setting changes cannot release the current token")
+	SignalBus.choice_selected.emit("valid")
+	await get_tree().process_frame
+	assert_true(first_finished[0])
+	assert_true(StellaRuntime.auto_play.is_effective())
+
+	# The following choice takes a fresh false/false snapshot and therefore
+	# preserves both directly configured controller intents while it blocks.
+	StellaRuntime.skip_controller.is_active = true
+	var second_context := ScenarioContext.new(_context.scenario_data)
+	var second_finished := [false]
+	var run_second := func() -> void:
+		await handler.execute(command, second_context)
+		second_finished[0] = true
+	run_second.call()
+	assert_true(StellaRuntime.auto_play.is_effective())
+	assert_true(StellaRuntime.skip_controller.is_active)
+	second_context.request_cancellation()
+	await get_tree().process_frame
+	assert_true(second_finished[0])
+	assert_false(StellaRuntime.auto_play.is_active)
+	assert_false(StellaRuntime.skip_controller.is_active)
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections)
+	assert_eq(second_context.cancellation_requested.get_connections().size(), 0)
+
+	StellaRuntime.set_setting(
+		"auto_play_pause_on_choice", original_auto_pause)
+	StellaRuntime.set_setting("skip_stop_on_choice", original_skip_stop)
+
+
+func test_runtime_policy_rejects_concurrent_choice_before_show() -> void:
+	var handler := StellaRuntime.registry.get_handler("choice") as ChoiceHandler
+	assert_not_null(handler)
+	var show_count := [0]
+	var on_show := func(_prompt: String, _options: Array) -> void:
+		show_count[0] += 1
+	SignalBus.choice_show.connect(on_show)
+	var choice_connections := SignalBus.choice_selected.get_connections().size()
+	var abort_connections := (
+		SignalBus.engine_abort_requested.get_connections().size())
+	var first_context := ScenarioContext.new(_context.scenario_data)
+	first_context.variable_store = VariableStore.new()
+	var first_finished := [false]
+	var run_first := func() -> void:
+		await handler.execute(_build_cmd("choice", {
+			"options": [{
+				"id": "old",
+				"label": "Old",
+				"jump": "old_selected",
+			}],
+		}), first_context)
+		first_finished[0] = true
+	run_first.call()
+	assert_true(StellaRuntime.is_choice_active())
+	assert_eq(show_count[0], 1)
+
+	var rejected_context := ScenarioContext.new(_context.scenario_data)
+	rejected_context.variable_store = VariableStore.new()
+	await handler.execute(_build_cmd("choice", {
+		"options": [{
+			"id": "new",
+			"label": "New",
+			"jump": "must_not_apply",
+			"set": {"leaked": "= 1"},
+		}],
+	}), rejected_context)
+
+	assert_true(rejected_context.is_cancellation_requested(),
+		"a rejected concurrent blocker fails closed")
+	assert_eq(show_count[0], 1,
+		"the rejected policy session cannot replace the current modal")
+	assert_false(first_finished[0])
+	assert_true(StellaRuntime.is_choice_active(),
+		"the original policy owner remains current")
+	assert_eq(rejected_context.pending_jump, "")
+	assert_null(rejected_context.variable_store.get_var("leaked"))
+
+	SignalBus.choice_selected.emit("old")
+	await get_tree().process_frame
+	SignalBus.choice_show.disconnect(on_show)
+	assert_true(first_finished[0])
+	assert_eq(first_context.pending_jump, "old_selected")
+	assert_false(StellaRuntime.is_choice_active())
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections)
+
+
+func test_hard_boundary_preserves_reentrant_replacement_choice_owner() -> void:
+	var original_auto_pause: Variant = StellaRuntime.get_setting(
+		"auto_play_pause_on_choice")
+	StellaRuntime.set_setting("auto_play_pause_on_choice", true)
+	StellaRuntime.auto_play.stop()
+	StellaRuntime.auto_play.clear_suspensions()
+	StellaRuntime.skip_controller.stop()
+	StellaRuntime.auto_play.is_active = true
+	var old_session: int = StellaRuntime._begin_choice_policy_session()
+	assert_gt(old_session, 0)
+	assert_false(StellaRuntime.auto_play.is_effective())
+
+	var engine := ScenarioEngine.new()
+	var old_context := ScenarioContext.new(_context.scenario_data)
+	engine.context = old_context
+	var retired_abort_count := [0]
+	var fresh_abort_count := [0]
+	var on_retired_abort := func() -> void: retired_abort_count[0] += 1
+	var on_fresh_abort := func() -> void: fresh_abort_count[0] += 1
+	SignalBus.engine_abort_requested.connect(
+		on_retired_abort, CONNECT_ONE_SHOT)
+	var retired_abort_connections := (
+		StellaRuntime._capture_engine_abort_connections())
+	var fresh_session := [-1]
+	var fresh_show_count := [0]
+	var hide_count := [0]
+	var on_hide := func() -> void: hide_count[0] += 1
+	SignalBus.choice_hide.connect(on_hide)
+	old_context.cancellation_requested.connect(func() -> void:
+		fresh_session[0] = StellaRuntime._begin_choice_policy_session()
+		SignalBus.engine_abort_requested.connect(
+			on_fresh_abort, CONNECT_ONE_SHOT)
+		SignalBus.choice_show.emit("Fresh", [{
+			"id": "fresh", "label": "Fresh",
+		}])
+		fresh_show_count[0] += 1,
+		CONNECT_ONE_SHOT)
+
+	StellaRuntime._begin_choice_hard_boundary()
+	engine.context = ScenarioContext.new(_context.scenario_data)
+	StellaRuntime._notify_retired_engine_abort_connections(
+		retired_abort_connections)
+	StellaRuntime._finish_choice_hard_boundary(true)
+	SignalBus.choice_hide.disconnect(on_hide)
+
+	assert_eq(retired_abort_count[0], 1,
+		"the pre-transfer abort audience receives the boundary")
+	assert_false(SignalBus.engine_abort_requested.is_connected(
+		on_retired_abort))
+	assert_eq(fresh_abort_count[0], 0,
+		"a replacement handler cannot consume the retired generation's abort")
+	assert_true(SignalBus.engine_abort_requested.is_connected(on_fresh_abort),
+		"the replacement keeps its own future lifecycle listener")
+	assert_gt(fresh_session[0], old_session)
+	assert_eq(fresh_show_count[0], 1)
+	assert_eq(hide_count[0], 0,
+		"the old untyped HIDE cannot target a synchronously shown replacement")
+	assert_true(StellaRuntime.is_choice_active())
+	assert_false(StellaRuntime.auto_play.is_active,
+		"hard boundaries still fail-close user intent")
+	StellaRuntime.auto_play.is_active = true
+	assert_false(StellaRuntime.auto_play.is_effective(),
+		"cleanup preserves the replacement choice's exact suspension")
+	assert_true(StellaRuntime._resolve_choice_policy_session(fresh_session[0]))
+	assert_true(StellaRuntime.auto_play.is_effective())
+
+	SignalBus.engine_abort_requested.disconnect(on_fresh_abort)
+	StellaRuntime.auto_play.stop()
+	StellaRuntime.auto_play.clear_suspensions()
+	StellaRuntime.choice_history_manager.clear()
+	StellaRuntime.set_setting(
+		"auto_play_pause_on_choice", original_auto_pause)
+
+
+func test_cancel_owner_loss_releases_only_retired_choice_token() -> void:
+	var original_auto_pause: Variant = StellaRuntime.get_setting(
+		"auto_play_pause_on_choice")
+	StellaRuntime.set_setting("auto_play_pause_on_choice", true)
+	StellaRuntime.auto_play.stop()
+	StellaRuntime.auto_play.clear_suspensions()
+	StellaRuntime.auto_play.is_active = true
+	var retired_session := StellaRuntime._begin_choice_policy_session()
+	assert_gt(retired_session, 0)
+	assert_false(StellaRuntime.auto_play.is_effective())
+
+	var old_context := ScenarioContext.new(_context.scenario_data)
+	StellaRuntime.engine.context = old_context
+	var replacement_context := ScenarioContext.new(_context.scenario_data)
+	var replacement_session := [-1]
+	old_context.cancellation_requested.connect(func() -> void:
+		StellaRuntime.engine.context = replacement_context
+		replacement_session[0] = (
+			StellaRuntime._begin_choice_policy_session()),
+		CONNECT_ONE_SHOT,
+	)
+
+	assert_false(StellaRuntime._cancel_active_gameplay(),
+		"the retired caller loses ownership to the synchronous replacement")
+	assert_same(StellaRuntime.engine.context, replacement_context)
+	assert_gt(replacement_session[0], retired_session)
+	assert_true(StellaRuntime._is_choice_policy_session_current(
+		replacement_session[0]))
+	assert_false(StellaRuntime.auto_play.is_effective(),
+		"the replacement still owns its exact suspension")
+	assert_true(StellaRuntime._resolve_choice_policy_session(
+		replacement_session[0]))
+	assert_true(StellaRuntime.auto_play.is_effective(),
+		"the retired session token cannot strand the replacement Auto policy")
+
+	StellaRuntime.engine.cancel_current_run()
+	StellaRuntime.auto_play.stop()
+	StellaRuntime.auto_play.clear_suspensions()
+	StellaRuntime.set_setting(
+		"auto_play_pause_on_choice", original_auto_pause)
+
+
+func test_choice_begin_reentry_cannot_adopt_replacement_session() -> void:
+	var original_auto_pause: Variant = StellaRuntime.get_setting(
+		"auto_play_pause_on_choice")
+	var original_skip_stop: Variant = StellaRuntime.get_setting(
+		"skip_stop_on_choice")
+	StellaRuntime.set_setting("auto_play_pause_on_choice", true)
+	StellaRuntime.set_setting("skip_stop_on_choice", false)
+	StellaRuntime.auto_play.stop()
+	StellaRuntime.auto_play.clear_suspensions()
+	StellaRuntime.skip_controller.stop()
+	StellaRuntime.auto_play.is_active = true
+
+	var engine := ScenarioEngine.new()
+	var old_context := ScenarioContext.new(_context.scenario_data)
+	old_context.variable_store = VariableStore.new()
+	var fresh_context := ScenarioContext.new(_context.scenario_data)
+	engine.context = old_context
+	var fresh_session := [-1]
+	var show_prompts: Array[String] = []
+	var on_show := func(prompt: String, _options: Array) -> void:
+		show_prompts.append(prompt)
+	var on_effective := func(effective: bool) -> void:
+		if effective or fresh_session[0] >= 0:
+			return
+		StellaRuntime._begin_choice_hard_boundary()
+		engine.context = fresh_context
+		fresh_session[0] = StellaRuntime._begin_choice_policy_session()
+		SignalBus.choice_show.emit("Fresh", [{
+			"id": "fresh", "label": "Fresh",
+		}])
+		StellaRuntime._finish_choice_hard_boundary(false)
+	SignalBus.choice_show.connect(on_show)
+	StellaRuntime.auto_play.effective_changed.connect(
+		on_effective, CONNECT_ONE_SHOT)
+
+	var handler := StellaRuntime.registry.get_handler("choice") as ChoiceHandler
+	await handler.execute(_build_cmd("choice", {
+		"prompt": "Retired",
+		"options": [{"id": "old", "label": "Old"}],
+	}), old_context)
+	SignalBus.choice_show.disconnect(on_show)
+
+	assert_true(old_context.is_cancellation_requested())
+	assert_eq(show_prompts, ["Fresh"],
+		"the stale begin tail cannot publish its retired modal")
+	assert_gt(fresh_session[0], 0)
+	assert_true(StellaRuntime._is_choice_policy_session_current(
+		fresh_session[0]),
+		"the stale handler must retain its own id instead of cancelling fresh")
+	assert_true(StellaRuntime.is_choice_active())
+	StellaRuntime.auto_play.is_active = true
+	assert_false(StellaRuntime.auto_play.is_effective(),
+		"the replacement choice still owns its exact suspension")
+	assert_true(StellaRuntime._resolve_choice_policy_session(fresh_session[0]))
+
+	StellaRuntime.auto_play.stop()
+	StellaRuntime.auto_play.clear_suspensions()
+	StellaRuntime.set_setting(
+		"auto_play_pause_on_choice", original_auto_pause)
+	StellaRuntime.set_setting("skip_stop_on_choice", original_skip_stop)
+
+
+func test_direct_presentation_reset_rejects_live_semantic_choice() -> void:
+	var hide_count := [0]
+	var on_hide := func() -> void: hide_count[0] += 1
+	SignalBus.choice_hide.connect(on_hide)
+
+	assert_true(StellaRuntime._reset_presentation())
+	assert_eq(hide_count[0], 1,
+		"an unowned reset publishes the ordinary presentation HIDE")
+
+	var session_id: int = StellaRuntime._begin_choice_policy_session()
+	assert_gt(session_id, 0)
+	assert_false(StellaRuntime._reset_presentation())
+	assert_push_error(
+		"StellaRuntime: presentation reset requires retired choice ownership")
+	assert_eq(hide_count[0], 1,
+		"a rejected reset cannot hide a live semantic choice owner")
+	assert_true(StellaRuntime._cancel_choice_policy_session(session_id))
+	SignalBus.choice_hide.disconnect(on_hide)
 
 
 func test_choice_show_revalidates_owner_after_synchronous_selection() -> void:
