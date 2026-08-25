@@ -147,10 +147,15 @@ DSP preset 是 `VoiceDspChainDefinition` Resource，`effects` 按数组顺序执
   关闭对应支路，非零值必须至少为 `0.001`，因为 Godot 的可表达 floor 是
   `-60 dB`。
 
-preset 在修改 AudioServer 前完成完整 detached validation。资源缺失、类型错误、
-非法频率/阶数/gain 或无法安装完整 chain 时拒绝该 voice request，不会中断当前
-有效语音后再降级成干声。hide、clear、load/rollback、return-to-title、替换语音
-和 Presenter 退出都会清理 private bus effects 与 tail Timer。
+preset 先完成完整 detached validation，再安装到尚未连接 live player 的 staging
+bus；资源缺失、类型错误、非法频率/阶数/gain 或无法安装完整 chain 时拒绝该
+voice request，并按 bus identity 释放 staging，不会中断当前有效语音后再降级成
+干声。player 固定 unity gain，private bus 是 master/voice/per-character/enabled 的
+唯一 post-effect gain authority，因此设置同时约束 active source 和已缓冲 tail。
+hide、clear、load/rollback、return-to-title、替换语音和 Presenter 退出都会清理
+owned private bus effects 与 tail Timer；不属于对话 UI 的旧 dry programmatic voice
+仍保持原物理生命周期，但 processed programmatic voice 会在硬边界整体退休，不会
+让同一 token 中途失去所选 chain。
 
 每个可见字符的基础延迟来自该句开始显示时取得的
 `character_interval`；字符属于固定集合 `，。！？；：、,.!?;:…—` 时，再加上

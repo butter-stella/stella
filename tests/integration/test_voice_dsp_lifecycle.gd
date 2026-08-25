@@ -8,14 +8,28 @@ var _audio: AudioPresenter
 var _game_scene: Node
 var _original_voice_path: String
 var _original_dsp_path: String
+var _original_settings: Dictionary
+var _original_audio_bus_count: int
 
 
 func before_each() -> void:
 	_original_voice_path = StellaRuntime.voice_path
 	_original_dsp_path = StellaRuntime.voice_dsp_path
+	_original_settings = {}
+	for key in [
+		"master_volume", "voice_volume",
+		"character_voice_volume", "character_voice_enabled",
+	]:
+		var value: Variant = StellaRuntime.get_setting(key)
+		_original_settings[key] = (
+			value.duplicate(true)
+			if value is Dictionary or value is Array
+			else value
+		)
 	StellaRuntime.voice_path = VOICE_PATH
 	StellaRuntime.voice_dsp_path = DSP_PATH
 	_audio = StellaRuntime.get_node("AudioPresenter") as AudioPresenter
+	_original_audio_bus_count = AudioServer.bus_count
 	SignalBus.hide_dialogue.emit()
 	_game_scene = load("res://addons/stella/scenes/game.tscn").instantiate()
 	add_child_autoqfree(_game_scene)
@@ -32,6 +46,10 @@ func after_each() -> void:
 	await get_tree().process_frame
 	assert_true(_audio._voice_dsp_tail_timer.is_stopped())
 	assert_eq(AudioServer.get_bus_effect_count(_bus_index()), 0)
+	assert_eq(AudioServer.bus_count, _original_audio_bus_count,
+		"staging and replaced private buses must be released exactly")
+	for key: String in _original_settings:
+		StellaRuntime.set_setting(key, _original_settings[key])
 	StellaRuntime.voice_path = _original_voice_path
 	StellaRuntime.voice_dsp_path = _original_dsp_path
 	_audio = null
@@ -152,7 +170,7 @@ func test_abort_and_reset_boundaries_clear_tail_and_private_chain() -> void:
 	assert_eq(AudioServer.get_bus_effect_count(_bus_index()), 0)
 
 
-func test_unowned_programmatic_voice_keeps_playback_but_retires_dsp_on_reset() -> void:
+func test_unowned_processed_voice_retires_atomically_on_reset() -> void:
 	var response := SignalBus.request_voice_playback(
 		"narration_001",
 		"extension",
@@ -167,15 +185,119 @@ func test_unowned_programmatic_voice_keeps_playback_but_retires_dsp_on_reset() -
 	assert_eq(AudioServer.get_bus_effect_count(_bus_index()), 2)
 
 	SignalBus.hide_dialogue.emit()
-	assert_false(response.get_completion().is_finished(),
-		"unowned programmatic playback is not a dialogue UI owner")
+	assert_true(response.get_completion().is_finished())
+	assert_eq(_audio._voice_playback_token, -1)
+	assert_null(_audio._voice_player.stream)
+	assert_false(_audio._voice_player.playing)
+	assert_eq(AudioServer.get_bus_effect_count(_bus_index()), 0)
+	assert_ne(_audio._voice_playback_token, playback_token)
+	assert_not_same(_audio._voice_player.stream, stream,
+		"a processed token cannot continue after its chain is removed")
+
+
+func test_unowned_dry_voice_keeps_existing_programmatic_boundary_semantics() -> void:
+	var response := SignalBus.request_voice_playback(
+		"narration_001", "extension", Callable(), false)
+	assert_true(response.was_accepted())
+	var playback_token := response.get_playback_token()
+	var stream := _audio._voice_player.stream
+	SignalBus.hide_dialogue.emit()
+	assert_false(response.get_completion().is_finished())
 	assert_eq(_audio._voice_playback_token, playback_token)
 	assert_same(_audio._voice_player.stream, stream)
 	assert_true(_audio._voice_player.playing)
-	assert_eq(AudioServer.get_bus_effect_count(_bus_index()), 0,
-		"a UI/load boundary cannot retain its previous DSP projection")
+	assert_eq(AudioServer.get_bus_effect_count(_bus_index()), 0)
 	SignalBus.emit_advance_requested()
 	assert_true(response.get_completion().is_finished())
+
+
+func test_staging_failure_preserves_live_voice_bus_chain_and_token() -> void:
+	var live := _request("remote")
+	assert_true(live.was_accepted())
+	var live_token := _audio._voice_playback_token
+	var live_stream := _audio._voice_player.stream
+	var live_bus := _audio._voice_dsp_bus_name
+	var collision_name := StringName(
+		"__stella_voice_dsp_%d_%d"
+			% [_audio.get_instance_id(), _audio._voice_dsp_bus_serial + 1])
+	var collision_index := AudioServer.bus_count
+	AudioServer.add_bus(collision_index)
+	AudioServer.set_bus_name(collision_index, collision_name)
+	assert_eq(AudioServer.get_bus_index(collision_name), collision_index)
+
+	var rejected := _request("memory", "narration_002")
+	assert_false(rejected.was_accepted())
+	assert_push_error("private staging bus identity is ambiguous")
+	assert_eq(_audio._voice_playback_token, live_token)
+	assert_same(_audio._voice_player.stream, live_stream)
+	assert_eq(_audio._voice_dsp_bus_name, live_bus)
+	assert_eq(_audio._voice_player.bus, live_bus)
+	assert_eq(AudioServer.get_bus_effect_count(_bus_index()), 2)
+	assert_true(_audio._voice_player.playing)
+
+	var exact_collision_index := AudioServer.get_bus_index(collision_name)
+	if exact_collision_index >= 0:
+		AudioServer.remove_bus(exact_collision_index)
+
+
+func test_private_bus_is_the_single_live_and_replacement_gain_authority() -> void:
+	StellaRuntime.set_setting("master_volume", 1.0)
+	StellaRuntime.set_setting("voice_volume", 1.0)
+	StellaRuntime.set_setting("character_voice_volume", {"speaker": 1.0})
+	StellaRuntime.set_setting("character_voice_enabled", {"speaker": true})
+	var dry := _request("")
+	assert_true(dry.was_accepted())
+	assert_eq(_audio._voice_player.volume_db, 0.0)
+	assert_almost_eq(AudioServer.get_bus_volume_db(_bus_index()), 0.0, 0.0001)
+
+	var filtered := _request("remote", "narration_002")
+	assert_true(filtered.was_accepted())
+	assert_true(dry.get_completion().is_finished())
+	assert_eq(_audio._voice_player.volume_db, 0.0)
+	assert_almost_eq(AudioServer.get_bus_volume_db(_bus_index()), 0.0, 0.0001)
+	StellaRuntime.set_setting("voice_volume", 0.5)
+	assert_eq(_audio._voice_player.volume_db, 0.0)
+	assert_almost_eq(
+		AudioServer.get_bus_volume_db(_bus_index()), linear_to_db(0.5), 0.0001)
+
+	var final_dry := _request("", "narration_003")
+	assert_true(final_dry.was_accepted())
+	assert_true(filtered.get_completion().is_finished())
+	assert_eq(_audio._voice_player.volume_db, 0.0)
+	assert_almost_eq(
+		AudioServer.get_bus_volume_db(_bus_index()), linear_to_db(0.5), 0.0001)
+	StellaRuntime.set_setting("voice_volume", 1.0)
+	assert_almost_eq(AudioServer.get_bus_volume_db(_bus_index()), 0.0, 0.0001)
+
+
+func test_live_tail_obeys_master_voice_character_volume_and_enabled() -> void:
+	StellaRuntime.set_setting("master_volume", 1.0)
+	StellaRuntime.set_setting("voice_volume", 1.0)
+	StellaRuntime.set_setting("character_voice_volume", {"speaker": 1.0})
+	StellaRuntime.set_setting("character_voice_enabled", {"speaker": true})
+	var response := _request("memory")
+	assert_true(response.was_accepted())
+	assert_eq(_audio._voice_player.volume_db, 0.0)
+	_audio._voice_player.stop()
+	_audio._on_voice_playback_finished()
+	assert_false(_audio._voice_dsp_tail_timer.is_stopped())
+	assert_almost_eq(AudioServer.get_bus_volume_db(_bus_index()), 0.0, 0.0001)
+
+	StellaRuntime.set_setting("master_volume", 0.0)
+	assert_lte(AudioServer.get_bus_volume_db(_bus_index()), -79.0)
+	StellaRuntime.set_setting("master_volume", 1.0)
+	StellaRuntime.set_setting("voice_volume", 0.0)
+	assert_lte(AudioServer.get_bus_volume_db(_bus_index()), -79.0)
+	StellaRuntime.set_setting("voice_volume", 1.0)
+	StellaRuntime.set_setting("character_voice_volume", {"speaker": 0.0})
+	assert_lte(AudioServer.get_bus_volume_db(_bus_index()), -79.0)
+	StellaRuntime.set_setting("character_voice_volume", {"speaker": 1.0})
+	StellaRuntime.set_setting("character_voice_enabled", {"speaker": false})
+	assert_lte(AudioServer.get_bus_volume_db(_bus_index()), -79.0)
+	assert_false(_audio._voice_dsp_tail_timer.is_stopped(),
+		"settings mute the owned tail without changing its lifecycle")
+	StellaRuntime.set_setting("character_voice_enabled", {"speaker": true})
+	assert_almost_eq(AudioServer.get_bus_volume_db(_bus_index()), 0.0, 0.0001)
 
 
 func test_combine_and_backlog_replay_keep_each_segment_preset() -> void:

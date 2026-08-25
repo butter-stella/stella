@@ -14,8 +14,10 @@ var _voice_playback_token: int = -1
 var _voice_lifecycle_revision: int = 0
 var _voice_playback_revision: int = -1
 var _voice_dsp_bus_name: StringName = &""
+var _voice_dsp_bus_serial: int = 0
 var _voice_dsp_tail_timer: Timer
 var _voice_dsp_tail_seconds: float = 0.0
+var _voice_dsp_active: bool = false
 var _voice_request_owned: bool = false
 var _bgm_capability: RefCounted
 var _bgm_channel: Dictionary = {}
@@ -191,6 +193,7 @@ func _retire_voice_for_shutdown() -> void:
 	_voice_playback_revision = -1
 	_voice_started_advance_serial = -1
 	_voice_dsp_tail_seconds = 0.0
+	_voice_dsp_active = false
 	_voice_request_owned = false
 	if finished_token >= 0:
 		SignalBus.emit_voice_playback_event(VoicePlaybackEvent.finished(
@@ -257,7 +260,13 @@ func _apply_volumes(changed_key: String = ""):
 		"master_volume", "voice_volume",
 		"character_voice_volume", "character_voice_enabled",
 	]:
-		_voice_player.volume_db = _get_voice_target_db()
+		# The player remains unity-gain. The private bus is the single effective
+		# voice gain authority so already-buffered DSP tails follow live settings.
+		_voice_player.volume_db = 0.0
+		_set_voice_dsp_bus_volume(
+			_voice_dsp_bus_name,
+			_get_voice_target_db_for_character(_current_voice_character),
+		)
 
 	if update_all or changed_key in ["master_volume", "system_se_volume"]:
 		var sys_se_vol := _get_volume_setting("system_se_volume", 1.0)
@@ -269,9 +278,9 @@ func _get_volume_setting(key: String, fallback: float) -> float:
 	return fallback if value == null else float(value)
 
 
-func _get_voice_target_db() -> float:
+func _get_voice_target_db_for_character(character: String) -> float:
 	var char_enabled = StellaRuntime.get_setting("character_voice_enabled")
-	if char_enabled is Dictionary and not bool(char_enabled.get(_current_voice_character, true)):
+	if char_enabled is Dictionary and not bool(char_enabled.get(character, true)):
 		return -80.0
 
 	var final_volume := (
@@ -280,7 +289,7 @@ func _get_voice_target_db() -> float:
 	)
 	var char_volume = StellaRuntime.get_setting("character_voice_volume")
 	if char_volume is Dictionary:
-		final_volume *= float(char_volume.get(_current_voice_character, 1.0))
+		final_volume *= float(char_volume.get(character, 1.0))
 	return _to_db(final_volume)
 
 
@@ -2263,28 +2272,82 @@ func _normalize_loop_se_position(stream: AudioStream, position: float) -> float:
 func _create_voice_dsp_bus() -> bool:
 	if not _voice_dsp_bus_name.is_empty():
 		return AudioServer.get_bus_index(_voice_dsp_bus_name) >= 0
+	var initial_bus := _stage_voice_dsp_chain(
+		[], {}, _get_voice_target_db_for_character(""))
+	if initial_bus.is_empty():
+		return false
+	_voice_dsp_bus_name = initial_bus
+	return true
+
+
+func _stage_voice_dsp_chain(
+	effects_value: Variant,
+	source: Dictionary,
+	volume_db: float,
+) -> StringName:
+	if not effects_value is Array:
+		_voice_dsp_error(source, "prepared effect chain is malformed")
+		return &""
+	var effects: Array = effects_value
+	for effect_value: Variant in effects:
+		if not effect_value is AudioEffect:
+			_voice_dsp_error(source, "prepared effect is not an AudioEffect")
+			return &""
+
+	# The detached bus is not reachable from the live voice player. Complete
+	# installation and exact effect-count validation happen before replacement.
+	_voice_dsp_bus_serial += 1
+	var requested_name := StringName(
+		"__stella_voice_dsp_%d_%d"
+			% [get_instance_id(), _voice_dsp_bus_serial])
+	if AudioServer.get_bus_index(requested_name) >= 0:
+		_voice_dsp_error(source, "private staging bus identity is ambiguous")
+		return &""
 	var previous_count := AudioServer.bus_count
 	AudioServer.add_bus(previous_count)
 	if AudioServer.bus_count != previous_count + 1:
-		return false
-	var requested_name := StringName(
-		"__stella_voice_dsp_%d" % get_instance_id())
+		_voice_dsp_error(source, "private staging bus could not be allocated")
+		return &""
 	AudioServer.set_bus_name(previous_count, requested_name)
 	AudioServer.set_bus_send(previous_count, &"Master")
+	AudioServer.set_bus_volume_db(previous_count, volume_db)
 	var resolved_index := AudioServer.get_bus_index(requested_name)
 	if resolved_index != previous_count:
 		AudioServer.remove_bus(previous_count)
+		_voice_dsp_error(source, "private staging bus identity is ambiguous")
+		return &""
+	for effect_value: Variant in effects:
+		AudioServer.add_bus_effect(
+			resolved_index, effect_value as AudioEffect)
+	if AudioServer.get_bus_effect_count(resolved_index) != effects.size():
+		AudioServer.remove_bus(resolved_index)
+		_voice_dsp_error(source, "complete private DSP chain could not be staged")
+		return &""
+	return requested_name
+
+
+func _set_voice_dsp_bus_volume(bus_name: StringName, volume_db: float) -> bool:
+	if bus_name.is_empty():
 		return false
-	_voice_dsp_bus_name = requested_name
+	var bus_index := AudioServer.get_bus_index(bus_name)
+	if bus_index < 0:
+		return false
+	AudioServer.set_bus_volume_db(bus_index, volume_db)
 	return true
+
+
+func _release_voice_dsp_bus_named(bus_name: StringName) -> void:
+	if bus_name.is_empty():
+		return
+	var bus_index := AudioServer.get_bus_index(bus_name)
+	if bus_index >= 0:
+		AudioServer.remove_bus(bus_index)
 
 
 func _release_voice_dsp_bus() -> void:
 	if _voice_dsp_bus_name.is_empty():
 		return
-	var bus_index := AudioServer.get_bus_index(_voice_dsp_bus_name)
-	if bus_index >= 0:
-		AudioServer.remove_bus(bus_index)
+	_release_voice_dsp_bus_named(_voice_dsp_bus_name)
 	_voice_dsp_bus_name = &""
 
 
@@ -2397,32 +2460,6 @@ func _append_delay_effect(
 	return true
 
 
-func _install_voice_dsp_chain(
-	effects_value: Variant,
-	source: Dictionary,
-) -> bool:
-	if not effects_value is Array:
-		_voice_dsp_error(source, "prepared effect chain is malformed")
-		return false
-	var bus_index := AudioServer.get_bus_index(_voice_dsp_bus_name)
-	if bus_index < 0:
-		_voice_dsp_error(source, "private voice DSP bus is unavailable")
-		return false
-	_clear_voice_dsp_chain()
-	var effects: Array = effects_value
-	for effect_value: Variant in effects:
-		if not effect_value is AudioEffect:
-			_clear_voice_dsp_chain()
-			_voice_dsp_error(source, "prepared effect is not an AudioEffect")
-			return false
-		AudioServer.add_bus_effect(bus_index, effect_value as AudioEffect)
-	if AudioServer.get_bus_effect_count(bus_index) != effects.size():
-		_clear_voice_dsp_chain()
-		_voice_dsp_error(source, "private voice DSP chain could not be installed")
-		return false
-	return true
-
-
 func _clear_voice_dsp_chain() -> void:
 	if _voice_dsp_bus_name.is_empty():
 		return
@@ -2465,10 +2502,19 @@ func _on_voice_playback_requested(request: VoicePlaybackRequest) -> void:
 	if not request.get_dsp_preset().is_empty() and prepared_dsp.is_empty():
 		SignalBus.resolve_voice_playback_request(request, false)
 		return
+	var prepared_effects: Array = prepared_dsp.get("effects", [])
+	var staged_bus := _stage_voice_dsp_chain(
+		prepared_effects,
+		request.get_source(),
+		_get_voice_target_db_for_character(character),
+	)
+	if staged_bus.is_empty():
+		SignalBus.resolve_voice_playback_request(request, false)
+		return
 
-	# Stream and the complete detached chain validate before the previous voice is
-	# touched. A malformed preset can never interrupt a valid live playback and
-	# then continue as dry audio.
+	# Stream and the complete detached chain, including its private staging bus,
+	# validate before the previous voice is touched. A malformed or unavailable
+	# chain can never interrupt a valid live playback and then continue as dry.
 	# Physical lifecycle ownership is AudioPresenter-local. Dialogue ownership
 	# decides whether this request may start, but later advance/hide transitions
 	# must not make its legitimate physical FINISH look stale to low-level users.
@@ -2484,6 +2530,7 @@ func _on_voice_playback_requested(request: VoicePlaybackRequest) -> void:
 	# replacement, reject this retired request without touching replacement audio.
 	if request_revision != _voice_lifecycle_revision \
 		or not request.is_current():
+		_release_voice_dsp_bus_named(staged_bus)
 		SignalBus.resolve_voice_playback_request(request, false)
 		return
 
@@ -2492,26 +2539,44 @@ func _on_voice_playback_requested(request: VoicePlaybackRequest) -> void:
 	# remain side-effect free.
 	var char_enabled = StellaRuntime.get_setting("character_voice_enabled")
 	if char_enabled is Dictionary and not bool(char_enabled.get(character, true)):
+		_release_voice_dsp_bus_named(staged_bus)
 		SignalBus.resolve_voice_playback_request(request, false)
 		return
 
-	if not _install_voice_dsp_chain(
-		prepared_dsp.get("effects", []), request.get_source()):
+	# FINISHED is a synchronous public reentrancy boundary. Revalidate this exact
+	# detached bus before consuming the request or replacing the active bus.
+	var staged_bus_index := AudioServer.get_bus_index(staged_bus)
+	if (
+		staged_bus_index < 0
+		or AudioServer.get_bus_effect_count(staged_bus_index)
+			!= prepared_effects.size()
+		or not _set_voice_dsp_bus_volume(
+			staged_bus, _get_voice_target_db_for_character(character))
+	):
+		_release_voice_dsp_bus_named(staged_bus)
+		_voice_dsp_error(
+			request.get_source(), "private staged DSP chain lost authority")
 		SignalBus.resolve_voice_playback_request(request, false)
 		return
 
 	var playback_token := SignalBus.resolve_voice_playback_request(request, true)
 	if playback_token < 0:
-		_clear_voice_dsp_chain()
+		_release_voice_dsp_bus_named(staged_bus)
 		return
+	var previous_bus := _voice_dsp_bus_name
+	_voice_dsp_bus_name = staged_bus
+	_voice_player.bus = staged_bus
 	_current_voice_character = character
 	_voice_playback_token = playback_token
 	_voice_playback_revision = request_revision
 	_voice_dsp_tail_seconds = float(prepared_dsp.get("tail_seconds", 0.0))
+	_voice_dsp_active = not request.get_dsp_preset().is_empty()
 	_voice_request_owned = request.has_owner_validator()
-	_voice_player.volume_db = _get_voice_target_db()
+	_voice_player.volume_db = 0.0
 	_voice_player.stream = stream
 	_voice_started_advance_serial = SignalBus.current_advance_dispatch_serial()
+	if previous_bus != staged_bus:
+		_release_voice_dsp_bus_named(previous_bus)
 	_voice_player.play()
 	SignalBus.emit_voice_playback_event(VoicePlaybackEvent.started(
 		_current_voice_character, asset,
@@ -2555,12 +2620,13 @@ func _on_voice_lifecycle_boundary() -> void:
 	if _voice_playback_token < 0:
 		return
 	# Unowned programmatic playback is independent from dialogue UI visibility.
-	# It may keep playing, but can never retain a dialogue-selected DSP chain or
-	# tail across a load/title presentation boundary.
-	if not _voice_request_owned and _voice_player.playing:
-		_cancel_voice_dsp_tail()
-		_clear_voice_dsp_chain()
-		_voice_dsp_tail_seconds = 0.0
+	# Preserve only its established dry physical lifecycle. A processed playback
+	# cannot continue the same token after its selected chain is removed.
+	if (
+		not _voice_request_owned
+		and not _voice_dsp_active
+		and _voice_player.playing
+	):
 		return
 	_voice_lifecycle_revision += 1
 	_retire_active_voice(_voice_lifecycle_revision)
@@ -2575,6 +2641,7 @@ func _retire_active_voice(finished_revision: int) -> void:
 	_voice_playback_revision = -1
 	_voice_started_advance_serial = -1
 	_voice_dsp_tail_seconds = 0.0
+	_voice_dsp_active = false
 	_voice_request_owned = false
 	if finished_token >= 0:
 		SignalBus.emit_voice_playback_event(VoicePlaybackEvent.finished(
@@ -2598,6 +2665,7 @@ func _finish_voice_playback(revision: int, playback_token: int) -> void:
 	_voice_playback_revision = -1
 	_voice_started_advance_serial = -1
 	_voice_dsp_tail_seconds = 0.0
+	_voice_dsp_active = false
 	_voice_request_owned = false
 	SignalBus.emit_voice_playback_event(VoicePlaybackEvent.finished(
 		playback_token,
