@@ -49,6 +49,7 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 	var old_dialogue_handler := (
 		_runtime.registry.get_handler("dialogue") as DialogueHandler
 	)
+	var old_wait_handler := _runtime.registry.get_handler("wait") as WaitHandler
 	var old_unlock_manager: UnlockManager = _runtime.unlock_manager
 	var old_flowchart_visited: FlowchartVisitedState = _runtime.flowchart_visited
 	var audio_presenter: Node = _runtime.get_node("AudioPresenter")
@@ -161,6 +162,11 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 		"reset must replace the handler instead of rebinding an in-flight instance")
 	assert_same(dialogue_handler._read_flags, _runtime.read_flags,
 		"reset must rebind the handler to the replacement read history")
+	var wait_handler := _runtime.registry.get_handler("wait") as WaitHandler
+	assert_not_same(wait_handler, old_wait_handler,
+		"reset must replace the handler bound to the old Skip controller")
+	assert_same(wait_handler._skip_controller, _runtime.skip_controller,
+		"the fresh WaitHandler observes the fresh session Skip owner")
 	assert_not_same(_runtime.unlock_manager, old_unlock_manager)
 	assert_false(_runtime.unlock_manager.is_unlocked("cg", "dirty_cg"))
 	assert_not_same(_runtime.flowchart_visited, old_flowchart_visited)
@@ -283,6 +289,31 @@ func test_reset_for_test_does_not_advance_past_aborted_dialogue() -> void:
 	assert_eq(_scenario_ended_count[0], 0)
 
 
+func test_reset_for_test_cancels_skippable_timed_wait_generation() -> void:
+	var advance_connections := SignalBus.advance_requested.get_connections().size()
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	var old_context := _start_blocking_command(
+		_wait_command("timer", 60.0, true))
+	assert_eq(SignalBus.advance_requested.get_connections().size(),
+		advance_connections + 1)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1)
+
+	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
+
+	assert_true(old_context.is_cancellation_requested())
+	assert_eq(SignalBus.advance_requested.get_connections().size(),
+		advance_connections,
+		"session reset retires the old normal-advance listener")
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections,
+		"session reset retires the old abort listener")
+	assert_same(
+		(_runtime.registry.get_handler("wait") as WaitHandler)._skip_controller,
+		_runtime.skip_controller,
+	)
+
+
 func test_in_game_manual_load_transfers_owner_before_presenter_hide() -> void:
 	var dialogue := await _instantiate_game_dialogue()
 	_prepare_load_snapshot(false)
@@ -343,12 +374,15 @@ func test_in_game_manual_load_cancels_retired_click_wait_generation() -> void:
 func test_in_game_quick_load_cancels_retired_timer_wait_generation() -> void:
 	var dialogue := await _instantiate_game_dialogue()
 	_prepare_load_snapshot(true)
+	var advance_connections := SignalBus.advance_requested.get_connections().size()
 	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
 	var requests: Array[DialogueRequest] = []
 	var on_request := func(request: DialogueRequest) -> void:
 		requests.append(request)
 	SignalBus.dialogue_requested.connect(on_request)
-	var old_context := _start_blocking_command(_wait_command("timer", 0.2))
+	var old_context := _start_blocking_command(_wait_command("timer", 0.2, true))
+	assert_eq(SignalBus.advance_requested.get_connections().size(),
+		advance_connections + 1)
 	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
 		abort_connections + 1)
 
@@ -358,6 +392,9 @@ func test_in_game_quick_load_cancels_retired_timer_wait_generation() -> void:
 	var loaded_activation: DialogueActivation = dialogue._current_dialogue_activation
 
 	_assert_blocking_load_boundary(old_context, dialogue)
+	assert_eq(SignalBus.advance_requested.get_connections().size(),
+		advance_connections,
+		"quick load must disconnect the retired skippable wait input owner")
 	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
 		abort_connections + 1,
 		"quick load must replace the timer waiter with only the loaded dialogue")
@@ -661,10 +698,18 @@ func _build_command_then_dialogue_scenario(command: CommandData) -> ScenarioData
 	return data
 
 
-func _wait_command(mode: String, duration: float = 1.0) -> CommandData:
+func _wait_command(
+	mode: String,
+	duration: float = 1.0,
+	skippable: bool = false,
+) -> CommandData:
 	var command := CommandData.new()
 	command.type = "wait"
-	command.params = {"mode": mode, "duration": duration}
+	command.params = (
+		{"mode": "click"}
+		if mode == "click"
+		else {"mode": "timer", "duration": duration, "skippable": skippable}
+	)
 	return command
 
 

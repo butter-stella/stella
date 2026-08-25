@@ -563,7 +563,11 @@ func test_context_replacement_cancels_click_wait_connections() -> void:
 
 func test_context_replacement_cancels_timer_wait_before_timeout() -> void:
 	var handler := WaitHandler.new()
-	var command := _build_cmd("wait", {"mode": "timer", "duration": 10.0})
+	var command := _build_cmd("wait", {
+		"mode": "timer",
+		"duration": 10.0,
+		"skippable": false,
+	})
 	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
 	var engine := ScenarioEngine.new()
 	engine.context = _context

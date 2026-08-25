@@ -1475,11 +1475,7 @@ static func _parse_at_command(
 				"duration": float(parts[1]) if parts.size() > 1 else 0.5,
 			})
 		"wait":
-			if parts.size() > 0 and parts[0] == "click":
-				return _make_cmd("wait", {"mode": "click"})
-			return _make_cmd("wait", {
-				"duration": float(parts[0]) if parts.size() > 0 else 1.0,
-			})
+			return _parse_wait_command(parts, token.line, data)
 		"effect":
 			if parts.is_empty():
 				_record_diagnostic(
@@ -1678,7 +1674,7 @@ static func _parse_chapter_indicator_command(
 					transition = raw_value.to_lower()
 			"duration":
 				duration_was_set = true
-				var duration_result := _parse_chapter_indicator_duration(raw_value)
+				var duration_result := _parse_non_negative_duration(raw_value)
 				if not bool(duration_result.get("valid", false)):
 					_record_diagnostic(
 						data,
@@ -1719,6 +1715,100 @@ static func _parse_chapter_indicator_command(
 		"action": action,
 		"transition": transition,
 		"duration": duration,
+	})
+
+
+static func _parse_wait_command(
+	parts: Array,
+	line: int,
+	data: ScenarioData,
+) -> CommandData:
+	var location := _source_location(data, line)
+	if parts.is_empty():
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @wait requires a duration or click at %s" % location,
+			line,
+		)
+		return null
+
+	var first := String(parts[0])
+	if first == "click":
+		if parts.size() != 1:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: @wait click does not accept options at %s" % location,
+				line,
+			)
+			return null
+		return _make_cmd("wait", {"mode": "click"})
+
+	var duration_result := _parse_non_negative_duration(first)
+	if not bool(duration_result.get("valid", false)):
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @wait duration must be finite and non-negative at %s"
+			% location,
+			line,
+		)
+		return null
+
+	var skippable := false
+	var seen_skippable := false
+	var invalid := false
+	for index in range(1, parts.size()):
+		var encoded := String(parts[index])
+		var equals_at := encoded.find("=")
+		if equals_at < 1:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: invalid @wait argument '%s' at %s; use skippable=true|false"
+				% [encoded, location],
+				line,
+			)
+			invalid = true
+			continue
+		var key := encoded.substr(0, equals_at).strip_edges()
+		var raw_value := encoded.substr(equals_at + 1).strip_edges()
+		if key != "skippable":
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: unknown @wait option '%s' at %s" % [key, location],
+				line,
+			)
+			invalid = true
+			continue
+		if seen_skippable:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: duplicate @wait option 'skippable' at %s" % location,
+				line,
+			)
+			invalid = true
+			continue
+		seen_skippable = true
+		if raw_value not in ["true", "false"]:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: @wait skippable must be true or false at %s" % location,
+				line,
+			)
+			invalid = true
+			continue
+		skippable = raw_value == "true"
+	if invalid:
+		return null
+	return _make_cmd("wait", {
+		"duration": float(duration_result.get("value", 0.0)),
+		"mode": "timer",
+		"skippable": skippable,
 	})
 
 
@@ -1810,7 +1900,7 @@ static func _parse_loop_se_command(
 			invalid = true
 			continue
 		seen[key] = true
-		var number_result := _parse_chapter_indicator_duration(raw_value)
+		var number_result := _parse_non_negative_duration(raw_value)
 		match key:
 			"fade":
 				if not bool(number_result.get("valid", false)):
@@ -1876,7 +1966,7 @@ static func _parse_loop_se_command(
 	return _make_cmd("loop_se", payload)
 
 
-static func _parse_chapter_indicator_duration(encoded: String) -> Dictionary:
+static func _parse_non_negative_duration(encoded: String) -> Dictionary:
 	if not encoded.is_valid_float():
 		return {"valid": false, "requirement": "finite"}
 	var normalized := encoded.strip_edges().to_lower()

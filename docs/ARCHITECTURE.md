@@ -148,6 +148,8 @@ func get_handler(command_type: String) -> CommandHandler:
 
 阻塞型 handler 必须加入传入 `ScenarioContext` 所代表的执行代际。等待普通 Godot signal 时应使用 `await CommandHandler.await_with_abort(target, context)`；这样载入、重启或回滚替换 context 后，只会取消旧代际的等待，不会留下能响应后续输入的旧连接。仅等待全局 `engine_abort_requested` 不能覆盖所有 context 替换路径。
 
+Timed `WaitHandler` 在同一个 Core handler 内把 `SceneTreeTimer.timeout`、可选的普通玩家 advance、persistent Skip activation 与 context/global cancellation 合成为一次 exact race；它不创建第二 scheduler。每个 waiter 在安装时记录 `SignalBus.current_advance_dispatch_serial()`，只接受更晚的 dispatch，因此结束当前 wait 的 signal tail 不能同时结束同步创建的下一条 wait。首个 terminal 会断开 timer、advance、Skip 与 cancellation 的所有其余 listener；load、rollback、restart、return-to-title、session reset 和 scenario replacement 都通过相同 `ScenarioContext` generation 退休旧 owner。Auto 不属于 player skip，保持 authored duration。
+
 ### 2.2 剧情引擎
 
 主循环：`LoadScenario → SetScene → FetchCommand → Dispatch → WaitForCompletion → Next`
@@ -558,7 +560,7 @@ enum {
 }
 ```
 
-当前内建物理输入面覆盖左键、Space、Enter，以及 Ctrl/工具栏 Skip。语义 advance 会完成当前 exact blocking owner，不会跨越到同一 signal tail 中创建的下一命令。手柄 parity 与 #133 可重绑输入仍属后续工作，不声称已自动适配。
+当前内建物理输入面覆盖左键、Space、Enter、手柄 A，以及 Ctrl/工具栏 Skip。语义 advance 会完成当前 exact blocking owner，不会跨越到同一 signal tail 中创建的下一命令。#133 的可重绑输入仍属后续工作；当前只承诺这组固定映射。
 
 ---
 
