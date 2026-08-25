@@ -83,6 +83,57 @@ func test_enter_advances_when_playing():
 	handler.queue_free()
 
 
+func test_gamepad_accept_advances_when_playing() -> void:
+	var handler = _make_handler()
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	var received := []
+	var cb = func(): received.append(true)
+	SignalBus.advance_requested.connect(cb)
+
+	var event := InputEventJoypadButton.new()
+	event.button_index = JOY_BUTTON_A
+	event.pressed = true
+	handler._unhandled_input(event)
+
+	assert_eq(received.size(), 1)
+	SignalBus.advance_requested.disconnect(cb)
+	handler.queue_free()
+
+
+func test_other_gamepad_buttons_do_not_advance() -> void:
+	var handler = _make_handler()
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	var received := []
+	var cb = func(): received.append(true)
+	SignalBus.advance_requested.connect(cb)
+
+	var event := InputEventJoypadButton.new()
+	event.button_index = JOY_BUTTON_B
+	event.pressed = true
+	handler._unhandled_input(event)
+
+	assert_eq(received.size(), 0)
+	SignalBus.advance_requested.disconnect(cb)
+	handler.queue_free()
+
+
+func test_gamepad_accept_is_blocked_by_overlay_state() -> void:
+	var handler = _make_handler()
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
+	var received := []
+	var cb = func(): received.append(true)
+	SignalBus.advance_requested.connect(cb)
+
+	var event := InputEventJoypadButton.new()
+	event.button_index = JOY_BUTTON_A
+	event.pressed = true
+	handler._unhandled_input(event)
+
+	assert_eq(received.size(), 0)
+	SignalBus.advance_requested.disconnect(cb)
+	handler.queue_free()
+
+
 func test_resolved_dialogue_falls_back_to_click_wait_notification() -> void:
 	var handler = _make_handler()
 	var dialogue := ResolvedDialogueStub.new()

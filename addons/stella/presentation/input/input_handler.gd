@@ -71,6 +71,16 @@ func _input(event: InputEvent) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventJoypadButton:
+		if not event.pressed or event.button_index != JOY_BUTTON_A:
+			return
+		var joypad_dialogue = _get_dialogue()
+		if _restore_soft_hidden_dialogue(joypad_dialogue):
+			return
+		if not StellaRuntime.game_state.is_playing():
+			return
+		_handle_normal_advance(joypad_dialogue)
+		return
 	if not event is InputEventKey:
 		return
 	var dialogue = _get_dialogue()

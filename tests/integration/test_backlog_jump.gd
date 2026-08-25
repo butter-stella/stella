@@ -367,6 +367,7 @@ func test_jump_unblocks_wait_timer():
 	# coroutine would park until the timer fired naturally. With
 	# engine_abort_requested, the wait handler races and unblocks promptly.
 	var data = ScenarioData.new()
+	var advance_connections := SignalBus.advance_requested.get_connections().size()
 	data.id = "wait_test"
 	var s = SceneData.new()
 	s.id = "start"
@@ -378,7 +379,11 @@ func test_jump_unblocks_wait_timer():
 
 	var w = CommandData.new()
 	w.type = "wait"
-	w.params = {"duration": 60.0}  # would block for a full minute
+	w.params = {
+		"duration": 60.0,
+		"mode": "timer",
+		"skippable": true,
+	}  # would block for a full minute
 	s.commands.append(w)
 
 	var d1 = CommandData.new()
@@ -398,6 +403,9 @@ func test_jump_unblocks_wait_timer():
 	assert_eq(_runtime.backlog_manager.get_entries().size(), 1)
 	assert_eq(_runtime.engine.context.current_command_index, 1,
 		"engine should be on the wait command")
+	assert_eq(SignalBus.advance_requested.get_connections().size(),
+		advance_connections + 1,
+		"the skippable timed wait owns exactly one normal-advance listener")
 
 	# Jump back. Without the abort signal, the old coroutine would still
 	# be parked on the timer. With it, the wait_handler races and returns.
@@ -413,6 +421,9 @@ func test_jump_unblocks_wait_timer():
 
 	# New engine context should be positioned at dialogue 0
 	assert_eq(_runtime.engine.context.current_command_index, 0)
+	assert_eq(SignalBus.advance_requested.get_connections().size(),
+		advance_connections,
+		"rollback retires the old timed wait input owner")
 
 	await _stop_engine()
 

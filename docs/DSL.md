@@ -560,12 +560,29 @@ sakura「[expr:sad]我数学肯定完蛋了。」 #voice:sakura_019
 
 ### 3.14 等待
 
-```
-@wait 1.5                   // 等待 1.5 秒
-@wait click                  // 等待玩家点击
+```stla
+@wait 1.5                         // 固定等待 1.5 秒（默认）
+@wait 1.5 skippable=true          // 玩家推进或 Skip 可提前结束
+@wait click                       // 只等待一次玩家推进
 ```
 
+精确语法为：
+
+```text
+@wait <seconds> [skippable=true|false]
+@wait click
+```
+
+- timed wait 的 `skippable` 默认是 `false`，因此既有 `@wait 1.5` 仍完整等待计时器；需要玩家可提前结束时才显式写 `skippable=true`。
+- duration 必须是有限、非负的秒数。`skippable` 是 timed wait 唯一可选项，只接受严格小写的 `true` / `false`；未知、重复、裸参数、`canskip` 等遗留别名都会带 `source_path:line` fail-close。
+- `@wait click` 是独立模式，不接受 `skippable` 或其他 option。
+- 可跳过 timed wait 接受与对话相同的普通推进输入：左键、Space、Enter 和手柄 A；Skip 激活时也会立即结束，已处于 Skip 时不会创建 timer。Auto 不是玩家推进，不会擅自截短 authored duration。
+- timer、玩家推进和 engine/context cancellation 只允许一个结果获胜。一次输入最多结束当前 wait；迟到 timer、旧 signal tail、读档、Backlog/流程图回退、重启、返回标题或 scenario replacement 的旧 listener 都不能推进下一条命令。
+- non-skippable timed wait 只忽略玩家推进和 Skip；它仍必须响应 engine abort/context cancellation。这与 authored player skip 是两套边界。
+
 大部分情况不需要手写 `@wait`；对话会自动等待点击。
+
+可运行的公开示例见 [`examples/demo/scenarios/skippable_wait.stla`](../examples/demo/scenarios/skippable_wait.stla)。
 
 ## 4. 完整示例
 
@@ -696,7 +713,7 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | 并行 | `@parallel ... @end` | — |
 | Stage 批次 | `@stage_batch policy=join|fire_and_forget ... @end` | — |
 | 合并 | `@combine ... @end` | 多段语音、头像提示与舞台操作合并为一句对话 |
-| 等待 | `@wait duration/click` | — |
+| 等待 | `@wait seconds [skippable=true\|false]` / `@wait click` | `@wait 1.5` |
 | 场景 | `@scene id "title"` | `@scene id` |
 
 ## 6. 智能默认值总表
@@ -710,6 +727,7 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | BGM 淡入 | `1.0s` | — |
 | BGM 淡出 | `1.0s` | — |
 | loop-SE 音量 / 淡变 | `1` / `0s` | standalone 默认 fire-and-forget；JOIN 只通过 `@presentation_batch` 选择 |
+| timed wait 可跳过 | `false` | 显式 `skippable=true` 才接受普通推进或 Skip |
 | 对话推进 | 等待点击 | 有语音时可配置等语音播完 |
 
 ## 7. 解析器架构

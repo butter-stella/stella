@@ -1,0 +1,14 @@
+// Public synthetic example for authored skippable timed waits.
+@chapter wait_demo "Skippable timed wait"
+@scene start
+
+「This pause keeps its full authored duration.」
+@wait 0.5
+
+「This pause may end on left click, Space, Enter, gamepad A, or Skip.」
+@wait 2.0 skippable=true
+
+「Click mode has no timer and accepts no options.」
+@wait click
+
+「Done.」
