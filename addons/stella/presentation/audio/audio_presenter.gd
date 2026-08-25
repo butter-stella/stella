@@ -24,6 +24,24 @@ var _shutdown_quiesced := false
 
 
 func _ready():
+	# Shutdown is terminal for this Runtime. Presenter replacement can occur while
+	# the Runtime is waiting for an AudioServer mix rollover. A duplicate can also
+	# fail the unique-owner contract during ordinary play. Both remain completely
+	# inert: acquire the dual typed capability before players or signal consumers.
+	_shutdown_quiesced = SignalBus.runtime_audio_shutdown_has_started()
+	if _shutdown_quiesced:
+		set_process(false)
+		return
+	var capabilities := StellaRuntime._register_audio_presenter(self)
+	if capabilities.is_empty():
+		set_process(false)
+		return
+	_bgm_capability = capabilities.get("bgm") as RefCounted
+	_loop_se_capability = capabilities.get("loop_se") as RefCounted
+	if _bgm_capability == null or _loop_se_capability == null:
+		set_process(false)
+		return
+
 	# Create SE player pool
 	for i in range(_max_se_channels):
 		var player = AudioStreamPlayer.new()
@@ -76,13 +94,9 @@ func _ready():
 		_on_runtime_audio_shutdown_requested)
 
 	_apply_volumes()
-	_loop_se_capability = StellaRuntime._register_loop_se_presenter(self)
-	if _loop_se_capability != null:
-		SignalBus.announce_loop_se_presenter_registered(
-			self, _loop_se_capability)
-	_bgm_capability = StellaRuntime._register_bgm_presenter(self)
-	if _bgm_capability != null:
-		SignalBus.announce_bgm_presenter_registered(self, _bgm_capability)
+	SignalBus.announce_loop_se_presenter_registered(
+		self, _loop_se_capability)
+	SignalBus.announce_bgm_presenter_registered(self, _bgm_capability)
 
 
 func _on_runtime_audio_shutdown_requested(request_serial: int) -> void:
@@ -90,19 +104,29 @@ func _on_runtime_audio_shutdown_requested(request_serial: int) -> void:
 		return
 	if not _shutdown_quiesced:
 		_shutdown_quiesced = true
-		# First quiesce always invalidates both typed epochs. A validation/pre-apply
-		# request can own a Director/Bus slot before either local player map exists;
-		# map emptiness is therefore never sufficient evidence of lifecycle idleness.
-		SignalBus.reset_bgm_presentation()
-		SignalBus.reset_loop_se_presentation()
 		_retire_voice_for_shutdown()
 		for player_value: Variant in _se_players:
 			_retire_fixed_audio_player(player_value as AudioStreamPlayer)
 		_retire_fixed_audio_player(_system_se_player)
+	# First quiesce always invalidates both typed epochs. A validation/pre-apply
+	# request can own a Director/Bus slot before either local player map exists;
+	# map emptiness is therefore never sufficient evidence of lifecycle idleness.
+	# The Bus admits only this unique dual-capability owner and makes the reset
+	# globally once-only across Presenter replacement.
+	if not SignalBus.retire_runtime_audio_epochs_for_shutdown(
+		self, _bgm_capability):
+		return
 	if not _runtime_audio_shutdown_presenter_is_idle():
 		return
 	SignalBus.acknowledge_runtime_audio_shutdown(
 		self, _bgm_capability, request_serial)
+
+
+func _audio_admission_is_closed() -> bool:
+	return (
+		_shutdown_quiesced
+		or SignalBus.runtime_audio_shutdown_has_started()
+	)
 
 
 func _runtime_audio_shutdown_presenter_is_idle() -> bool:
@@ -151,22 +175,20 @@ func _retire_fixed_audio_player(player: AudioStreamPlayer) -> void:
 
 
 func _exit_tree() -> void:
-	if _bgm_capability != null:
+	if _bgm_capability != null and _loop_se_capability != null:
 		if not _shutdown_quiesced:
 			SignalBus.commit_bgm_position(
 				self, _bgm_capability, _capture_bgm_position())
 			SignalBus.reset_bgm_presentation()
-		StellaRuntime._unregister_bgm_presenter(self, _bgm_capability)
-		_bgm_capability = null
-	if _loop_se_capability != null:
-		if not _shutdown_quiesced:
 			SignalBus.commit_loop_se_positions(
 				self, _loop_se_capability, _capture_loop_se_positions())
 			# Presenter replacement retires only the old projection generation. The
 			# canonical channel state survives and the replacement receives one cut
 			# projection after it acquires the Runtime-owned capability.
 			SignalBus.reset_loop_se_presentation()
-		StellaRuntime._unregister_loop_se_presenter(self, _loop_se_capability)
+		StellaRuntime._unregister_audio_presenter(
+			self, _loop_se_capability, _bgm_capability)
+		_bgm_capability = null
 		_loop_se_capability = null
 
 
@@ -243,7 +265,7 @@ func _on_settings_changed(key: String, _value: Variant):
 func _on_bgm_validate_requested(request: BgmOperationRequest) -> void:
 	if _bgm_capability == null or request == null or not request.is_target(self):
 		return
-	if _shutdown_quiesced:
+	if _audio_admission_is_closed():
 		SignalBus.reject_bgm_request(
 			request, self, _bgm_capability, "audio presenter is quiescing")
 		return
@@ -715,7 +737,7 @@ func _create_bgm_voice(
 	loop_position: float,
 	level: float,
 ) -> Dictionary:
-	if _shutdown_quiesced or stream == null:
+	if _audio_admission_is_closed() or stream == null:
 		return {}
 	var player := AudioStreamPlayer.new()
 	player.bus = "Master"
@@ -954,7 +976,7 @@ func _duplicate_bgm_stream(
 # ─── SE ───
 
 func _on_se_play(asset: String):
-	if _shutdown_quiesced:
+	if _audio_admission_is_closed():
 		return
 	var stream = _load_audio(StellaRuntime.se_path, asset, ["ogg", "wav"])
 	if stream == null:
@@ -975,7 +997,7 @@ func _on_se_play(asset: String):
 func _on_loop_se_validate_requested(request: LoopSeOperationRequest) -> void:
 	if _loop_se_capability == null or request == null or not request.is_target(self):
 		return
-	if _shutdown_quiesced:
+	if _audio_admission_is_closed():
 		SignalBus.reject_loop_se_request(
 			request, self, _loop_se_capability, "audio presenter is quiescing")
 		return
@@ -1267,7 +1289,7 @@ func _create_loop_se_voice(
 	resume_position: float,
 	level: float,
 ) -> Dictionary:
-	if _shutdown_quiesced or stream == null:
+	if _audio_admission_is_closed() or stream == null:
 		return {}
 	var player := AudioStreamPlayer.new()
 	player.bus = "Master"
@@ -1600,7 +1622,7 @@ func _normalize_loop_se_position(stream: AudioStream, position: float) -> float:
 func _on_voice_playback_requested(request: VoicePlaybackRequest) -> void:
 	if not SignalBus.voice_playback_request_is_pending(request):
 		return
-	if _shutdown_quiesced:
+	if _audio_admission_is_closed():
 		SignalBus.resolve_voice_playback_request(request, false)
 		return
 	var asset := request.get_asset()
@@ -1732,7 +1754,7 @@ func _on_choice_selected(_option_id: String):
 
 
 func _on_system_se_play(asset: String):
-	if _shutdown_quiesced:
+	if _audio_admission_is_closed():
 		return
 	var stream = _load_audio(StellaRuntime.se_path, asset, ["ogg", "wav"])
 	if stream == null:

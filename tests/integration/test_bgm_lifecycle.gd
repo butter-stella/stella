@@ -8,6 +8,8 @@ const FIXTURE_PATH := "res://tests/fixtures/audio/bgm/"
 var _runtime: Node
 var _audio: AudioPresenter
 var _original_bgm_path: String
+var _original_se_path: String
+var _original_voice_path: String
 var _receipts: Array[Dictionary] = []
 var _terminals: Array[Dictionary] = []
 
@@ -18,7 +20,10 @@ func before_each() -> void:
 	_audio = _runtime.get_node("AudioPresenter") as AudioPresenter
 	_audio._shutdown_quiesced = false
 	SignalBus._runtime_audio_shutdown_started = false
+	SignalBus._runtime_audio_shutdown_epochs_retired = false
 	_original_bgm_path = _runtime.bgm_path
+	_original_se_path = _runtime.se_path
+	_original_voice_path = _runtime.voice_path
 	_runtime.bgm_path = FIXTURE_PATH
 	_receipts.clear()
 	_terminals.clear()
@@ -32,9 +37,12 @@ func after_each() -> void:
 	if SignalBus.bgm_transition_terminal.is_connected(_on_terminal):
 		SignalBus.bgm_transition_terminal.disconnect(_on_terminal)
 	_runtime.bgm_path = _original_bgm_path
+	_runtime.se_path = _original_se_path
+	_runtime.voice_path = _original_voice_path
 	_runtime.skip_controller.is_active = false
 	_audio._shutdown_quiesced = false
 	SignalBus._runtime_audio_shutdown_started = false
+	SignalBus._runtime_audio_shutdown_epochs_retired = false
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
 
 
@@ -111,6 +119,12 @@ func _finish_receipt(receipt: Dictionary) -> void:
 func _signal_connection_counts() -> Dictionary:
 	var result: Dictionary = {}
 	for signal_name: StringName in [
+		&"se_play",
+		&"voice_playback_requested",
+		&"system_se_play",
+		&"loop_se_validate_requested",
+		&"loop_se_apply_requested",
+		&"loop_se_projection_reset_requested",
 		&"bgm_validate_requested",
 		&"bgm_accept_requested",
 		&"bgm_apply_requested",
@@ -772,8 +786,83 @@ func test_first_quiesce_invalidates_queued_preseal_mixed_audio_without_late_appl
 	SignalBus.stage_operations_requested.disconnect(on_stage)
 
 
+func test_duplicate_audio_presenter_never_becomes_a_second_consumer() -> void:
+	var connection_counts := _signal_connection_counts()
+	assert_eq(int(connection_counts["se_play"]), 1)
+	assert_eq(int(connection_counts["voice_playback_requested"]), 1)
+	assert_eq(int(connection_counts["system_se_play"]), 1)
+	var duplicate := AudioPresenter.new()
+	duplicate.name = "RejectedAudioPresenter"
+	_runtime.add_child(duplicate)
+	assert_null(duplicate._bgm_capability)
+	assert_null(duplicate._loop_se_capability)
+	assert_eq(duplicate.get_child_count(), 0)
+	assert_false(duplicate.is_processing())
+	assert_eq(_signal_connection_counts(), connection_counts)
+
+	_runtime.se_path = "res://examples/demo/audio/se/"
+	SignalBus.se_play.emit("se_select")
+	var playing_owner_channels := 0
+	for player_value: Variant in _audio._se_players:
+		var player := player_value as AudioStreamPlayer
+		if player.playing and player.stream != null:
+			playing_owner_channels += 1
+	assert_eq(playing_owner_channels, 1,
+		"one raw request reaches exactly the admitted AudioPresenter")
+	assert_eq(duplicate.get_child_count(), 0)
+	duplicate.queue_free()
+	await get_tree().process_frame
+
+
+func test_audio_presenter_atomic_admission_never_leaves_a_partial_owner() -> void:
+	_audio.queue_free()
+	await get_tree().process_frame
+	var foreign_loop_owner := Node.new()
+	foreign_loop_owner.name = "SyntheticForeignLoopOwner"
+	_runtime.add_child(foreign_loop_owner)
+	var foreign_loop_capability := RefCounted.new()
+	SignalBus._loop_se_presenter = weakref(foreign_loop_owner)
+	SignalBus._loop_se_capability = foreign_loop_capability
+	SignalBus._bgm_presenter = null
+	SignalBus._bgm_capability = null
+	var candidate := AudioPresenter.new()
+	candidate.name = "RejectedSplitOwnerCandidate"
+	_runtime.add_child(candidate)
+	assert_null(candidate._loop_se_capability)
+	assert_null(candidate._bgm_capability)
+	assert_eq(candidate.get_child_count(), 0)
+	assert_same(SignalBus._loop_se_presenter.get_ref(), foreign_loop_owner)
+	assert_same(SignalBus._loop_se_capability, foreign_loop_capability)
+	assert_null(SignalBus._bgm_presenter,
+		"dual-slot preflight mutates neither owner when either slot is occupied")
+	assert_null(SignalBus._bgm_capability)
+
+	# Restore the intentionally corrupted registry only inside this test boundary.
+	candidate.queue_free()
+	foreign_loop_owner.queue_free()
+	SignalBus._loop_se_presenter = null
+	SignalBus._loop_se_capability = null
+	await get_tree().process_frame
+	var restored := AudioPresenter.new()
+	restored.name = "AudioPresenter"
+	_runtime.add_child(restored)
+	_audio = restored
+	assert_not_null(restored._loop_se_capability)
+	assert_not_null(restored._bgm_capability)
+
+
 func test_runtime_audio_shutdown_quiesces_every_exact_owner_idempotently() -> void:
 	var stream := load(FIXTURE_PATH + "synthetic_raw.tres") as AudioStreamWAV
+	var connection_counts := _signal_connection_counts()
+	var duplicate := AudioPresenter.new()
+	duplicate.name = "ShutdownNonOwnerDuplicate"
+	_runtime.add_child(duplicate)
+	assert_null(duplicate._bgm_capability)
+	assert_null(duplicate._loop_se_capability)
+	assert_eq(duplicate.get_child_count(), 0)
+	assert_false(duplicate.is_processing())
+	assert_eq(_signal_connection_counts(), connection_counts,
+		"capability rejection happens before every raw or typed connection")
 	var fnf := _submit([
 		_operation("play", "synthetic_track", "", 0.7, 10.0),
 	])
@@ -803,6 +892,9 @@ func test_runtime_audio_shutdown_quiesces_every_exact_owner_idempotently() -> vo
 
 	assert_true(SignalBus.quiesce_runtime_audio_for_shutdown())
 	assert_true(_audio._shutdown_quiesced)
+	assert_false(duplicate._shutdown_quiesced,
+		"an invalid participant has no shutdown connection or compatibility path")
+	assert_eq(duplicate.get_child_count(), 0)
 	assert_eq(_audio._bgm_channel, {})
 	assert_eq(_audio._loop_se_channels, {})
 	assert_eq(_runtime.presentation_director._entries, {})
@@ -817,13 +909,115 @@ func test_runtime_audio_shutdown_quiesces_every_exact_owner_idempotently() -> vo
 	assert_null(se_player.stream)
 	assert_false(_audio._system_se_player.playing)
 	assert_null(_audio._system_se_player.stream)
+	var retired_bgm_epoch := SignalBus.current_bgm_epoch()
+	var retired_loop_epoch := SignalBus.current_loop_se_epoch()
 	assert_true(SignalBus.quiesce_runtime_audio_for_shutdown(),
 		"a concurrent/repeated quit request reuses the empty projection")
+	assert_eq(SignalBus.current_bgm_epoch(), retired_bgm_epoch)
+	assert_eq(SignalBus.current_loop_se_epoch(), retired_loop_epoch)
 	assert_eq(SignalBus._dispatching_runtime_audio_shutdown_serial, 0)
 	assert_false(SignalBus._runtime_audio_shutdown_acknowledged)
 	await get_tree().process_frame
 	assert_false(is_instance_valid(bgm_player))
 	assert_false(is_instance_valid(loop_player))
+
+	# Replacement remains possible during StellaRuntime's bounded real-mix wait.
+	# A new unique owner must inherit the global terminal latch before _ready can
+	# admit title/state projection or any raw audio notification.
+	_audio.queue_free()
+	await get_tree().process_frame
+	var terminal_connection_counts := _signal_connection_counts()
+	var replacement := AudioPresenter.new()
+	replacement.name = "AudioPresenter"
+	_runtime.add_child(replacement)
+	_audio = replacement
+	assert_true(replacement._shutdown_quiesced)
+	assert_true(SignalBus.runtime_audio_shutdown_has_started())
+	assert_null(replacement._bgm_capability,
+		"terminal replacement never registers or announces typed ownership")
+	assert_null(replacement._loop_se_capability)
+	assert_eq(replacement.get_child_count(), 0)
+	assert_false(replacement.is_processing())
+	assert_eq(_signal_connection_counts(), terminal_connection_counts,
+		"after the old owner exits, a terminal replacement connects no consumers")
+	_runtime.se_path = "res://examples/demo/audio/se/"
+	_runtime.voice_path = "res://examples/demo/audio/voice/"
+	assert_eq(SignalBus.apply_title_bgm_cut("synthetic_raw"), 0)
+	assert_eq(SignalBus.reset_and_apply_bgm_state({
+		"asset": "synthetic_raw", "cue": "", "loop": true,
+		"position": 0.0, "status": "playing", "volume": 0.7,
+	}), 0)
+	assert_eq(SignalBus.reset_and_apply_loop_se_state({
+		"ambient": {
+			"asset": "se_select", "loop": true,
+			"position": 0.0, "volume": 0.5,
+		},
+	}), 0)
+	var voice_response := SignalBus.request_voice_playback(
+		"sakura_001", "sakura", Callable(), false)
+	assert_true(voice_response.was_handled())
+	assert_false(voice_response.was_accepted())
+	SignalBus.se_play.emit("se_select")
+	SignalBus.system_se_play.emit("se_select")
+	assert_eq(replacement.get_child_count(), 0,
+		"terminal state never allocates fixed or dynamic audio players")
+	assert_eq(replacement._bgm_channel, {})
+	assert_eq(replacement._loop_se_channels, {})
+	assert_eq(duplicate._bgm_channel, {})
+	assert_eq(duplicate._loop_se_channels, {})
+	assert_eq(duplicate.get_child_count(), 0)
+	assert_eq(SignalBus.current_bgm_epoch(), retired_bgm_epoch)
+	assert_eq(SignalBus.current_loop_se_epoch(), retired_loop_epoch)
+	assert_true(SignalBus.quiesce_runtime_audio_for_shutdown())
+	assert_eq(SignalBus.current_bgm_epoch(), retired_bgm_epoch,
+		"replacement owner cannot repeat the globally retired epochs")
+	assert_eq(SignalBus.current_loop_se_epoch(), retired_loop_epoch)
+	duplicate.queue_free()
+	replacement.queue_free()
+	await get_tree().process_frame
+	# Product shutdown is terminal. Restore a fresh owner only inside this test's
+	# isolation boundary so later same-process files exercise ordinary admission.
+	SignalBus._runtime_audio_shutdown_started = false
+	SignalBus._runtime_audio_shutdown_epochs_retired = false
+	var restored := AudioPresenter.new()
+	restored.name = "AudioPresenter"
+	_runtime.add_child(restored)
+	_audio = restored
+	assert_not_null(restored._bgm_capability)
+	assert_not_null(restored._loop_se_capability)
+
+
+func test_runtime_audio_shutdown_cancels_active_join_only_through_one_epoch() -> void:
+	var started := _submit([
+		_operation("play", "synthetic_track", "", 0.8),
+	])
+	assert_eq(started.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	var joined := _submit(
+		[_operation("pause", "", "", 1.0, 10.0)],
+		PresentationBatchRequest.Policy.JOIN,
+	)
+	assert_false(joined.is_settled())
+	assert_false(_runtime.presentation_director._entries.is_empty())
+	var state_apply_count := [0]
+	var on_state_apply := func(_state: Dictionary, _generation: int) -> void:
+		state_apply_count[0] += 1
+	SignalBus.bgm_state_apply_requested.connect(on_state_apply)
+	var bgm_epoch_before := SignalBus.current_bgm_epoch()
+	var loop_epoch_before := SignalBus.current_loop_se_epoch()
+
+	assert_true(SignalBus.quiesce_runtime_audio_for_shutdown())
+	assert_true(joined.is_settled())
+	assert_eq(joined.get_outcome(), PresentationBatchRequest.Outcome.CANCELLED)
+	assert_eq(SignalBus.current_bgm_epoch(), bgm_epoch_before + 1,
+		"active JOIN retirement advances the BGM epoch exactly once")
+	assert_eq(SignalBus.current_loop_se_epoch(), loop_epoch_before + 1,
+		"first quiesce advances the loop-SE epoch exactly once")
+	assert_eq(state_apply_count[0], 0,
+		"JOIN cancellation cannot roll back or replay a stable BGM during shutdown")
+	assert_eq(_audio._bgm_channel, {})
+	assert_eq(_audio._loop_se_channels, {})
+	assert_eq(_runtime.presentation_director._entries, {})
+	SignalBus.bgm_state_apply_requested.disconnect(on_state_apply)
 
 
 func test_graceful_quit_latch_and_mix_boundary_fail_close_are_bounded() -> void:

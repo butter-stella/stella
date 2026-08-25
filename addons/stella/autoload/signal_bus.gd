@@ -181,6 +181,9 @@ func request_voice_playback(
 ) -> VoicePlaybackResponse:
 	var request := VoicePlaybackRequest.new(asset, character, owner_validator)
 	var response := VoicePlaybackResponse.new()
+	if _runtime_audio_shutdown_started:
+		response._resolve(false)
+		return response
 	if not request.is_current():
 		response._resolve(false)
 		return response
@@ -731,10 +734,10 @@ signal bgm_position_committed(position: float)
 signal bgm_natural_stop_committed()
 signal bgm_presenter_registered()
 
-# Runtime-owned graceful shutdown is a synchronous capability handshake with
-# the same unique AudioPresenter that owns BGM and loop-SE projection. The
-# Runtime observes the later AudioServer mix boundary; the Bus only proves that
-# all Stella audio was retired before that observation begins.
+# Runtime-owned graceful shutdown performs a synchronous capability handshake
+# with the same unique AudioPresenter that owns every Stella audio projection.
+# The Runtime observes the later AudioServer mix boundary; the Bus only proves
+# that all Stella audio was retired before that observation begins.
 signal runtime_audio_shutdown_requested(request_serial: int)
 
 var _stage_operation_queue: Array[Dictionary] = []
@@ -773,6 +776,7 @@ var _next_runtime_audio_shutdown_serial := 1
 var _dispatching_runtime_audio_shutdown_serial := 0
 var _runtime_audio_shutdown_acknowledged := false
 var _runtime_audio_shutdown_started := false
+var _runtime_audio_shutdown_epochs_retired := false
 var _presentation_operation_queue: Array[Dictionary] = []
 var _presentation_enqueue_serial := 1
 var _presentation_projection_depth := 0
@@ -793,28 +797,6 @@ func configure_loop_se_registrar(authority: Object) -> bool:
 	return _loop_se_registrar_authority == authority
 
 
-func register_loop_se_presenter(
-	presenter: Object,
-	registrar_authority: Object,
-) -> RefCounted:
-	if (
-		registrar_authority != _loop_se_registrar_authority
-		or presenter == null
-		or not is_instance_valid(presenter)
-		or not presenter is Node
-		or (presenter as Node).is_queued_for_deletion()
-	):
-		return null
-	var registered := _current_loop_se_presenter()
-	if registered != null:
-		if registered == presenter:
-			return _loop_se_capability
-		return null
-	_loop_se_presenter = weakref(presenter)
-	_loop_se_capability = RefCounted.new()
-	return _loop_se_capability
-
-
 func announce_loop_se_presenter_registered(
 	presenter: Object,
 	capability: RefCounted,
@@ -823,19 +805,6 @@ func announce_loop_se_presenter_registered(
 		return false
 	loop_se_presenter_registered.emit()
 	return true
-
-
-func unregister_loop_se_presenter(
-	presenter: Object,
-	capability: RefCounted,
-	registrar_authority: Object,
-) -> void:
-	if (
-		registrar_authority == _loop_se_registrar_authority
-		and _loop_se_participant_identity_matches(presenter, capability)
-	):
-		_loop_se_presenter = null
-		_loop_se_capability = null
 
 
 func reject_loop_se_request(
@@ -945,7 +914,10 @@ func reset_loop_se_presentation() -> int:
 
 
 func reset_and_apply_loop_se_state(channels: Dictionary) -> int:
-	if not LoopSeChannelState.validate_channels(channels, true):
+	if (
+		_runtime_audio_shutdown_started
+		or not LoopSeChannelState.validate_channels(channels, true)
+	):
 		return 0
 	return _reset_loop_se_projection(channels)
 
@@ -954,7 +926,10 @@ func apply_loop_se_targets_state(
 	channels: Dictionary,
 	targets: Array,
 ) -> bool:
-	if not LoopSeChannelState.validate_channels(channels, true):
+	if (
+		_runtime_audio_shutdown_started
+		or not LoopSeChannelState.validate_channels(channels, true)
+	):
 		return false
 	var normalized_targets: Array[String] = []
 	for target_value: Variant in targets:
@@ -1036,26 +1011,6 @@ func configure_bgm_registrar(authority: Object) -> bool:
 	return _bgm_registrar_authority == authority
 
 
-func register_bgm_presenter(
-	presenter: Object,
-	registrar_authority: Object,
-) -> RefCounted:
-	if (
-		registrar_authority != _bgm_registrar_authority
-		or presenter == null
-		or not is_instance_valid(presenter)
-		or not presenter is Node
-		or (presenter as Node).is_queued_for_deletion()
-	):
-		return null
-	var registered := _current_bgm_presenter()
-	if registered != null:
-		return _bgm_capability if registered == presenter else null
-	_bgm_presenter = weakref(presenter)
-	_bgm_capability = RefCounted.new()
-	return _bgm_capability
-
-
 func announce_bgm_presenter_registered(
 	presenter: Object,
 	capability: RefCounted,
@@ -1063,6 +1018,69 @@ func announce_bgm_presenter_registered(
 	if not _bgm_participant_identity_matches(presenter, capability):
 		return false
 	bgm_presenter_registered.emit()
+	return true
+
+
+## StellaRuntime admits the concrete AudioPresenter as one atomic participant.
+## Preflight both owner slots before mutating either, so a duplicate or split
+## owner can never connect raw audio signals with only half the typed contract.
+func register_audio_presenter(
+	presenter: Object,
+	loop_se_registrar_authority: Object,
+	bgm_registrar_authority: Object,
+) -> Dictionary:
+	if (
+		loop_se_registrar_authority != _loop_se_registrar_authority
+		or bgm_registrar_authority != _bgm_registrar_authority
+		or presenter == null
+		or not is_instance_valid(presenter)
+		or not presenter is Node
+		or (presenter as Node).is_queued_for_deletion()
+	):
+		return {}
+	var loop_se_owner := _current_loop_se_presenter()
+	var bgm_owner := _current_bgm_presenter()
+	if loop_se_owner != null or bgm_owner != null:
+		if loop_se_owner == presenter and bgm_owner == presenter:
+			return {
+				"bgm": _bgm_capability,
+				"loop_se": _loop_se_capability,
+			}
+		return {}
+	_loop_se_presenter = weakref(presenter)
+	_loop_se_capability = RefCounted.new()
+	_bgm_presenter = weakref(presenter)
+	_bgm_capability = RefCounted.new()
+	return {
+		"bgm": _bgm_capability,
+		"loop_se": _loop_se_capability,
+	}
+
+
+func unregister_audio_presenter(
+	presenter: Object,
+	loop_se_capability: RefCounted,
+	bgm_capability: RefCounted,
+	loop_se_registrar_authority: Object,
+	bgm_registrar_authority: Object,
+) -> bool:
+	if (
+		loop_se_registrar_authority != _loop_se_registrar_authority
+		or bgm_registrar_authority != _bgm_registrar_authority
+		or presenter == null
+		or not is_instance_valid(presenter)
+		or _loop_se_presenter == null
+		or _bgm_presenter == null
+		or _loop_se_presenter.get_ref() != presenter
+		or _bgm_presenter.get_ref() != presenter
+		or loop_se_capability != _loop_se_capability
+		or bgm_capability != _bgm_capability
+	):
+		return false
+	_loop_se_presenter = null
+	_loop_se_capability = null
+	_bgm_presenter = null
+	_bgm_capability = null
 	return true
 
 
@@ -1090,6 +1108,34 @@ func quiesce_runtime_audio_for_shutdown() -> bool:
 	var acknowledged := _runtime_audio_shutdown_acknowledged
 	_runtime_audio_shutdown_acknowledged = false
 	return acknowledged
+
+
+## The terminal latch is global because AudioPresenter replacement remains
+## possible while StellaRuntime waits for the next real AudioServer mix. A new
+## Presenter must be born closed rather than briefly admitting playback.
+func runtime_audio_shutdown_has_started() -> bool:
+	return _runtime_audio_shutdown_started
+
+
+## Exactly the unique dual-capability owner may retire the canonical epochs.
+## The retirement is globally once-only so replacing that owner during the mix
+## wait cannot advance epochs a second time on a repeated quit request.
+func retire_runtime_audio_epochs_for_shutdown(
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if (
+		not _runtime_audio_shutdown_started
+		or not _bgm_participant_identity_matches(presenter, capability)
+		or _current_loop_se_presenter() != presenter
+	):
+		return false
+	if _runtime_audio_shutdown_epochs_retired:
+		return true
+	_runtime_audio_shutdown_epochs_retired = true
+	reset_bgm_presentation()
+	reset_loop_se_presentation()
+	return true
 
 
 func _cancel_queued_presentation_for_runtime_shutdown() -> void:
@@ -1151,19 +1197,6 @@ func _runtime_audio_shutdown_bus_is_idle() -> bool:
 		and _dispatching_chapter_indicator_request == null
 		and _applying_chapter_indicator_request == null
 	)
-
-
-func unregister_bgm_presenter(
-	presenter: Object,
-	capability: RefCounted,
-	registrar_authority: Object,
-) -> void:
-	if (
-		registrar_authority == _bgm_registrar_authority
-		and _bgm_participant_identity_matches(presenter, capability)
-	):
-		_bgm_presenter = null
-		_bgm_capability = null
 
 
 func reject_bgm_request(
@@ -1276,13 +1309,19 @@ func reset_bgm_presentation() -> int:
 
 
 func reset_and_apply_bgm_state(state: Dictionary) -> int:
-	if not BgmChannelState.validate_snapshot_state(state, true):
+	if (
+		_runtime_audio_shutdown_started
+		or not BgmChannelState.validate_snapshot_state(state, true)
+	):
 		return 0
 	return _reset_bgm_projection(state)
 
 
 func apply_bgm_state(state: Dictionary) -> bool:
-	if not BgmChannelState.validate_snapshot_state(state, true):
+	if (
+		_runtime_audio_shutdown_started
+		or not BgmChannelState.validate_snapshot_state(state, true)
+	):
 		return false
 	bgm_state_apply_requested.emit(state.duplicate(true), _bgm_epoch)
 	return true
@@ -1291,6 +1330,8 @@ func apply_bgm_state(state: Dictionary) -> bool:
 ## Title configuration uses the same Runtime-owned channel projection but does
 ## not create an authored lifecycle owner or a save-state commit.
 func apply_title_bgm_cut(asset: String) -> int:
+	if _runtime_audio_shutdown_started:
+		return 0
 	var normalized := asset.strip_edges()
 	var epoch := _reset_bgm_projection({})
 	if normalized.is_empty() or normalized != asset:

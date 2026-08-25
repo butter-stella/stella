@@ -142,34 +142,28 @@ func _unregister_chapter_indicator_presenter(
 	)
 
 
-func _register_loop_se_presenter(presenter: Object) -> RefCounted:
+func _register_audio_presenter(presenter: Object) -> Dictionary:
 	if not presenter is AudioPresenter:
-		return null
-	return SignalBus.register_loop_se_presenter(
-		presenter, _loop_se_registrar_authority)
+		return {}
+	return SignalBus.register_audio_presenter(
+		presenter,
+		_loop_se_registrar_authority,
+		_bgm_registrar_authority,
+	)
 
 
-func _unregister_loop_se_presenter(
+func _unregister_audio_presenter(
 	presenter: Object,
-	capability: RefCounted,
-) -> void:
-	SignalBus.unregister_loop_se_presenter(
-		presenter, capability, _loop_se_registrar_authority)
-
-
-func _register_bgm_presenter(presenter: Object) -> RefCounted:
-	if not presenter is AudioPresenter:
-		return null
-	return SignalBus.register_bgm_presenter(
-		presenter, _bgm_registrar_authority)
-
-
-func _unregister_bgm_presenter(
-	presenter: Object,
-	capability: RefCounted,
-) -> void:
-	SignalBus.unregister_bgm_presenter(
-		presenter, capability, _bgm_registrar_authority)
+	loop_se_capability: RefCounted,
+	bgm_capability: RefCounted,
+) -> bool:
+	return SignalBus.unregister_audio_presenter(
+		presenter,
+		loop_se_capability,
+		bgm_capability,
+		_loop_se_registrar_authority,
+		_bgm_registrar_authority,
+	)
 
 
 func _notification(what: int) -> void:

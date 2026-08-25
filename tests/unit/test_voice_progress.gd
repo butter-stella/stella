@@ -8,8 +8,7 @@ var _progress_emissions: Array
 
 
 func before_each():
-	_audio_presenter = _create_audio_presenter()
-	add_child_autoqfree(_audio_presenter)
+	_audio_presenter = StellaRuntime.get_node("AudioPresenter")
 	_progress_emissions = []
 	_progress_cb = func(pos, dur): _progress_emissions.append({"pos": pos, "dur": dur})
 	SignalBus.voice_progress.connect(_progress_cb)
@@ -18,13 +17,6 @@ func before_each():
 func after_each():
 	if SignalBus.voice_progress.is_connected(_progress_cb):
 		SignalBus.voice_progress.disconnect(_progress_cb)
-
-
-func _create_audio_presenter() -> Node:
-	var script = load("res://addons/stella/presentation/audio/audio_presenter.gd")
-	var node = Node.new()
-	node.set_script(script)
-	return node
 
 
 # --- Signal existence ---
