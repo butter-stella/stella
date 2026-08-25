@@ -626,6 +626,31 @@ signal stage_transitions_finish_requested(transitions: Array)
 ## exact presenter, layer, token, operation request, and Presenter-owned
 ## generation identity. Legacy three-field completion remains above.
 signal stage_transition_receipts_finish_requested(transitions: Array)
+signal dialogue_visibility_operations_requested(operations: Array, force_cut: bool)
+signal presentation_operation_request_finished(request_id: int, delivered: bool)
+signal presentation_projection_lifecycle_finished(lifecycle_id: int)
+signal dialogue_visibility_visuals_reset_requested()
+signal dialogue_visibility_state_apply_requested(
+	visibility: Dictionary,
+	content: Dictionary,
+	runtime_binding: Dictionary,
+)
+signal dialogue_visibility_transition_receipt_started(
+	presenter_instance_id: int,
+	target: String,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+)
+signal dialogue_visibility_transition_terminal(
+	presenter_instance_id: int,
+	target: String,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+	outcome: StringName,
+)
+signal dialogue_visibility_transition_receipts_finish_requested(transitions: Array)
 
 var _stage_operation_queue: Array[Dictionary] = []
 var _stage_operation_dispatching := false
@@ -636,6 +661,18 @@ var _stage_reset_epoch_stack: Array[int] = []
 var _next_stage_operation_request_id := 1
 var _stage_operation_epoch := 1
 var _stage_reset_depth := 0
+var _dialogue_visibility_queue: Array[Dictionary] = []
+var _dialogue_visibility_dispatching := false
+var _dialogue_visibility_epoch := 1
+var _dialogue_visibility_dispatch_stack: Array[int] = []
+var _dialogue_visibility_epoch_stack: Array[int] = []
+var _presentation_operation_queue: Array[Dictionary] = []
+var _presentation_enqueue_serial := 1
+var _presentation_projection_depth := 0
+var _presentation_unified_draining := false
+var _next_presentation_projection_lifecycle_id := 1
+var _active_presentation_projection_lifecycle_id := 0
+var _presentation_projection_retirement_started := false
 
 
 ## Allocate an identity before submission when a caller needs to own the exact
@@ -675,6 +712,285 @@ func is_current_stage_reset_valid() -> bool:
 	if _stage_reset_epoch_stack.is_empty():
 		return true
 	return _stage_reset_epoch_stack.back() == _stage_operation_epoch
+
+
+func emit_dialogue_visibility_operations(
+	operations: Array,
+	force_cut: bool = false,
+	request_id: int = 0,
+) -> int:
+	if request_id <= 0:
+		request_id = reserve_stage_operation_request_id()
+	for operation_value: Variant in operations:
+		if not DialogueVisibilityState.validate_operation(operation_value, true):
+			presentation_operation_request_finished.emit(request_id, false)
+			return request_id
+	_dialogue_visibility_queue.append({
+		"operations": operations.duplicate(true),
+		"force_cut": force_cut,
+		"request_id": request_id,
+		"epoch": _dialogue_visibility_epoch,
+		"enqueue_serial": _presentation_enqueue_serial,
+		"projection_lifecycle_id": _active_presentation_projection_lifecycle_id,
+		"born_after_retirement": _presentation_projection_retirement_started,
+	})
+	_presentation_enqueue_serial += 1
+	if (
+		_dialogue_visibility_dispatching
+		or _stage_reset_depth > 0
+		or _presentation_projection_depth > 0
+		or _presentation_unified_draining
+	):
+		return request_id
+	_drain_all_presentation_operation_queues()
+	return request_id
+
+
+func emit_presentation_operations(
+	stage_operations: Array,
+	dialogue_visibility_operations: Array,
+	force_cut: bool = false,
+	request_id: int = 0,
+) -> int:
+	if request_id <= 0:
+		request_id = reserve_stage_operation_request_id()
+	for operation_value: Variant in stage_operations:
+		if not StageLayerState.validate_operation(operation_value, true):
+			presentation_operation_request_finished.emit(request_id, false)
+			return request_id
+	for operation_value: Variant in dialogue_visibility_operations:
+		var payload: Variant = (
+			operation_value.get_payload()
+			if operation_value is PresentationOperation
+			else operation_value
+		)
+		if not DialogueVisibilityState.validate_operation(payload, true):
+			presentation_operation_request_finished.emit(request_id, false)
+			return request_id
+	_presentation_operation_queue.append({
+		"stage_operations": stage_operations.duplicate(true),
+		"dialogue_visibility_operations":
+			dialogue_visibility_operations.duplicate(true),
+		"force_cut": force_cut,
+		"request_id": request_id,
+		"stage_epoch": _stage_operation_epoch,
+		"visibility_epoch": _dialogue_visibility_epoch,
+		"enqueue_serial": _presentation_enqueue_serial,
+		"projection_lifecycle_id": _active_presentation_projection_lifecycle_id,
+		"born_after_retirement": _presentation_projection_retirement_started,
+	})
+	_presentation_enqueue_serial += 1
+	if (
+		_stage_reset_depth > 0
+		or _presentation_projection_depth > 0
+		or _presentation_unified_draining
+	):
+		return request_id
+	_drain_all_presentation_operation_queues()
+	return request_id
+
+
+func current_dialogue_visibility_request_id() -> int:
+	if _dialogue_visibility_dispatch_stack.is_empty():
+		return 0
+	return _dialogue_visibility_dispatch_stack.back()
+
+
+func is_current_dialogue_visibility_operation_valid() -> bool:
+	if _dialogue_visibility_epoch_stack.is_empty():
+		return true
+	return _dialogue_visibility_epoch_stack.back() == _dialogue_visibility_epoch
+
+
+func reset_dialogue_visibility_visuals() -> void:
+	_mark_presentation_projection_retirement_started()
+	_dialogue_visibility_epoch += 1
+	var reset_epoch := _dialogue_visibility_epoch
+	var cancelled_requests: Array[Dictionary] = []
+	var retained_requests: Array[Dictionary] = []
+	for request: Dictionary in _dialogue_visibility_queue:
+		if _request_belongs_to_retained_projection(request):
+			request["epoch"] = reset_epoch
+			retained_requests.append(request)
+		else:
+			cancelled_requests.append(request)
+	_dialogue_visibility_queue = retained_requests
+	for request: Dictionary in _presentation_operation_queue:
+		if _request_belongs_to_retained_projection(request):
+			request["visibility_epoch"] = reset_epoch
+	for request: Dictionary in cancelled_requests:
+		presentation_operation_request_finished.emit(
+			int(request.get("request_id", 0)),
+			false,
+		)
+	dialogue_visibility_visuals_reset_requested.emit()
+
+
+func cancel_dialogue_visibility_operation_request(request_id: int) -> void:
+	if request_id <= 0:
+		return
+	_dialogue_visibility_queue = _dialogue_visibility_queue.filter(
+		func(entry: Dictionary) -> bool:
+			return int(entry.get("request_id", 0)) != request_id
+	)
+
+
+func cancel_presentation_operation_request(request_id: int) -> bool:
+	for index in range(_presentation_operation_queue.size()):
+		if int(_presentation_operation_queue[index].get("request_id", 0)) != request_id:
+			continue
+		_presentation_operation_queue.remove_at(index)
+		presentation_operation_request_finished.emit(request_id, false)
+		return true
+	return false
+
+
+func apply_dialogue_visibility_state(
+	visibility: Dictionary,
+	content: Dictionary,
+	runtime_binding: Dictionary = {},
+) -> void:
+	dialogue_visibility_state_apply_requested.emit(
+		visibility.duplicate(true),
+		content.duplicate(true),
+		runtime_binding.duplicate(true),
+	)
+
+
+func run_presentation_projection(body: Callable) -> void:
+	_run_presentation_projection(body)
+
+
+func current_presentation_projection_lifecycle_id() -> int:
+	return _active_presentation_projection_lifecycle_id
+
+
+func _run_presentation_projection(body: Callable) -> void:
+	var is_outermost := (
+		_presentation_projection_depth == 0
+		and _active_presentation_projection_lifecycle_id == 0
+	)
+	if is_outermost:
+		_active_presentation_projection_lifecycle_id = (
+			_next_presentation_projection_lifecycle_id
+		)
+		_next_presentation_projection_lifecycle_id += 1
+		_presentation_projection_retirement_started = false
+	_presentation_projection_depth += 1
+	if body.is_valid():
+		body.call()
+	_presentation_projection_depth -= 1
+	if is_outermost:
+		var lifecycle_id := _active_presentation_projection_lifecycle_id
+		_drain_all_presentation_operation_queues()
+		_active_presentation_projection_lifecycle_id = 0
+		_presentation_projection_retirement_started = false
+		if lifecycle_id > 0:
+			presentation_projection_lifecycle_finished.emit(lifecycle_id)
+
+
+func _mark_presentation_projection_retirement_started() -> void:
+	if _active_presentation_projection_lifecycle_id > 0:
+		_presentation_projection_retirement_started = true
+
+
+func _request_belongs_to_retained_projection(request: Dictionary) -> bool:
+	return (
+		_active_presentation_projection_lifecycle_id > 0
+		and bool(request.get("born_after_retirement", false))
+		and int(request.get("projection_lifecycle_id", 0))
+			== _active_presentation_projection_lifecycle_id
+	)
+
+
+func _drain_dialogue_visibility_queue() -> void:
+	if (
+		_dialogue_visibility_dispatching
+		or _stage_reset_depth > 0
+		or _presentation_projection_depth > 0
+		or _presentation_unified_draining
+	):
+		return
+	while not _dialogue_visibility_queue.is_empty():
+		_drain_dialogue_visibility_queue_once()
+		if _presentation_projection_depth > 0 or _presentation_unified_draining:
+			return
+
+
+func _drain_dialogue_visibility_queue_once() -> void:
+	if _dialogue_visibility_queue.is_empty():
+		return
+	_dialogue_visibility_dispatching = true
+	var request: Dictionary = _dialogue_visibility_queue.pop_front()
+	var request_id := int(request.get("request_id", 0))
+	var request_epoch := int(request.get("epoch", 0))
+	_dialogue_visibility_dispatch_stack.append(request_id)
+	_dialogue_visibility_epoch_stack.append(request_epoch)
+	dialogue_visibility_operations_requested.emit(
+		(request.get("operations", []) as Array).duplicate(true),
+		bool(request.get("force_cut", false)),
+	)
+	_dialogue_visibility_dispatch_stack.pop_back()
+	_dialogue_visibility_epoch_stack.pop_back()
+	presentation_operation_request_finished.emit(
+		request_id,
+		request_epoch == _dialogue_visibility_epoch,
+	)
+	_dialogue_visibility_dispatching = false
+
+
+func _drain_presentation_operation_queue() -> void:
+	if (
+		_stage_reset_depth > 0
+		or _presentation_projection_depth > 0
+		or _presentation_unified_draining
+	):
+		return
+	while not _presentation_operation_queue.is_empty():
+		_drain_presentation_operation_queue_once()
+		if _presentation_projection_depth > 0 or _presentation_unified_draining:
+			return
+
+
+func _drain_presentation_operation_queue_once() -> void:
+	if _presentation_operation_queue.is_empty():
+		return
+	var request: Dictionary = _presentation_operation_queue.pop_front()
+	var request_id := int(request.get("request_id", 0))
+	var stage_epoch := int(request.get("stage_epoch", 0))
+	var visibility_epoch := int(request.get("visibility_epoch", 0))
+	_stage_operation_dispatch_stack.append(request_id)
+	_stage_operation_epoch_stack.append(stage_epoch)
+	_dialogue_visibility_dispatch_stack.append(request_id)
+	_dialogue_visibility_epoch_stack.append(visibility_epoch)
+	stage_operations_requested.emit(
+		(request.get("stage_operations", []) as Array).duplicate(true),
+		bool(request.get("force_cut", false)),
+	)
+	var epochs_valid := (
+		stage_epoch == _stage_operation_epoch
+		and visibility_epoch == _dialogue_visibility_epoch
+	)
+	if not epochs_valid:
+		_dialogue_visibility_epoch_stack.pop_back()
+		_dialogue_visibility_dispatch_stack.pop_back()
+		_stage_operation_epoch_stack.pop_back()
+		_stage_operation_dispatch_stack.pop_back()
+		presentation_operation_request_finished.emit(request_id, false)
+		return
+	dialogue_visibility_operations_requested.emit(
+		(request.get("dialogue_visibility_operations", []) as Array).duplicate(true),
+		bool(request.get("force_cut", false)),
+	)
+	_dialogue_visibility_epoch_stack.pop_back()
+	_dialogue_visibility_dispatch_stack.pop_back()
+	_stage_operation_epoch_stack.pop_back()
+	_stage_operation_dispatch_stack.pop_back()
+	presentation_operation_request_finished.emit(
+		request_id,
+		stage_epoch == _stage_operation_epoch
+		and visibility_epoch == _dialogue_visibility_epoch,
+	)
 
 
 func is_stage_operation_request_active(request_id: int) -> bool:
@@ -724,11 +1040,22 @@ func _run_stage_reset_transaction(after_reset_consumers: Callable) -> void:
 	# validation but remain queued until every reset consumer (and an optional
 	# canonical cut projection) has completed.
 	_stage_reset_depth += 1
+	_mark_presentation_projection_retirement_started()
 	_stage_operation_epoch += 1
 	var reset_epoch := _stage_operation_epoch
-	var cancelled_requests := _stage_operation_queue.duplicate(true)
-	_stage_operation_queue.clear()
-	for request in cancelled_requests:
+	var cancelled_requests: Array[Dictionary] = []
+	var retained_requests: Array[Dictionary] = []
+	for request: Dictionary in _stage_operation_queue:
+		if _request_belongs_to_retained_projection(request):
+			request["epoch"] = reset_epoch
+			retained_requests.append(request)
+		else:
+			cancelled_requests.append(request)
+	_stage_operation_queue = retained_requests
+	for request: Dictionary in _presentation_operation_queue:
+		if _request_belongs_to_retained_projection(request):
+			request["stage_epoch"] = reset_epoch
+	for request: Dictionary in cancelled_requests:
 		stage_operation_request_finished.emit(
 			int(request.get("request_id", 0)),
 			false,
@@ -747,7 +1074,7 @@ func _run_stage_reset_transaction(after_reset_consumers: Callable) -> void:
 		after_reset_consumers.call(reset_epoch)
 	_stage_reset_depth -= 1
 	if _stage_reset_depth == 0 and not _stage_operation_dispatching:
-		_drain_stage_operation_queue()
+		_drain_all_presentation_operation_queues()
 
 
 ## Serialize authored stage mutations before delivering them to state trackers
@@ -775,39 +1102,113 @@ func emit_stage_operations(
 		"request_id": request_id,
 		"epoch": _stage_operation_epoch,
 		"on_dispatch_started": on_dispatch_started,
+		"enqueue_serial": _presentation_enqueue_serial,
+		"projection_lifecycle_id": _active_presentation_projection_lifecycle_id,
+		"born_after_retirement": _presentation_projection_retirement_started,
 	})
-	if _stage_operation_dispatching or _stage_reset_depth > 0:
+	_presentation_enqueue_serial += 1
+	if (
+		_stage_operation_dispatching
+		or _stage_reset_depth > 0
+		or _presentation_projection_depth > 0
+		or _presentation_unified_draining
+	):
 		return request_id
-	_drain_stage_operation_queue()
+	_drain_all_presentation_operation_queues()
 	return request_id
 
 
 func _drain_stage_operation_queue() -> void:
-	if _stage_operation_dispatching or _stage_reset_depth > 0:
+	if (
+		_stage_operation_dispatching
+		or _stage_reset_depth > 0
+		or _presentation_projection_depth > 0
+		or _presentation_unified_draining
+	):
+		return
+	while not _stage_operation_queue.is_empty():
+		_drain_stage_operation_queue_once()
+		if (
+			_stage_reset_depth > 0
+			or _presentation_projection_depth > 0
+			or _presentation_unified_draining
+		):
+			return
+	_stage_operation_dispatching = false
+
+
+func _drain_stage_operation_queue_once() -> void:
+	if _stage_operation_queue.is_empty():
 		return
 	_stage_operation_dispatching = true
-	while not _stage_operation_queue.is_empty():
-		var request: Dictionary = _stage_operation_queue.pop_front()
-		var dispatched_request_id := int(request.get("request_id", 0))
-		var request_epoch := int(request.get("epoch", 0))
-		_stage_operation_dispatch_stack.append(dispatched_request_id)
-		_stage_operation_epoch_stack.append(request_epoch)
-		var dispatch_callback: Callable = request.get(
-			"on_dispatch_started", Callable()
-		)
-		if request_epoch == _stage_operation_epoch and dispatch_callback.is_valid():
-			dispatch_callback.call()
-		stage_operations_requested.emit(
-			(request.get("operations", []) as Array).duplicate(true),
-			bool(request.get("force_cut", false)),
-		)
-		_stage_operation_dispatch_stack.pop_back()
-		_stage_operation_epoch_stack.pop_back()
-		stage_operation_request_finished.emit(
-			dispatched_request_id,
-			request_epoch == _stage_operation_epoch,
-		)
+	var request: Dictionary = _stage_operation_queue.pop_front()
+	var dispatched_request_id := int(request.get("request_id", 0))
+	var request_epoch := int(request.get("epoch", 0))
+	_stage_operation_dispatch_stack.append(dispatched_request_id)
+	_stage_operation_epoch_stack.append(request_epoch)
+	var dispatch_callback: Callable = request.get(
+		"on_dispatch_started", Callable()
+	)
+	if request_epoch == _stage_operation_epoch and dispatch_callback.is_valid():
+		dispatch_callback.call()
+	stage_operations_requested.emit(
+		(request.get("operations", []) as Array).duplicate(true),
+		bool(request.get("force_cut", false)),
+	)
+	_stage_operation_dispatch_stack.pop_back()
+	_stage_operation_epoch_stack.pop_back()
+	stage_operation_request_finished.emit(
+		dispatched_request_id,
+		request_epoch == _stage_operation_epoch,
+	)
 	_stage_operation_dispatching = false
+
+
+func _drain_all_presentation_operation_queues() -> void:
+	if (
+		_stage_reset_depth > 0
+		or _presentation_projection_depth > 0
+		or _presentation_unified_draining
+	):
+		return
+	_presentation_unified_draining = true
+	while true:
+		var next_queue := _next_presentation_queue_name()
+		if next_queue == "":
+			break
+		match next_queue:
+			"stage":
+				_drain_stage_operation_queue_once()
+			"dialogue":
+				_drain_dialogue_visibility_queue_once()
+			"mixed":
+				_drain_presentation_operation_queue_once()
+	_presentation_unified_draining = false
+
+
+func _next_presentation_queue_name() -> String:
+	var candidates: Array[Dictionary] = []
+	if not _stage_operation_queue.is_empty():
+		candidates.append({
+			"queue": "stage",
+			"serial": int(_stage_operation_queue[0].get("enqueue_serial", 0)),
+		})
+	if not _dialogue_visibility_queue.is_empty():
+		candidates.append({
+			"queue": "dialogue",
+			"serial": int(_dialogue_visibility_queue[0].get("enqueue_serial", 0)),
+		})
+	if not _presentation_operation_queue.is_empty():
+		candidates.append({
+			"queue": "mixed",
+			"serial": int(_presentation_operation_queue[0].get("enqueue_serial", 0)),
+		})
+	if candidates.is_empty():
+		return ""
+	candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return int(a.get("serial", 0)) < int(b.get("serial", 0))
+	)
+	return String(candidates[0].get("queue", ""))
 
 # Audio
 signal bgm_play(asset: String, fade_duration: float)

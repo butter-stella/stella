@@ -373,6 +373,26 @@ StellaRuntime.clear_stage_layers()                    # 删除全部命名舞台
 
 Godot 4.6 的 redraw 像素管线使用 Forward+ 或 Mobile renderer。macOS 上如需使用 Compatibility renderer，请升级到 Godot 4.7 或更新版本，以避开 4.6 的 CanvasGroup screen-backbuffer 缺陷。
 
+### 声明式对话界面显隐
+
+普通剧本直接使用最短的 standalone 写法，不需要 presentation batch：
+
+```stla
+@dialogue_visibility hide
+@dialogue_visibility show
+```
+
+省略 target 会规范化为 `surface`。只有独立控制快捷菜单时才显式写
+`quick_menu`；淡入淡出也是可选的高级参数：
+
+```stla
+@dialogue_visibility quick_menu hide
+@dialogue_visibility show transition=fade duration=0.3
+```
+
+显式 `surface` 仍属于同一套可选 target grammar，并与省略形式生成相同的
+canonical payload。精确语法和 fail-close 规则见 [DSL 文档](DSL.md#35a-dialogue-visibility)。
+
 ### 声明式 Stage 批次：JOIN 与 fire-and-forget
 
 当多个命名 Stage 层必须在同一 authored boundary 提交，且后续对话或音频必须等待全部转场到达终态时，使用 `policy=join`：
@@ -399,7 +419,7 @@ Godot 4.6 的 redraw 像素管线使用 Forward+ 或 Mobile renderer。macOS 上
 
 普通左键、Space 或 Enter 只会把当前 sealed JOIN 的 exact receipts snap 到 authored endpoint；`FIRE_AND_FORGET` 不 claim input。Skip 从 false 切换为 true 时 exact-finish 当前 JOIN 一次；Skip 是持续模式，新 batch 提交时已 active 则直接 force-cut。Auto 状态本身不结束 Stage JOIN。完整语法、ordering 与 fail-close 规则见 [DSL 文档](DSL.md#312-舞台批次组合stage_batch)；公开的 reference scenario 见 [`examples/demo/scenarios/stage_batch.stla`](../examples/demo/scenarios/stage_batch.stla)，它不是默认 Start Game 入口。
 
-高级 typed surface 由 `PresentationOperation`、`StagePresentationOperation`、`PresentationOperationReceipt`、`PresentationBatchRequest` 和 `PresentationDirector` 组成。唯一 owner 是 `StellaRuntime.presentation_director`；项目不应自行 `new()` 第二个 Director，也不应调用 `_bind_authority()`、`_seal()` 或 `_settle()` 等下划线内部方法。当前 typed adapter 只支持 Stage；#166 与 #170 仍 OPEN 且 out of scope，它们所需的 message/non-Stage 与 cross-channel adapter 尚未实现。
+高级 typed surface 由 `PresentationOperation`、`StagePresentationOperation`、`DialogueVisibilityPresentationOperation`、`PresentationOperationReceipt`、`PresentationBatchRequest` 和 `PresentationDirector` 组成。唯一 owner 是 `StellaRuntime.presentation_director`；项目不应自行 `new()` 第二个 Director，也不应调用 `_bind_authority()`、`_seal()` 或 `_settle()` 等下划线内部方法。issue #166 现在通过同一个 Director 支持 Stage 与 `@dialogue_visibility` 的 mixed `@presentation_batch`；它只用于需要跨 channel 共享 JOIN/FNF boundary 的高级 composition，普通 dialogue surface 显隐仍使用上面的 standalone 写法。#170 仍 OPEN 且 out of scope。
 
 既有 `StellaRuntime.apply_stage_operations(operations, force_cut) -> void` 仍是 raw 兼容 Facade：它不返回 receipt、不等待 Tween，也不等价于 authored `@stage_batch`。standalone `@stage`、`@parallel` 和 `@combine` 的既有语义同样保持不变。
 

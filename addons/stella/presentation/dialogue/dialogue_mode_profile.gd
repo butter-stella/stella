@@ -59,6 +59,10 @@ const ADVANCE_INDICATOR_ANIMATIONS := ["none", "pulse", "bob"]
 ## Maps Godot group names to their desired visibility in this mode.
 ## Only CanvasItem descendants of DialoguePanel are affected.
 @export var visibility_groups: Dictionary = {}
+## Runtime-authored dialogue surface ownership group names.
+@export var surface_groups: Array[String] = ["dialogue_surface"]
+## Runtime-authored quick menu ownership group names.
+@export var quick_menu_groups: Array[String] = ["quick_menu"]
 
 ## Exact property names supplied by STLA. Resource-authored fallback profiles
 ## leave this empty and continue to use their section-level override toggles.
@@ -138,6 +142,10 @@ static func from_dictionary(
 		profile.override_background_modulate = true
 		profile.background_modulate = data["background_modulate"]
 	profile.visibility_groups = data.get("visibility_groups", {}).duplicate(true)
+	profile.surface_groups = data.get(
+		"surface_groups", profile.surface_groups).duplicate()
+	profile.quick_menu_groups = data.get(
+		"quick_menu_groups", profile.quick_menu_groups).duplicate()
 	return profile
 
 

@@ -262,7 +262,26 @@ func test_prepare_scenario_clears_flowchart_state():
 		"_prepare_scenario must capture INITIAL_SNAPSHOT")
 	assert_eq(
 		_runtime.flowchart_state.initial_snapshot["presentation_state"],
-		{"bg": "", "stage_layers": {}, "bgm": ""},
+		{
+			"bg": "",
+			"stage_layers": {},
+			"bgm": "",
+			"dialogue_visibility": {
+				"surface": true,
+				"quick_menu": true,
+			},
+			"dialogue_content": {
+				"version": 1,
+				"active": false,
+				"mode": "adv",
+				"profile_name": "",
+				"declarative_presentation": false,
+				"character": "",
+				"segments": [],
+				"avatar_expression": "",
+				"nvl_entries": [],
+			},
+		},
 		"initial rollback state must not inherit title or previous-run visuals",
 	)
 

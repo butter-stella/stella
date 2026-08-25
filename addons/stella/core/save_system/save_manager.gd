@@ -271,7 +271,10 @@ func validate_data_for_scenario(
 		return false
 	if (
 		data.has("presentation_state")
-		and not _presentation_snapshot_is_valid(data["presentation_state"])
+		and not _presentation_snapshot_is_valid(
+			data["presentation_state"],
+			scenario_data,
+		)
 	):
 		return false
 	if (
@@ -427,7 +430,10 @@ func _variable_store_snapshot_is_valid(raw_snapshot: Variant) -> bool:
 	return true
 
 
-func _presentation_snapshot_is_valid(raw_snapshot: Variant) -> bool:
+func _presentation_snapshot_is_valid(
+	raw_snapshot: Variant,
+	scenario_data: ScenarioData = null,
+) -> bool:
 	if not raw_snapshot is Dictionary:
 		return false
 	var snapshot: Dictionary = raw_snapshot
@@ -447,6 +453,29 @@ func _presentation_snapshot_is_valid(raw_snapshot: Variant) -> bool:
 				)
 			):
 				return false
+	var has_dialogue_visibility := snapshot.has("dialogue_visibility")
+	var has_dialogue_content := snapshot.has("dialogue_content")
+	if has_dialogue_visibility != has_dialogue_content:
+		return false
+	if has_dialogue_visibility:
+		if not DialogueVisibilityState.validate_snapshot_state(
+			snapshot["dialogue_visibility"],
+			false,
+		):
+			return false
+		if not PresentationState._validate_dialogue_content(
+			snapshot["dialogue_content"],
+			false,
+		):
+			return false
+		if (
+			scenario_data != null
+			and not PresentationState.dialogue_content_profiles_exist(
+				snapshot["dialogue_content"] as Dictionary,
+				scenario_data,
+			)
+		):
+			return false
 	return true
 
 

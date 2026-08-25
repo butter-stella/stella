@@ -864,6 +864,8 @@ func test_builtin_scenes_expose_stla_profile_targets_without_scene_editing() -> 
 		"res://examples/demo/scenes/game.tscn",
 	]:
 		var game: Node = load(scene_path).instantiate()
+		add_child(game)
+		await get_tree().process_frame
 		var presenter: Control = game.get_node("UILayer/DialoguePanel")
 		var text_target: Control = presenter.get_node(presenter.text_rect_target_path)
 		var toolbar: Control = presenter.get_node("%Toolbar")
@@ -871,9 +873,216 @@ func test_builtin_scenes_expose_stla_profile_targets_without_scene_editing() -> 
 		assert_false(text_target.get_parent() is Container,
 			"the profile target must own its rect in %s" % scene_path)
 		assert_true(toolbar.is_in_group("quick_menu"), scene_path)
+		var avatar: CanvasItem = presenter.get_node("HBox/AvatarContainer")
+		assert_true(avatar.is_in_group("dialogue_surface"),
+			"surface ownership includes the avatar in %s" % scene_path)
+		var voice_progress := presenter.get_node_or_null(
+			"HBox/TextArea/MarginContainer/VBox/NameRow/VoiceProgressBar")
+		if scene_path == "res://examples/demo/scenes/game.tscn":
+			assert_not_null(voice_progress)
+			if voice_progress != null:
+				assert_true((voice_progress as CanvasItem).is_in_group("dialogue_surface"),
+					"demo voice progress belongs to the Dialogue surface")
+		var avatar_baseline := avatar.visible
+		var toolbar_baseline := toolbar.visible
+		var voice_baseline := (
+			(voice_progress as CanvasItem).visible if voice_progress != null else false)
+		presenter.set("_canonical_dialogue_visibility", {
+			"surface": false, "quick_menu": true,
+		})
+		presenter.call("_apply_canonical_dialogue_visibility")
+		assert_false(avatar.visible,
+			"canonical surface hide reaches the real avatar in %s" % scene_path)
+		if voice_progress != null:
+			assert_false((voice_progress as CanvasItem).visible,
+				"canonical surface hide reaches demo voice progress")
+		assert_eq(toolbar.visible, toolbar_baseline,
+			"surface hide is independent from the real quick menu")
+		presenter.set("_canonical_dialogue_visibility", {
+			"surface": true, "quick_menu": true,
+		})
+		presenter.call("_apply_canonical_dialogue_visibility")
+		assert_eq(avatar.visible, avatar_baseline,
+			"surface show restores the real avatar Profile baseline")
+		if voice_progress != null:
+			assert_eq((voice_progress as CanvasItem).visible, voice_baseline,
+				"surface show restores demo voice progress Profile baseline")
+		assert_eq(toolbar.visible, toolbar_baseline)
 		assert_false(text_target.is_ancestor_of(toolbar),
 			"quick menu must stay at the viewport bottom when the text rect moves")
 		game.free()
+
+
+func test_profile_visibility_baseline_and_canonical_surface_mask_are_orthogonal() -> void:
+	_presenter = FIXTURE.instantiate()
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	var surface: CanvasItem = _presenter.get_node("DialogueBg")
+	surface.add_to_group("dialogue_surface")
+	var profile_surface_groups: Array[String] = ["dialogue_surface"]
+	var profile_quick_groups: Array[String] = ["quick_menu"]
+	_presenter.call("_resolve_dialogue_visibility_binding", {
+		"current": {
+			"profile_name": "baseline_probe",
+			"provenance": {},
+			"surface_groups": profile_surface_groups,
+			"quick_menu_groups": profile_quick_groups,
+		},
+		"default": {
+			"surface_groups": profile_surface_groups,
+			"quick_menu_groups": profile_quick_groups,
+		},
+		"nvl_entries": [],
+	})
+	var profile := DialogueModeProfile.from_dictionary({
+		"visibility_groups": {"dialogue_surface": false},
+		"surface_groups": profile_surface_groups,
+		"quick_menu_groups": profile_quick_groups,
+	})
+	_presenter.call("_apply_mode_profile", "adv", profile)
+	_presenter.set("_canonical_dialogue_visibility", {
+		"surface": true, "quick_menu": true,
+	})
+	_presenter.call("_apply_canonical_dialogue_visibility")
+	assert_false(surface.visible,
+		"canonical show cannot override the current Profile desired-hidden baseline")
+	_presenter.set("_canonical_dialogue_visibility", {
+		"surface": false, "quick_menu": true,
+	})
+	_presenter.call("_apply_canonical_dialogue_visibility")
+	assert_false(surface.visible)
+	_presenter.set("_canonical_dialogue_visibility", {
+		"surface": true, "quick_menu": true,
+	})
+	_presenter.call("_apply_canonical_dialogue_visibility")
+	assert_false(surface.visible,
+		"hide then show preserves the Profile visibility baseline")
+
+
+func test_profile_switch_rebinds_canonical_surface_to_the_new_owned_group() -> void:
+	_presenter = FIXTURE.instantiate()
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	var adv_chrome: CanvasItem = _presenter.get_node("AdvChrome")
+	var text_region: CanvasItem = _presenter.get_node("TextRegion")
+	adv_chrome.add_to_group("adv_surface")
+	text_region.add_to_group("nvl_surface")
+	_presenter.set("_canonical_dialogue_visibility", {
+		"surface": false, "quick_menu": true,
+	})
+	var adv_surface_groups: Array[String] = ["adv_surface"]
+	var quick_groups: Array[String] = ["quick_menu"]
+	var adv_profile := DialogueModeProfile.from_dictionary({
+		"surface_groups": adv_surface_groups,
+		"quick_menu_groups": quick_groups,
+	})
+	_presenter.call("_apply_mode_profile", "adv", adv_profile)
+	var adv_binding: Dictionary = _presenter.get("_dialogue_visibility_binding")
+	assert_eq(adv_binding.get("current", {}).get("surface_groups"), ["adv_surface"])
+	assert_false(adv_chrome.visible)
+	var nvl_surface_groups: Array[String] = ["nvl_surface"]
+	var nvl_profile := DialogueModeProfile.from_dictionary({
+		"surface_groups": nvl_surface_groups,
+		"quick_menu_groups": quick_groups,
+	})
+	_presenter.call("_apply_mode_profile", "nvl", nvl_profile)
+	var nvl_binding: Dictionary = _presenter.get("_dialogue_visibility_binding")
+	assert_eq(nvl_binding.get("current", {}).get("surface_groups"), ["nvl_surface"],
+		"profile switch resolves the new authored ownership groups")
+	assert_true(adv_chrome.visible, "old Profile group is restored after rebind")
+	assert_false(text_region.visible, "canonical hidden follows the new Profile group")
+
+
+func test_actual_mode_transaction_captures_new_profile_before_hidden_gate() -> void:
+	_presenter = FIXTURE.instantiate()
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	var adv_chrome: CanvasItem = _presenter.get_node("AdvChrome")
+	var text_region: CanvasItem = _presenter.get_node("TextRegion")
+	adv_chrome.add_to_group("profile_a_surface")
+	text_region.add_to_group("profile_b_surface")
+	_presenter.set("_canonical_dialogue_visibility", {
+		"surface": false, "quick_menu": true,
+	})
+	var profile_a_surface_groups: Array[String] = ["profile_a_surface"]
+	var profile_b_surface_groups: Array[String] = ["profile_b_surface"]
+	var profile_quick_menu_groups: Array[String] = ["quick_menu"]
+	var profile_a := DialogueModeProfile.from_dictionary({
+		"surface_groups": profile_a_surface_groups,
+		"quick_menu_groups": profile_quick_menu_groups,
+	})
+	var profile_b := DialogueModeProfile.from_dictionary({
+		"surface_groups": profile_b_surface_groups,
+		"quick_menu_groups": profile_quick_menu_groups,
+	})
+	_presenter.call("_apply_dialogue_mode_presentation", "adv", profile_a, true)
+	assert_false(adv_chrome.visible)
+	_presenter.call("_apply_dialogue_mode_presentation", "nvl", profile_b, true)
+	assert_true(adv_chrome.visible, "profile A authored state is restored")
+	assert_false(text_region.visible, "new profile B is immediately canonical-gated")
+	_presenter.set("_canonical_dialogue_visibility", {
+		"surface": true, "quick_menu": true,
+	})
+	_presenter.call("_apply_canonical_dialogue_visibility")
+	assert_true(text_region.visible,
+		"old canonical=false never contaminates profile B desired baseline")
+
+
+func test_profile_to_no_profile_rebuilds_default_binding_and_restores_custom_group() -> void:
+	_presenter = FIXTURE.instantiate()
+	add_child_autoqfree(_presenter)
+	await get_tree().process_frame
+	var custom: CanvasItem = _presenter.get_node("AdvChrome")
+	var default_surface: CanvasItem = _presenter.get_node("DialogueBg")
+	custom.add_to_group("custom_surface")
+	default_surface.add_to_group("dialogue_surface")
+	var custom_surface_groups: Array[String] = ["custom_surface"]
+	var default_quick_menu_groups: Array[String] = ["quick_menu"]
+	var profile := DialogueModeProfile.from_dictionary({
+		"surface_groups": custom_surface_groups,
+		"quick_menu_groups": default_quick_menu_groups,
+		"visibility_groups": {"custom_surface": false},
+	})
+	_presenter.call("_apply_dialogue_mode_presentation", "adv", profile, true)
+	assert_false(custom.visible)
+	_presenter.call("_apply_dialogue_mode_presentation", "adv", null, false)
+	var binding: Dictionary = _presenter.get("_dialogue_visibility_binding")
+	assert_eq(binding.get("current", {}).get("profile_name"), "")
+	assert_eq(binding.get("current", {}).get("provenance"), {})
+	assert_eq(binding.get("current", {}).get("surface_groups"), ["dialogue_surface"])
+	assert_eq(binding.get("current", {}).get("quick_menu_groups"), ["quick_menu"])
+	assert_true(custom.visible, "leaving the profile restores its custom group")
+	_presenter.set("_canonical_dialogue_visibility", {
+		"surface": false, "quick_menu": true,
+	})
+	_presenter.call("_apply_canonical_dialogue_visibility")
+	assert_false(default_surface.visible, "default surface owns the canonical gate")
+	assert_true(custom.visible, "old custom group is no longer canonical-owned")
+
+
+func test_demo_voice_progress_runtime_baseline_survives_real_cut_hide_show() -> void:
+	var game: Node = load("res://examples/demo/scenes/game.tscn").instantiate()
+	add_child_autoqfree(game)
+	await get_tree().process_frame
+	var presenter: Control = game.get_node("UILayer/DialoguePanel")
+	var voice_progress: CanvasItem = presenter.get_node(
+		"HBox/TextArea/MarginContainer/VBox/NameRow/VoiceProgressBar")
+	var toolbar: CanvasItem = presenter.get_node("%Toolbar")
+	voice_progress.visible = true
+	var toolbar_before := toolbar.visible
+	presenter.call("_on_dialogue_visibility_operations_requested", [{
+		"target": "surface", "action": "hide",
+		"transition": "cut", "duration": 0.0,
+	}], true)
+	assert_false(voice_progress.visible)
+	assert_eq(toolbar.visible, toolbar_before)
+	presenter.call("_on_dialogue_visibility_operations_requested", [{
+		"target": "surface", "action": "show",
+		"transition": "cut", "duration": 0.0,
+	}], true)
+	assert_true(voice_progress.visible,
+		"cut show restores the latest runtime-visible surface baseline")
+	assert_eq(toolbar.visible, toolbar_before, "surface cuts leave quick menu unchanged")
 
 
 func test_stla_can_configure_adv_and_restore_it_after_nvl() -> void:
