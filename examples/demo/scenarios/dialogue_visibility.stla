@@ -1,0 +1,38 @@
+// Public synthetic dialogue-visibility composition example.
+
+@dialogue_profile message surface_groups=dialogue_surface quick_menu_groups=quick_menu
+@dialogue_profile novel surface_groups=dialogue_surface quick_menu_groups=quick_menu show=quick_menu
+@dialogue_profile novel panel_anchors=0,0,1,1 text_anchors=0.12,0.08,0.88,0.7
+@dialogue_profile novel entry_prefix="・" entry_separator=""
+
+@chapter dialogue_visibility_demo "Dialogue visibility demo"
+@scene dialogue_visibility_start "Dialogue visibility demo"
+@adv profile=message
+@stage sakura show kind=character asset=character:sakura/smile position=720,80 transition=cut duration=0
+sakura「ADV content remains owned while its surface is hidden.」
+
+@presentation_batch policy=join
+@dialogue_visibility hide transition=fade duration=0.3
+@dialogue_visibility quick_menu hide transition=fade duration=0.3
+@stage sakura update asset=character:sakura/happy position=840,80 transition=move duration=0.3
+@end
+
+@nvl profile=novel
+@presentation_batch policy=join
+@dialogue_visibility show transition=fade duration=0.2
+@dialogue_visibility quick_menu show transition=fade duration=0.2
+@end
+「The first NVL entry is visible again.」
+@dialogue_visibility hide transition=fade duration=0.2
+@dialogue_visibility show transition=fade duration=0.2
+「The accumulated NVL page survived the hidden interval.」
+
+@presentation_batch policy=join
+@dialogue_visibility quick_menu hide transition=fade duration=0.2
+@end
+@nvl off
+@presentation_batch policy=join
+@dialogue_visibility quick_menu show transition=fade duration=0.2
+@stage clear transition=fade duration=0.2
+@end
+sakura「ADV returns while the quick menu remains independently owned.」

@@ -220,6 +220,48 @@ Advance indicator 是可选的、按 Profile 独立配置的表现节点。`adva
 
 `@stage` 是人物立绘、身体/脸部差分、事件图、SD 与前景图片的统一舞台接口。它通过稳定 ID 管理任意数量的动态层，不预建位置槽，也不限制同时显示的人物数量。ID 区分大小写且必须非空；`clear` 是无 ID 的全舞台动作。
 
+### 3.5A Dialogue visibility
+
+```stla
+@dialogue_visibility hide
+@dialogue_visibility show
+```
+
+这两条最短写法控制整个对话 surface；普通剧本不需要 `@presentation_batch`。
+需要动画或单独控制 quick menu 时，再写可选参数：
+
+```stla
+@dialogue_visibility hide transition=fade duration=0.3
+@dialogue_visibility quick_menu show transition=fade duration=0.25
+```
+
+精确语法只有一套：
+
+- `@dialogue_visibility [surface|quick_menu] show|hide [transition=cut|fade] [duration=<seconds>]`
+- 省略可选 `target` 时规范化为 `surface`；显式 `surface` 属于同一 grammar，并生成完全相同的 canonical payload
+- `action` 只接受严格小写的 `show` 或 `hide`
+- `transition` 省略时为 `cut`
+- `fade` 省略 `duration` 时为 `0.25`
+- `cut` 只接受 `duration=0`
+- 重复或未知参数、非有限值、`NaN` 及负 duration 都会让整条命令 fail-close，并保留精确的 source path 与行号
+
+每条 standalone command 都是 blocking JOIN；无 Presenter 的 headless runner 同步完成。
+
+#### 高级：mixed presentation batch
+
+只有需要把 dialogue visibility 与 Stage 操作组成同一 JOIN/FNF 边界时，才使用
+`@presentation_batch`：
+
+```stla
+@presentation_batch policy=join
+  @stage sakura update asset=character:sakura/happy transition=move duration=0.3
+  @dialogue_visibility hide transition=fade duration=0.3
+  @dialogue_visibility quick_menu hide transition=fade duration=0.3
+@end
+```
+
+`@presentation_batch` header 只接受一个严格小写的 `policy=join|fire_and_forget`。block 不能为空，合法 child 只有 canonical `@stage` 与 canonical `@dialogue_visibility`；child 与 standalone 共用上面的唯一 parser/canonicalization。解析器保留 authored child 顺序和 `operation_lines`，并对 duplicate Stage layer、duplicate visibility target（省略 target 的 surface 与显式 surface 也视为重复）、nested batch/if/parallel/combine、scene gap、非法 child 与缺失 `@end` 做整块 fail-close。既有 `@stage_batch` 继续保持 Stage-only public contract，不会静默扩成 mixed alias。
+
 ```
 @stage <layer-id> show key=value ...
 @stage <layer-id> update key=value ...

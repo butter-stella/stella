@@ -9,6 +9,9 @@ const _PARALLEL_BLOCKING_COMMANDS := [
 ]
 const _CHAPTER_INDICATOR_ACTIONS := ["show", "hide"]
 const _CHAPTER_INDICATOR_TRANSITIONS := ["cut", "none", "fade"]
+const _DIALOGUE_VISIBILITY_TARGETS := ["surface", "quick_menu"]
+const _DIALOGUE_VISIBILITY_ACTIONS := ["show", "hide"]
+const _DIALOGUE_VISIBILITY_TRANSITIONS := ["cut", "fade"]
 const _STAGE_TRANSITIONS := [
 	"cut", "none", "fade", "move",
 	"slide_left", "slide_right", "slide_up", "slide_down",
@@ -86,6 +89,15 @@ static func parse(
 	var stage_batch_start_line: int = 0
 	var stage_batch_invalid: bool = false
 	var stage_batch_nested_depth: int = 0
+	var in_presentation_batch: bool = false
+	var presentation_batch_policy: String = ""
+	var presentation_batch_operations: Array = []
+	var presentation_batch_operation_lines: Array = []
+	var presentation_batch_stage_layer_ids: Dictionary = {}
+	var presentation_batch_visibility_targets: Dictionary = {}
+	var presentation_batch_start_line: int = 0
+	var presentation_batch_invalid: bool = false
+	var presentation_batch_nested_depth: int = 0
 
 	var i = 0
 	while i < tokens.size():
@@ -94,6 +106,180 @@ static func parse(
 		# A stage batch owns every token until its matching @end. Invalid nested
 		# blocks are consumed structurally so their @end cannot accidentally close
 		# the outer batch and leak a following sibling command.
+		if in_presentation_batch:
+			if token.type in [
+				DslToken.Type.SCENE_DIRECTIVE,
+				DslToken.Type.CHAPTER_DIRECTIVE,
+			]:
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: @presentation_batch block opened at %s is missing @end before the next @scene/@chapter"
+					% _source_location(data, presentation_batch_start_line),
+					presentation_batch_start_line,
+				)
+				in_presentation_batch = false
+				presentation_batch_policy = ""
+				presentation_batch_operations.clear()
+				presentation_batch_operation_lines.clear()
+				presentation_batch_stage_layer_ids.clear()
+				presentation_batch_visibility_targets.clear()
+				presentation_batch_start_line = 0
+				presentation_batch_invalid = false
+				presentation_batch_nested_depth = 0
+			elif presentation_batch_nested_depth > 0:
+				if token.type == DslToken.Type.AT_COMMAND:
+					var nested_child_name := _get_at_command_name(token.raw_text)
+					if nested_child_name in ["presentation_batch", "stage_batch", "parallel", "combine", "if"]:
+						presentation_batch_nested_depth += 1
+					elif nested_child_name == "end":
+						presentation_batch_nested_depth -= 1
+				i += 1
+				continue
+			elif token.type == DslToken.Type.AT_COMMAND:
+				var child_name := _get_at_command_name(token.raw_text)
+				if child_name == "stage":
+					var stage_child := _parse_at_command(token, data)
+					if stage_child == null or stage_child.type != "stage_layer":
+						presentation_batch_invalid = true
+					else:
+						var payload: Dictionary = stage_child.params.duplicate(true)
+						var action := String(payload.get("action", ""))
+						var layer_id := String(payload.get("id", ""))
+						if action != "clear" and presentation_batch_stage_layer_ids.has(layer_id):
+							_record_diagnostic(
+								data,
+								"error",
+								"DslParser: duplicate Stage layer '%s' at %s"
+								% [layer_id, _source_location(data, token.line)],
+								token.line,
+							)
+							presentation_batch_invalid = true
+						elif action == "clear":
+							for prior_value: Variant in presentation_batch_operations:
+								var prior: Dictionary = prior_value
+								if String(prior.get("kind", "")) != "stage":
+									continue
+								if String((prior.get("payload", {}) as Dictionary).get("action", "")) != "clear":
+									_record_diagnostic(
+										data,
+										"error",
+										"DslParser: @stage clear conflicts with another Stage sibling at %s"
+										% _source_location(data, token.line),
+										token.line,
+									)
+									presentation_batch_invalid = true
+									break
+						else:
+							for prior_value: Variant in presentation_batch_operations:
+								var prior: Dictionary = prior_value
+								if String(prior.get("kind", "")) != "stage":
+									continue
+								if String((prior.get("payload", {}) as Dictionary).get("action", "")) == "clear":
+									_record_diagnostic(
+										data,
+										"error",
+										"DslParser: @stage clear conflicts with another Stage sibling at %s"
+										% _source_location(data, token.line),
+										token.line,
+									)
+									presentation_batch_invalid = true
+									break
+							presentation_batch_stage_layer_ids[layer_id] = true
+						presentation_batch_operations.append({
+							"kind": "stage",
+							"payload": payload,
+						})
+						presentation_batch_operation_lines.append(token.line)
+				elif child_name == "dialogue_visibility":
+					var visibility_child := _parse_at_command(token, data)
+					if visibility_child == null or visibility_child.type != "dialogue_visibility":
+						presentation_batch_invalid = true
+					else:
+						var payload: Dictionary = visibility_child.params.duplicate(true)
+						var target := String(payload.get("target", ""))
+						if presentation_batch_visibility_targets.has(target):
+							_record_diagnostic(
+								data,
+								"error",
+								"DslParser: duplicate dialogue visibility target '%s' at %s"
+								% [target, _source_location(data, token.line)],
+								token.line,
+							)
+							presentation_batch_invalid = true
+						else:
+							presentation_batch_visibility_targets[target] = true
+						presentation_batch_operations.append({
+							"kind": "dialogue_visibility",
+							"payload": payload,
+						})
+						presentation_batch_operation_lines.append(token.line)
+				elif child_name == "end":
+					if (
+						presentation_batch_operations.is_empty()
+						and not presentation_batch_invalid
+					):
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @presentation_batch cannot be empty at %s"
+							% _source_location(data, presentation_batch_start_line),
+							presentation_batch_start_line,
+						)
+						presentation_batch_invalid = true
+					if (
+						not presentation_batch_invalid
+						and current_scene != null
+						and not chapter_needs_scene
+					):
+						var batch_command := _make_cmd("presentation_batch", {
+							"policy": presentation_batch_policy,
+							"operations": presentation_batch_operations.duplicate(true),
+							"operation_lines": presentation_batch_operation_lines.duplicate(),
+						})
+						batch_command.declared_line = presentation_batch_start_line
+						_add_command(batch_command, current_scene, if_stack)
+					in_presentation_batch = false
+					presentation_batch_policy = ""
+					presentation_batch_operations.clear()
+					presentation_batch_operation_lines.clear()
+					presentation_batch_stage_layer_ids.clear()
+					presentation_batch_visibility_targets.clear()
+					presentation_batch_start_line = 0
+					presentation_batch_invalid = false
+					presentation_batch_nested_depth = 0
+				elif child_name in ["presentation_batch", "stage_batch", "parallel", "combine", "if"]:
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @%s is not allowed inside @presentation_batch at %s"
+						% [child_name, _source_location(data, token.line)],
+						token.line,
+					)
+					presentation_batch_invalid = true
+					presentation_batch_nested_depth = 1
+				else:
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: only canonical @stage and @dialogue_visibility children are allowed inside @presentation_batch; found @%s at %s"
+						% [child_name, _source_location(data, token.line)],
+						token.line,
+					)
+					presentation_batch_invalid = true
+				i += 1
+				continue
+			else:
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: only canonical @stage and @dialogue_visibility children are allowed inside @presentation_batch at %s"
+					% _source_location(data, token.line),
+					token.line,
+				)
+				presentation_batch_invalid = true
+				i += 1
+				continue
 		if in_stage_batch:
 			if token.type in [
 				DslToken.Type.SCENE_DIRECTIVE,
@@ -364,7 +550,40 @@ static func parse(
 
 				var cmd_name = _get_at_command_name(token.raw_text)
 
-				if cmd_name == "stage_batch":
+				if cmd_name == "presentation_batch":
+					in_presentation_batch = true
+					presentation_batch_start_line = token.line
+					presentation_batch_operations.clear()
+					presentation_batch_operation_lines.clear()
+					presentation_batch_stage_layer_ids.clear()
+					presentation_batch_visibility_targets.clear()
+					presentation_batch_nested_depth = 0
+					presentation_batch_invalid = false
+					var name_position := token.raw_text.find(cmd_name, 1)
+					var batch_args := _strip_inline_comment(
+						token.raw_text.substr(
+							name_position + cmd_name.length()
+						).strip_edges()
+					)
+					var header := _parse_presentation_batch_header(
+						_split_args(batch_args), token.line, data)
+					presentation_batch_policy = String(header.get("policy", ""))
+					presentation_batch_invalid = not bool(header.get("valid", false))
+					if (
+						current_scene == null
+						or chapter_needs_scene
+						or in_parallel
+						or in_combine
+					):
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @presentation_batch requires an active @scene and cannot be nested in @parallel/@combine at %s"
+							% _source_location(data, token.line),
+							token.line,
+						)
+						presentation_batch_invalid = true
+				elif cmd_name == "stage_batch":
 					in_stage_batch = true
 					stage_batch_start_line = token.line
 					stage_batch_operations.clear()
@@ -574,7 +793,7 @@ static func parse(
 					combine_pending_stage_ops = []
 					combine_start_line = token.line
 				else:
-					var cmd = _parse_at_command(token, data)
+					var cmd = _parse_at_command(token, data, true)
 					if cmd:
 						cmd.declared_line = token.line
 					if (
@@ -708,6 +927,14 @@ static func parse(
 			% _source_location(data, stage_batch_start_line),
 			stage_batch_start_line,
 		)
+	if in_presentation_batch:
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @presentation_batch block opened at %s is missing @end"
+			% _source_location(data, presentation_batch_start_line),
+			presentation_batch_start_line,
+		)
 	if in_combine:
 		_record_diagnostic(
 			data,
@@ -812,7 +1039,7 @@ static func _semantic_command(
 	synthetic_scene_ids: Dictionary,
 ) -> Array:
 	var semantic_params := command.params.duplicate(true)
-	if command.type == "stage_batch":
+	if command.type in ["stage_batch", "presentation_batch"]:
 		semantic_params.erase("operation_lines")
 	return [
 		command.type,
@@ -1042,7 +1269,11 @@ static func _get_at_command_name(raw: String) -> String:
 	return after_at
 
 
-static func _parse_at_command(token: DslToken, data: ScenarioData) -> CommandData:
+static func _parse_at_command(
+	token: DslToken,
+	data: ScenarioData,
+	lower_standalone_dialogue_visibility: bool = false,
+) -> CommandData:
 	var raw = token.raw_text
 	var name = _get_at_command_name(raw)
 	var name_position := raw.find(name, 1)
@@ -1054,6 +1285,13 @@ static func _parse_at_command(token: DslToken, data: ScenarioData) -> CommandDat
 	match name:
 		"chapter_indicator":
 			return _parse_chapter_indicator_command(parts, token.line, data)
+		"dialogue_visibility":
+			return _parse_dialogue_visibility_command(
+				parts,
+				token.line,
+				data,
+				lower_standalone_dialogue_visibility,
+			)
 		"stage":
 			return _parse_stage_command(parts, token.line, data)
 		"bg":
@@ -1869,6 +2107,162 @@ static func _parse_stage_batch_header(
 		)
 		valid = false
 	return {"valid": valid, "policy": policy}
+
+
+static func _parse_presentation_batch_header(
+	parts: Array,
+	line: int,
+	data: ScenarioData,
+) -> Dictionary:
+	var result := _parse_stage_batch_header(parts, line, data)
+	if not bool(result.get("valid", false)):
+		return result
+	return result
+
+
+static func _parse_dialogue_visibility_command(
+	parts: Array,
+	line: int,
+	data: ScenarioData,
+	lower_to_presentation_batch: bool = false,
+) -> CommandData:
+	var location := _source_location(data, line)
+	if parts.is_empty():
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @dialogue_visibility requires an action at %s"
+			% location,
+			line,
+		)
+		return null
+	var first := String(parts[0])
+	var target := "surface"
+	var action := ""
+	var option_start := 1
+	if first in _DIALOGUE_VISIBILITY_ACTIONS:
+		action = first
+	elif first in _DIALOGUE_VISIBILITY_TARGETS:
+		target = first
+		if parts.size() < 2:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: @dialogue_visibility requires an action after target '%s' at %s"
+				% [target, location],
+				line,
+			)
+			return null
+		action = String(parts[1])
+		option_start = 2
+	else:
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: invalid @dialogue_visibility first token '%s' at %s; expected show|hide or surface|quick_menu"
+			% [first, location],
+			line,
+		)
+		return null
+	if action not in _DIALOGUE_VISIBILITY_ACTIONS:
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: invalid @dialogue_visibility action '%s' at %s"
+			% [action, location],
+			line,
+		)
+		return null
+	var transition := "cut"
+	var duration := 0.0
+	var duration_set := false
+	var seen: Dictionary = {}
+	for index in range(option_start, parts.size()):
+		var encoded := String(parts[index])
+		var equals_at := encoded.find("=")
+		if equals_at < 1:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: invalid @dialogue_visibility argument '%s' at %s; use key=value"
+				% [encoded, location],
+				line,
+			)
+			return null
+		var key := encoded.substr(0, equals_at).strip_edges()
+		var value := encoded.substr(equals_at + 1).strip_edges()
+		if seen.has(key):
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: duplicate @dialogue_visibility option '%s' at %s"
+				% [key, location],
+				line,
+			)
+			return null
+		seen[key] = true
+		match key:
+			"transition":
+				if value not in _DIALOGUE_VISIBILITY_TRANSITIONS:
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: invalid @dialogue_visibility transition '%s' at %s"
+						% [value, location],
+						line,
+					)
+					return null
+				transition = value
+			"duration":
+				if not value.is_valid_float() or not is_finite(value.to_float()) or value.to_float() < 0.0:
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @dialogue_visibility duration must be finite and non-negative at %s"
+						% location,
+						line,
+					)
+					return null
+				duration_set = true
+				duration = value.to_float()
+			_:
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: unknown @dialogue_visibility option '%s' at %s"
+					% [key, location],
+					line,
+				)
+				return null
+	if transition == "fade" and not duration_set:
+		duration = 0.25
+	if transition == "cut" and duration != 0.0:
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @dialogue_visibility cut transition requires duration=0 at %s"
+			% location,
+			line,
+		)
+		return null
+	var payload := {
+		"target": target,
+		"action": action,
+		"transition": transition,
+		"duration": duration,
+	}
+	if lower_to_presentation_batch:
+		var batch_command := _make_cmd("presentation_batch", {
+			"policy": "join",
+			"operations": [{
+				"kind": "dialogue_visibility",
+				"payload": payload.duplicate(true),
+			}],
+			"operation_lines": [line],
+		})
+		batch_command.declared_line = line
+		return batch_command
+	return _make_cmd("dialogue_visibility", payload)
 
 
 static func _invalid_stage_redraw_value(

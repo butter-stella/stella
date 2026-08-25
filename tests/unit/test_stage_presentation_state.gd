@@ -134,3 +134,42 @@ func test_projection_payload_is_a_deep_copy() -> void:
 	assert_eq(received.size(), 1)
 	received[0]["hero"]["body"] = "listener-mutated"
 	assert_eq(state.stage_layers["hero"]["body"], "stage:bg_cafe")
+
+
+func test_dialogue_projection_defaults_and_restore_are_stable() -> void:
+	var state := PresentationState.new()
+	var snapshot := state.capture_snapshot()
+	assert_eq(snapshot.get("dialogue_visibility"), {
+		"surface": true,
+		"quick_menu": true,
+	})
+	assert_eq(snapshot.get("dialogue_content"), {
+		"version": 1,
+		"active": false,
+		"mode": "adv",
+		"profile_name": "",
+		"declarative_presentation": false,
+		"character": "",
+		"segments": [],
+		"avatar_expression": "",
+		"nvl_entries": [],
+	})
+	var stable := {
+		"bg": "",
+		"stage_layers": {},
+		"bgm": "",
+		"dialogue_visibility": {"surface": false, "quick_menu": true},
+		"dialogue_content": {
+			"version": 1,
+			"active": true,
+			"mode": "adv",
+			"profile_name": "message",
+			"declarative_presentation": true,
+			"character": "sakura",
+			"segments": [{"text": "Stable line"}],
+			"avatar_expression": "happy",
+			"nvl_entries": [],
+		},
+	}
+	state.restore_snapshot(stable)
+	assert_eq(state.capture_snapshot(), stable)

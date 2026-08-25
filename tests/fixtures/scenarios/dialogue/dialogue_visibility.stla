@@ -1,0 +1,106 @@
+// Public synthetic runtime fixture for issue #166 red tests.
+
+@dialogue_profile message surface_groups=dialogue_surface quick_menu_groups=quick_menu
+@dialogue_profile novel_first surface_groups=dialogue_surface quick_menu_groups=quick_menu entry_prefix="A" entry_separator="|"
+@dialogue_profile novel_second surface_groups=dialogue_surface quick_menu_groups=quick_menu entry_prefix="B" entry_separator="~"
+@dialogue_profile missing_groups surface_groups=missing_surface quick_menu_groups=missing_quick
+@dialogue_profile overlapping surface_groups=overlap_surface quick_menu_groups=overlap_quick
+
+@chapter dialogue_visibility_contract "Dialogue visibility contract"
+
+@scene standalone_join
+@adv profile=message
+sakura「Owned ADV[expr:happy] content survives a hidden surface.」
+@dialogue_visibility hide transition=fade duration=10
+sakura「Standalone JOIN tail.」
+
+@scene independent_groups
+@adv profile=message
+sakura「Surface and quick menu begin visible.」
+@presentation_batch policy=join
+  @dialogue_visibility surface hide transition=fade duration=10
+  @dialogue_visibility quick_menu show transition=fade duration=10
+@end
+sakura「Quick menu remained independently owned.」
+
+@scene mixed_join
+@adv profile=message
+sakura「Mixed ownership begins here.」
+@presentation_batch policy=join
+  @stage mixed show asset=stage:redraw_source transition=fade duration=10
+  @dialogue_visibility hide transition=fade duration=10
+  @dialogue_visibility quick_menu hide transition=fade duration=10
+@end
+sakura「Mixed JOIN tail.」
+
+@scene fire_and_forget
+@adv profile=message
+sakura「FNF setup.」
+@presentation_batch policy=fire_and_forget
+  @dialogue_visibility surface hide transition=fade duration=10
+@end
+sakura「FNF dialogue owns ordinary advance while the fade remains live.」
+
+@scene supersession
+@adv profile=message
+sakura「Supersession setup.」
+@presentation_batch policy=fire_and_forget
+  @dialogue_visibility surface hide transition=fade duration=10
+@end
+@presentation_batch policy=join
+  @dialogue_visibility surface show transition=fade duration=10
+@end
+sakura「Only the later surface generation owns this tail.」
+
+@scene skip_boundary
+@adv profile=message
+sakura「Skip boundary setup.」
+@presentation_batch policy=join
+  @stage skipped show asset=stage:redraw_source transition=fade duration=10
+  @dialogue_visibility surface hide transition=fade duration=10
+  @dialogue_visibility quick_menu hide transition=fade duration=10
+@end
+sakura「Skip completed only the sealed mixed owner.」
+
+@scene adv_save
+@adv profile=message
+sakura「Stable ADV[expr:happy] save projection.」
+@dialogue_visibility surface hide transition=fade duration=10
+sakura「ADV load tail.」
+
+@scene fnf_save
+@adv profile=message
+sakura「Stable FNF ADV[expr:happy] save projection.」
+@presentation_batch policy=fire_and_forget
+  @dialogue_visibility surface hide transition=fade duration=10
+@end
+sakura「FNF save tail.」
+
+@scene nvl_save
+@nvl profile=novel_first
+sakura「First NVL entry.」
+@nvl profile=novel_second
+senpai「Second NVL[expr:smile] entry.」
+@dialogue_visibility surface hide transition=fade duration=10
+senpai「NVL load tail.」
+@nvl off
+
+@scene missing_binding
+@adv profile=missing_groups
+sakura「Missing groups bind no participants and leave unrelated UI untouched.」
+@dialogue_visibility surface hide transition=cut duration=0
+sakura「Missing binding tail.」
+
+@scene overlap_binding
+@adv profile=overlapping
+sakura「Overlapping groups reject the authored binding.」
+@dialogue_visibility quick_menu hide transition=cut duration=0
+sakura「Overlap fallback tail.」
+
+@scene backlog_overlay
+@adv profile=message
+sakura「Backlog cannot mutate canonical Dialogue projection.」
+@presentation_batch policy=fire_and_forget
+  @dialogue_visibility quick_menu hide transition=fade duration=10
+@end
+sakura「Backlog return does not replay this line.」

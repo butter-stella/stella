@@ -81,4 +81,6 @@ AVG 标准行为：打字未完成时点击 = 完成打字（不推进），打�
 
 Stage JOIN 和 chapter indicator 共享 Director-owned generic blocking presentation waiter。reset、load、rollback、restart、return-to-title、context 或 SceneTree replacement 先退休旧 owner/generation，再重置或 cut canonical 投影；不使用 indicator/stage 并列的私有 flag，旧 callback 也不能回来领取新 input。
 
+Issue #166 的 `dialogue_visibility` JOIN/FNF 也进入同一 Runtime-owned generic presentation 边界：`surface` 与 `quick_menu` gate 在同一个 Director queue 上分配 request/receipt/generation，并和 Stage mixed batch 共用 exact finish、persistent Skip force-cut、save/load visual-only restore 与 stale callback 拒绝规则。Profile baseline、mode binding 与 canonical gate 是声明式合成关系；backlog overlay 与 soft UI hide 不会修改这两个 canonical bool。
+
 既有输入优先级保持不变：soft-hidden UI 先恢复，Button/Slider 左键交给 GUI，非 PLAYING 不处理；Skip/Auto 的既有左键 policy 先于普通推进。成功进入 normal path 后，无论是 typed dialogue advance 还是 Stage JOIN / chapter indicator / wait fallback 都会 `set_input_as_handled()`。手柄输入 parity 与 #133 的可重绑输入系统仍是 non-goal，不属于本卡。
