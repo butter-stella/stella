@@ -333,7 +333,7 @@ func _register_handlers():
 	registry.register(SeHandler.new())
 	registry.register(VoiceHandler.new())
 	registry.register(FadeHandler.new())
-	registry.register(WaitHandler.new())
+	_register_wait_handler()
 	registry.register(EffectHandler.new())
 	registry.register(CallHandler.new())
 	var parallel_handler = ParallelHandler.new()
@@ -344,6 +344,11 @@ func _register_handlers():
 ## Register a fresh handler when the composition root replaces read history.
 func _register_dialogue_handler() -> void:
 	registry.register(DialogueHandler.new(read_flags))
+
+
+## Register a fresh handler against the current Runtime-owned Skip lifecycle.
+func _register_wait_handler() -> void:
+	registry.register(WaitHandler.new(skip_controller))
 
 
 ## Resolve the game scene path — config override or built-in default.

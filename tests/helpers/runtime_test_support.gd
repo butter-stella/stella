@@ -63,6 +63,7 @@ static func reset_for_test(runtime: Node, tree: SceneTree) -> void:
 	# DialogueHandler owns the Core-side write boundary for read history. Replace
 	# the handler so no in-flight execution can be rebound to the fresh manager.
 	runtime._register_dialogue_handler()
+	runtime._register_wait_handler()
 
 	# These instances own long-lived SignalBus/runtime connections established in
 	# StellaRuntime._ready(), so preserve them and reset only their data models.

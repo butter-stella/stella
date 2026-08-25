@@ -638,6 +638,8 @@ sakura「[expr:sad]我有点担心。」
 // 演出
 @fade out 1.0
 @wait 1.5
+@wait 1.5 skippable=true  // 允许玩家推进或 Skip 提前结束
+@wait click
 @effect shake
 @nvl / @nvl off
 @overlay / @overlay off
@@ -656,6 +658,8 @@ sakura「[expr:surprised]但是听说下周要期中考...」 #voice:sakura_018
 sakura「[expr:sad]我数学肯定完蛋了。」 #voice:sakura_019
 @end
 ```
+
+Timed wait 默认不可由玩家截短；`skippable=true` 是唯一可选项，适合仍需保留最长演出时长、但允许左键、Space、Enter、手柄 A 或 Skip 提前继续的场景。Auto 保持 authored duration。`@wait click` 是独立模式，不接受 option。无论是否 skippable，读档、回退、重启、返回标题和 scenario replacement 都会取消旧 execution generation；迟到 timer 或输入不会影响恢复后的命令。完整 grammar 与诊断见 [DSL 文档](DSL.md#314-等待)。
 
 ---
 
