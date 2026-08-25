@@ -158,6 +158,7 @@ func test_dialogue_projection_defaults_and_restore_are_stable() -> void:
 		"bg": "",
 		"stage_layers": {},
 		"bgm": "",
+		"loop_se_channels": {},
 		"dialogue_visibility": {"surface": false, "quick_menu": true},
 		"dialogue_content": {
 			"version": 1,

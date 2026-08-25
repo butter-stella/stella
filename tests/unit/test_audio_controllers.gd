@@ -70,31 +70,29 @@ func test_se_handler_type():
 func test_se_handler_emits_play_signal():
 	var received: Array = []
 	var bus = get_tree().root.get_node("SignalBus")
-	bus.se_play.connect(func(a, l): received.append({"asset": a, "loop": l}))
+	bus.se_play.connect(func(a): received.append(a))
 
 	var handler = SeHandler.new()
 	var cmd = CommandData.new()
 	cmd.type = "se"
-	cmd.params = {"asset": "se_click", "loop": false}
+	cmd.params = {"asset": "se_click"}
 	await handler.execute(cmd, ScenarioContext.new())
 
 	assert_eq(received.size(), 1)
-	assert_eq(received[0]["asset"], "se_click")
-	assert_false(received[0]["loop"])
+	assert_eq(received[0], "se_click")
 
 
-func test_se_handler_stop_emits_signal():
-	var received: Array = []
-	var bus = get_tree().root.get_node("SignalBus")
-	bus.se_stop.connect(func(a): received.append(a))
-
-	var handler = SeHandler.new()
-	var cmd = CommandData.new()
-	cmd.type = "se"
-	cmd.params = {"asset": "se_rain", "off": true}
-	await handler.execute(cmd, ScenarioContext.new())
-
-	assert_eq(received, ["se_rain"])
+func test_se_handler_rejects_removed_loop_and_asset_stop_params():
+	for removed_key: String in ["loop", "off"]:
+		var handler = SeHandler.new()
+		var cmd = CommandData.new()
+		cmd.type = "se"
+		cmd.params = {"asset": "se_rain"}
+		cmd.params[removed_key] = true
+		var context := ScenarioContext.new()
+		await handler.execute(cmd, context)
+		assert_true(context.is_finished)
+		assert_push_error("@se accepts exactly one one-shot asset")
 
 
 # --- FadeHandler ---

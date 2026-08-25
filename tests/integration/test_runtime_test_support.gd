@@ -130,6 +130,7 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 		"bg": "",
 		"stage_layers": {},
 		"bgm": "",
+		"loop_se_channels": {},
 		"dialogue_visibility": {
 			"surface": true,
 			"quick_menu": true,

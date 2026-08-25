@@ -9,6 +9,7 @@ extends GutTest
 const DEMO_PATH = "res://examples/demo/scenarios/demo.stla"
 const DIALOGUE_VISIBILITY_REFERENCE_PATH = \
 	"res://examples/demo/scenarios/dialogue_visibility.stla"
+const LOOP_SE_REFERENCE_PATH = "res://examples/demo/scenarios/loop_se.stla"
 
 
 func _parse_demo() -> ScenarioData:
@@ -210,3 +211,57 @@ func test_dialogue_visibility_public_reference_parses_without_private_content() 
 	assert_eq(clear_stage.get("action"), "clear")
 	assert_eq(clear_stage.get("transition"), "fade")
 	assert_eq(clear_stage.get("duration"), 0.2)
+
+
+func test_loop_se_public_reference_uses_canonical_named_channels() -> void:
+	assert_true(FileAccess.file_exists(LOOP_SE_REFERENCE_PATH),
+		"issue #167 publishes one redistributable reference scenario")
+	if not FileAccess.file_exists(LOOP_SE_REFERENCE_PATH):
+		return
+	var file := FileAccess.open(LOOP_SE_REFERENCE_PATH, FileAccess.READ)
+	assert_not_null(file)
+	if file == null:
+		return
+	var source := file.get_as_text()
+	file.close()
+	var data := DslParser.parse(
+		DslLexer.tokenize(source),
+		"loop_se_demo",
+		LOOP_SE_REFERENCE_PATH,
+	)
+	assert_eq(data.diagnostics, [], str(data.diagnostics))
+	assert_not_null(data.get_chapter("loop_se_demo"))
+	var scene := data.get_scene("loop_se_start")
+	assert_not_null(scene)
+	if scene == null:
+		return
+	var batches: Array[CommandData] = []
+	for command_value: Variant in scene.commands:
+		var command: CommandData = command_value
+		if command.type == "presentation_batch":
+			batches.append(command)
+	assert_eq(batches.size(), 4)
+	if batches.size() != 4:
+		return
+	assert_eq(batches.map(func(batch: CommandData) -> String:
+		return batch.get_string("policy")), [
+		"fire_and_forget", "fire_and_forget", "fire_and_forget", "join",
+	])
+	assert_eq(batches.map(func(batch: CommandData) -> Array:
+		return batch.params.get("operation_lines", [])), [[6], [7], [11], [16, 17]])
+	var first_payload: Dictionary = batches[0].params["operations"][0]["payload"]
+	var detail_payload: Dictionary = batches[1].params["operations"][0]["payload"]
+	var volume_payload: Dictionary = batches[2].params["operations"][0]["payload"]
+	assert_eq(first_payload.get("channel"), "ambience")
+	assert_eq(first_payload.get("asset"), "se_select")
+	assert_eq(detail_payload.get("channel"), "detail")
+	assert_eq(detail_payload.get("asset"), "se_cancel")
+	assert_eq(volume_payload.get("channel"), "ambience")
+	assert_eq(volume_payload.get("asset"), "se_select")
+	assert_eq(volume_payload.get("volume"), 0.08)
+	var stop_channels: Array[String] = []
+	for operation_value: Variant in batches[3].params["operations"]:
+		var payload: Dictionary = (operation_value as Dictionary)["payload"]
+		assert_eq(payload.get("action"), "stop")
+		stop_channels.append(String(payload.get("channel", "")))
+	assert_eq(stop_channels, ["ambience", "detail"])
