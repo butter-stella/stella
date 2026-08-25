@@ -81,6 +81,19 @@ func test_scenario_context_restore_without_return_stack_clears_it():
 
 # ─── PresentationState Tracking ───
 
+func _bgm_state(asset: String = "theme.ogg") -> Dictionary:
+	return {
+		"asset": asset, "cue": "", "loop": true, "position": 0.0,
+		"status": "playing", "volume": 1.0,
+	}
+
+
+func _bgm_operation(asset: String = "theme.ogg") -> BgmPresentationOperation:
+	return BgmPresentationOperation.new({
+		"action": "play", "asset": asset, "cue": "", "fade_duration": 0.0,
+		"resume_position": 0.0, "volume": 1.0,
+	})
+
 func test_presentation_state_tracks_bg():
 	var ps = PresentationState.new()
 	ps.connect_signals()
@@ -91,16 +104,23 @@ func test_presentation_state_tracks_bg():
 func test_presentation_state_tracks_bgm():
 	var ps = PresentationState.new()
 	ps.connect_signals()
-	SignalBus.bgm_play.emit("battle.ogg", 1.0)
-	assert_eq(ps.current_bgm, "battle.ogg")
+	SignalBus.bgm_operation_committed.emit(
+		_bgm_operation("battle.ogg"), _bgm_state("battle.ogg"))
+	assert_eq(ps.current_bgm, _bgm_state("battle.ogg"))
+	ps.disconnect_signals()
 
 
-func test_presentation_state_tracks_bgm_stop():
+func test_presentation_state_tracks_stopped_bgm():
 	var ps = PresentationState.new()
 	ps.connect_signals()
-	SignalBus.bgm_play.emit("battle.ogg", 1.0)
-	SignalBus.bgm_stop.emit(0.5)
-	assert_eq(ps.current_bgm, "")
+	SignalBus.bgm_operation_committed.emit(
+		_bgm_operation("battle.ogg"), _bgm_state("battle.ogg"))
+	SignalBus.bgm_operation_committed.emit(BgmPresentationOperation.new({
+		"action": "stop", "asset": "", "cue": "", "fade_duration": 0.5,
+		"resume_position": 0.0, "volume": 1.0,
+	}), {})
+	assert_eq(ps.current_bgm, {})
+	ps.disconnect_signals()
 
 
 func test_presentation_state_snapshot_roundtrip():
@@ -120,14 +140,19 @@ func test_presentation_state_snapshot_roundtrip():
 			],
 		},
 	}], true)
-	SignalBus.bgm_play.emit("theme.ogg", 1.0)
+	SignalBus.bgm_operation_committed.emit(
+		_bgm_operation(), _bgm_state())
 
 	var snap = ps.capture_snapshot()
 
 	var ps2 = PresentationState.new()
 	ps2.restore_snapshot(snap)
 	assert_eq(ps2.current_bg, "forest.png")
-	assert_eq(ps2.current_bgm, "theme.ogg")
+	assert_true(BgmChannelState.validate_snapshot_state(snap.get("bgm"), false),
+		"captured BGM state uses the exact stable schema")
+	assert_eq(ps2.current_bgm, snap.get("bgm"),
+		"round-trip preserves the sampled current playback cursor")
+	ps.disconnect_signals()
 	assert_true(ps2.stage_layers.has("alice"))
 	assert_eq(ps2.stage_layers["alice"]["asset"], "character:alice/happy")
 	assert_eq(ps2.stage_layers["alice"]["redraw"], [
@@ -141,31 +166,26 @@ func test_presentation_state_snapshot_roundtrip():
 func test_presentation_state_restore_emits_signals():
 	var ps = PresentationState.new()
 	ps.current_bg = "forest.png"
-	ps.current_bgm = "theme.ogg"
+	ps.current_bgm = {}
 	ps.stage_layers = {
 		"alice": StageLayerState.normalize_full({"asset": "character:alice/happy"}),
 	}
 
 	var bg_received := []
 	var stage_received := []
-	var bgm_received := []
 	var bg_cb = func(a, _t, _d): bg_received.append(a)
 	var stage_cb = func(layers): stage_received.append(layers)
-	var bgm_cb = func(a, _f): bgm_received.append(a)
 	SignalBus.bg_changed.connect(bg_cb)
 	SignalBus.stage_state_apply_requested.connect(stage_cb)
-	SignalBus.bgm_play.connect(bgm_cb)
 
 	ps.apply_to_presenters()
 
 	assert_eq(bg_received, ["forest.png"])
 	assert_eq(stage_received.size(), 1)
 	assert_eq(stage_received[0]["alice"]["asset"], "character:alice/happy")
-	assert_eq(bgm_received, ["theme.ogg"])
 
 	SignalBus.bg_changed.disconnect(bg_cb)
 	SignalBus.stage_state_apply_requested.disconnect(stage_cb)
-	SignalBus.bgm_play.disconnect(bgm_cb)
 
 
 func test_presentation_state_restore_uses_zero_duration():
@@ -182,16 +202,16 @@ func test_presentation_state_restore_uses_zero_duration():
 	SignalBus.bg_changed.disconnect(cb)
 
 
-func test_presentation_state_restore_projects_empty_bgm_as_stop():
+func test_presentation_state_restore_projects_empty_bgm_as_canonical_reset():
 	var ps = PresentationState.new()
-	var stop_durations := []
-	var cb = func(duration): stop_durations.append(duration)
-	SignalBus.bgm_stop.connect(cb)
+	var reset_epochs: Array[int] = []
+	var cb = func(epoch: int): reset_epochs.append(epoch)
+	SignalBus.bgm_projection_reset_requested.connect(cb)
 
 	ps.apply_to_presenters()
 
-	SignalBus.bgm_stop.disconnect(cb)
-	assert_eq(stop_durations, [0.0])
+	SignalBus.bgm_projection_reset_requested.disconnect(cb)
+	assert_eq(reset_epochs.size(), 1)
 
 
 func test_presentation_state_disconnect_signals():
@@ -205,11 +225,11 @@ func test_presentation_state_disconnect_signals():
 func test_presentation_state_clear():
 	var ps = PresentationState.new()
 	ps.current_bg = "forest.png"
-	ps.current_bgm = "theme.ogg"
+	ps.current_bgm = _bgm_state()
 	ps.stage_layers = {"alice": StageLayerState.default_state()}
 	ps.clear()
 	assert_eq(ps.current_bg, "")
-	assert_eq(ps.current_bgm, "")
+	assert_eq(ps.current_bgm, {})
 	assert_eq(ps.stage_layers.size(), 0)
 
 

@@ -94,6 +94,7 @@ var _emitting_chapter_id := ""
 var _emitting_chapter_title := ""
 var _chapter_indicator_registrar_authority := RefCounted.new()
 var _loop_se_registrar_authority := RefCounted.new()
+var _bgm_registrar_authority := RefCounted.new()
 
 
 func _init() -> void:
@@ -111,6 +112,8 @@ func _init() -> void:
 		push_error("StellaRuntime: chapter indicator registrar authority conflict")
 	if not SignalBus.configure_loop_se_registrar(_loop_se_registrar_authority):
 		push_error("StellaRuntime: loop-SE registrar authority conflict")
+	if not SignalBus.configure_bgm_registrar(_bgm_registrar_authority):
+		push_error("StellaRuntime: BGM registrar authority conflict")
 
 
 ## Composition-owned admission keeps the cross-layer Bus free of concrete
@@ -147,6 +150,21 @@ func _unregister_loop_se_presenter(
 ) -> void:
 	SignalBus.unregister_loop_se_presenter(
 		presenter, capability, _loop_se_registrar_authority)
+
+
+func _register_bgm_presenter(presenter: Object) -> RefCounted:
+	if not presenter is AudioPresenter:
+		return null
+	return SignalBus.register_bgm_presenter(
+		presenter, _bgm_registrar_authority)
+
+
+func _unregister_bgm_presenter(
+	presenter: Object,
+	capability: RefCounted,
+) -> void:
+	SignalBus.unregister_bgm_presenter(
+		presenter, capability, _bgm_registrar_authority)
 
 
 func _notification(what: int) -> void:
@@ -329,7 +347,6 @@ func _register_handlers():
 	registry.register(SetHandler.new())
 	registry.register(ConditionHandler.new())
 	registry.register(ChoiceHandler.new())
-	registry.register(BgmHandler.new())
 	registry.register(SeHandler.new())
 	registry.register(VoiceHandler.new())
 	registry.register(FadeHandler.new())
@@ -2038,7 +2055,7 @@ func _install_scenario(data: ScenarioData, scenario_path: String) -> void:
 	initial_snapshot["presentation_state"] = {
 		"bg": "",
 		"stage_layers": {},
-		"bgm": "",
+		"bgm": {},
 		"loop_se_channels": {},
 		"dialogue_visibility": {
 			"surface": true,
@@ -2140,7 +2157,8 @@ func _reset_presentation(
 	SignalBus.reset_chapter_indicator_presentation()
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
-	SignalBus.bgm_stop.emit(0.0)
+	presentation_state.current_bgm.clear()
+	SignalBus.reset_bgm_presentation()
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
 	SignalBus.hide_dialogue.emit()
@@ -3161,8 +3179,8 @@ func get_backlog() -> Array:
 ##    the global signal remains for non-context compatibility listeners.
 ##    Ownership transfer happens before any hard presentation boundary so a
 ##    synchronous Presenter abort cannot make the stale run report scenario_ended.
-## 7. Reset visuals to a clean slate. bgm_stop triggers the PresentationState
-##    listener; restore_snapshot then overwrites it. fade("in",0) drops any
+## 7. Reset visuals to a clean slate. The canonical BGM reset is then replaced
+##    by restore_snapshot. fade("in",0) drops any
 ##    lingering screen-fade overlay.
 ## 8. Restore presentation_state and apply_to_presenters, snapping visuals to
 ##    the restored state before the target command is re-dispatched.
@@ -3256,7 +3274,8 @@ func _restore_runtime_from_snapshot(
 	SignalBus.reset_chapter_indicator_presentation()
 	if not _owns_navigation_context(navigation, new_ctx):
 		return false
-	SignalBus.bgm_stop.emit(0.0)
+	presentation_state.current_bgm.clear()
+	SignalBus.reset_bgm_presentation()
 	if not _owns_navigation_context(navigation, new_ctx):
 		return false
 	SignalBus.hide_dialogue.emit()
@@ -3406,7 +3425,8 @@ func reset_settings() -> void:
 
 
 func _play_title_bgm() -> void:
-	SignalBus.bgm_play.emit(config.title_bgm, 1.0)
+	presentation_state.current_bgm.clear()
+	SignalBus.apply_title_bgm_cut(config.title_bgm)
 
 
 ## Play a system sound effect (UI clicks, confirmations, etc.)

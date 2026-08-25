@@ -242,9 +242,17 @@ signal stage_transition_receipts_finish_requested(transitions: Array)
 # 背景
 signal bg_changed(asset: String, transition: String, duration: float)
 
-# 音频
-signal bgm_play(asset: String, fade_duration: float)
-signal bgm_stop(fade_duration: float)
+# BGM：与其他 typed presentation child 共用唯一 Director queue
+signal bgm_validate_requested(request: BgmOperationRequest)
+signal bgm_accept_requested(request: BgmOperationRequest)
+signal bgm_apply_requested(request: BgmOperationRequest)
+signal bgm_operation_committed(operation: BgmPresentationOperation, state: Dictionary)
+signal bgm_transition_receipt_started(presenter_instance_id: int, token: int, operation_request_id: int, generation: int)
+signal bgm_transition_terminal(presenter_instance_id: int, token: int, operation_request_id: int, generation: int, outcome: StringName)
+signal bgm_projection_reset_requested(epoch: int)
+signal bgm_state_apply_requested(state: Dictionary, generation: int)
+
+# 其他音频
 signal se_play(asset: String)
 signal loop_se_validate_requested(request: LoopSeOperationRequest)
 signal loop_se_accept_requested(request: LoopSeOperationRequest)
@@ -278,23 +286,23 @@ signal settings_changed(key: String, value: Variant)
 
 #### PresentationDirector 与 exact typed composition
 
-`StellaRuntime` 作为唯一 composition root，只构造并持有一个 `PresentationDirector`。Stage、dialogue visibility、chapter indicator 与 persistent loop-SE 都通过这个 owner/lifecycle 边界：
+`StellaRuntime` 作为唯一 composition root，只构造并持有一个 `PresentationDirector`。Stage、dialogue visibility、chapter indicator、persistent loop-SE 与 BGM 都通过这个 owner/lifecycle 边界：
 
-- `PresentationOperation` 是只读 typed operation，暴露 kind、channel、deep-copy payload 和 source location。concrete kind 为 `StagePresentationOperation`（`stage:<layer_id>` / `stage:*`）、`DialogueVisibilityPresentationOperation`（`dialogue:surface` / `dialogue:quick_menu`）、固定 channel `chapter:indicator` 的 `ChapterIndicatorPresentationOperation`，以及 `LoopSePresentationOperation`（`loop_se:<channel_id>`）。
+- `PresentationOperation` 是只读 typed operation，暴露 kind、channel、deep-copy payload 和 source location。concrete kind 为 `StagePresentationOperation`（`stage:<layer_id>` / `stage:*`）、`DialogueVisibilityPresentationOperation`（`dialogue:surface` / `dialogue:quick_menu`）、固定 channel `chapter:indicator` 的 `ChapterIndicatorPresentationOperation`、`LoopSePresentationOperation`（`loop_se:<channel_id>`），以及固定 channel `bgm:main` 的 `BgmPresentationOperation`。
 - `PresentationOperationReceipt` 用 `batch_id / presenter_instance_id / channel / token / generation` 五元组唯一标识 Presenter 真正拥有的转场；单独 layer ID 不能完成批次。
 - `PresentationBatchRequest` 的 policy 为 `JOIN` / `FIRE_AND_FORGET`，outcome 为 `COMPLETED` / `CANCELLED` / `FAILED`。operation/receipt getter 返回 defensive container，`settled(batch_id, outcome)` 只发送一次。`_bind_authority()`、`_seal()` 和 `_settle()` 是 Director 内部 authority 方法，不是 caller API。
 
 Parser 把整个 `@stage_batch` 编译为一个 addressable `CommandData(type="stage_batch")`，`declared_line` 是 block opening line，params 精确为 `policy / operations / operation_lines`。`operations` 中每项都是 `action / id / properties / transition / duration` canonical five-field；`operation_lines` 与 child 一一对应，保留在可执行 params 中供程序化调用在 runtime fail-close 时定位原始 child source line，但它只是诊断元数据，会从 `stage_batch` semantic content fingerprint 排除；`policy` 与 `operations` 仍参与 identity。
 
-`submit()` 在分配 request ID 之前完成 authoritative typed schema/context preflight：检查所有 kind 的 canonical payload、duplicate channel、Stage clear 冲突，并以 canonical state 做 semantic reduce。chapter 即使已经处于 authored target 也不会跳过 binding validation；loop-SE 也必须进入 Bus，让唯一 Runtime-owned AudioPresenter 证明资源与当前投影都可用。invalid 和不含 clear/loop-SE 的真实 no-work 路径不进入 Bus，也不分配 receipt、token 或 Tween；这类 no-work 会以 `batch_id=0`、`receipts=[]` 同步 `COMPLETED`。canonical clear 与每条 loop-SE 都是 live projection ownership exception：它们不能仅凭 canonical Dictionary 相等而短路。loop-SE 即使 same asset+volume 或 stop absent，也取得 positive batch 并重新验证 Presenter/resource；只有 Presenter 同时证明 current player 有效且 playing、target/level 对齐、没有 Tween/receipt/outgoing 时，才在 apply 内以零 receipt 同步完成。若同 target 仍在 fade，Presenter 先 exact-complete 旧 receipt 到 canonical endpoint，再让当前 positive batch 同步完成；重复 stop-fade 遵守相同规则。
+`submit()` 在分配 request ID 之前完成 authoritative typed schema/context preflight：检查所有 kind 的 canonical payload、duplicate channel、Stage clear 冲突，并以 canonical state 做 semantic reduce。chapter 即使已经处于 authored target 也不会跳过 binding validation；loop-SE/BGM 也必须进入 Bus，让唯一 Runtime-owned AudioPresenter 证明资源与当前投影都可用。invalid 和不含 clear/loop-SE/BGM 的真实 no-work 路径不进入 Bus，也不分配 receipt、token 或 Tween；这类 no-work 会以 `batch_id=0`、`receipts=[]` 同步 `COMPLETED`。canonical clear 与每条 loop-SE/BGM 都是 live projection ownership exception：它们不能仅凭 canonical Dictionary 相等而短路。BGM same playing asset+cue+volume 仍取得 positive Presenter/resource preflight；稳定物理投影才以零 receipt 完成，只改 volume 则保留 player/cursor。若同 target 仍在 fade，Presenter 先 exact-complete 旧 receipt 到 canonical endpoint，再让当前 positive batch 继续；paused `play` 重启 cue，`resume` 才保留 cursor。
 
-有工作的操作在同一 `SignalBus` dispatch boundary 中原子派发。Bus 在任何 child apply 前收集并验证完整 chapter Presenter registry，并让唯一 AudioPresenter 对每个 loop-SE asset 完成 typed validate/accept；任一资源缺失或 participant 拒绝都会在第一个 child mutation 前令整批 `FAILED`。seal 后按 authored child order 跨 kind 派发，operation source line、channel 与 receipt 一一保持。Bus 在每个连续 typed run 即将 apply 时才把实际 channels 交给 Director；post-apply failure 只回滚该失败 request 仍持有的 applied domains，并在同一 projection lifecycle 内 cut-project canonical Stage、受影响的 dialogue/loop-SE targets 与 chapter state。已由 fresh request 接管的域不会被旧 terminal 回滚，无关域的 epoch 变化也不会使 fresh dispatch tail 失败。`JOIN` 只等待 dispatch tail 封存的 exact receipt union；零 receipt 同步完成，current owner 的任一 superseded/cancelled receipt 都使该 JOIN fail-close。`FIRE_AND_FORGET` 在 dispatch seal 后释放剧情，但 Director 继续持有 receipts 直到 terminal cleanup。连续 batch 经 Bus 串行；同 channel 重叠时由 Presenter generation 决定 winner，late、foreign 或 duplicate terminal 不能完成新 batch。
+有工作的操作在同一 `SignalBus` dispatch boundary 中原子派发。Bus 在任何 child apply 前收集并验证完整 chapter Presenter registry，并让唯一 AudioPresenter 对每个 loop-SE/BGM resource 完成 typed validate/accept；任一资源、cue、marker 缺失/非法或 participant 拒绝都会在第一个 child mutation 前令整批 `FAILED`。seal 后按 authored child order 跨 kind 派发，operation source line、channel 与 receipt 一一保持。Bus 在每个连续 typed run 即将 apply 时才把实际 channels 交给 Director；post-apply failure 只回滚该失败 request 仍持有的 applied domains，并在同一 projection lifecycle 内 cut-project canonical Stage、受影响的 dialogue/audio targets 与 chapter state。已由 fresh request 接管的域不会被旧 terminal 回滚，无关域的 epoch 变化也不会使 fresh dispatch tail 失败。`JOIN` 只等待 dispatch tail 封存的 exact receipt union；零 receipt 同步完成，current owner 的任一 superseded/cancelled receipt 都使该 JOIN fail-close。`FIRE_AND_FORGET` 在 dispatch seal 后释放剧情，但 Director 继续持有 receipts 直到 terminal cleanup。连续 batch 经 Bus 串行；同 channel 重叠时由 Presenter generation 决定 winner，late、foreign 或 duplicate terminal 不能完成新 batch。
 
-Director 还统一拥有 blocking presentation waiter。四种 operation 共享 Runtime 的 generic lifecycle 判断，不再各自维护 sibling flag。session reset、load、rollback、restart、return-to-title 或 context replacement 先退休旧 generation/owner，再 reset 并在需要时 cut canonical state；旧 callback 不能复活。纯 Presentation SceneTree/UI replacement 不清 persistent loop-SE canonical state：旧 AudioPresenter 同步提交 canonical incoming 的物理 position、退休自己的 projection/callback，新 Runtime-owned Presenter 再从该 state cut-project 一次，不能重复 player。可逆导航被拒绝时，Runtime 恢复该命令之前的 canonical state，然后在 retained cursor 重新派发，不会 resume 已取消的 coroutine。
+Director 还统一拥有 blocking presentation waiter。所有 typed operation 共享 Runtime 的 generic lifecycle 判断，不再各自维护 sibling flag。session reset、load、rollback、restart、return-to-title 或 context replacement 先退休旧 generation/owner，再 reset 并在需要时 cut canonical state；旧 callback 不能复活。纯 Presentation SceneTree/UI replacement 不清 persistent loop-SE/BGM canonical state：旧 AudioPresenter 同步提交 canonical incoming 的物理 position、退休自己的 projection/callback，新 Runtime-owned Presenter 再从该 state cut-project 一次，不能重复 player。context/global abort 会把仍有 exact BGM receipt 的 Tween cut 到已提交 stable target，不能留下无 Director owner 的 player。可逆导航被拒绝时，Runtime 恢复该命令之前的 canonical state，然后在 retained cursor 重新派发，不会 resume 已取消的 coroutine。
 
 章节标题指示器在 typed operation 内使用短生命周期的 `ChapterIndicatorRequest`，而不是共享可变 `Dictionary` 收集 quorum，也不拥有另一条 scheduler。validation 阶段每个 Presenter 以自身对象注册或 reject；Bus seal 参与者集合后要求同一 request 的每个 sealed participant 显式 accept，且 apply-time binding 与实例仍有效。所有 child 全量 preflight+seal 后才允许第一个 child apply。完整 ordered apply tail 成功后，Director 才提交 `ScenarioContext.chapter_indicator_visible`；JOIN 随后等待各 Presenter 的 exact receipt terminal。getter 返回 defensive copy，任意 listener 修改副本、释放别的 Presenter 或同步 reset 都只能使整批确定性成功/失败/取消，不会缩小 authoritative barrier、留下 preflight partial mutation 或永久悬挂。
 
-request start、hard reset 与 cut state projection 共用 owner-checked generation；同步 listener 若在外层 signal 中替换 context、读档或发起新请求，后续 built-in consumer 会拒绝 stale outer tail。普通 advance 还记录 request 的接受 serial，因而一次 physical/semantic dispatch 最多结束一个 blocking command。所有 operation 共享 receipt、generation、cancel 与 settlement 规则。standalone chapter/dialogue 命令由 parser lowering 为单 child JOIN，standalone loop-SE 则 lowering 为单 child FNF；程序化 `ChapterIndicatorHandler` 也委托同一 Director。不存在第二 scheduler、第二等待链或第二 composition root。visibility 省略 authored target 时在 Core 边界 canonicalize 为明确的 `target=surface`，typed operation 和 runtime 从不推断默认 target。
+request start、hard reset 与 cut state projection 共用 owner-checked generation；同步 listener 若在外层 signal 中替换 context、读档或发起新请求，后续 built-in consumer 会拒绝 stale outer tail。普通 advance 还记录 request 的接受 serial，因而一次 physical/semantic dispatch 最多结束一个 blocking command。所有 operation 共享 receipt、generation、cancel 与 settlement 规则。standalone chapter/dialogue 命令由 parser lowering 为单 child JOIN，standalone loop-SE/BGM 则 lowering 为单 child FNF；程序化 `ChapterIndicatorHandler` 也委托同一 Director。不存在 BGM handler、raw BGM SignalBus API、第二 scheduler、第二等待链或第二 composition root。visibility 省略 authored target 时在 Core 边界 canonicalize 为明确的 `target=surface`，typed operation 和 runtime 从不推断默认 target。
 
 SceneTree 导航交接另有一个只属于 `StellaRuntime` 的 per-serial broadcast receipt：open 时保留唯一 creator reservation，superseded navigation 与 recovery continuation 必须在任何 yield/公开重入边界前登记各自 waiter lease。中央 `scene_changed` observer 先封存不可变结果并清除 active slot，再广播唤醒；只有 receipt 已 settled、creator 已释放且 waiter 数归零时才删除记录。creator 可以消费一次 settle-before-await 的结果，其他未知、迟到或已过期 serial 都同步返回失败，不能复活历史或形成无 owner waiter。它只是 SceneTree 生命周期记账，不是 #166 的通用 extension receipt。
 
@@ -336,6 +344,8 @@ func restore_snapshot(snapshot: Dictionary) -> void: ...
 动态舞台层以 `stage_layers: Dictionary` 保存：键是稳定业务 ID，值是经过 `StageLayerState` 归一化的完整 JSON-safe 状态。人物、事件图和其他舞台图片都使用这一份状态，不存在第二套人物快照。`PresentationState` 与 `StagePresenter` 使用同一 reducer，所以 patch 语义不会漂移。JOIN 动画进行中仍可存档；存档只包含已原子提交的 final canonical `stage_layers` 和 scenario cursor，绝不保存 operation、policy、request/batch、receipt、token、generation、Tween、barrier 或 progress，也不新增 in-flight schema。恢复顺序是 cancel old generation → reset + atomic cut canonical target → same-cursor re-dispatch；非 clear 目标已满足时以 no-work 同步完成，且零新 batch/receipt/token/Tween，不重播旧动画。clear 仍须经过 typed dispatch 取得 live projection ownership；真正空 Presenter 以 positive batch、零 receipt 同步完成。
 
 loop-SE 以 `loop_se_channels: Dictionary` 保存，键为 authored stable channel，值精确为 `{asset, loop: true, volume, position}`。save capture 同步询问唯一 AudioPresenter 的 canonical incoming position；outgoing voice、fade progress、receipt/generation、Tween 与 wall-clock 都不入 JSON。load/rollback 取消旧 generation 后按 position cut-project 单 player；same cursor 重派同 asset+volume 仍走 Presenter/resource preflight，live projection 完全对齐时不 seek、不复制也不创建 receipt。session/new-game/title reset 清空该 Dictionary；普通 scenario scene 变化和 AudioPresenter replacement 保留它。
+
+BGM 使用同一 `PresentationState` 中的单一 `bgm` stable Dictionary：stopped 为 `{}`，active 精确为 `{asset, cue, loop, position, status, volume}`，其中 status 只允许 `playing` / `paused`。save capture 采样 canonical incoming player 的当前 cursor；crossfade 的 outgoing、Tween progress、receipt 与 wall-clock 不入档。pause fade 中保存会采样当下 cursor，但恢复直接投影稳定 paused；crossfade 中保存只投影 incoming target/current cursor。这是有意的 cut projection，不尝试猜测或恢复旧 Tween 进度。恢复会重新验证资源、cue 与 loop metadata 后以单 player cut-project。旧版 String `bgm` snapshot 不是版本化公共 schema，`SaveManager` 在任何 provider mutation 或场景替换前 fail-close；没有第二套 runtime compatibility handler。
 
 ### 2.6 选择系统
 
@@ -453,7 +463,7 @@ Core → Presentation 的 canonical 对话与语音链均使用只读 typed DTO�
 
 `AudioPresenter` 统一管理 BGM / one-shot SE / persistent loop-SE / Voice：
 
-- **BGM**：淡入淡出、循环播放、交叉混合
+- **BGM**：单一 `bgm:main` typed channel；play/pause/resume/stop 的 authored fade、最多 incoming+outgoing 两个 player 的整段 crossfade、稳定 paused cursor、resource/named-cue marker、exact receipt/generation、save/restore cut projection。原始 OGG/MP3/WAV 默认循环到 stream end；`BgmTrackDefinition` 提供完整 default 与不继承的 named `BgmCueDefinition`。
 - **one-shot SE**：`se_play(asset)` 多通道并行，不可寻址；不存在素材子串 stop 或假 loop 参数
 - **persistent loop-SE**：以 stable channel 寻址；OGG/WAV duplicate 后开启格式循环并保留既有 marker；同 asset 音量变化复用 player/position，asset replacement 最多保留 canonical incoming + 一个 outgoing 交叉淡变
 - **Voice**：对话同步，角色独立音量控制；语音未播完可阻止自动推进
@@ -620,7 +630,7 @@ stella/
 │       │   │   ├── jump_handler.gd
 │       │   │   ├── condition_handler.gd
 │       │   │   ├── set_handler.gd
-│       │   │   ├── bgm_handler.gd
+│       │   │   ├── presentation_batch_handler.gd
 │       │   │   ├── se_handler.gd
 │       │   │   ├── voice_handler.gd
 │       │   │   ├── fade_handler.gd
@@ -638,6 +648,10 @@ stella/
 │       │   │   ├── character_config.gd
 │       │   │   ├── stage_layer_state.gd
 │       │   │   ├── presentation_operation.gd
+│       │   │   ├── bgm_presentation_operation.gd
+│       │   │   ├── bgm_channel_state.gd
+│       │   │   ├── bgm_track_definition.gd
+│       │   │   ├── bgm_cue_definition.gd
 │       │   │   ├── stage_presentation_operation.gd
 │       │   │   ├── chapter_indicator_presentation_operation.gd
 │       │   │   ├── dialogue_visibility_state.gd

@@ -6,5 +6,5 @@
 @stage_batch policy=fire_and_forget
   @stage runner update asset=stage:redraw_blur_source position=96,48 transition=move duration=10
 @end
-@bgm off
+@se se_select
 「fire-and-forget tail」

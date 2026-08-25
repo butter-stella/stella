@@ -1,9 +1,6 @@
 ## Audio presenter — manages BGM, SE, Voice, and System SE playback.
 class_name AudioPresenter extends Node
 
-enum BgmTweenPurpose { NONE, SWITCH_FADE_OUT, FADE_IN, STOP_FADE_OUT }
-
-var _bgm_player: AudioStreamPlayer
 var _se_players: Array = []
 var _max_se_channels: int = 4
 var _voice_player: AudioStreamPlayer
@@ -13,8 +10,11 @@ var _voice_started_advance_serial: int = -1
 var _voice_playback_token: int = -1
 var _voice_lifecycle_revision: int = 0
 var _voice_playback_revision: int = -1
-var _bgm_tween: Tween
-var _bgm_tween_purpose: int = BgmTweenPurpose.NONE
+var _bgm_capability: RefCounted
+var _bgm_channel: Dictionary = {}
+var _bgm_validation_cache: Dictionary = {}
+var _bgm_generation: int = 1
+var _next_bgm_token: int = 1
 var _loop_se_capability: RefCounted
 var _loop_se_channels: Dictionary = {}
 var _loop_se_validation_cache: Dictionary = {}
@@ -23,11 +23,6 @@ var _next_loop_se_token: int = 1
 
 
 func _ready():
-	# Create BGM player
-	_bgm_player = AudioStreamPlayer.new()
-	_bgm_player.bus = "Master"
-	add_child(_bgm_player)
-
 	# Create SE player pool
 	for i in range(_max_se_channels):
 		var player = AudioStreamPlayer.new()
@@ -47,8 +42,6 @@ func _ready():
 	add_child(_system_se_player)
 
 	# Connect signals
-	SignalBus.bgm_play.connect(_on_bgm_play)
-	SignalBus.bgm_stop.connect(_on_bgm_stop)
 	SignalBus.se_play.connect(_on_se_play)
 	SignalBus.voice_playback_requested.connect(_on_voice_playback_requested)
 	SignalBus.advance_requested.connect(_on_advance_requested)
@@ -67,25 +60,44 @@ func _ready():
 		_on_loop_se_targets_state_apply_requested)
 	SignalBus.loop_se_state_capture_requested.connect(
 		_on_loop_se_state_capture_requested)
+	SignalBus.bgm_validate_requested.connect(_on_bgm_validate_requested)
+	SignalBus.bgm_accept_requested.connect(_on_bgm_accept_requested)
+	SignalBus.bgm_apply_requested.connect(_on_bgm_apply_requested)
+	SignalBus.bgm_transition_receipts_finish_requested.connect(
+		_on_bgm_transition_receipts_finish_requested)
+	SignalBus.bgm_projection_reset_requested.connect(
+		_on_bgm_projection_reset_requested)
+	SignalBus.bgm_state_apply_requested.connect(_on_bgm_state_apply_requested)
+	SignalBus.bgm_title_cut_requested.connect(_on_bgm_title_cut_requested)
+	SignalBus.bgm_state_capture_requested.connect(
+		_on_bgm_state_capture_requested)
 
 	_apply_volumes()
 	_loop_se_capability = StellaRuntime._register_loop_se_presenter(self)
 	if _loop_se_capability != null:
 		SignalBus.announce_loop_se_presenter_registered(
 			self, _loop_se_capability)
+	_bgm_capability = StellaRuntime._register_bgm_presenter(self)
+	if _bgm_capability != null:
+		SignalBus.announce_bgm_presenter_registered(self, _bgm_capability)
 
 
 func _exit_tree() -> void:
-	if _loop_se_capability == null:
-		return
-	SignalBus.commit_loop_se_positions(
-		self, _loop_se_capability, _capture_loop_se_positions())
-	# Presenter replacement retires only the old projection generation. The
-	# canonical channel state survives and the replacement receives one cut
-	# projection after it acquires the Runtime-owned capability.
-	SignalBus.reset_loop_se_presentation()
-	StellaRuntime._unregister_loop_se_presenter(self, _loop_se_capability)
-	_loop_se_capability = null
+	if _bgm_capability != null:
+		SignalBus.commit_bgm_position(
+			self, _bgm_capability, _capture_bgm_position())
+		SignalBus.reset_bgm_presentation()
+		StellaRuntime._unregister_bgm_presenter(self, _bgm_capability)
+		_bgm_capability = null
+	if _loop_se_capability != null:
+		SignalBus.commit_loop_se_positions(
+			self, _loop_se_capability, _capture_loop_se_positions())
+		# Presenter replacement retires only the old projection generation. The
+		# canonical channel state survives and the replacement receives one cut
+		# projection after it acquires the Runtime-owned capability.
+		SignalBus.reset_loop_se_presentation()
+		StellaRuntime._unregister_loop_se_presenter(self, _loop_se_capability)
+		_loop_se_capability = null
 
 
 func _process(_delta: float) -> void:
@@ -105,14 +117,7 @@ func _apply_volumes(changed_key: String = ""):
 	var master := _get_volume_setting("master_volume", 1.0)
 	var update_all := changed_key == ""
 	if update_all or changed_key in ["master_volume", "bgm_volume"]:
-		var bgm_target_db := _get_bgm_target_db()
-		# A fade-in captures its target when created. End it before applying a live
-		# setting so that it cannot later restore the old target. Fade-outs keep
-		# heading to silence; a switch computes the new track's target after it ends.
-		if _bgm_tween_purpose == BgmTweenPurpose.FADE_IN:
-			_cancel_bgm_tween()
-		if _bgm_tween_purpose == BgmTweenPurpose.NONE:
-			_bgm_player.volume_db = bgm_target_db
+		_apply_bgm_volumes()
 
 	if update_all or changed_key in ["master_volume", "se_volume"]:
 		var se_vol := _get_volume_setting("se_volume", 1.0)
@@ -134,13 +139,6 @@ func _apply_volumes(changed_key: String = ""):
 func _get_volume_setting(key: String, fallback: float) -> float:
 	var value = StellaRuntime.get_setting(key)
 	return fallback if value == null else float(value)
-
-
-func _get_bgm_target_db() -> float:
-	return _to_db(
-		_get_volume_setting("master_volume", 1.0)
-		* _get_volume_setting("bgm_volume", 0.8)
-	)
 
 
 func _get_voice_target_db() -> float:
@@ -172,76 +170,696 @@ func _on_settings_changed(key: String, _value: Variant):
 
 # ─── BGM ───
 
-func _on_bgm_play(asset: String, fade_duration: float):
-	var stream = _load_audio(StellaRuntime.bgm_path, asset, ["ogg", "mp3"])
-	if stream == null:
-		push_warning("AudioPresenter: BGM not found: %s" % asset)
+func _on_bgm_validate_requested(request: BgmOperationRequest) -> void:
+	if _bgm_capability == null or request == null or not request.is_target(self):
 		return
-
-	# Enable looping — AudioStreamOggVorbis / AudioStreamMP3 default to loop=false.
-	if "loop" in stream:
-		stream.loop = true
-
-	# Kill any running BGM tween to avoid concurrent coroutines
-	_cancel_bgm_tween()
-
-	if fade_duration > 0 and _bgm_player.playing:
-		var fade_out = create_tween()
-		_bgm_tween = fade_out
-		_bgm_tween_purpose = BgmTweenPurpose.SWITCH_FADE_OUT
-		fade_out.tween_property(_bgm_player, "volume_db", -80.0, fade_duration)
-		await fade_out.finished
-		# If another bgm_play killed our tween, abort this coroutine
-		if _bgm_tween != fade_out:
+	var payload := request.get_payload()
+	if not BgmChannelState.validate_operation(payload, false):
+		SignalBus.reject_bgm_request(
+			request, self, _bgm_capability, "invalid canonical operation")
+		return
+	var request_key := request.get_instance_id()
+	var prepared := {"action": String(payload["action"])}
+	if String(payload["action"]) == "play":
+		prepared = _resolve_bgm_track(
+			String(payload["asset"]), String(payload["cue"]))
+		if prepared.is_empty():
+			SignalBus.reject_bgm_request(
+				request,
+				self,
+				_bgm_capability,
+				"asset '%s' or cue '%s' is missing, ambiguous, or has invalid metadata"
+					% [String(payload["asset"]), String(payload["cue"])],
+			)
 			return
-		_bgm_tween = null
-		_bgm_tween_purpose = BgmTweenPurpose.NONE
-
-	_bgm_player.stream = stream
-	_bgm_player.volume_db = -80.0
-	_bgm_player.play()
-	_start_bgm_fade_in(fade_duration)
+	_bgm_validation_cache[request_key] = prepared
+	request.finished.connect(
+		_cleanup_bgm_validation.bind(request_key), CONNECT_ONE_SHOT)
+	SignalBus.validate_bgm_request(request, self, _bgm_capability)
 
 
-func _start_bgm_fade_in(duration: float) -> void:
-	_cancel_bgm_tween()
-	var target_db := _get_bgm_target_db()
-	if duration <= 0.0:
-		_bgm_player.volume_db = target_db
+func _on_bgm_accept_requested(request: BgmOperationRequest) -> void:
+	if (
+		_bgm_capability == null
+		or request == null
+		or not _bgm_validation_cache.has(request.get_instance_id())
+	):
 		return
-
-	var fade_in := create_tween()
-	_bgm_tween = fade_in
-	_bgm_tween_purpose = BgmTweenPurpose.FADE_IN
-	fade_in.tween_property(_bgm_player, "volume_db", target_db, duration)
-	fade_in.finished.connect(func() -> void:
-		if _bgm_tween == fade_in:
-			_bgm_tween = null
-			_bgm_tween_purpose = BgmTweenPurpose.NONE
-	, CONNECT_ONE_SHOT)
+	SignalBus.accept_bgm_request(request, self, _bgm_capability)
 
 
-func _on_bgm_stop(fade_duration: float):
-	if not _bgm_player.playing:
+func _on_bgm_apply_requested(request: BgmOperationRequest) -> void:
+	if _bgm_capability == null or request == null:
 		return
-	_cancel_bgm_tween()
-	_bgm_tween = create_tween()
-	_bgm_tween_purpose = BgmTweenPurpose.STOP_FADE_OUT
-	_bgm_tween.tween_property(_bgm_player, "volume_db", -80.0, fade_duration)
-	var fade_out := _bgm_tween
-	_bgm_tween.tween_callback(func() -> void:
-		if _bgm_tween == fade_out:
-			_bgm_player.stop()
-			_bgm_tween = null
-			_bgm_tween_purpose = BgmTweenPurpose.NONE
+	var prepared: Dictionary = _bgm_validation_cache.get(
+		request.get_instance_id(), {})
+	if prepared.is_empty():
+		return
+	var committed_state := _apply_bgm_operation(
+		request.get_payload(),
+		prepared,
+		request.get_request_id(),
+		request.get_force_cut(),
+	)
+	if committed_state == null:
+		return
+	SignalBus.acknowledge_bgm_apply(
+		request, self, _bgm_capability, committed_state)
+
+
+func _cleanup_bgm_validation(request_key: int) -> void:
+	_bgm_validation_cache.erase(request_key)
+
+
+func _apply_bgm_operation(
+	payload: Dictionary,
+	prepared: Dictionary,
+	request_id: int,
+	force_cut: bool,
+) -> Variant:
+	var action := String(payload["action"])
+	var fade_duration := 0.0 if force_cut else float(payload["fade_duration"])
+	match action:
+		"play":
+			return _play_bgm(payload, prepared, fade_duration, request_id)
+		"pause":
+			return _pause_bgm(fade_duration, request_id)
+		"resume":
+			return _resume_bgm(fade_duration, request_id)
+		"stop":
+			return _stop_bgm(fade_duration, request_id)
+	return null
+
+
+func _play_bgm(
+	payload: Dictionary,
+	prepared: Dictionary,
+	fade_duration: float,
+	request_id: int,
+) -> Variant:
+	var asset := String(payload["asset"])
+	var cue := String(payload["cue"])
+	var volume := float(payload["volume"])
+	var current_state: Dictionary = _bgm_channel.get("target_state", {})
+	var current: Dictionary = _bgm_channel.get("current", {})
+	var exact_playing_target := (
+		not current_state.is_empty()
+		and String(current_state.get("status", "")) == "playing"
+		and String(current_state.get("asset", "")) == asset
+		and String(current_state.get("cue", "")) == cue
+	)
+	if exact_playing_target:
+		var active_receipt: Dictionary = _bgm_channel.get("receipt", {})
+		if not active_receipt.is_empty():
+			_complete_bgm_receipt(active_receipt)
+			current = _bgm_channel.get("current", {})
+		if _bgm_voice_is_live(current, asset, cue):
+			var state := current_state.duplicate(true)
+			state["position"] = _capture_bgm_position()
+			state["volume"] = volume
+			_bgm_channel["target_state"] = state.duplicate(true)
+			if is_equal_approx(float(current.get("level", -1.0)), volume):
+				return state
+			if fade_duration <= 0.0:
+				_set_bgm_voice_level(volume, current)
+				return state
+			var receipt := _start_bgm_receipt(request_id, &"play")
+			var tween := create_tween()
+			_bgm_channel["tween"] = tween
+			tween.tween_method(
+				_set_bgm_voice_level.bind(current),
+				float(current.get("level", 0.0)), volume, fade_duration)
+			tween.finished.connect(
+				_complete_bgm_receipt.bind(receipt), CONNECT_ONE_SHOT)
+			return state
+
+	_retire_bgm_transition(&"superseded")
+	if not SignalBus.is_current_bgm_operation_valid():
+		return null
+	var old_current: Dictionary = _bgm_channel.get("current", {})
+	var stream: AudioStream = prepared.get("stream")
+	var start_position := float(prepared.get("start_position", 0.0))
+	var new_voice := _create_bgm_voice(
+		stream, asset, cue, bool(prepared["loop"]), start_position,
+		float(prepared["loop_position"]),
+		0.0 if fade_duration > 0.0 else volume)
+	if new_voice.is_empty():
+		return null
+	var state := {
+		"asset": asset,
+		"cue": cue,
+		"loop": bool(prepared["loop"]),
+		"position": start_position,
+		"status": "playing",
+		"volume": volume,
+	}
+	_bgm_channel["current"] = new_voice
+	_bgm_channel["outgoing"] = old_current
+	_bgm_channel["target_state"] = state.duplicate(true)
+	if fade_duration <= 0.0:
+		_stop_bgm_voice(old_current)
+		_bgm_channel["outgoing"] = {}
+		_set_bgm_voice_level(volume, new_voice)
+		return state
+	var receipt := _start_bgm_receipt(request_id, &"play")
+	var tween := create_tween().set_parallel(true)
+	_bgm_channel["tween"] = tween
+	tween.tween_method(
+		_set_bgm_voice_level.bind(new_voice), 0.0, volume, fade_duration)
+	if not old_current.is_empty():
+		tween.tween_method(
+			_set_bgm_voice_level.bind(old_current),
+			float(old_current.get("level", 0.0)), 0.0, fade_duration)
+	tween.chain().tween_callback(_complete_bgm_receipt.bind(receipt))
+	return state
+
+
+func _pause_bgm(fade_duration: float, request_id: int) -> Variant:
+	var state: Dictionary = _bgm_channel.get("target_state", {})
+	if state.is_empty():
+		return null
+	if String(state.get("status", "")) == "paused":
+		return state.duplicate(true)
+	_retire_bgm_transition(&"superseded")
+	if not SignalBus.is_current_bgm_operation_valid():
+		return null
+	var current: Dictionary = _bgm_channel.get("current", {})
+	if current.is_empty():
+		return null
+	state = state.duplicate(true)
+	state["position"] = _capture_bgm_position()
+	state["status"] = "paused"
+	_bgm_channel["target_state"] = state.duplicate(true)
+	if fade_duration <= 0.0:
+		_set_bgm_voice_level(0.0, current)
+		(current.get("player") as AudioStreamPlayer).stream_paused = true
+		return state
+	var receipt := _start_bgm_receipt(request_id, &"pause")
+	var tween := create_tween()
+	_bgm_channel["tween"] = tween
+	tween.tween_method(
+		_set_bgm_voice_level.bind(current),
+		float(current.get("level", 0.0)), 0.0, fade_duration)
+	tween.finished.connect(
+		_complete_bgm_receipt.bind(receipt), CONNECT_ONE_SHOT)
+	return state
+
+
+func _resume_bgm(fade_duration: float, request_id: int) -> Variant:
+	var state: Dictionary = _bgm_channel.get("target_state", {})
+	if state.is_empty():
+		return null
+	if String(state.get("status", "")) == "playing":
+		return state.duplicate(true)
+	_retire_bgm_transition(&"superseded")
+	if not SignalBus.is_current_bgm_operation_valid():
+		return null
+	var current: Dictionary = _bgm_channel.get("current", {})
+	var player: AudioStreamPlayer = current.get("player")
+	if player == null or not is_instance_valid(player):
+		return null
+	player.stream_paused = false
+	state = state.duplicate(true)
+	state["position"] = _capture_bgm_position()
+	state["status"] = "playing"
+	_bgm_channel["target_state"] = state.duplicate(true)
+	var volume := float(state["volume"])
+	if fade_duration <= 0.0:
+		_set_bgm_voice_level(volume, current)
+		return state
+	_set_bgm_voice_level(0.0, current)
+	var receipt := _start_bgm_receipt(request_id, &"resume")
+	var tween := create_tween()
+	_bgm_channel["tween"] = tween
+	tween.tween_method(
+		_set_bgm_voice_level.bind(current), 0.0, volume, fade_duration)
+	tween.finished.connect(
+		_complete_bgm_receipt.bind(receipt), CONNECT_ONE_SHOT)
+	return state
+
+
+func _stop_bgm(fade_duration: float, request_id: int) -> Variant:
+	if _bgm_channel.is_empty() or (_bgm_channel.get("target_state", {}) as Dictionary).is_empty():
+		return {}
+	_retire_bgm_transition(&"superseded")
+	if not SignalBus.is_current_bgm_operation_valid():
+		return null
+	var current: Dictionary = _bgm_channel.get("current", {})
+	_bgm_channel["target_state"] = {}
+	if current.is_empty() or fade_duration <= 0.0:
+		_stop_bgm_voice(current)
+		_bgm_channel.clear()
+		return {}
+	var receipt := _start_bgm_receipt(request_id, &"stop")
+	var tween := create_tween()
+	_bgm_channel["tween"] = tween
+	tween.tween_method(
+		_set_bgm_voice_level.bind(current),
+		float(current.get("level", 0.0)), 0.0, fade_duration)
+	tween.finished.connect(
+		_complete_bgm_receipt.bind(receipt), CONNECT_ONE_SHOT)
+	return {}
+
+
+func _new_bgm_channel() -> Dictionary:
+	return {
+		"current": {}, "outgoing": {}, "receipt": {},
+		"target_state": {}, "tween": null,
+	}
+
+
+func _start_bgm_receipt(request_id: int, action: StringName) -> Dictionary:
+	var receipt := {
+		"action": action,
+		"generation": _bgm_generation,
+		"operation_request_id": request_id,
+		"token": _next_bgm_token,
+	}
+	_next_bgm_token += 1
+	_bgm_channel["receipt"] = receipt
+	SignalBus.bgm_transition_receipt_started.emit(
+		get_instance_id(), int(receipt["token"]), request_id,
+		int(receipt["generation"]))
+	return receipt
+
+
+func _complete_bgm_receipt(receipt: Dictionary) -> void:
+	if not _bgm_receipt_is_current(receipt):
+		return
+	var tween: Tween = _bgm_channel.get("tween")
+	_bgm_channel["tween"] = null
+	if tween != null and tween.is_valid():
+		tween.kill()
+	var action := StringName(receipt.get("action", &""))
+	var current: Dictionary = _bgm_channel.get("current", {})
+	match action:
+		&"stop":
+			_stop_bgm_voice(current)
+			_stop_bgm_voice(_bgm_channel.get("outgoing", {}))
+			_bgm_channel["current"] = {}
+			_bgm_channel["outgoing"] = {}
+		&"pause":
+			_set_bgm_voice_level(0.0, current)
+			var player: AudioStreamPlayer = current.get("player")
+			if player != null and is_instance_valid(player):
+				player.stream_paused = true
+		_:
+			var target: Dictionary = _bgm_channel.get("target_state", {})
+			if not target.is_empty():
+				_set_bgm_voice_level(float(target.get("volume", 1.0)), current)
+			_stop_bgm_voice(_bgm_channel.get("outgoing", {}))
+			_bgm_channel["outgoing"] = {}
+	_emit_bgm_terminal(receipt, &"completed")
+	if action == &"stop":
+		_bgm_channel.clear()
+
+
+func _retire_bgm_transition(outcome: StringName) -> void:
+	if _bgm_channel.is_empty():
+		_bgm_channel = _new_bgm_channel()
+		return
+	var tween: Tween = _bgm_channel.get("tween")
+	_bgm_channel["tween"] = null
+	if tween != null and tween.is_valid():
+		tween.kill()
+	_stop_bgm_voice(_bgm_channel.get("outgoing", {}))
+	_bgm_channel["outgoing"] = {}
+	var receipt: Dictionary = _bgm_channel.get("receipt", {})
+	if not receipt.is_empty():
+		_emit_bgm_terminal(receipt, outcome)
+
+
+func _emit_bgm_terminal(receipt: Dictionary, outcome: StringName) -> void:
+	if _bgm_channel.get("receipt", {}) != receipt:
+		return
+	_bgm_channel["receipt"] = {}
+	SignalBus.bgm_transition_terminal.emit(
+		get_instance_id(), int(receipt.get("token", 0)),
+		int(receipt.get("operation_request_id", 0)),
+		int(receipt.get("generation", 0)), outcome)
+
+
+func _bgm_receipt_is_current(receipt: Dictionary) -> bool:
+	return (
+		not _bgm_channel.is_empty()
+		and not receipt.is_empty()
+		and _bgm_channel.get("receipt", {}) == receipt
+		and int(receipt.get("generation", -1)) == _bgm_generation
 	)
 
 
-func _cancel_bgm_tween() -> void:
-	if _bgm_tween and _bgm_tween.is_valid():
-		_bgm_tween.kill()
-	_bgm_tween = null
-	_bgm_tween_purpose = BgmTweenPurpose.NONE
+func _on_bgm_transition_receipts_finish_requested(records: Array) -> void:
+	for record_value: Variant in records:
+		if not record_value is Dictionary:
+			continue
+		var record: Dictionary = record_value
+		if int(record.get("presenter_instance_id", 0)) != get_instance_id():
+			continue
+		var receipt: Dictionary = _bgm_channel.get("receipt", {})
+		if (
+			int(receipt.get("token", 0)) != int(record.get("token", -1))
+			or int(receipt.get("operation_request_id", 0))
+				!= int(record.get("operation_request_id", -1))
+			or int(receipt.get("generation", 0))
+				!= int(record.get("generation", -1))
+		):
+			continue
+		_complete_bgm_receipt(receipt)
+
+
+func _on_bgm_projection_reset_requested(epoch: int) -> void:
+	if _bgm_capability == null or epoch != SignalBus.current_bgm_epoch():
+		return
+	_bgm_generation += 1
+	_retire_bgm_transition(&"cancelled")
+	_stop_bgm_voice(_bgm_channel.get("current", {}))
+	_stop_bgm_voice(_bgm_channel.get("outgoing", {}))
+	_bgm_channel.clear()
+	_bgm_validation_cache.clear()
+
+
+func _on_bgm_state_apply_requested(state: Dictionary, generation: int) -> void:
+	if (
+		_bgm_capability == null
+		or generation != SignalBus.current_bgm_epoch()
+		or not _bgm_channel.is_empty()
+	):
+		return
+	if state.is_empty():
+		return
+	var resolved := _resolve_bgm_track(
+		String(state["asset"]), String(state["cue"]))
+	var restored_position := float(state["position"])
+	var restored_length := (
+		(resolved.get("stream") as AudioStream).get_length()
+		if not resolved.is_empty()
+		else 0.0
+	)
+	if (
+		resolved.is_empty()
+		or bool(resolved["loop"]) != bool(state["loop"])
+		or not is_finite(restored_length)
+		or restored_position >= restored_length
+	):
+		push_error("AudioPresenter: cannot project saved BGM state: resource metadata changed")
+		return
+	var level := float(state["volume"])
+	var voice := _create_bgm_voice(
+		resolved.get("stream") as AudioStream,
+		String(state["asset"]), String(state["cue"]), bool(state["loop"]),
+		restored_position, float(resolved["loop_position"]), level)
+	if voice.is_empty():
+		return
+	_bgm_channel = _new_bgm_channel()
+	_bgm_channel["current"] = voice
+	_bgm_channel["target_state"] = state.duplicate(true)
+	if String(state["status"]) == "paused":
+		(voice.get("player") as AudioStreamPlayer).stream_paused = true
+
+
+func _on_bgm_title_cut_requested(asset: String, generation: int) -> void:
+	if (
+		_bgm_capability == null
+		or generation != SignalBus.current_bgm_epoch()
+		or not _bgm_channel.is_empty()
+	):
+		return
+	var resolved := _resolve_bgm_track(asset, "")
+	if resolved.is_empty():
+		push_warning("AudioPresenter: cannot project title BGM asset '%s'" % asset)
+		return
+	var voice := _create_bgm_voice(
+		resolved.get("stream") as AudioStream,
+		asset, "", bool(resolved["loop"]), float(resolved["start_position"]),
+		float(resolved["loop_position"]), 1.0)
+	if voice.is_empty():
+		return
+	_bgm_channel = _new_bgm_channel()
+	_bgm_channel["current"] = voice
+	_bgm_channel["target_state"] = {
+		"asset": asset, "cue": "", "loop": bool(resolved["loop"]),
+		"position": float(resolved["start_position"]), "status": "playing",
+		"volume": 1.0,
+	}
+
+
+func _on_bgm_state_capture_requested(request: BgmStateCaptureRequest) -> void:
+	if _bgm_capability == null:
+		return
+	SignalBus.resolve_bgm_state_capture(
+		request, self, _bgm_capability, _capture_bgm_position())
+
+
+func _capture_bgm_position() -> float:
+	var current: Dictionary = _bgm_channel.get("current", {})
+	var player: AudioStreamPlayer = current.get("player")
+	if player == null or not is_instance_valid(player):
+		return float((_bgm_channel.get("target_state", {}) as Dictionary).get(
+			"position", 0.0))
+	return maxf(player.get_playback_position(), 0.0)
+
+
+func _create_bgm_voice(
+	stream: AudioStream,
+	asset: String,
+	cue: String,
+	loop: bool,
+	position: float,
+	loop_position: float,
+	level: float,
+) -> Dictionary:
+	if stream == null:
+		return {}
+	var player := AudioStreamPlayer.new()
+	player.bus = "Master"
+	player.stream = stream
+	add_child(player)
+	var voice := {
+		"asset": asset, "cue": cue, "level": level, "loop": loop,
+		"loop_position": loop_position, "player": player,
+	}
+	_set_bgm_voice_level(level, voice)
+	player.finished.connect(_on_bgm_voice_finished.bind(voice), CONNECT_ONE_SHOT)
+	player.play(position)
+	return voice
+
+
+func _bgm_voice_is_live(voice: Dictionary, asset: String, cue: String) -> bool:
+	var player: AudioStreamPlayer = voice.get("player")
+	return (
+		String(voice.get("asset", "")) == asset
+		and String(voice.get("cue", "")) == cue
+		and player != null
+		and is_instance_valid(player)
+		and player.playing
+		and player.stream != null
+	)
+
+
+func _set_bgm_voice_level(level: float, voice: Dictionary) -> void:
+	voice["level"] = clampf(level, 0.0, 1.0)
+	var player: AudioStreamPlayer = voice.get("player")
+	if player == null or not is_instance_valid(player):
+		return
+	player.volume_db = _to_db(
+		_get_volume_setting("master_volume", 1.0)
+		* _get_volume_setting("bgm_volume", 0.8)
+		* float(voice["level"]))
+
+
+func _apply_bgm_volumes() -> void:
+	for key: String in ["current", "outgoing"]:
+		var voice: Dictionary = _bgm_channel.get(key, {})
+		if not voice.is_empty():
+			_set_bgm_voice_level(float(voice.get("level", 0.0)), voice)
+
+
+func _stop_bgm_voice(voice_value: Variant) -> void:
+	if not voice_value is Dictionary:
+		return
+	var player: AudioStreamPlayer = (voice_value as Dictionary).get("player")
+	if player == null or not is_instance_valid(player):
+		return
+	player.stop()
+	player.queue_free()
+
+
+func _on_bgm_voice_finished(voice: Dictionary) -> void:
+	if _bgm_capability == null or _bgm_channel.get("current", {}) != voice:
+		return
+	if bool(voice.get("loop", true)):
+		return
+	var receipt: Dictionary = _bgm_channel.get("receipt", {})
+	if not receipt.is_empty():
+		var tween: Tween = _bgm_channel.get("tween")
+		_bgm_channel["tween"] = null
+		if tween != null and tween.is_valid():
+			tween.kill()
+		_emit_bgm_terminal(receipt, &"completed")
+	_stop_bgm_voice(_bgm_channel.get("outgoing", {}))
+	_bgm_channel.clear()
+	SignalBus.commit_bgm_natural_stop(self, _bgm_capability)
+
+
+func _resolve_bgm_track(asset: String, cue: String) -> Dictionary:
+	var paths := _bgm_candidate_paths(asset)
+	var existing: Array[String] = []
+	for path: String in paths:
+		if ResourceLoader.exists(path):
+			existing.append(path)
+	if existing.size() != 1:
+		return {}
+	var loaded := ResourceLoader.load(existing[0])
+	if loaded is BgmTrackDefinition:
+		return _prepare_bgm_definition(loaded as BgmTrackDefinition, cue)
+	if not cue.is_empty() or not loaded is AudioStream:
+		return {}
+	return _prepare_raw_bgm_stream(loaded as AudioStream)
+
+
+func _bgm_candidate_paths(asset: String) -> Array[String]:
+	if (
+		asset.is_empty() or asset.begins_with("/") or "\\" in asset
+		or ".." in asset.split("/", false)
+	):
+		return []
+	var extension := asset.get_extension().to_lower()
+	if "://" in asset:
+		return [asset] if extension in ["tres", "res", "ogg", "mp3", "wav"] else []
+	if extension in ["tres", "res", "ogg", "mp3", "wav"]:
+		return [StellaRuntime.bgm_path.path_join(asset)]
+	if not extension.is_empty():
+		return []
+	var result: Array[String] = []
+	for suffix: String in ["tres", "res", "ogg", "mp3", "wav"]:
+		result.append(StellaRuntime.bgm_path.path_join("%s.%s" % [asset, suffix]))
+	return result
+
+
+func _prepare_bgm_definition(definition: BgmTrackDefinition, cue: String) -> Dictionary:
+	if definition == null or definition.stream == null:
+		return {}
+	var length := definition.stream.get_length()
+	if not is_finite(length) or length <= 0.0:
+		return {}
+	if not _bgm_marker_is_valid(
+		definition.loop, definition.start_position,
+		definition.loop_position, length):
+		return {}
+	var selected := {
+		"loop": definition.loop,
+		"start_position": definition.start_position,
+		"loop_position": definition.loop_position,
+	}
+	var names: Dictionary = {}
+	for cue_definition: BgmCueDefinition in definition.cues:
+		if (
+			cue_definition == null
+			or not BgmChannelState.is_valid_cue_name(cue_definition.cue_name, false)
+			or names.has(cue_definition.cue_name)
+			or not _bgm_marker_is_valid(
+				cue_definition.loop, cue_definition.start_position,
+				cue_definition.loop_position, length)
+		):
+			return {}
+		names[cue_definition.cue_name] = true
+		if cue_definition.cue_name == cue:
+			selected = {
+				"loop": cue_definition.loop,
+				"start_position": cue_definition.start_position,
+				"loop_position": cue_definition.loop_position,
+			}
+	if not cue.is_empty() and not names.has(cue):
+		return {}
+	if not _bgm_marker_is_valid(
+		bool(selected["loop"]), float(selected["start_position"]),
+		float(selected["loop_position"]), length):
+		return {}
+	var stream := _duplicate_bgm_stream(
+		definition.stream, bool(selected["loop"]),
+		float(selected["loop_position"]))
+	if stream == null:
+		return {}
+	selected["stream"] = stream
+	return selected
+
+
+func _prepare_raw_bgm_stream(source: AudioStream) -> Dictionary:
+	if source == null:
+		return {}
+	var length := source.get_length()
+	if not is_finite(length) or length <= 0.0:
+		return {}
+	var loop_position := _native_bgm_loop_position(source, length)
+	if not is_finite(loop_position):
+		return {}
+	var stream := _duplicate_bgm_stream(source, true, loop_position)
+	if stream == null:
+		return {}
+	return {
+		"stream": stream, "loop": true,
+		"start_position": 0.0, "loop_position": loop_position,
+	}
+
+
+func _bgm_marker_is_valid(
+	loop: bool,
+	start_position: float,
+	loop_position: float,
+	length: float,
+) -> bool:
+	if (
+		not is_finite(start_position) or not is_finite(loop_position)
+		or start_position < 0.0 or start_position >= length
+	):
+		return false
+	# A disabled loop still carries a complete authored marker. Keeping one
+	# invariant for default and named cues avoids a second sentinel schema; the
+	# marker is simply ignored when `loop` is false.
+	return loop_position >= start_position and loop_position < length
+
+
+func _native_bgm_loop_position(source: AudioStream, length: float) -> float:
+	if source is AudioStreamOggVorbis:
+		var value := float((source as AudioStreamOggVorbis).loop_offset)
+		return value if is_finite(value) and value >= 0.0 and value < length else NAN
+	if source is AudioStreamMP3:
+		var value := float((source as AudioStreamMP3).loop_offset)
+		return value if is_finite(value) and value >= 0.0 and value < length else NAN
+	if source is AudioStreamWAV:
+		var wav := source as AudioStreamWAV
+		if wav.loop_mode != AudioStreamWAV.LOOP_DISABLED:
+			if wav.mix_rate <= 0:
+				return NAN
+			var value := float(wav.loop_begin) / float(wav.mix_rate)
+			return value if is_finite(value) and value >= 0.0 and value < length else NAN
+	return 0.0
+
+
+func _duplicate_bgm_stream(
+	source: AudioStream,
+	loop: bool,
+	loop_position: float,
+) -> AudioStream:
+	if source is AudioStreamOggVorbis:
+		var stream := (source as AudioStreamOggVorbis).duplicate(true) as AudioStreamOggVorbis
+		stream.loop = loop
+		stream.loop_offset = loop_position if loop else 0.0
+		return stream
+	if source is AudioStreamMP3:
+		var stream := (source as AudioStreamMP3).duplicate(true) as AudioStreamMP3
+		stream.loop = loop
+		stream.loop_offset = loop_position if loop else 0.0
+		return stream
+	if source is AudioStreamWAV:
+		var stream := (source as AudioStreamWAV).duplicate(true) as AudioStreamWAV
+		stream.loop_mode = (
+			AudioStreamWAV.LOOP_FORWARD if loop else AudioStreamWAV.LOOP_DISABLED)
+		stream.loop_begin = int(round(loop_position * float(stream.mix_rate))) if loop else 0
+		stream.loop_end = maxi(
+			int(round(stream.get_length() * float(stream.mix_rate))), 1) if loop else 0
+		return stream
+	return null
 
 
 # ─── SE ───

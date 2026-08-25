@@ -18,7 +18,7 @@ _input:
   1. 鼠标下有交互控件（Button/Slider）？→ return，让 GUI 处理
   2. 打字中？→ 完成打字 + set_input_as_handled（消费事件）
   3. UI 隐藏？→ 恢复 UI + set_input_as_handled
-  4. 否则 → 当前 pending `DialogueRequest.advance()`；若没有 Dialogue owner，广播语义 advance，依次交给当前 presentation JOIN（Stage / dialogue visibility / chapter indicator / loop-SE）、可跳过 timed wait 或 `@wait click` fallback
+  4. 否则 → 当前 pending `DialogueRequest.advance()`；若没有 Dialogue owner，广播语义 advance，依次交给当前 presentation JOIN（Stage / dialogue visibility / chapter indicator / loop-SE / BGM）、可跳过 timed wait 或 `@wait click` fallback
 
 _unhandled_input:
   键盘（空格/回车/Ctrl）与手柄 A → UI 隐藏时先恢复并消费，否则正常处理
@@ -79,9 +79,9 @@ AVG 标准行为：打字未完成时点击 = 完成打字（不推进），打�
 
 `FIRE_AND_FORGET` 从不 claim advance，Auto 状态本身也不结束 JOIN。Skip 从 false 激活为 true 时，只 exact-finish 当前 owner 一次；Skip 已 active 时新 batch 按持续模式 policy 直接 force-cut。普通输入的“一次只结束一个 owner”与持续 Skip policy 是两个不同的边界。
 
-Stage、chapter indicator、dialogue visibility 和 loop-SE 共享 Director-owned generic blocking presentation waiter。reset、load、rollback、restart、return-to-title 或 context replacement 先退休旧 owner/generation，再重置或 cut canonical 投影；不存在 audio/indicator/stage 并列的私有 scheduler/flag，旧 callback 也不能回来领取新 input。单纯 AudioPresenter replacement 只退休旧音频投影并从 canonical channel+position 唯一重投影，不把 persistent channel 当成 session state 清空。
+Stage、chapter indicator、dialogue visibility、loop-SE 和固定 `bgm:main` 共享 Director-owned generic blocking presentation waiter。reset、load、rollback、restart、return-to-title 或 context replacement 先退休旧 owner/generation，再重置或 cut canonical 投影；不存在 audio/indicator/stage 并列的私有 scheduler/flag，旧 callback 也不能回来领取新 input。单纯 AudioPresenter replacement 只退休旧音频投影并从 canonical channel+position 唯一重投影，不把 persistent channel 当成 session state 清空。BGM pause/resume/play/stop receipt 被 context/global abort 取消时会 cut 到已经原子提交的 stable target，不能留下仍在 Tween 的无 owner player。
 
-`surface`、`quick_menu`、`chapter:indicator` 与 `loop_se:<channel>` 在同一个 Director queue 上分配 request/receipt/generation，并和 Stage mixed batch 共用 exact finish、persistent Skip force-cut、save/load projection restore 与 stale callback 拒绝规则。mixed batch 先全量 preflight/seal（包括 loop-SE resource validation），后按 authored child order apply；dispatch tail 的 Skip 也只能结束这一个 sealed owner。Profile baseline、mode binding 与 canonical gate 是声明式合成关系；backlog overlay 与 soft UI hide 不会修改这些 canonical bool 或 loop-SE channels。
+`surface`、`quick_menu`、`chapter:indicator`、`loop_se:<channel>` 与 `bgm:main` 在同一个 Director queue 上分配 request/receipt/generation，并和 Stage mixed batch 共用 exact finish、persistent Skip force-cut、save/load projection restore 与 stale callback 拒绝规则。mixed batch 先全量 preflight/seal（包括 loop-SE/BGM resource、cue 和 marker validation），后按 authored child order apply；dispatch tail 的 Skip 也只能结束这一个 sealed owner。Profile baseline、mode binding 与 canonical gate 是声明式合成关系；backlog overlay 与 soft UI hide 不会修改这些 canonical bool 或 audio channels。
 
 既有输入优先级保持不变：soft-hidden UI 先恢复，Button/Slider 左键交给 GUI，非 PLAYING 不处理；Skip/Auto 的既有左键 policy 先于普通推进。成功进入 normal path 后，无论是 typed dialogue advance、Presentation JOIN、可跳过 timed wait 还是 `@wait click` 都会 `set_input_as_handled()`。左键、Space、Enter 与手柄 A 进入同一个 advance dispatch serial；#133 的可重绑输入系统仍是后续工作。
 

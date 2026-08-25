@@ -13,6 +13,7 @@ const _DIALOGUE_VISIBILITY_TARGETS := ["surface", "quick_menu"]
 const _DIALOGUE_VISIBILITY_ACTIONS := ["show", "hide"]
 const _DIALOGUE_VISIBILITY_TRANSITIONS := ["cut", "fade"]
 const _LOOP_SE_ACTIONS := ["play", "stop"]
+const _BGM_ACTIONS := ["play", "pause", "resume", "stop"]
 const _STAGE_TRANSITIONS := [
 	"cut", "none", "fade", "move",
 	"slide_left", "slide_right", "slide_up", "slide_down",
@@ -98,6 +99,7 @@ static func parse(
 	var presentation_batch_visibility_targets: Dictionary = {}
 	var presentation_batch_loop_se_channels: Dictionary = {}
 	var presentation_batch_has_chapter_indicator: bool = false
+	var presentation_batch_has_bgm: bool = false
 	var presentation_batch_start_line: int = 0
 	var presentation_batch_invalid: bool = false
 	var presentation_batch_nested_depth: int = 0
@@ -129,6 +131,7 @@ static func parse(
 				presentation_batch_visibility_targets.clear()
 				presentation_batch_loop_se_channels.clear()
 				presentation_batch_has_chapter_indicator = false
+				presentation_batch_has_bgm = false
 				presentation_batch_start_line = 0
 				presentation_batch_invalid = false
 				presentation_batch_nested_depth = 0
@@ -262,6 +265,26 @@ static func parse(
 							"payload": payload,
 						})
 						presentation_batch_operation_lines.append(token.line)
+				elif child_name == "bgm":
+					var bgm_child := _parse_at_command(token, data)
+					if bgm_child == null or bgm_child.type != "bgm":
+						presentation_batch_invalid = true
+					elif presentation_batch_has_bgm:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: duplicate BGM channel at %s"
+							% _source_location(data, token.line),
+							token.line,
+						)
+						presentation_batch_invalid = true
+					else:
+						presentation_batch_has_bgm = true
+						presentation_batch_operations.append({
+							"kind": "bgm",
+							"payload": bgm_child.params.duplicate(true),
+						})
+						presentation_batch_operation_lines.append(token.line)
 				elif child_name == "end":
 					if (
 						presentation_batch_operations.is_empty()
@@ -295,6 +318,7 @@ static func parse(
 					presentation_batch_visibility_targets.clear()
 					presentation_batch_loop_se_channels.clear()
 					presentation_batch_has_chapter_indicator = false
+					presentation_batch_has_bgm = false
 					presentation_batch_start_line = 0
 					presentation_batch_invalid = false
 					presentation_batch_nested_depth = 0
@@ -312,7 +336,7 @@ static func parse(
 					_record_diagnostic(
 						data,
 						"error",
-						"DslParser: only canonical @stage, @dialogue_visibility, @chapter_indicator, and @loop_se children are allowed inside @presentation_batch; found @%s at %s"
+						"DslParser: only canonical @stage, @dialogue_visibility, @chapter_indicator, @loop_se, and @bgm children are allowed inside @presentation_batch; found @%s at %s"
 						% [child_name, _source_location(data, token.line)],
 						token.line,
 					)
@@ -323,7 +347,7 @@ static func parse(
 				_record_diagnostic(
 					data,
 					"error",
-					"DslParser: only canonical @stage, @dialogue_visibility, @chapter_indicator, and @loop_se children are allowed inside @presentation_batch at %s"
+					"DslParser: only canonical @stage, @dialogue_visibility, @chapter_indicator, @loop_se, and @bgm children are allowed inside @presentation_batch at %s"
 					% _source_location(data, token.line),
 					token.line,
 				)
@@ -609,6 +633,7 @@ static func parse(
 					presentation_batch_visibility_targets.clear()
 					presentation_batch_loop_se_channels.clear()
 					presentation_batch_has_chapter_indicator = false
+					presentation_batch_has_bgm = false
 					presentation_batch_nested_depth = 0
 					presentation_batch_invalid = false
 					var name_position := token.raw_text.find(cmd_name, 1)
@@ -672,7 +697,7 @@ static func parse(
 						"DslParser: only @stage is allowed inside @combine block; @%s was ignored (line %d)"
 						% [cmd_name, token.line]
 					)
-					if cmd_name in ["chapter_indicator", "loop_se"]:
+					if cmd_name in ["chapter_indicator", "loop_se", "bgm"]:
 						combine_message = (
 							"DslParser: @%s is not allowed inside @combine at %s"
 							% [cmd_name, _source_location(data, token.line)]
@@ -681,7 +706,7 @@ static func parse(
 						data,
 						(
 							"error"
-							if cmd_name in ["chapter_indicator", "loop_se"]
+							if cmd_name in ["chapter_indicator", "loop_se", "bgm"]
 							else "warning"
 						),
 						combine_message,
@@ -874,6 +899,19 @@ static func parse(
 							data,
 							"error",
 							"DslParser: @loop_se requires an active @scene at %s"
+							% _source_location(data, token.line),
+							token.line,
+						)
+						cmd = null
+					if (
+						cmd != null
+						and _command_contains_operation_kind(cmd, "bgm")
+						and (current_scene == null or chapter_needs_scene)
+					):
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @bgm requires an active @scene at %s"
 							% _source_location(data, token.line),
 							token.line,
 						)
@@ -1430,15 +1468,19 @@ static func _parse_at_command(
 		"set":
 			return _parse_set_command(args)
 		"bgm":
-			if parts.size() > 0 and parts[0] == "off":
-				return _make_cmd("bgm", {
-					"off": true,
-					"fade_duration": float(parts[1]) if parts.size() > 1 else 1.0,
-				})
-			return _make_cmd("bgm", {
-				"asset": parts[0] if parts.size() > 0 else "",
-				"fade_duration": float(parts[1]) if parts.size() > 1 else 1.0,
+			var bgm_command := _parse_bgm_command(parts, token.line, data)
+			if bgm_command == null or not lower_standalone_presentation:
+				return bgm_command
+			var batch_command := _make_cmd("presentation_batch", {
+				"policy": "fire_and_forget",
+				"operations": [{
+					"kind": "bgm",
+					"payload": bgm_command.params.duplicate(true),
+				}],
+				"operation_lines": [token.line],
 			})
+			batch_command.declared_line = token.line
+			return batch_command
 		"se":
 			if parts.size() != 1 or String(parts[0]).strip_edges().is_empty():
 				_record_diagnostic(
@@ -1964,6 +2006,179 @@ static func _parse_loop_se_command(
 		)
 		return null
 	return _make_cmd("loop_se", payload)
+
+
+static func _parse_bgm_command(
+	parts: Array,
+	line: int,
+	data: ScenarioData,
+) -> CommandData:
+	var location := _source_location(data, line)
+	if parts.is_empty():
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @bgm requires play, pause, resume, or stop at %s"
+			% location,
+			line,
+		)
+		return null
+	var action := String(parts[0])
+	if action not in _BGM_ACTIONS:
+		var message := (
+			"DslParser: invalid @bgm action '%s' at %s; expected play, pause, resume, or stop"
+			% [action, location]
+		)
+		if action == "off" or action == action.to_lower():
+			message = (
+				"DslParser: legacy @bgm asset/off syntax is not supported at %s; use @bgm play <asset> or @bgm stop"
+				% location
+			)
+		_record_diagnostic(data, "error", message, line)
+		return null
+
+	var option_start := 1
+	var asset := ""
+	if action == "play":
+		if parts.size() < 2 or String(parts[1]).contains("="):
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: @bgm play requires an asset at %s" % location,
+				line,
+			)
+			return null
+		asset = String(parts[1])
+		option_start = 2
+
+	var cue := ""
+	var fade_duration := 0.0
+	var volume := 1.0
+	var seen: Dictionary = {}
+	var invalid := false
+	for index in range(option_start, parts.size()):
+		var encoded := String(parts[index])
+		var equals_at := encoded.find("=")
+		if equals_at < 1:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: invalid @bgm argument '%s' at %s; use key=value"
+				% [encoded, location],
+				line,
+			)
+			invalid = true
+			continue
+		var key := encoded.substr(0, equals_at).strip_edges()
+		var raw_value := encoded.substr(equals_at + 1).strip_edges()
+		if key != key.to_lower():
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: @bgm option names are lowercase; found '%s' at %s"
+				% [key, location],
+				line,
+			)
+			invalid = true
+			continue
+		if seen.has(key):
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: duplicate @bgm option '%s' at %s" % [key, location],
+				line,
+			)
+			invalid = true
+			continue
+		seen[key] = true
+		match key:
+			"fade":
+				var duration_result := _parse_non_negative_duration(raw_value)
+				if not bool(duration_result.get("valid", false)):
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @bgm fade must be finite and non-negative at %s"
+						% location,
+						line,
+					)
+					invalid = true
+				else:
+					fade_duration = float(duration_result.get("value", 0.0))
+			"volume":
+				if action != "play":
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @bgm %s does not accept volume at %s"
+						% [action, location],
+						line,
+					)
+					invalid = true
+				else:
+					var volume_result := _parse_non_negative_duration(raw_value)
+					if (
+						not bool(volume_result.get("valid", false))
+						or float(volume_result.get("value", -1.0)) > 1.0
+					):
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @bgm volume must be finite and between 0 and 1 at %s"
+							% location,
+							line,
+						)
+						invalid = true
+					else:
+						volume = float(volume_result.get("value", 1.0))
+			"cue":
+				if action != "play":
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @bgm %s does not accept cue at %s"
+						% [action, location],
+						line,
+					)
+					invalid = true
+				elif not BgmChannelState.is_valid_cue_name(raw_value, false):
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: invalid @bgm cue '%s' at %s"
+						% [raw_value, location],
+						line,
+					)
+					invalid = true
+				else:
+					cue = raw_value
+			_:
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: unknown @bgm option '%s' at %s" % [key, location],
+					line,
+				)
+				invalid = true
+	if invalid:
+		return null
+	var payload := {
+		"action": action,
+		"asset": asset,
+		"cue": cue,
+		"fade_duration": fade_duration,
+		"resume_position": 0.0,
+		"volume": volume,
+	}
+	if not BgmChannelState.validate_operation(payload, false):
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: invalid canonical @bgm operation at %s" % location,
+			line,
+		)
+		return null
+	return _make_cmd("bgm", payload)
 
 
 static func _parse_non_negative_duration(encoded: String) -> Dictionary:
