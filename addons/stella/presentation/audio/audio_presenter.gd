@@ -275,10 +275,14 @@ func _on_bgm_validate_requested(request: BgmOperationRequest) -> void:
 			request, self, _bgm_capability, "invalid canonical operation")
 		return
 	var request_key := request.get_instance_id()
-	var prepared := {"action": String(payload["action"])}
-	if String(payload["action"]) == "play":
+	var action := String(payload["action"])
+	var prepared := {"action": action}
+	if action == "play":
 		prepared = _resolve_bgm_track(
-			String(payload["asset"]), String(payload["cue"]))
+			String(payload["asset"]),
+			String(payload["cue"]),
+			payload["stem_mix"] as Dictionary,
+		)
 		if prepared.is_empty():
 			SignalBus.reject_bgm_request(
 				request,
@@ -286,6 +290,45 @@ func _on_bgm_validate_requested(request: BgmOperationRequest) -> void:
 				_bgm_capability,
 				"asset '%s' or cue '%s' is missing, ambiguous, or has invalid metadata"
 					% [String(payload["asset"]), String(payload["cue"])],
+			)
+			return
+		var current_target: Dictionary = _bgm_channel.get("target_state", {})
+		var current_voice: Dictionary = _bgm_channel.get("current", {})
+		var would_reuse_live_voice := (
+			not current_target.is_empty()
+			and String(current_target.get("status", "")) == "playing"
+			and String(current_target.get("asset", "")) == String(payload["asset"])
+			and String(current_target.get("cue", "")) == String(payload["cue"])
+			and _bgm_voice_is_live(
+				current_voice, String(payload["asset"]), String(payload["cue"]))
+		)
+		if would_reuse_live_voice and not _bgm_voice_matches_prepared(
+			current_voice, prepared):
+			SignalBus.reject_bgm_request(
+				request,
+				self,
+				_bgm_capability,
+				"the live BGM resource schema changed and cannot be reused without restarting",
+			)
+			return
+	elif action == "mix":
+		var current_state: Dictionary = _bgm_channel.get("target_state", {})
+		prepared = _resolve_bgm_track(
+			String(current_state.get("asset", "")),
+			String(current_state.get("cue", "")),
+			payload["stem_mix"] as Dictionary,
+		)
+		var current_voice: Dictionary = _bgm_channel.get("current", {})
+		if (
+			prepared.is_empty()
+			or (prepared["stem_mix"] as Dictionary).is_empty()
+			or not _bgm_voice_matches_prepared(current_voice, prepared)
+		):
+			SignalBus.reject_bgm_request(
+				request,
+				self,
+				_bgm_capability,
+				"the current BGM is not a compatible multi-stem track or the stem mix is invalid",
 			)
 			return
 	_bgm_validation_cache[request_key] = prepared
@@ -338,6 +381,8 @@ func _apply_bgm_operation(
 	match action:
 		"play":
 			return _play_bgm(payload, prepared, fade_duration, request_id)
+		"mix":
+			return _mix_bgm(payload, prepared, fade_duration, request_id)
 		"pause":
 			return _pause_bgm(fade_duration, request_id)
 		"resume":
@@ -356,6 +401,7 @@ func _play_bgm(
 	var asset := String(payload["asset"])
 	var cue := String(payload["cue"])
 	var volume := float(payload["volume"])
+	var stem_mix: Dictionary = prepared.get("stem_mix", {}).duplicate(true)
 	var current_state: Dictionary = _bgm_channel.get("target_state", {})
 	var current: Dictionary = _bgm_channel.get("current", {})
 	var exact_playing_target := (
@@ -373,21 +419,33 @@ func _play_bgm(
 		if _bgm_voice_is_live(current, asset, cue):
 			var state := current_state.duplicate(true)
 			state["position"] = _capture_bgm_position()
+			state["stem_mix"] = stem_mix.duplicate(true)
 			state["volume"] = volume
 			_bgm_channel["target_state"] = state.duplicate(true)
-			if is_equal_approx(float(current.get("level", -1.0)), volume):
+			var current_mix: Dictionary = current.get("stem_mix", {})
+			var mix_aligned := BgmChannelState.stem_mix_equal(
+				current_mix, stem_mix)
+			var level_aligned := is_equal_approx(
+				float(current.get("level", -1.0)), volume)
+			if mix_aligned and level_aligned:
 				return state
 			if fade_duration <= 0.0:
 				_set_bgm_voice_level(volume, current)
+				_set_bgm_stem_mix(stem_mix, current)
 				return state
 			var receipt := _start_bgm_receipt(request_id, &"play")
-			var tween := create_tween()
+			var tween := create_tween().set_parallel(true)
 			_bgm_channel["tween"] = tween
-			tween.tween_method(
-				_set_bgm_voice_level.bind(current),
-				float(current.get("level", 0.0)), volume, fade_duration)
-			tween.finished.connect(
-				_complete_bgm_receipt.bind(receipt), CONNECT_ONE_SHOT)
+			if not level_aligned:
+				tween.tween_method(
+					_set_bgm_voice_level.bind(current),
+					float(current.get("level", 0.0)), volume, fade_duration)
+			if not mix_aligned:
+				tween.tween_method(
+					_set_bgm_stem_mix_progress.bind(
+						current_mix.duplicate(true), stem_mix.duplicate(true), current),
+					0.0, 1.0, fade_duration)
+			tween.chain().tween_callback(_complete_bgm_receipt.bind(receipt))
 			return state
 
 	_retire_bgm_transition(&"superseded")
@@ -399,7 +457,11 @@ func _play_bgm(
 	var new_voice := _create_bgm_voice(
 		stream, asset, cue, bool(prepared["loop"]), start_position,
 		float(prepared["loop_position"]),
-		0.0 if fade_duration > 0.0 else volume)
+		0.0 if fade_duration > 0.0 else volume,
+		stem_mix,
+		prepared.get("stem_names", []) as Array,
+		prepared.get("resource_signature", {}) as Dictionary,
+	)
 	if new_voice.is_empty():
 		return null
 	var state := {
@@ -408,6 +470,7 @@ func _play_bgm(
 		"loop": bool(prepared["loop"]),
 		"position": start_position,
 		"status": "playing",
+		"stem_mix": stem_mix.duplicate(true),
 		"volume": volume,
 	}
 	_bgm_channel["current"] = new_voice
@@ -428,6 +491,59 @@ func _play_bgm(
 			_set_bgm_voice_level.bind(old_current),
 			float(old_current.get("level", 0.0)), 0.0, fade_duration)
 	tween.chain().tween_callback(_complete_bgm_receipt.bind(receipt))
+	return state
+
+
+func _mix_bgm(
+	payload: Dictionary,
+	prepared: Dictionary,
+	fade_duration: float,
+	request_id: int,
+) -> Variant:
+	var state: Dictionary = _bgm_channel.get("target_state", {})
+	var current: Dictionary = _bgm_channel.get("current", {})
+	if state.is_empty() or current.is_empty():
+		return null
+	var stem_mix: Dictionary = prepared.get("stem_mix", {}).duplicate(true)
+	if stem_mix.is_empty():
+		return null
+	var receipt: Dictionary = _bgm_channel.get("receipt", {})
+	if (
+		not receipt.is_empty()
+		and StringName(receipt.get("action", &"")) != &"mix"
+	):
+		_complete_active_bgm_receipt()
+		state = _bgm_channel.get("target_state", {})
+		current = _bgm_channel.get("current", {})
+		if state.is_empty() or current.is_empty():
+			return null
+	var current_target_mix: Dictionary = state.get("stem_mix", {})
+	if BgmChannelState.stem_mix_equal(current_target_mix, stem_mix):
+		_complete_matching_bgm_receipt(&"mix")
+		return state.duplicate(true)
+	_retire_bgm_transition(&"superseded")
+	if not SignalBus.is_current_bgm_operation_valid():
+		return null
+	current = _bgm_channel.get("current", {})
+	if current.is_empty():
+		return null
+	var from_mix: Dictionary = current.get("stem_mix", {}).duplicate(true)
+	state = state.duplicate(true)
+	state["position"] = _capture_bgm_position()
+	state["stem_mix"] = stem_mix.duplicate(true)
+	_bgm_channel["target_state"] = state.duplicate(true)
+	if fade_duration <= 0.0:
+		_set_bgm_stem_mix(stem_mix, current)
+		return state
+	var mix_receipt := _start_bgm_receipt(request_id, &"mix")
+	var tween := create_tween()
+	_bgm_channel["tween"] = tween
+	tween.tween_method(
+		_set_bgm_stem_mix_progress.bind(
+			from_mix, stem_mix.duplicate(true), current),
+		0.0, 1.0, fade_duration)
+	tween.finished.connect(
+		_complete_bgm_receipt.bind(mix_receipt), CONNECT_ONE_SHOT)
 	return state
 
 
@@ -585,6 +701,8 @@ func _complete_bgm_receipt(receipt: Dictionary) -> void:
 			var target: Dictionary = _bgm_channel.get("target_state", {})
 			if not target.is_empty():
 				_set_bgm_voice_level(float(target.get("volume", 1.0)), current)
+				_set_bgm_stem_mix(
+					target.get("stem_mix", {}) as Dictionary, current)
 			_stop_bgm_voice(_bgm_channel.get("outgoing", {}))
 			_bgm_channel["outgoing"] = {}
 	_emit_bgm_terminal(receipt, &"completed")
@@ -666,7 +784,10 @@ func _on_bgm_state_apply_requested(state: Dictionary, generation: int) -> void:
 	if state.is_empty():
 		return
 	var resolved := _resolve_bgm_track(
-		String(state["asset"]), String(state["cue"]))
+		String(state["asset"]),
+		String(state["cue"]),
+		state["stem_mix"] as Dictionary,
+	)
 	var restored_position := float(state["position"])
 	var restored_length := (
 		(resolved.get("stream") as AudioStream).get_length()
@@ -675,6 +796,10 @@ func _on_bgm_state_apply_requested(state: Dictionary, generation: int) -> void:
 	)
 	if (
 		resolved.is_empty()
+		or not BgmChannelState.stem_mix_equal(
+			resolved.get("stem_mix", {}) as Dictionary,
+			state["stem_mix"] as Dictionary,
+		)
 		or bool(resolved["loop"]) != bool(state["loop"])
 		or not is_finite(restored_length)
 		or restored_position >= restored_length
@@ -685,7 +810,11 @@ func _on_bgm_state_apply_requested(state: Dictionary, generation: int) -> void:
 	var voice := _create_bgm_voice(
 		resolved.get("stream") as AudioStream,
 		String(state["asset"]), String(state["cue"]), bool(state["loop"]),
-		restored_position, float(resolved["loop_position"]), level)
+		restored_position, float(resolved["loop_position"]), level,
+		resolved.get("stem_mix", {}) as Dictionary,
+		resolved.get("stem_names", []) as Array,
+		resolved.get("resource_signature", {}) as Dictionary,
+	)
 	if voice.is_empty():
 		return
 	_bgm_channel = _new_bgm_channel()
@@ -709,7 +838,11 @@ func _on_bgm_title_cut_requested(asset: String, generation: int) -> void:
 	var voice := _create_bgm_voice(
 		resolved.get("stream") as AudioStream,
 		asset, "", bool(resolved["loop"]), float(resolved["start_position"]),
-		float(resolved["loop_position"]), 1.0)
+		float(resolved["loop_position"]), 1.0,
+		resolved.get("stem_mix", {}) as Dictionary,
+		resolved.get("stem_names", []) as Array,
+		resolved.get("resource_signature", {}) as Dictionary,
+	)
 	if voice.is_empty():
 		return
 	_bgm_channel = _new_bgm_channel()
@@ -717,6 +850,7 @@ func _on_bgm_title_cut_requested(asset: String, generation: int) -> void:
 	_bgm_channel["target_state"] = {
 		"asset": asset, "cue": "", "loop": bool(resolved["loop"]),
 		"position": float(resolved["start_position"]), "status": "playing",
+		"stem_mix": (resolved.get("stem_mix", {}) as Dictionary).duplicate(true),
 		"volume": 1.0,
 	}
 
@@ -745,6 +879,9 @@ func _create_bgm_voice(
 	position: float,
 	loop_position: float,
 	level: float,
+	stem_mix: Dictionary,
+	stem_names: Array,
+	resource_signature: Dictionary,
 ) -> Dictionary:
 	if _audio_admission_is_closed() or stream == null:
 		return {}
@@ -755,7 +892,11 @@ func _create_bgm_voice(
 	var voice := {
 		"asset": asset, "cue": cue, "level": level, "loop": loop,
 		"loop_position": loop_position, "player": player,
+		"stem_mix": stem_mix.duplicate(true),
+		"stem_names": stem_names.duplicate(),
+		"resource_signature": resource_signature.duplicate(true),
 	}
+	_set_bgm_stem_mix(stem_mix, voice)
 	_set_bgm_voice_level(level, voice)
 	player.finished.connect(_on_bgm_voice_finished.bind(voice), CONNECT_ONE_SHOT)
 	player.play(position)
@@ -783,6 +924,46 @@ func _set_bgm_voice_level(level: float, voice: Dictionary) -> void:
 		_get_volume_setting("master_volume", 1.0)
 		* _get_volume_setting("bgm_volume", 0.8)
 		* float(voice["level"]))
+
+
+func _set_bgm_stem_mix(stem_mix: Dictionary, voice: Dictionary) -> void:
+	voice["stem_mix"] = stem_mix.duplicate(true)
+	var player: AudioStreamPlayer = voice.get("player")
+	if player == null or not is_instance_valid(player):
+		return
+	var synchronized := player.stream as AudioStreamSynchronized
+	if synchronized == null:
+		return
+	var stem_names: Array = voice.get("stem_names", [])
+	if stem_names.size() != synchronized.stream_count:
+		return
+	for index in range(stem_names.size()):
+		var stem_name := String(stem_names[index])
+		synchronized.set_sync_stream_volume(
+			index, _to_bgm_stem_db(float(stem_mix.get(stem_name, 0.0))))
+
+
+func _to_bgm_stem_db(gain: float) -> float:
+	# AudioStreamPlaybackSynchronized multiplies each child by db_to_linear().
+	# A finite floor such as -80 dB leaks that child at 1e-4 linear gain; -INF
+	# is the Godot 4.6 exact-silence representation and remains physical only.
+	return -INF if gain <= 0.0 else linear_to_db(gain)
+
+
+func _set_bgm_stem_mix_progress(
+	progress: float,
+	from_mix: Dictionary,
+	to_mix: Dictionary,
+	voice: Dictionary,
+) -> void:
+	var current: Dictionary = {}
+	for stem_name: Variant in to_mix.keys():
+		current[String(stem_name)] = lerpf(
+			float(from_mix.get(stem_name, 0.0)),
+			float(to_mix[stem_name]),
+			clampf(progress, 0.0, 1.0),
+		)
+	_set_bgm_stem_mix(current, voice)
 
 
 func _apply_bgm_volumes() -> void:
@@ -821,7 +1002,11 @@ func _on_bgm_voice_finished(voice: Dictionary) -> void:
 	SignalBus.commit_bgm_natural_stop(self, _bgm_capability)
 
 
-func _resolve_bgm_track(asset: String, cue: String) -> Dictionary:
+func _resolve_bgm_track(
+	asset: String,
+	cue: String,
+	requested_stem_mix: Dictionary = {},
+) -> Dictionary:
 	var paths := _bgm_candidate_paths(asset)
 	var existing: Array[String] = []
 	for path: String in paths:
@@ -831,8 +1016,13 @@ func _resolve_bgm_track(asset: String, cue: String) -> Dictionary:
 		return {}
 	var loaded := ResourceLoader.load(existing[0])
 	if loaded is BgmTrackDefinition:
-		return _prepare_bgm_definition(loaded as BgmTrackDefinition, cue)
-	if not cue.is_empty() or not loaded is AudioStream:
+		return _prepare_bgm_definition(
+			loaded as BgmTrackDefinition, cue, requested_stem_mix)
+	if (
+		not cue.is_empty()
+		or not requested_stem_mix.is_empty()
+		or not loaded is AudioStream
+	):
 		return {}
 	return _prepare_raw_bgm_stream(loaded as AudioStream)
 
@@ -856,10 +1046,49 @@ func _bgm_candidate_paths(asset: String) -> Array[String]:
 	return result
 
 
-func _prepare_bgm_definition(definition: BgmTrackDefinition, cue: String) -> Dictionary:
-	if definition == null or definition.stream == null:
+func _prepare_bgm_definition(
+	definition: BgmTrackDefinition,
+	cue: String,
+	requested_stem_mix: Dictionary = {},
+) -> Dictionary:
+	if definition == null:
 		return {}
-	var length := definition.stream.get_length()
+	var uses_single_stream := definition.stream != null
+	var uses_stems := not definition.stems.is_empty()
+	if uses_single_stream == uses_stems:
+		return {}
+	var sources: Array[AudioStream] = []
+	var stem_names: Array[String] = []
+	var default_stem_mix: Dictionary = {}
+	if uses_single_stream:
+		if not requested_stem_mix.is_empty():
+			return {}
+		sources.append(definition.stream)
+	else:
+		if (
+			definition.stems.size() < 2
+			or definition.stems.size() > AudioStreamSynchronized.MAX_STREAMS
+		):
+			return {}
+		var seen_stems: Dictionary = {}
+		for stem: BgmStemDefinition in definition.stems:
+			if (
+				stem == null
+				or not BgmChannelState.is_valid_stem_name(stem.stem_name)
+				or seen_stems.has(stem.stem_name)
+				or stem.stream == null
+				or not is_finite(stem.default_gain)
+				or stem.default_gain < 0.0
+				or stem.default_gain > 1.0
+			):
+				return {}
+			seen_stems[stem.stem_name] = true
+			stem_names.append(stem.stem_name)
+			sources.append(stem.stream)
+			default_stem_mix[stem.stem_name] = stem.default_gain
+		if not _bgm_stem_streams_match(sources):
+			return {}
+	var length := sources[0].get_length()
 	if not is_finite(length) or length <= 0.0:
 		return {}
 	if not _bgm_marker_is_valid(
@@ -895,13 +1124,179 @@ func _prepare_bgm_definition(definition: BgmTrackDefinition, cue: String) -> Dic
 		bool(selected["loop"]), float(selected["start_position"]),
 		float(selected["loop_position"]), length):
 		return {}
-	var stream := _duplicate_bgm_stream(
-		definition.stream, bool(selected["loop"]),
-		float(selected["loop_position"]))
-	if stream == null:
+	for source: AudioStream in sources:
+		if not _bgm_marker_is_valid(
+			bool(selected["loop"]),
+			float(selected["start_position"]),
+			float(selected["loop_position"]),
+			source.get_length(),
+		):
+			return {}
+	var stem_mix := _resolve_bgm_stem_mix(
+		stem_names, default_stem_mix, requested_stem_mix)
+	if uses_stems and stem_mix.is_empty():
 		return {}
-	selected["stream"] = stream
+	if uses_single_stream:
+		var stream := _duplicate_bgm_stream(
+			sources[0], bool(selected["loop"]),
+			float(selected["loop_position"]))
+		if stream == null:
+			return {}
+		selected["stream"] = stream
+	else:
+		var synchronized := AudioStreamSynchronized.new()
+		synchronized.stream_count = sources.size()
+		for index in range(sources.size()):
+			var stream := _duplicate_bgm_stream(
+				sources[index], bool(selected["loop"]),
+				float(selected["loop_position"]))
+			if stream == null:
+				return {}
+			synchronized.set_sync_stream(index, stream)
+			synchronized.set_sync_stream_volume(
+				index, _to_bgm_stem_db(float(stem_mix[stem_names[index]])))
+		selected["stream"] = synchronized
+	selected["stem_mix"] = stem_mix.duplicate(true)
+	selected["stem_names"] = stem_names.duplicate()
+	selected["resource_signature"] = _bgm_resource_signature(
+		sources, stem_names, default_stem_mix, selected)
 	return selected
+
+
+func _resolve_bgm_stem_mix(
+	stem_names: Array[String],
+	default_mix: Dictionary,
+	requested_mix: Dictionary,
+) -> Dictionary:
+	if stem_names.is_empty():
+		return {}
+	if not BgmChannelState.validate_stem_mix(requested_mix, true):
+		return {}
+	var available: Dictionary = {}
+	for stem_name: String in stem_names:
+		available[stem_name] = true
+	for stem_name: Variant in requested_mix.keys():
+		if not available.has(stem_name):
+			return {}
+	var result: Dictionary = {}
+	for stem_name: String in stem_names:
+		result[stem_name] = (
+			float(default_mix.get(stem_name, 1.0))
+			if requested_mix.is_empty()
+			else float(requested_mix.get(stem_name, 0.0))
+		)
+	return result if BgmChannelState.validate_stem_mix(
+		result, false, true) else {}
+
+
+func _bgm_stem_streams_match(sources: Array[AudioStream]) -> bool:
+	if sources.size() < 2:
+		return false
+	var reference := sources[0]
+	var reference_length := reference.get_length()
+	if not _bgm_stream_type_is_supported(reference):
+		return false
+	for index in range(1, sources.size()):
+		var candidate := sources[index]
+		if (
+			not _bgm_stream_type_is_supported(candidate)
+			or candidate.get_class() != reference.get_class()
+			or not is_finite(candidate.get_length())
+			or candidate.get_length() != reference_length
+		):
+			return false
+		if reference is AudioStreamWAV:
+			var reference_wav := reference as AudioStreamWAV
+			var candidate_wav := candidate as AudioStreamWAV
+			if (
+				candidate_wav.mix_rate != reference_wav.mix_rate
+				or candidate_wav.stereo != reference_wav.stereo
+				or candidate_wav.format != reference_wav.format
+			):
+				return false
+	return true
+
+
+func _bgm_resource_signature(
+	sources: Array[AudioStream],
+	stem_names: Array[String],
+	default_stem_mix: Dictionary,
+	selected: Dictionary,
+) -> Dictionary:
+	var stream_signatures: Array = []
+	for source: AudioStream in sources:
+		var stream_signature := {
+			"class": source.get_class(),
+			"length": source.get_length(),
+			"resource_path": source.resource_path,
+		}
+		if source is AudioStreamWAV:
+			var wav := source as AudioStreamWAV
+			stream_signature["data_hash"] = hash(wav.data)
+			stream_signature["format"] = wav.format
+			stream_signature["mix_rate"] = wav.mix_rate
+			stream_signature["stereo"] = wav.stereo
+		elif source is AudioStreamMP3:
+			stream_signature["data_hash"] = hash(
+				(source as AudioStreamMP3).data)
+		elif source is AudioStreamOggVorbis:
+			var packet_sequence := (
+				(source as AudioStreamOggVorbis).packet_sequence)
+			if packet_sequence != null:
+				stream_signature["granule_hash"] = hash(
+					packet_sequence.granule_positions)
+				stream_signature["packet_hash"] = hash(
+					packet_sequence.packet_data)
+				stream_signature["sampling_rate"] = (
+					packet_sequence.sampling_rate)
+		stream_signatures.append(stream_signature)
+	return {
+		"loop": bool(selected["loop"]),
+		"loop_position": float(selected["loop_position"]),
+		"start_position": float(selected["start_position"]),
+		"stem_default_mix": default_stem_mix.duplicate(true),
+		"stem_names": stem_names.duplicate(),
+		"streams": stream_signatures,
+	}
+
+
+func _bgm_voice_matches_prepared(
+	voice: Dictionary,
+	prepared: Dictionary,
+) -> bool:
+	if voice.is_empty():
+		return false
+	var prepared_names: Array = prepared.get("stem_names", [])
+	var live_names: Array = voice.get("stem_names", [])
+	var prepared_mix: Dictionary = prepared.get("stem_mix", {})
+	var live_mix: Dictionary = voice.get("stem_mix", {})
+	return (
+		live_names == prepared_names
+		and _bgm_stem_schema_matches_mix(live_names, live_mix)
+		and _bgm_stem_schema_matches_mix(prepared_names, prepared_mix)
+		and (voice.get("resource_signature", {}) as Dictionary)
+			== (prepared.get("resource_signature", {}) as Dictionary)
+	)
+
+
+func _bgm_stem_schema_matches_mix(
+	stem_names: Array,
+	stem_mix: Dictionary,
+) -> bool:
+	if stem_names.size() != stem_mix.size():
+		return false
+	for stem_name: Variant in stem_names:
+		if not stem_mix.has(stem_name):
+			return false
+	return true
+
+
+func _bgm_stream_type_is_supported(stream: AudioStream) -> bool:
+	return (
+		stream is AudioStreamOggVorbis
+		or stream is AudioStreamMP3
+		or stream is AudioStreamWAV
+	)
 
 
 func _prepare_raw_bgm_stream(source: AudioStream) -> Dictionary:
@@ -919,6 +1314,13 @@ func _prepare_raw_bgm_stream(source: AudioStream) -> Dictionary:
 	return {
 		"stream": stream, "loop": true,
 		"start_position": 0.0, "loop_position": loop_position,
+		"stem_mix": {}, "stem_names": [],
+		"resource_signature": _bgm_resource_signature(
+			[source], [], {}, {
+				"loop": true,
+				"start_position": 0.0,
+				"loop_position": loop_position,
+			}),
 	}
 
 

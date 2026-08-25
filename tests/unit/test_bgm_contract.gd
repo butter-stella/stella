@@ -46,11 +46,13 @@ func test_standalone_actions_lower_to_canonical_fire_and_forget_children() -> vo
 		assert_eq(command.params["operations"][0]["kind"], "bgm")
 	assert_eq(commands[0].params["operations"][0]["payload"], {
 		"action": "play", "asset": "theme", "cue": "p1",
-		"fade_duration": 0.8, "resume_position": 0.0, "volume": 0.65,
+		"fade_duration": 0.8, "resume_position": 0.0, "stem_mix": {},
+		"volume": 0.65,
 	})
 	assert_eq(commands[1].params["operations"][0]["payload"], {
 		"action": "pause", "asset": "", "cue": "",
-		"fade_duration": 0.2, "resume_position": 0.0, "volume": 1.0,
+		"fade_duration": 0.2, "resume_position": 0.0, "stem_mix": {},
+		"volume": 1.0,
 	})
 	assert_eq(commands[2].params["operations"][0]["payload"]["fade_duration"], 0.0,
 		"the new canonical grammar defaults every action to an immediate cut")
@@ -116,14 +118,16 @@ func test_closed_grammar_and_removed_legacy_forms_fail_at_source_line() -> void:
 func test_stable_state_distinguishes_status_cue_volume_loop_and_position() -> void:
 	var playing := {
 		"asset": "theme", "cue": "p1", "loop": true,
-		"position": 2.25, "status": "playing", "volume": 0.7,
+		"position": 2.25, "status": "playing", "stem_mix": {},
+		"volume": 0.7,
 	}
 	assert_true(BgmChannelState.validate_snapshot_state({}, false))
 	assert_true(BgmChannelState.validate_snapshot_state(playing, false))
 	assert_not_null(JSON.parse_string(JSON.stringify(playing)))
 	var play := {
 		"action": "play", "asset": "theme", "cue": "p1",
-		"fade_duration": 0.5, "resume_position": 0.0, "volume": 0.7,
+		"fade_duration": 0.5, "resume_position": 0.0, "stem_mix": {},
+		"volume": 0.7,
 	}
 	assert_false(BgmChannelState.operation_has_work(playing, play),
 		"a restored cursor is not itself authored target work")
@@ -133,7 +137,8 @@ func test_stable_state_distinguishes_status_cue_volume_loop_and_position() -> vo
 		"play from paused restarts at the authored cue")
 	var pause := {
 		"action": "pause", "asset": "", "cue": "",
-		"fade_duration": 0.2, "resume_position": 0.0, "volume": 1.0,
+		"fade_duration": 0.2, "resume_position": 0.0, "stem_mix": {},
+		"volume": 1.0,
 	}
 	assert_true(BgmChannelState.operation_has_work(playing, pause))
 	assert_false(BgmChannelState.operation_has_work(paused, pause))
@@ -195,10 +200,16 @@ func test_save_schema_accepts_only_exact_stable_dictionary_and_legacy_string_fai
 	var manager := SaveManager.new()
 	var active := {
 		"asset": "theme", "cue": "intro", "loop": false,
-		"position": 1.25, "status": "paused", "volume": 0.6,
+		"position": 1.25, "status": "paused", "stem_mix": {},
+		"volume": 0.6,
 	}
 	assert_true(manager._presentation_snapshot_is_valid({"bg": "", "bgm": {}}))
 	assert_true(manager._presentation_snapshot_is_valid({"bg": "", "bgm": active}))
+	var previous_six_field := active.duplicate(true)
+	previous_six_field.erase("stem_mix")
+	assert_false(manager._presentation_snapshot_is_valid({
+		"bg": "", "bgm": previous_six_field,
+	}), "pre-stem saves require an explicit host migration; runtime has no legacy branch")
 	assert_false(manager._presentation_snapshot_is_valid({
 		"bg": "", "bgm": "theme",
 	}), "unversioned legacy String saves fail closed; there is no runtime compatibility API")

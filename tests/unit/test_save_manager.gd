@@ -555,6 +555,7 @@ func test_bgm_snapshot_schema_is_exact_and_legacy_string_read_fails_closed() -> 
 		"loop": false,
 		"position": 1.25,
 		"status": "paused",
+		"stem_mix": {},
 		"volume": 0.6,
 	}
 	assert_true(_manager.validate_data_for_scenario(valid, scenario))

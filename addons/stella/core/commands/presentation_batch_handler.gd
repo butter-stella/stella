@@ -17,7 +17,8 @@ const EXACT_LOOP_SE_PAYLOAD_KEYS := [
 	"action", "asset", "channel", "fade_duration", "resume_position", "volume",
 ]
 const EXACT_BGM_PAYLOAD_KEYS := [
-	"action", "asset", "cue", "fade_duration", "resume_position", "volume",
+	"action", "asset", "cue", "fade_duration", "resume_position", "stem_mix",
+	"volume",
 ]
 
 var _director: PresentationDirector
@@ -280,7 +281,7 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 				var bgm_keys := payload.keys()
 				bgm_keys.sort()
 				if bgm_keys != EXACT_BGM_PAYLOAD_KEYS:
-					return {"valid": false, "error": "BGM payload must use the canonical six-field schema", "line": int(operation_lines[index])}
+					return {"valid": false, "error": "BGM payload must use the canonical seven-field schema", "line": int(operation_lines[index])}
 				if not BgmChannelState.validate_operation(payload, false):
 					return {"valid": false, "error": "BGM payload failed canonical validation", "line": int(operation_lines[index])}
 				if saw_bgm:

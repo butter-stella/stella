@@ -451,6 +451,8 @@ BGM 只有一个 `bgm:main` channel。普通作者使用四条短 standalone 命
 ```stla
 @bgm play theme
 @bgm play evening cue=bridge volume=0.7 fade=1.0
+@bgm play battle_stems mix=rhythm,bass:0.7
+@bgm mix rhythm:0.4,bass,melody fade=0.8
 @bgm pause fade=0.2
 @bgm resume fade=0.2
 @bgm stop fade=1.0
@@ -465,9 +467,11 @@ replacement 的 `fade` 是 outgoing 淡出与 incoming 淡入重叠的整个总�
 @end
 ```
 
-same playing asset+cue+volume 会重新完成 resource/Presenter positive preflight，但稳定时不 seek、不重启 player；只改 volume 保留 cursor。若同 action 的上一条 FNF fade 尚未结束，新 aligned JOIN 会先 exact-finish 旧 receipt 到唯一 authored endpoint，再以零新 Tween 同步完成，旧 token 之后保持 inert。paused 下 `play` 从 cue start 重播，`resume` 才继续保存的 cursor。pause/resume/play/stop fade 都由同一 Director receipt 驱动，普通 advance 与 Skip 只 exact-finish 当前 JOIN；Auto 本身不制造 ack。context/global abort 会 cut 当前 Tween 到已提交 stable target；reset/load/rollback/restart/title 与 stale callback 使用同一 generation/ownership边界。
+最短 `@bgm play asset` 保持不变。multi-stem resource 可在 `play` 上以 `mix=stem[,stem[:gain]...]` 指定初始配比，之后用 `@bgm mix ... [fade=...]` 原地改变配比；裸 stem gain 为 1，未列出的已定义 stem 为 0，空或全零 mix 会 fail-close。same playing asset+cue+volume+mix 会重新完成 resource/Presenter positive preflight，但稳定时不 seek、不重启 player；只改 volume 或 mix 保留同一个 player/stream/cursor。若同 action 的上一条 FNF fade 尚未结束，新 aligned JOIN 会先 exact-finish 旧 receipt 到唯一 authored endpoint，再以零新 Tween 同步完成，旧 token 之后保持 inert。paused 下 `play` 从 cue start 重播，`resume` 才继续保存的 cursor。play/mix/pause/resume/stop fade 都由同一 Director receipt 驱动，普通 advance 与 Skip 只 exact-finish 当前 JOIN；Auto 本身不制造 ack。context/global abort 会 cut 当前 Tween 到已提交 stable target；reset/load/rollback/restart/title 与 stale callback 使用同一 generation/ownership边界。
 
-原始 OGG/MP3/WAV 默认从 0 开始、循环到 stream end，并保留格式中合法的 loop marker。需要 authored start/loop marker 或 named cue 时，创建 `BgmTrackDefinition` Resource，设置 `stream`、`loop`、`start_position`、`loop_position`，并可添加完整的 `BgmCueDefinition`。named cue 不继承 track default；每个定义都必须满足有限正 stream length 以及 `0 <= start_position <= loop_position < length`，`loop=false` 时 marker 仍存在但不会启用循环。这一版不支持 `loop_end`。资源/cue/marker 缺失、歧义或非法会在 mixed child 的任何 mutation 前按 BGM authored line fail-close。公开 synthetic reference 见 [`examples/demo/scenarios/bgm_lifecycle.stla`](../examples/demo/scenarios/bgm_lifecycle.stla) 与对应 redistributable `.tres`。
+原始 OGG/MP3/WAV 默认从 0 开始、循环到 stream end，并保留格式中合法的 loop marker。需要 authored start/loop marker 或 named cue 时，创建 `BgmTrackDefinition` Resource。single-stream 设置 `stream`；multi-stem 必须把 `stream` 留空并设置 2..32 个 `BgmStemDefinition`（唯一 `stem_name`、AudioStream、`default_gain=0..1`）。两者必须且只能选一个。multi-stem 所有流必须同为 OGG/MP3/WAV、长度相同；WAV 还要求 mix rate、stereo 和 sample format 相同。Presenter 只创建一个 `AudioStreamSynchronized` BGM player，各 stem 从同一 playback 相位开始。
+
+track 设置共享 `loop`、`start_position`、`loop_position`，并可添加完整的 `BgmCueDefinition`。named cue 不继承 track default；每个定义都必须对所有流满足有限正 stream length 以及 `0 <= start_position <= loop_position < length`，`loop=false` 时 marker 仍存在但不会启用循环。这一版不支持 `loop_end`。资源/cue/stem/marker 缺失、歧义或非法会在 mixed child 的任何 mutation 前按 BGM authored line fail-close。公开 synthetic single/multi-stem reference 见 [`examples/demo/scenarios/bgm_lifecycle.stla`](../examples/demo/scenarios/bgm_lifecycle.stla) 与对应 redistributable `.tres`。
 
 旧 `@bgm asset [fade]` / `@bgm off [fade]` 已删除，必须迁移为 `play` / `stop` action grammar；Runtime 中没有第二 BGM handler 或 legacy alias。
 
@@ -545,7 +549,7 @@ legacy_snapshot["scenario_context"]["scenario_source_identity"] = (
 
 在游戏内读档、快读或从 Backlog/选项/流程图回退时，Runtime 会先把 engine context 所有权转交给恢复后的 context，再清理旧画面和阻塞命令。旧对话的取消不会触发自然 `scenario_ended`，恢复后的 context 始终是最终执行 owner；自定义 Presenter 仍只需遵守上文的 request `advance()` / `abort()` 契约。
 
-JOIN 动画进行中可以存档。存档记录已原子提交的 final canonical Stage target、loop-SE 的 `{asset, loop, volume, position}`、BGM 的 `{asset, cue, loop, position, status, volume}`（stopped 为 `{}`）与 scenario cursor；operation、policy、request/batch、receipt、token、generation、Tween、barrier、fade progress 与 outgoing player 都不入档。恢复时先 cancel old generation，再 reset + atomic cut canonical target，最后在 same cursor 重新派发。BGM pause fade 存档会采样保存瞬间 cursor，但恢复直接是稳定 paused；crossfade 存档只保存 incoming target/current incoming cursor。这是有意的 cut projection，不恢复 Tween progress。loop-SE/BGM 的 same target 仍须通过 AudioPresenter/resource preflight。旧版 String `bgm` 存档不是带版本的公共 schema，generic read 与 scenario-aware load 都在任何 provider mutation 前 fail-close；如产品确需旧档，应由宿主版本化迁移工具先转换，Stella Runtime 不保留 legacy 分支。
+JOIN 动画进行中可以存档。存档记录已原子提交的 final canonical Stage target、loop-SE 的 `{asset, loop, volume, position}`、BGM 的 `{asset, cue, loop, position, status, stem_mix, volume}`（stopped 为 `{}`；single-stream 的 `stem_mix={}`）与 scenario cursor；operation、policy、request/batch、receipt、token、generation、Tween、barrier、fade progress 与 outgoing player 都不入档。恢复时先 cancel old generation，再 reset + atomic cut canonical target，最后在 same cursor 重新派发。BGM pause fade 存档会采样保存瞬间 cursor，但恢复直接是稳定 paused；crossfade 存档只保存 incoming target/current incoming cursor，mix fade 保存已提交的 final mix。这是有意的 cut projection，不恢复 Tween progress。loop-SE/BGM 的 same target 仍须通过 AudioPresenter/resource preflight。旧版 String `bgm` 或缺少 `stem_mix` 的旧六字段 BGM 存档不是当前版本公共 schema，generic read 与 scenario-aware load 都在任何 provider mutation 前 fail-close；宿主若需要迁移已确认版本的 single-stream 旧档，应在自己的版本化迁移事务中补入 `stem_mix={}`，Stella Runtime 不保留 legacy 分支。
 
 ### 播放控制
 

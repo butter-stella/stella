@@ -24,6 +24,16 @@
 
 「The mixed batch uses one crossfade interval and waits for exact receipts.」
 
+@bgm play synthetic_bgm_stems cue=opening mix=rhythm volume=0.04
+
+「A multi-stem track still starts with the shortest play command plus one optional mix.」
+
+@presentation_batch policy=join
+  @bgm mix harmony,rhythm:0.25 fade=0.2
+@end
+
+「Stem balance changed in place without restarting or seeking the BGM player.」
+
 @presentation_batch policy=join
   @bgm stop fade=0.2
   @stage lifecycle_card remove transition=fade duration=0.2
