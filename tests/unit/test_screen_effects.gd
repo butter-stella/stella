@@ -11,9 +11,12 @@ var _ui_layer: CanvasLayer
 var _bg_shake_root: Node2D
 var _stage_shake_root: Node2D
 var _effects: Node
+var _original_effect_enabled: bool
 
 
 func before_each() -> void:
+	_original_effect_enabled = bool(StellaRuntime.get_setting("effect_enabled"))
+	StellaRuntime.set_setting("effect_enabled", true)
 	# Mirror the real game scene: camera/pan offsets live on CanvasLayers while
 	# ScreenEffects owns dedicated Node2D roots below the two stage layers.
 	_parent = Node2D.new()
@@ -61,6 +64,219 @@ func after_each() -> void:
 			SignalBus.effect_requested.disconnect(_effects._on_effect)
 		if SignalBus.engine_abort_requested.is_connected(_effects._clear_effects):
 			SignalBus.engine_abort_requested.disconnect(_effects._clear_effects)
+	StellaRuntime.set_setting("effect_enabled", _original_effect_enabled)
+
+
+# --- Settings policy: admission, active cleanup, and generation safety ---
+
+func test_disabled_policy_drops_builtins_without_mutation_or_later_replay() -> void:
+	var bg_baseline := Vector2(7.0, -3.0)
+	var stage_baseline := Vector2(-5.0, 11.0)
+	_bg_shake_root.position = bg_baseline
+	_stage_shake_root.position = stage_baseline
+
+	StellaRuntime.set_setting("effect_enabled", false)
+	SignalBus.effect_requested.emit("shake", {"intensity": 30.0, "duration": 5.0})
+	SignalBus.effect_requested.emit("flash", {"color": "red", "duration": 5.0})
+
+	_assert_effects_neutral(bg_baseline, stage_baseline)
+	StellaRuntime.set_setting("effect_enabled", true)
+	_assert_effects_neutral(bg_baseline, stage_baseline)
+
+	SignalBus.effect_requested.emit("shake", {"intensity": 30.0, "duration": 5.0})
+	SignalBus.effect_requested.emit("flash", {"color": "red", "duration": 5.0})
+	assert_not_null(_effects._shake_tween,
+		"re-enabling admits only a newly requested shake")
+	assert_not_null(_effects._flash_tween,
+		"re-enabling admits only a newly requested flash")
+	assert_not_null(_effects._flash_overlay)
+
+
+func test_disabling_active_effects_restores_visuals_and_retires_old_callbacks() -> void:
+	var target := Control.new()
+	target.name = "PolicyCoverageTarget"
+	target.position = Vector2(13.0, -9.0)
+	target.size = Vector2(320.0, 180.0)
+	target.scale = Vector2.ONE
+	target.pivot_offset = Vector2(4.0, 6.0)
+	_bg_layer.add_child(target)
+	var target_paths: Array[NodePath] = [
+		NodePath("../BackgroundLayer/PolicyCoverageTarget"),
+	]
+	_effects.shake_target_paths = target_paths
+	_effects.shake_coverage_target_paths = target_paths
+
+	SignalBus.effect_requested.emit("shake", {"intensity": 20.0, "duration": 5.0})
+	SignalBus.effect_requested.emit("flash", {"color": "red", "duration": 5.0})
+	var retired_shake: Tween = _effects._shake_tween
+	var retired_flash: Tween = _effects._flash_tween
+	var retired_overlay: ColorRect = _effects._flash_overlay
+	assert_not_null(retired_shake)
+	assert_not_null(retired_flash)
+	assert_not_null(retired_overlay)
+	assert_ne(target.position, Vector2(13.0, -9.0))
+	assert_ne(target.scale, Vector2.ONE)
+
+	StellaRuntime.set_setting("effect_enabled", false)
+
+	assert_null(_effects._shake_tween)
+	assert_null(_effects._flash_tween)
+	assert_null(_effects._flash_overlay)
+	assert_eq(target.position, Vector2(13.0, -9.0))
+	assert_eq(target.scale, Vector2.ONE)
+	assert_eq(target.pivot_offset, Vector2(4.0, 6.0))
+	assert_false(_effects.is_processing())
+	assert_false(retired_overlay.visible)
+
+	StellaRuntime.set_setting("effect_enabled", true)
+	SignalBus.effect_requested.emit("shake", {"intensity": 8.0, "duration": 5.0})
+	SignalBus.effect_requested.emit("flash", {"color": "blue", "duration": 5.0})
+	var replacement_shake: Tween = _effects._shake_tween
+	var replacement_flash: Tween = _effects._flash_tween
+	var replacement_overlay: ColorRect = _effects._flash_overlay
+	assert_not_same(replacement_shake, retired_shake)
+	assert_not_same(replacement_flash, retired_flash)
+
+	_effects._finish_shake(retired_shake)
+	_effects._finish_flash(retired_flash)
+	assert_same(_effects._shake_tween, replacement_shake,
+		"a disabled generation's late shake callback cannot clear the replacement")
+	assert_same(_effects._flash_tween, replacement_flash,
+		"a disabled generation's late flash callback cannot clear the replacement")
+	assert_same(_effects._flash_overlay, replacement_overlay)
+
+	StellaRuntime.set_setting("effect_enabled", false)
+	SignalBus.effect_requested.emit("off", {})
+	assert_null(_effects._shake_tween, "off remains an unconditional neutralizer")
+	assert_null(_effects._flash_tween)
+	assert_null(_effects._flash_overlay)
+
+
+func test_reentrant_reenable_during_disable_keeps_only_fresh_effects() -> void:
+	var target := Control.new()
+	target.name = "ReentrantPolicyTarget"
+	target.position = Vector2(13.0, -9.0)
+	target.size = Vector2(320.0, 180.0)
+	_bg_layer.add_child(target)
+	var target_paths: Array[NodePath] = [
+		NodePath("../BackgroundLayer/ReentrantPolicyTarget"),
+	]
+	_effects.shake_target_paths = target_paths
+	_effects.shake_coverage_target_paths = target_paths
+
+	SignalBus.effect_requested.emit("shake", {"intensity": 20.0, "duration": 5.0})
+	SignalBus.effect_requested.emit("flash", {"color": "red", "duration": 5.0})
+	var retired_shake: Tween = _effects._shake_tween
+	var retired_flash: Tween = _effects._flash_tween
+	_effects._apply_shake_offset(retired_shake, Vector2(4.0, -6.0))
+	var reentry := {"requested": false}
+	target.item_rect_changed.connect(func() -> void:
+		if reentry["requested"]:
+			return
+		reentry["requested"] = true
+		StellaRuntime.set_setting("effect_enabled", true)
+		SignalBus.effect_requested.emit(
+			"shake", {"intensity": 8.0, "duration": 5.0})
+		SignalBus.effect_requested.emit(
+			"flash", {"color": "blue", "duration": 5.0})
+	)
+
+	StellaRuntime.set_setting("effect_enabled", false)
+
+	assert_true(reentry["requested"],
+		"restoring the retired Control must exercise synchronous policy reentry")
+	assert_true(bool(StellaRuntime.get_setting("effect_enabled")))
+	assert_not_null(_effects._shake_tween)
+	assert_not_null(_effects._flash_tween)
+	assert_not_same(_effects._shake_tween, retired_shake,
+		"the false generation cannot remain the active shake owner")
+	assert_not_same(_effects._flash_tween, retired_flash,
+		"the false generation cannot remain the active flash owner")
+	assert_eq(_effects._flash_overlay.color, Color.BLUE)
+
+	StellaRuntime.set_setting("effect_enabled", false)
+	_assert_effects_neutral(Vector2.ZERO, Vector2.ZERO)
+	assert_eq(target.position, Vector2(13.0, -9.0))
+	assert_eq(target.scale, Vector2.ONE)
+	assert_eq(target.pivot_offset, Vector2.ZERO)
+
+
+func test_disable_during_fallback_resolution_rolls_back_stale_canvas() -> void:
+	_parent.remove_child(_effects)
+	_effects.free()
+	_effects = null
+	StellaRuntime.set_setting("effect_enabled", false)
+
+	_effects = Node.new()
+	_effects.name = "ScreenEffects"
+	_effects.set_script(SCREEN_EFFECTS_SCRIPT)
+	var target_paths: Array[NodePath] = [
+		NodePath("../BackgroundLayer/ShakeRoot"),
+		NodePath("../StageLayer/ShakeRoot"),
+	]
+	_effects.shake_target_paths = target_paths
+	_parent.add_child(_effects)
+	await get_tree().process_frame
+	assert_null(_effects._fallback_flash_canvas,
+		"startup-disabled presentation must not allocate a fallback host")
+
+	StellaRuntime.set_setting("effect_enabled", true)
+	var reentry := {"disabled": false}
+	_effects.child_entered_tree.connect(func(child: Node) -> void:
+		if reentry["disabled"] or not child is CanvasLayer:
+			return
+		reentry["disabled"] = true
+		StellaRuntime.set_setting("effect_enabled", false)
+	)
+
+	SignalBus.effect_requested.emit(
+		"flash", {"color": "red", "duration": 5.0})
+
+	assert_true(reentry["disabled"],
+		"fallback host creation must exercise synchronous disable reentry")
+	assert_false(bool(StellaRuntime.get_setting("effect_enabled")))
+	assert_null(_effects._flash_tween)
+	assert_null(_effects._flash_overlay)
+	assert_null(_effects._flash_canvas)
+	assert_null(_effects._fallback_flash_canvas,
+		"a stale request cannot leave its newly allocated fallback host behind")
+	assert_null(_effects.get_node_or_null("FlashCanvas"))
+
+
+func test_presenter_snapshots_persisted_false_before_ready_and_cleans_listener() -> void:
+	var settings_connections_with_presenter := (
+		SignalBus.settings_changed.get_connections().size())
+	_parent.remove_child(_effects)
+	assert_eq(
+		SignalBus.settings_changed.get_connections().size(),
+		settings_connections_with_presenter - 1,
+		"leaving the scene must release the settings listener",
+	)
+	_effects.free()
+	_effects = null
+
+	# Runtime loads persisted settings before presenter construction, before its
+	# long-lived manager bridge can publish any change notification.
+	StellaRuntime.settings_manager.settings.effect_enabled = false
+	_effects = Node.new()
+	_effects.name = "ScreenEffects"
+	_effects.set_script(SCREEN_EFFECTS_SCRIPT)
+	var target_paths: Array[NodePath] = [
+		NodePath("../BackgroundLayer/ShakeRoot"),
+		NodePath("../StageLayer/ShakeRoot"),
+	]
+	_effects.shake_target_paths = target_paths
+	_parent.add_child(_effects)
+	await get_tree().process_frame
+
+	assert_eq(
+		SignalBus.settings_changed.get_connections().size(),
+		settings_connections_with_presenter,
+		"the replacement presenter installs exactly one settings listener",
+	)
+	SignalBus.effect_requested.emit("shake", {"intensity": 20.0, "duration": 5.0})
+	SignalBus.effect_requested.emit("flash", {"duration": 5.0})
+	_assert_effects_neutral(Vector2.ZERO, Vector2.ZERO)
 
 
 # --- Shake: dedicated roots move together; surrounding layer offsets compose ---
@@ -819,3 +1035,19 @@ func _find_color_rect_in(node: Node) -> ColorRect:
 		if found != null:
 			return found
 	return null
+
+
+func _assert_effects_neutral(
+	bg_position: Vector2,
+	stage_position: Vector2,
+) -> void:
+	assert_null(_effects._shake_tween)
+	assert_null(_effects._flash_tween)
+	assert_null(_effects._flash_overlay)
+	assert_true(_effects._shake_targets.is_empty())
+	assert_true(_effects._shake_baselines.is_empty())
+	assert_true(_effects._shake_motion_baselines.is_empty())
+	assert_true(_effects._shake_coverage_baselines.is_empty())
+	assert_false(_effects.is_processing())
+	assert_eq(_bg_shake_root.position, bg_position)
+	assert_eq(_stage_shake_root.position, stage_position)

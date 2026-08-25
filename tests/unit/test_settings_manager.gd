@@ -13,7 +13,7 @@ func before_each():
 
 func after_each():
 	if FileAccess.file_exists(_settings_path):
-		DirAccess.remove_absolute(_settings_path)
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(_settings_path))
 
 
 func test_default_values():
@@ -23,6 +23,7 @@ func test_default_values():
 	assert_true(s.skip_only_read)
 	assert_almost_eq(s.master_volume, 1.0, 0.01)
 	assert_almost_eq(s.bgm_volume, 0.8, 0.01)
+	assert_true(s.effect_enabled)
 
 
 func test_set_and_get():
@@ -53,6 +54,95 @@ func test_save_and_load():
 
 	assert_eq(manager2.settings.character_interval, 30)
 	assert_almost_eq(manager2.settings.bgm_volume, 0.3, 0.01)
+
+
+func test_load_applies_changed_present_keys_atomically_and_notifies_current_values():
+	_manager.set_value("character_interval", 77)
+	_manager.settings.character_voice_volume["sakura"] = 0.5
+	var retained_character_volumes := _manager.settings.character_voice_volume
+	var changed_keys: Array[String] = []
+	var snapshots: Array[Dictionary] = []
+	_manager.settings_changed.connect(func(key: String, _value: Variant) -> void:
+		changed_keys.append(key)
+		snapshots.append(_manager.settings.to_dict())
+	)
+	_write_settings_text(
+		'{"future_setting":"ignored","effect_enabled":false,'
+		+ '"click_to_complete":true,"bgm_volume":0.25}')
+
+	_manager.load_settings()
+
+	assert_eq(_manager.settings.character_interval, 77,
+		"an omitted persisted key must preserve its current in-memory value")
+	assert_same(_manager.settings.character_voice_volume, retained_character_volumes,
+		"an omitted mutable setting keeps its extension-visible identity")
+	assert_almost_eq(_manager.settings.bgm_volume, 0.25, 0.001)
+	assert_false(_manager.settings.effect_enabled)
+	assert_eq(changed_keys, ["bgm_volume", "effect_enabled"],
+		"a successful load reports only real changes in canonical field order")
+	for snapshot in snapshots:
+		assert_eq(snapshot, _manager.settings.to_dict(),
+			"all loaded fields must be committed before the first notification")
+
+
+func test_invalid_effect_enabled_rejects_the_whole_load_candidate() -> void:
+	_manager.settings.character_interval = 77
+	var baseline := _manager.settings.to_dict()
+	var changed_keys: Array[String] = []
+	_manager.settings_changed.connect(func(key: String, _value: Variant) -> void:
+		changed_keys.append(key)
+	)
+	for invalid_value in [0, 1]:
+		_manager.settings.from_dict(baseline)
+		changed_keys.clear()
+		_write_settings_text(JSON.stringify({
+			"bgm_volume": 0.25,
+			"effect_enabled": invalid_value,
+		}))
+
+		_manager.load_settings()
+
+		assert_eq(_manager.settings.to_dict(), baseline,
+			"effect_enabled accepts bool only; no sibling field may apply")
+		assert_eq(changed_keys, [],
+			"a rejected candidate publishes no partial settings notifications")
+
+
+func test_invalid_effect_enabled_direct_write_preserves_state_and_emits_nothing() -> void:
+	var baseline := _manager.settings.to_dict()
+	var changed_keys: Array[String] = []
+	_manager.settings_changed.connect(func(key: String, _value: Variant) -> void:
+		changed_keys.append(key)
+	)
+	for invalid_value in [0, 1]:
+		_manager.settings.from_dict(baseline)
+		changed_keys.clear()
+
+		_manager.set_value("effect_enabled", invalid_value)
+
+		assert_push_warning("effect_enabled must be a bool")
+		assert_eq(_manager.settings.to_dict(), baseline,
+			"direct writes must not use typed-property bool coercion")
+		assert_eq(changed_keys, [])
+
+
+func test_missing_or_non_dictionary_load_is_an_atomic_noop_without_notifications():
+	_manager.settings.character_interval = 77
+	_manager.settings.effect_enabled = false
+	var baseline := _manager.settings.to_dict()
+	var changed_keys: Array[String] = []
+	_manager.settings_changed.connect(func(key: String, _value: Variant) -> void:
+		changed_keys.append(key)
+	)
+
+	_manager.load_settings()
+	assert_eq(_manager.settings.to_dict(), baseline)
+	assert_eq(changed_keys, [], "a missing file cannot publish settings changes")
+
+	_write_settings_text("[]")
+	_manager.load_settings()
+	assert_eq(_manager.settings.to_dict(), baseline)
+	assert_eq(changed_keys, [], "a non-object settings document is rejected atomically")
 
 
 func test_reset_to_default():
@@ -196,3 +286,12 @@ func test_character_voice_enabled():
 	assert_false(_manager.is_character_voice_enabled("sakura"))
 	# Default for unknown character
 	assert_true(_manager.is_character_voice_enabled("unknown"))
+
+
+func _write_settings_text(contents: String) -> void:
+	var file := FileAccess.open(_settings_path, FileAccess.WRITE)
+	assert_not_null(file, "the synthetic settings fixture must be writable")
+	if file == null:
+		return
+	file.store_string(contents)
+	file.close()

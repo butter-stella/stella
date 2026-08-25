@@ -15,13 +15,15 @@ Godot 的输入传播顺序：`_input` → GUI (`_gui_input`) → `_unhandled_in
 
 ```
 _input:
-  1. 鼠标下有交互控件（Button/Slider）？→ return，让 GUI 处理
-  2. 打字中？→ 完成打字 + set_input_as_handled（消费事件）
-  3. UI 隐藏？→ 恢复 UI + set_input_as_handled
-  4. 否则 → 当前 pending `DialogueRequest.advance()`；若没有 Dialogue owner，广播语义 advance，依次交给当前 presentation JOIN（Stage / dialogue visibility / chapter indicator / loop-SE / BGM）、可跳过 timed wait 或 `@wait click` fallback
+  1. active choice？→ Button/Slider 交给 GUI；非 PLAYING return；其余背景左键只按策略停止 Skip 或 Auto，并消费，绝不进入隐藏/typewriter/wait fallback
+  2. UI 隐藏？→ 恢复 UI + set_input_as_handled
+  3. 鼠标下有交互控件（Button/Slider）？→ return，让 GUI 处理
+  4. 非 PLAYING？→ return；否则执行 Skip/Auto 的既有点击策略
+  5. 普通模式且打字中？→ 实时读取 click_to_complete；true 时原子补全，false 时保持打字状态；两者都 set_input_as_handled（消费事件）
+  6. 否则 → 当前 pending `DialogueRequest.advance()`；若没有 Dialogue owner，广播一次语义 advance，交给当前 Stage/Presentation JOIN、chapter indicator、loop-SE、BGM 或 `@wait click`/可跳过定时 `@wait`
 
 _unhandled_input:
-  键盘（空格/回车/Ctrl）与手柄 A → UI 隐藏时先恢复并消费，否则正常处理
+  active choice 先消费未被 GUI option Button 的 ui_accept 接受的空格/回车/手柄 A；否则键盘与手柄 A 在 UI 隐藏时先恢复并消费输入，再检查 PLAYING，最后进入与左键相同的 live click_to_complete 门槛或推进。Ctrl 沿用独立的快进按下/释放策略
 ```
 
 ### 为什么 `gui_get_hovered_control()` 有效
@@ -47,15 +49,24 @@ _unhandled_input:
 
 普通 Node，挂在 game 场景中。
 
-- `_input`：处理所有鼠标事件（左键推进/完成打字、右键隐藏 UI）
-- `_unhandled_input`：处理键盘事件（隐藏时先恢复 UI；否则空格/回车推进、Ctrl 快进）
+- `_input`：处理所有鼠标事件（左键进入正常推进门槛、右键隐藏 UI）
+- `_unhandled_input`：处理键盘与手柄事件（隐藏时先恢复 UI；否则空格/回车/手柄 A 进入同一推进门槛、Ctrl 快进）
 - 通过 `%DialoguePanel` 访问 DialoguePresenter 的状态
+
+InputHandler 还在所有 story fallback 之前查询当前 choice policy session。Option/toolbar
+Button 和 Slider 继续由 GUI 处理；其余四种 normal advance 输入由 modal choice 消费，
+不会补全文字、恢复隐藏对话或解除 wait，也不会隐式选择第一项。
 
 ### DialoguePresenter (`presentation/dialogue/dialogue_presenter.gd`)
 
-纯展示，零输入处理代码。暴露打字、临时隐藏和 Ctrl 快进状态；InputHandler 通过 `complete_typewriter()` 请求同步完成当前句，由 Presenter 统一取消尚未结束的字符/`{wait}` 计时、应用最终表情并进入 ready 状态，避免输入层直接改字段后留下旧协程。
+纯展示，零输入处理代码。暴露打字、临时隐藏和 Ctrl 快进状态；InputHandler 把事件时的策略传给 `consume_typewriter_advance(allow_completion)`，由 Presenter 在一次同步调用中判断当前是否仍在打字。允许补全时，它统一退休尚未结束的字符基础间隔、标点停顿与 `{wait}` 计时，应用最终表情并进入 ready；不允许时只确认当前 typewriter 拥有这次输入，不修改 visible boundary、generation 或 timer。`complete_typewriter()` 仍是 Skip 和扩展代码使用的强制完成 API，不读取 `click_to_complete`。字符间隔和标点停顿在每条 active SHOW 开始时从 settings-backed cache 一次性快照，因此输入完成与设置变更都不会让旧行的 timer 穿越到下一句。
 
 Presenter 同时观察 `AutoPlayController` / `SkipController` 的状态变化，因此内置工具栏、`StellaAction` 与 `StellaRuntime.toggle_auto_play()` / `toggle_skip()` 共享同一条完成路径：ready 状态开启快进会在允许跳过时立即确认当前 request；`skip_only_read=true` 时 ready 但尚未确认的行仍属未读，快进会停在该行。开启自动播放会进入配置的 voice-wait 与 delay tail，而不是只改变按钮高亮。
+
+Choice SHOW 会同步退休上一句的 Auto/Skip attempt 并清除 Ctrl-held，但不改写关闭
+stop/pause 策略时应保留的用户 intent。菜单内 toolbar 正向切换只更新 future intent；
+Presenter 在 active choice gate 下绝不让旧 ready/typewriter 建立推进 tail。Auto suspension
+解除的 positive effective edge 同样不启动旧 timer，下一条 active dialogue 才创建新 tail。
 
 ### Overlay（save_load/backlog/settings）
 
@@ -65,19 +76,19 @@ Presenter 同时观察 `AutoPlayController` / `SkipController` 的状态变化�
 
 ## 打字完成 vs 推进
 
-AVG 标准行为：打字未完成时点击 = 完成打字（不推进），打字完成后点击 = 推进。
+默认的 AVG 行为是：打字未完成时正常推进输入 = 完成打字（不推进），打字完成后下一次输入 = 推进。`click_to_complete=false` 会把第一条规则改成“只消费输入、继续打字”；自然完成后，下一次输入仍正常推进。
 
-实现：`_input` 调用 Presenter 的 `complete_typewriter()`，由 Presenter 同步取消旧的字符/等待协程、应用最终头像状态，并把当前对话剩余的 `@combine` 舞台操作按声明顺序归约后以 cut 投影。成功后输入层再用 `set_input_as_handled()` 消费事件，因此既不会同时推进，也不会留下跨到下一句的 Tween。仅完成打字不会把该行标为已读；`DialogueHandler` 在当前 request 的 `DialogueActivation` 被正常确认、且 engine/context owner 仍有效后写入已读记录，中止则保持未读并终止当前 context，因此无界面执行也遵守相同语义。Presenter 的输入、Auto 与 Skip 都调用当前 `DialogueRequest.advance()`；Core 提交已读后先发送带 activation identity 的内建完成事件，再广播无参数 `advance_requested` 作为扩展/音频兼容通知。若 Presenter 没有 pending dialogue activation，输入层改发该无参通知以解除 `@wait click`。typed owner 被新 SHOW、hard hide 或生命周期边界替换时，Presenter 会在清除其可达性前 `abort()`，不会留下只能由旧 UI 完成的 Core waiter；若 abort 回调同步发布更新的 SHOW/HIDE，使正在接受的外层 request 失去 current/queue 所有权，该 incoming request 也会被明确 abort。扩展直接广播旧信号不会完成任何 DialogueHandler waiter，也不会误推进另一个 activation。
+实现：左键、Space、Enter 和手柄 A 每次进入正常推进路径时都重新读取 `click_to_complete`，不会对 active line 做策略快照。Presenter 的原子 gate 返回“该 typewriter 是否消费了输入”：`true` 策略会同步取消旧的字符/等待协程、应用最终头像状态，并把当前对话剩余的 `@combine` 舞台操作按声明顺序归约后以 cut 投影；`false` 策略保持所有打字状态。两种结果都由输入层立即 `set_input_as_handled()`，绝不落入 owner/global advance；只有 gate 表明已经 ready 时，才确认当前 request 或发送兼容 advance，并同样消费事件。UI 隐藏恢复、Button/Slider、非 PLAYING，以及左键的 Skip/Auto 策略仍先于这个门槛处理。仅完成打字不会把该行标为已读；`DialogueHandler` 在当前 request 的 `DialogueActivation` 被正常确认、且 engine/context owner 仍有效后写入已读记录，中止则保持未读并终止当前 context，因此无界面执行也遵守相同语义。Presenter 的输入、Auto 与 Skip 都调用当前 `DialogueRequest.advance()`；Core 提交已读后先发送带 activation identity 的内建完成事件，再广播无参数 `advance_requested` 作为扩展/音频兼容通知。若 Presenter 没有 pending dialogue activation，输入层改发该无参通知，交给当前 Director-owned blocker 或 `@wait click`/`skippable=true` 的定时等待。WaitHandler 与各 Presenter 都用 dispatch serial 拒绝旧 signal tail，因此一次真实推进最多完成一个 blocking command。typed owner 被新 SHOW、hard hide 或生命周期边界替换时，Presenter 会在清除其可达性前 `abort()`，不会留下只能由旧 UI 完成的 Core waiter；若 abort 回调同步发布更新的 SHOW/HIDE，使正在接受的外层 request 失去 current/queue 所有权，该 incoming request 也会被明确 abort。扩展直接广播旧信号不会完成任何 DialogueHandler waiter，也不会误推进另一个 activation。
 
 ## Chapter indicator fade 与一次输入边界
 
-当没有 pending dialogue owner、当前 sealed Director JOIN 含有 `@chapter_indicator ... transition=fade` 时，普通左键、Space 和 Enter 仍走同一 `advance_requested` 语义：只把这个 owner 的 exact receipts snap 到 authored final state，并消费该次输入。toolbar Skip 开启也只 finish 当前 exact owner；Auto 状态本身不会自动结束 indicator。
+当没有 pending dialogue owner、当前 sealed Director JOIN 含有 `@chapter_indicator ... transition=fade` 时，普通左键、Space、Enter 和手柄 A 仍走同一 `advance_requested` 语义：只把这个 owner 的 exact receipts snap 到 authored final state，并消费该次输入。toolbar Skip 开启也只 finish 当前 exact owner；Auto 状态本身不会自动结束 indicator。
 
 每个 Presenter 在接受 request 时记录 `SignalBus` 的 advance dispatch serial。若第一位 Presenter 的 acknowledgement 同步推进引擎并创建下一条 indicator，后一位 Presenter 收到的仍是旧 signal tail；新 request 的接受 serial 与当前 dispatch 相同，因此它必须拒绝这次旧 tail。结果是一次 physical/semantic advance 最多完成一个 blocking command，不会把 chained fade 一起跳过。
 
 ## Presentation JOIN 与一次推进边界
 
-当没有 pending Dialogue owner，且当前 blocking presentation 使用 `policy=join` 时，左键、Space 和 Enter 进入同一个 `SignalBus` semantic advance boundary。`PresentationDirector` 只向最新 current 且已 sealed JOIN 的五元 exact receipts 发送 finish；对应 Stage/dialogue/chapter/Audio Presenter 将每个仍属于该 owner 的转场 snap 到 authored endpoint，再只 acknowledgement 一次。同一 advance serial 的旧 signal tail 不得完成同栈新建的下一 batch 或 Dialogue；late timer、input 或 terminal 也不得推进已替换的 tail。
+当没有 pending Dialogue owner，且当前 blocking presentation 使用 `policy=join` 时，左键、Space、Enter 和手柄 A 进入同一个 `SignalBus` semantic advance boundary。`PresentationDirector` 只向最新 current 且已 sealed JOIN 的五元 exact receipts 发送 finish；对应 Stage、dialogue、chapter 或 Audio Presenter 将每个仍属于该 owner 的转场 snap 到 authored endpoint，再只 acknowledgement 一次。同一 advance serial 的旧 signal tail 不得完成同栈新建的下一 batch 或 Dialogue；late timer、input 或 terminal 也不得推进已替换的 tail。
 
 `@dialogue_clear` 是同步的 dialogue-content 生命周期边界，不等待 wall-clock，也不把普通
 advance 当成清空确认。它只使旧 typewriter/voice/inline cue callback 失效；已由独立 Stage

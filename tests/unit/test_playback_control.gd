@@ -289,6 +289,85 @@ func test_auto_play_stop():
 	assert_false(apc.is_active)
 
 
+func test_auto_play_suspension_owners_are_idempotent_and_composable() -> void:
+	var controller := AutoPlayController.new()
+	var effective_edges: Array[bool] = []
+	controller.effective_changed.connect(
+		func(effective: bool) -> void: effective_edges.append(effective))
+	controller.is_active = true
+	assert_true(controller.is_effective())
+
+	controller.acquire_suspension("choice-a")
+	controller.acquire_suspension("choice-a")
+	controller.acquire_suspension("choice-b")
+	assert_false(controller.is_effective())
+	assert_eq(effective_edges, [true, false],
+		"reacquiring the same owner cannot publish a duplicate edge")
+
+	controller.release_suspension("choice-a")
+	controller.release_suspension("choice-a")
+	assert_false(controller.is_effective(),
+		"one owner cannot release another owner's suspension")
+	controller.release_suspension("choice-b")
+	assert_true(controller.is_effective())
+	assert_eq(effective_edges, [true, false, true])
+
+
+func test_auto_play_intent_edges_and_hard_clear_have_stable_order() -> void:
+	var controller := AutoPlayController.new()
+	var events: Array[String] = []
+	controller.active_changed.connect(
+		func(active: bool) -> void:
+			events.append("intent:%s" % active))
+	controller.effective_changed.connect(
+		func(effective: bool) -> void:
+			events.append("effective:%s" % effective))
+
+	controller.toggle()
+	controller.acquire_suspension("choice")
+	controller.stop()
+	controller.toggle()
+	controller.clear_suspensions()
+
+	assert_eq(events, [
+		"intent:true",
+		"effective:true",
+		"effective:false",
+		"intent:false",
+		"intent:true",
+		"effective:true",
+	], "intent publishes before its resulting effective edge")
+	assert_true(controller.is_active)
+	assert_true(controller.is_effective())
+
+	events.clear()
+	controller.acquire_suspension("hard-a")
+	controller.acquire_suspension("hard-b")
+	controller.stop()
+	controller.clear_suspensions()
+	assert_eq(events, ["effective:false", "intent:false"],
+		"stop-before-clear cannot emit a positive hard-boundary effective edge")
+	assert_false(controller.is_active)
+	assert_false(controller.is_effective())
+
+
+func test_auto_play_hard_cleanup_preserves_only_replacement_owner() -> void:
+	var controller := AutoPlayController.new()
+	controller.is_active = true
+	controller.acquire_suspension("retired-choice")
+	controller.acquire_suspension("replacement-choice")
+
+	controller.clear_suspensions_except("replacement-choice")
+
+	assert_false(controller.is_effective(),
+		"the replacement choice keeps its exact suspension")
+	controller.release_suspension("retired-choice")
+	assert_false(controller.is_effective(),
+		"the retired owner was already removed")
+	controller.release_suspension("replacement-choice")
+	assert_true(controller.is_effective())
+
+
 # --- SkipController ---
 
 func test_skip_default_off():

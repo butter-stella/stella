@@ -12,6 +12,7 @@ const _CHARACTER_MAP_SENTINEL := "\u2060"
 const _LIFECYCLE_HIDE := &"hide"
 const _LIFECYCLE_TRANSITION := &"transition"
 const _LIFECYCLE_EXIT := &"exit"
+const _TYPEWRITER_PUNCTUATION := "，。！？；：、,.!?;:…—"
 
 @export_group("Dialogue Presentation")
 ## Advanced scene-side fallback. Normal projects declare profiles in STLA.
@@ -26,7 +27,13 @@ const _LIFECYCLE_EXIT := &"exit"
 var _avatar_texture: TextureRect
 var _avatar_container: Control
 
-var _char_interval: float = 0.03  # seconds per character
+## Settings-backed caches in seconds. Tests and extensions historically assign
+## _char_interval directly; the mirror fields let active SHOW atomically refresh
+## unchanged caches from settings while preserving an explicit field override.
+var _char_interval: float = 0.05
+var _punctuation_pause: float = 0.2
+var _settings_character_interval: float = 0.05
+var _settings_punctuation_pause: float = 0.2
 var _is_typing: bool = false
 var _nvl_text: String = ""  # current NVL page, including the active entry
 var _nvl_render_source: String = ""
@@ -175,6 +182,10 @@ func _ready():
 		push_error(
 			"DialoguePresenter could not join the internal clear registry")
 		return
+	_char_interval = _read_typewriter_setting_seconds("character_interval")
+	_punctuation_pause = _read_typewriter_setting_seconds("punctuation_pause")
+	_settings_character_interval = _char_interval
+	_settings_punctuation_pause = _punctuation_pause
 	SignalBus.dialogue_requested.connect(_on_dialogue_requested)
 	SignalBus.hide_dialogue.connect(_on_hide_dialogue)
 	SignalBus.dialogue_advance_committed.connect(
@@ -190,7 +201,10 @@ func _ready():
 	SignalBus.scenario_ended_event.connect(_on_scenario_ended)
 	StellaRuntime.game_state.state_changed.connect(_on_game_state_changed)
 	StellaRuntime.auto_play.active_changed.connect(_on_auto_play_active_changed)
+	StellaRuntime.auto_play.effective_changed.connect(
+		_on_auto_play_effective_changed)
 	StellaRuntime.skip_controller.active_changed.connect(_on_skip_active_changed)
+	SignalBus.choice_show.connect(_on_choice_modal_started)
 	# Refresh the "回选项" button state whenever execution surfaces a new
 	# command (dialogue or choice). Both signals fire AFTER the engine has
 	# advanced to the command being presented, so can_jump_to_previous_choice()
@@ -230,6 +244,7 @@ func _ready():
 		(SignalBus.get(
 			&"dialogue_visibility_transition_receipts_finish_requested"
 		) as Signal).connect(_on_dialogue_visibility_transition_receipts_finish_requested)
+	SignalBus.settings_changed.connect(_on_typewriter_setting_changed)
 	_config_loader = StellaRuntime.character_config_loader
 	_avatar_container = get_node_or_null("%AvatarContainer")
 	if _avatar_container:
@@ -251,6 +266,95 @@ func _ready():
 	text_label.theme_changed.connect(_on_indicator_layout_changed)
 	text_label.get_v_scroll_bar().value_changed.connect(
 		func(_value): _on_indicator_layout_changed())
+
+
+func _read_typewriter_setting_seconds(key: String) -> float:
+	return _validate_typewriter_setting_seconds(
+		key, StellaRuntime.get_setting(key))
+
+
+func _validate_typewriter_setting_seconds(
+	key: String,
+	value: Variant,
+) -> float:
+	var defaults := GameSettings.new()
+	var fallback_ms: int = (
+		defaults.character_interval
+		if key == "character_interval"
+		else defaults.punctuation_pause
+	)
+	if typeof(value) != TYPE_INT or int(value) < 0:
+		push_warning((
+			"DialoguePresenter: %s must be a non-negative integer in "
+			+ "milliseconds; using GameSettings default %d ms"
+		) % [key, fallback_ms])
+		return float(fallback_ms) / 1000.0
+	return float(value) / 1000.0
+
+
+func _snapshot_typewriter_delay_seconds(
+	key: String,
+	value: Variant,
+) -> float:
+	if (
+		typeof(value) != TYPE_INT
+		and typeof(value) != TYPE_FLOAT
+	) or not is_finite(float(value)) or float(value) < 0.0:
+		var defaults := GameSettings.new()
+		var fallback_ms: int = (
+			defaults.character_interval
+			if key == "character_interval"
+			else defaults.punctuation_pause
+		)
+		push_warning((
+			"DialoguePresenter: cached %s must be a non-negative finite "
+			+ "number of seconds; using GameSettings default %d ms"
+		) % [key, fallback_ms])
+		return float(fallback_ms) / 1000.0
+	return float(value)
+
+
+func _on_typewriter_setting_changed(key: String, value: Variant) -> void:
+	if key == "character_interval":
+		var interval := _validate_typewriter_setting_seconds(key, value)
+		_char_interval = interval
+		_settings_character_interval = interval
+	elif key == "punctuation_pause":
+		var pause := _validate_typewriter_setting_seconds(key, value)
+		_punctuation_pause = pause
+		_settings_punctuation_pause = pause
+
+
+func _reconcile_typewriter_settings_cache() -> void:
+	# SettingsManager reset restores its whole model before publishing individual
+	# keys. A listener connected before this Presenter may synchronously SHOW on
+	# the first notification, so reconcile the authoritative pair at the SHOW
+	# boundary. Preserve fields that tests/extensions changed directly by
+	# comparing them with the last values received from settings.
+	var character_overridden := _char_interval != _settings_character_interval
+	var punctuation_overridden := (
+		_punctuation_pause != _settings_punctuation_pause)
+	var current_character := _read_typewriter_setting_seconds(
+		"character_interval")
+	var current_punctuation := _read_typewriter_setting_seconds(
+		"punctuation_pause")
+	_settings_character_interval = current_character
+	_settings_punctuation_pause = current_punctuation
+	if not character_overridden:
+		_char_interval = current_character
+	if not punctuation_overridden:
+		_punctuation_pause = current_punctuation
+
+
+static func _typewriter_character_delay_seconds(
+	character: String,
+	interval_seconds: float,
+	punctuation_pause_seconds: float,
+) -> float:
+	var delay := interval_seconds
+	if character.length() == 1 and _TYPEWRITER_PUNCTUATION.contains(character):
+		delay += punctuation_pause_seconds
+	return delay
 
 
 func _exit_tree() -> void:
@@ -730,16 +834,42 @@ func _on_auto_play_active_changed(active: bool) -> void:
 		# active controller, but the token prevents a later re-enable from reviving it.
 		_retire_auto_play_attempt()
 		return
+	if StellaRuntime.is_choice_active():
+		# Toolbar intent may change while the menu is open, but the choice remains
+		# the sole blocker. Its successor command creates any new Auto tail.
+		return
 	if not StellaRuntime.game_state.is_playing():
 		# Public facade/actions may configure Auto while a system overlay owns
 		# input. Preserve that public controller state, but never start a dialogue
 		# tail until PLAYING resumes.
 		return
 	if (
-		_dialogue_ready
+		StellaRuntime.is_auto_play_effective()
+		and _dialogue_ready
 		and _indicator_candidate_dialogue_gen == _dialogue_gen
 	):
 		_continue_auto_play_after_ready(_dialogue_gen)
+
+
+func _on_auto_play_effective_changed(effective: bool) -> void:
+	if not is_inside_tree() or is_queued_for_deletion():
+		return
+	# Suspension release must never revive the completed dialogue that preceded
+	# a choice. The next command owns creation of a fresh Auto tail. The negative
+	# edge, however, synchronously retires any timer that was already pending.
+	if not effective:
+		_retire_auto_play_attempt()
+
+
+func _on_choice_modal_started(_prompt: String, _options: Array) -> void:
+	if not StellaRuntime.is_choice_presentation_dispatch_current():
+		return
+	# Choice is a hard blocker even when settings keep Auto/Skip intent active.
+	# Retire the preceding dialogue's timers without entering the normal
+	# cancelled-skip restoration path, which could otherwise schedule Auto again.
+	_ctrl_held = false
+	_skip_pending_dialogue_gen = -1
+	_retire_auto_play_attempt()
 
 
 func _on_skip_pressed():
@@ -752,6 +882,10 @@ func _on_skip_active_changed(active: bool) -> void:
 	_update_toggle_buttons()
 	if not active:
 		cancel_pending_skip()
+		return
+	if StellaRuntime.is_choice_active():
+		# A menu-time toolbar toggle changes future intent only. Never let the old
+		# ready dialogue or typewriter become an advance source behind the choice.
 		return
 	if not StellaRuntime.game_state.is_playing():
 		# Preserve the public controller state while an overlay owns input. The
@@ -825,7 +959,7 @@ func _restore_ready_after_cancelled_skip(gen: int) -> void:
 	# Public callers can activate auto-play while a toolbar/Ctrl skip delay is
 	# pending. The skip controller then stops, so this completed line must enter
 	# the normal auto tail instead of leaving an active Auto toggle stranded.
-	if StellaRuntime.is_auto_playing():
+	if StellaRuntime.is_auto_play_effective():
 		_continue_auto_play_after_ready(gen)
 
 
@@ -850,8 +984,20 @@ func complete_typewriter() -> bool:
 		return true
 	_indicator_candidate_dialogue_gen = gen
 	_mark_dialogue_ready_for_indicator(gen)
-	if StellaRuntime.is_auto_playing():
+	if StellaRuntime.is_auto_play_effective():
 		_continue_auto_play_after_ready(gen)
+	return true
+
+
+## Consume one normal advance input at the active typewriter boundary.
+## The caller supplies the live input policy: disabled completion still owns
+## the input, but leaves every typewriter field and outstanding timer intact.
+## Forced callers such as Skip continue to use complete_typewriter() directly.
+func consume_typewriter_advance(allow_completion: bool) -> bool:
+	if not _is_typing:
+		return false
+	if allow_completion:
+		complete_typewriter()
 	return true
 
 
@@ -920,7 +1066,7 @@ func _on_settings_pressed():
 
 func _is_toggle_active(btn_id: String) -> bool:
 	match btn_id:
-		"auto": return StellaRuntime.is_auto_playing()
+		"auto": return StellaRuntime.auto_play.is_active
 		"skip": return StellaRuntime.is_skipping()
 	return false
 
@@ -1213,6 +1359,14 @@ func _show_dialogue_now(
 	uses_stla_presentation: bool,
 	custom_effect_registry: Dictionary,
 ) -> void:
+	# Settings changes may arrive while this coroutine is active. Snapshot both
+	# delays at the active SHOW boundary so the whole line has one deterministic
+	# timing policy; a later line observes the updated caches.
+	_reconcile_typewriter_settings_cache()
+	var line_character_interval := _snapshot_typewriter_delay_seconds(
+		"character_interval", _char_interval)
+	var line_punctuation_pause := _snapshot_typewriter_delay_seconds(
+		"punctuation_pause", _punctuation_pause)
 	var stla_mode_profile: DialogueModeProfile = (
 		DialogueModeProfile.from_dictionary(
 			stla_profile_data, stla_profile_provenance)
@@ -1500,7 +1654,8 @@ func _show_dialogue_now(
 	# fake typewriter delay or corrupt an accumulated NVL entry boundary.
 	var total_new_chars := maxi(
 		0, text_label.get_total_character_count() - start_visible)
-	var current_char_interval := _char_interval
+	var parsed_text_snapshot := text_label.get_parsed_text()
+	var current_char_interval := line_character_interval
 	for i in range(total_new_chars):
 		if not _is_typing:
 			break
@@ -1539,8 +1694,19 @@ func _show_dialogue_now(
 
 		text_label.visible_characters = start_visible + i + 1
 
-		if current_char_interval > 0.0:
-			await get_tree().create_timer(current_char_interval).timeout
+		var parsed_index: int = int(start_visible) + i
+		var revealed_character: String = (
+			parsed_text_snapshot.substr(parsed_index, 1)
+			if parsed_index < parsed_text_snapshot.length()
+			else ""
+		)
+		var character_delay: float = _typewriter_character_delay_seconds(
+			revealed_character,
+			current_char_interval,
+			line_punctuation_pause,
+		)
+		if character_delay > 0.0:
+			await get_tree().create_timer(character_delay).timeout
 			if gen != _dialogue_gen:
 				return
 	if gen != _dialogue_gen:
@@ -1589,14 +1755,15 @@ func _show_dialogue_now(
 
 	# Auto-play: wait for the voice queue to drain all segments, then advance.
 	# Click/keyboard completion calls the same tail with its replacement gen.
-	if StellaRuntime.is_auto_playing():
+	if StellaRuntime.is_auto_play_effective():
 		await _continue_auto_play_after_ready(gen)
 
 
 func _continue_auto_play_after_ready(gen: int) -> void:
 	if (
 		gen != _dialogue_gen
-		or not StellaRuntime.is_auto_playing()
+		or not StellaRuntime.is_auto_play_effective()
+		or StellaRuntime.is_choice_active()
 		or not StellaRuntime.game_state.is_playing()
 	):
 		return
@@ -1639,7 +1806,8 @@ func _continue_auto_play_after_ready(gen: int) -> void:
 		return
 	_auto_pending_dialogue_gen = -1
 	_auto_pending_attempt = -1
-	if StellaRuntime.is_auto_playing() \
+	if StellaRuntime.is_auto_play_effective() \
+		and not StellaRuntime.is_choice_active() \
 		and StellaRuntime.game_state.is_playing():
 		request_current_dialogue_advance()
 
@@ -1937,7 +2105,7 @@ func _on_game_state_changed(from_state: int, to_state: int) -> void:
 			# A facade/action can be toggled while a system overlay is open. It must
 			# remain inert there, then enter the same ready/typewriter path as the
 			# built-in toolbar once gameplay owns input again.
-			if StellaRuntime.is_auto_playing():
+			if StellaRuntime.is_auto_play_effective():
 				_on_auto_play_active_changed(true)
 			if StellaRuntime.is_skipping():
 				_on_skip_active_changed(true)

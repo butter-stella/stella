@@ -2,12 +2,23 @@ extends GutTest
 ## Tests for dialogue box avatar feature.
 
 var _game_scene: Node
+var _original_character_interval: Variant
+var _original_punctuation_pause: Variant
 
 
 func before_each():
+	_original_character_interval = StellaRuntime.get_setting("character_interval")
+	_original_punctuation_pause = StellaRuntime.get_setting("punctuation_pause")
 	_game_scene = load("res://addons/stella/scenes/game.tscn").instantiate()
 	add_child_autoqfree(_game_scene)
 	await get_tree().process_frame
+
+
+func after_each() -> void:
+	StellaRuntime.settings_manager.set_value(
+		"character_interval", _original_character_interval)
+	StellaRuntime.settings_manager.set_value(
+		"punctuation_pause", _original_punctuation_pause)
 
 
 func _get_presenter():
@@ -199,6 +210,94 @@ func test_speed_effect_persists_until_another_speed_effect() -> void:
 	await get_tree().create_timer(0.02).timeout
 	assert_eq(presenter.text_label.visible_characters, 3)
 	presenter.complete_current_dialogue()
+
+
+func test_typewriter_snapshots_character_interval_for_the_active_line() -> void:
+	var presenter = _get_presenter()
+	StellaRuntime.settings_manager.set_value("character_interval", 100)
+	StellaRuntime.settings_manager.set_value("punctuation_pause", 0)
+	SignalBus.show_dialogue.emit(
+		"",
+		[{"text": "AB", "voice": ""}],
+		"adv",
+	)
+	await get_tree().process_frame
+	assert_true(presenter._is_typing)
+	assert_eq(presenter.text_label.visible_characters, 1)
+
+	StellaRuntime.settings_manager.set_value("character_interval", 0)
+	await get_tree().create_timer(0.04).timeout
+	assert_eq(presenter.text_label.visible_characters, 1,
+		"a direct setting change must not alter the active SHOW snapshot")
+	assert_true(await wait_until(
+		func(): return not presenter._is_typing,
+		0.3,
+		"the 100ms active-line snapshot completes",
+	))
+
+	SignalBus.show_dialogue.emit(
+		"",
+		[{"text": "CD", "voice": ""}],
+		"adv",
+	)
+	await get_tree().process_frame
+	assert_false(presenter._is_typing,
+		"the next active SHOW snapshots the new zero interval")
+	assert_eq(presenter.text_label.visible_characters, -1)
+
+
+func test_typewriter_advance_policy_can_consume_without_forced_completion() -> void:
+	var presenter = _get_presenter()
+	presenter.text_label.text = "Typing"
+	presenter.text_label.visible_characters = 1
+	presenter._is_typing = true
+	var generation_before: int = presenter._dialogue_gen
+
+	assert_true(presenter.consume_typewriter_advance(false),
+		"a typing line consumes normal input even when completion is disabled")
+	assert_true(presenter._is_typing)
+	assert_eq(presenter.text_label.visible_characters, 1)
+	assert_eq(presenter._dialogue_gen, generation_before,
+		"disabled completion cannot retire or replace the active generation")
+
+	assert_true(presenter.consume_typewriter_advance(true))
+	assert_false(presenter._is_typing,
+		"the same gate may force completion when the live policy allows it")
+	assert_eq(presenter.text_label.visible_characters, -1)
+	assert_false(presenter.consume_typewriter_advance(false),
+		"a ready line is not owned by the typewriter gate")
+
+
+func test_punctuation_pause_is_additive_and_ordinary_text_has_no_pause() -> void:
+	var presenter = _get_presenter()
+	StellaRuntime.settings_manager.set_value("character_interval", 0)
+	StellaRuntime.settings_manager.set_value("punctuation_pause", 80)
+	SignalBus.show_dialogue.emit(
+		"",
+		[{"text": "A。B", "voice": ""}],
+		"adv",
+	)
+	await get_tree().process_frame
+	assert_true(presenter._is_typing)
+	assert_eq(presenter.text_label.visible_characters, 2,
+		"zero interval reveals through punctuation before its extra pause")
+	await get_tree().create_timer(0.04).timeout
+	assert_eq(presenter.text_label.visible_characters, 2,
+		"punctuation contributes its own delay after becoming visible")
+	assert_true(await wait_until(
+		func(): return not presenter._is_typing,
+		0.2,
+		"punctuation-delayed line completes",
+	))
+
+	SignalBus.show_dialogue.emit(
+		"",
+		[{"text": "ABC", "voice": ""}],
+		"adv",
+	)
+	await get_tree().process_frame
+	assert_false(presenter._is_typing,
+		"ordinary characters receive no punctuation pause at zero interval")
 
 
 func test_nvl_accumulation_counts_literal_bracket_text_exactly() -> void:

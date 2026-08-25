@@ -459,6 +459,156 @@ func test_in_game_continue_cancels_retired_choice_generation() -> void:
 		"a retired choice cannot complete the continued dialogue")
 
 
+func test_save_operations_preserve_active_choice_and_playback_policy() -> void:
+	var dialogue := await _instantiate_game_dialogue()
+	var choice_panel: Control = dialogue.get_node("../ChoicePanel")
+	_runtime.set_setting("auto_play_pause_on_choice", true)
+	_runtime.set_setting("skip_stop_on_choice", false)
+	_runtime.auto_play.is_active = true
+	_runtime.skip_controller.is_active = true
+	var choice_connections := SignalBus.choice_selected.get_connections().size()
+	var abort_connections := (
+		SignalBus.engine_abort_requested.get_connections().size())
+	var context := _start_blocking_command(_choice_command())
+	assert_true(choice_panel.visible)
+	assert_true(_runtime.auto_play.is_active)
+	assert_false(_runtime_auto_is_effective(),
+		"the current choice owns an Auto suspension before saving")
+	assert_true(_runtime.skip_controller.is_active)
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections + 1)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1)
+
+	_runtime.save(1)
+	_runtime.quick_save()
+	_runtime.auto_save()
+
+	assert_true(_runtime.save_manager.has_save(1))
+	assert_true(_runtime.has_quick_save())
+	assert_true(_runtime.has_auto_save())
+	assert_false(context.is_cancellation_requested(),
+		"capturing a save is not a context boundary")
+	assert_true(choice_panel.visible,
+		"manual/quick/auto save cannot dismiss the active choice")
+	assert_true(_runtime.auto_play.is_active)
+	assert_false(_runtime_auto_is_effective(),
+		"saving cannot release the exact choice suspension")
+	assert_true(_runtime.skip_controller.is_active,
+		"saving cannot stop retained Skip")
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections + 1)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1)
+
+	context.request_cancellation()
+	await get_tree().process_frame
+	assert_false(_runtime.auto_play.is_active)
+	assert_false(_runtime.skip_controller.is_active)
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections)
+	assert_eq(context.cancellation_requested.get_connections().size(), 0)
+
+
+func test_manual_load_from_active_choice_fail_closes_playback_modes() -> void:
+	await _assert_choice_load_fail_closed(false)
+
+
+func test_quick_load_from_active_choice_fail_closes_playback_modes() -> void:
+	await _assert_choice_load_fail_closed(true)
+
+
+func _assert_choice_load_fail_closed(quick: bool) -> void:
+	var label := "quick load" if quick else "manual load"
+	var dialogue := await _instantiate_game_dialogue()
+	var choice_panel: Control = dialogue.get_node("../ChoicePanel")
+	_prepare_load_snapshot(quick)
+	_runtime.set_setting("auto_play_pause_on_choice", false)
+	_runtime.set_setting("skip_stop_on_choice", false)
+	_runtime.set_setting("auto_play_delay", 10.0)
+	_runtime.set_setting("skip_interval", 10000)
+	_runtime.set_setting("skip_only_read", false)
+	_runtime.auto_play.is_active = true
+	_runtime.skip_controller.is_active = true
+	var choice_connections := SignalBus.choice_selected.get_connections().size()
+	var abort_connections := (
+		SignalBus.engine_abort_requested.get_connections().size())
+	var old_context := _start_blocking_command(_choice_boundary_command())
+	var old_store: VariableStore = old_context.variable_store
+	assert_true(choice_panel.visible)
+	assert_true(_runtime.auto_play.is_active)
+	assert_true(_runtime.skip_controller.is_active)
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections + 1)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1)
+	assert_eq(old_context.cancellation_requested.get_connections().size(), 1)
+	var hide_owners: Array[ScenarioContext] = []
+	var on_hide := func() -> void:
+		hide_owners.append(_runtime.engine.context)
+		SignalBus.choice_selected.emit("old")
+	SignalBus.choice_hide.connect(on_hide, CONNECT_ONE_SHOT)
+	var stale_dialogues: Array[String] = []
+	var on_dialogue := func(request: DialogueRequest) -> void:
+		var text := _dialogue_request_text(request)
+		if text == "must not start":
+			stale_dialogues.append(text)
+	SignalBus.dialogue_requested.connect(on_dialogue)
+
+	var loaded: bool
+	if quick:
+		loaded = await _runtime.quick_load()
+	else:
+		loaded = await _runtime.continue_from_save(1)
+	assert_true(loaded)
+	assert_true(await _wait_for_pending_activation(dialogue))
+	if SignalBus.choice_hide.is_connected(on_hide):
+		SignalBus.choice_hide.disconnect(on_hide)
+	SignalBus.dialogue_requested.disconnect(on_dialogue)
+	var loaded_context: ScenarioContext = _runtime.engine.context
+
+	assert_gte(hide_owners.size(), 1,
+		"%s must publish a hard choice HIDE" % label)
+	for owner in hide_owners:
+		assert_not_same(owner, old_context,
+			"%s transfers engine ownership before choice HIDE" % label)
+	assert_true(old_context.is_cancellation_requested())
+	assert_null(old_store.get_var("leaked"),
+		"synchronous HIDE reentry cannot commit old option effects")
+	assert_eq(stale_dialogues, [],
+		"synchronous HIDE reentry cannot dispatch the old command tail")
+	assert_eq(_scenario_ended_count[0], 0,
+		"synchronous HIDE reentry is cancellation, not normal completion")
+	assert_false(_runtime.auto_play.is_active,
+		"%s cannot carry choice-retained Auto into the new context" % label)
+	assert_false(_runtime.is_auto_playing())
+	assert_false(_runtime.skip_controller.is_active,
+		"%s cannot carry choice-retained Skip into the new context" % label)
+	assert_false(_runtime.is_skipping())
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections)
+	assert_eq(old_context.cancellation_requested.get_connections().size(), 0)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1,
+		"only the loaded dialogue owner remains abortable")
+	SignalBus.choice_selected.emit("old")
+	await get_tree().process_frame
+	assert_false(_runtime.auto_play.is_active,
+		"a late old-choice callback cannot revive Auto after %s" % label)
+	assert_false(_runtime.skip_controller.is_active,
+		"a late old-choice callback cannot revive Skip after %s" % label)
+
+	loaded_context.request_cancellation()
+	await get_tree().process_frame
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections)
+	assert_eq(loaded_context.cancellation_requested.get_connections().size(), 0)
+
+
 func test_in_game_rollback_transfers_owner_before_presenter_hide() -> void:
 	var dialogue := await _instantiate_game_dialogue()
 	_runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
@@ -484,6 +634,264 @@ func test_in_game_rollback_transfers_owner_before_presenter_hide() -> void:
 	assert_eq(_runtime.game_state.current_state, GameStateMachine.State.PLAYING)
 	assert_true(dialogue._current_dialogue_activation.is_pending(),
 		"the restored context remains the final dialogue owner")
+
+
+func test_rollback_from_active_choice_fail_closes_playback_modes() -> void:
+	var dialogue := await _instantiate_game_dialogue()
+	var choice_panel: Control = dialogue.get_node("../ChoicePanel")
+	_runtime.set_setting("auto_play_pause_on_choice", false)
+	_runtime.set_setting("skip_stop_on_choice", false)
+	_runtime.set_setting("auto_play_delay", 10.0)
+	_runtime.set_setting("skip_interval", 10000)
+	_runtime.set_setting("skip_only_read", false)
+	_runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	_runtime.engine.load_scenario(_build_dialogue_choice_scenario())
+	var old_context: ScenarioContext = _runtime.engine.context
+	var old_store: VariableStore = old_context.variable_store
+	var choice_connections := SignalBus.choice_selected.get_connections().size()
+	var abort_connections := (
+		SignalBus.engine_abort_requested.get_connections().size())
+	var cancellation_connections := (
+		old_context.cancellation_requested.get_connections().size())
+	_runtime.engine.run()
+	assert_true(await _wait_for_pending_activation(dialogue))
+	assert_eq(_runtime.backlog_manager.get_entries().size(), 1)
+
+	assert_true(RuntimeTestSupport.advance_dialogue_for_test(get_tree()),
+		"the test explicitly commits the ready dialogue activation")
+	await get_tree().process_frame
+	assert_true(choice_panel.visible,
+		"the authored choice becomes active without a wall-clock Skip race")
+	# The hard-boundary contract is about retiring controller intent owned while
+	# the choice is active. Enable both only after the modal owns execution so the
+	# fixture does not depend on Skip's synchronous ready-line advance behavior.
+	_runtime.auto_play.is_active = true
+	_runtime.skip_controller.is_active = true
+	assert_true(_runtime.auto_play.is_active)
+	assert_true(_runtime.skip_controller.is_active)
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections + 1)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1)
+	var hide_owners: Array[ScenarioContext] = []
+	var on_hide := func() -> void:
+		hide_owners.append(_runtime.engine.context)
+		SignalBus.choice_selected.emit("old")
+	SignalBus.choice_hide.connect(on_hide, CONNECT_ONE_SHOT)
+	var stale_dialogues: Array[String] = []
+	var on_dialogue := func(request: DialogueRequest) -> void:
+		var text := _dialogue_request_text(request)
+		if text == "must not start from stale choice":
+			stale_dialogues.append(text)
+	SignalBus.dialogue_requested.connect(on_dialogue)
+
+	assert_true(_runtime.jump_from_backlog(0))
+	assert_true(await _wait_for_pending_activation(dialogue))
+	if SignalBus.choice_hide.is_connected(on_hide):
+		SignalBus.choice_hide.disconnect(on_hide)
+	SignalBus.dialogue_requested.disconnect(on_dialogue)
+	var restored_context: ScenarioContext = _runtime.engine.context
+
+	assert_gte(hide_owners.size(), 1)
+	for owner in hide_owners:
+		assert_not_same(owner, old_context,
+			"rollback transfers engine ownership before choice HIDE")
+	assert_true(old_context.is_cancellation_requested())
+	assert_null(old_store.get_var("leaked"))
+	assert_eq(stale_dialogues, [])
+	assert_eq(_scenario_ended_count[0], 0)
+	assert_false(_runtime.auto_play.is_active,
+		"rollback cannot release an old choice pause into restored content")
+	assert_false(_runtime.is_auto_playing())
+	assert_false(_runtime.skip_controller.is_active,
+		"rollback cannot retain old choice Skip")
+	assert_false(_runtime.is_skipping())
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections)
+	assert_eq(old_context.cancellation_requested.get_connections().size(),
+		cancellation_connections)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1,
+		"only the restored dialogue owner remains abortable")
+	SignalBus.choice_selected.emit("old")
+	await get_tree().process_frame
+	assert_false(_runtime.auto_play.is_active)
+	assert_false(_runtime.skip_controller.is_active)
+
+	restored_context.request_cancellation()
+	await get_tree().process_frame
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections)
+	assert_eq(restored_context.cancellation_requested.get_connections().size(), 0)
+
+
+func test_return_to_title_from_active_choice_stops_modes_and_late_callbacks() -> void:
+	var dialogue := await _instantiate_game_dialogue()
+	var choice_panel: Control = dialogue.get_node("../ChoicePanel")
+	var original_title_bgm: String = _runtime.config.title_bgm
+	_runtime.config.title_bgm = ""
+	_runtime.set_setting("auto_play_pause_on_choice", true)
+	_runtime.set_setting("skip_stop_on_choice", false)
+	_runtime.auto_play.is_active = true
+	_runtime.skip_controller.is_active = true
+	var choice_connections := SignalBus.choice_selected.get_connections().size()
+	var abort_connections := (
+		SignalBus.engine_abort_requested.get_connections().size())
+	var old_context := _start_blocking_command(_choice_boundary_command())
+	var old_store: VariableStore = old_context.variable_store
+	assert_true(choice_panel.visible)
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections + 1)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections + 1)
+	assert_eq(old_context.cancellation_requested.get_connections().size(), 1)
+	var auto_effective_edges: Array[bool] = []
+	var on_auto_effective := func(effective: bool) -> void:
+		auto_effective_edges.append(effective)
+	var auto_effective_signal := Signal(
+		_runtime.auto_play, &"effective_changed")
+	auto_effective_signal.connect(on_auto_effective)
+	var hide_owners: Array[ScenarioContext] = []
+	var on_hide := func() -> void:
+		hide_owners.append(_runtime.engine.context)
+		SignalBus.choice_selected.emit("old")
+	SignalBus.choice_hide.connect(on_hide, CONNECT_ONE_SHOT)
+	var stale_dialogues: Array[String] = []
+	var on_dialogue := func(request: DialogueRequest) -> void:
+		var text := _dialogue_request_text(request)
+		if text == "must not start":
+			stale_dialogues.append(text)
+	SignalBus.dialogue_requested.connect(on_dialogue)
+
+	_runtime.return_to_title()
+	var title_completed: bool = await wait_until(
+		func() -> bool: return not _runtime._return_to_title_pending,
+		2.0,
+		"return-to-title confirms its deferred scene transaction",
+	)
+	assert_true(title_completed)
+	_runtime.config.title_bgm = original_title_bgm
+	if auto_effective_signal.is_connected(on_auto_effective):
+		auto_effective_signal.disconnect(on_auto_effective)
+	if SignalBus.choice_hide.is_connected(on_hide):
+		SignalBus.choice_hide.disconnect(on_hide)
+	SignalBus.dialogue_requested.disconnect(on_dialogue)
+
+	assert_gte(hide_owners.size(), 1)
+	for owner in hide_owners:
+		assert_null(owner,
+			"return-to-title clears engine ownership before choice HIDE")
+	assert_true(old_context.is_cancellation_requested())
+	assert_null(old_store.get_var("leaked"))
+	assert_eq(stale_dialogues, [])
+	assert_eq(_scenario_ended_count[0], 0)
+	assert_eq(auto_effective_edges, [],
+		"a hard boundary stops intent before clearing the choice token")
+	assert_null(_runtime.engine.context)
+	assert_false(choice_panel.visible)
+	assert_false(_runtime.auto_play.is_active)
+	assert_false(_runtime.is_auto_playing())
+	assert_false(_runtime.skip_controller.is_active)
+	assert_false(_runtime.is_skipping())
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections)
+	assert_eq(old_context.cancellation_requested.get_connections().size(), 0)
+	SignalBus.choice_selected.emit("old")
+	await get_tree().process_frame
+	assert_false(_runtime.auto_play.is_active,
+		"late title-screen callbacks cannot revive Auto")
+	assert_false(_runtime.skip_controller.is_active,
+		"late title-screen callbacks cannot revive Skip")
+	assert_eq(SignalBus.choice_selected.get_connections().size(),
+		choice_connections)
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(),
+		abort_connections)
+
+
+func test_screen_effects_retire_across_manual_and_quick_load_generations() -> void:
+	var fixture: Dictionary = await _instantiate_screen_effect_fixture()
+	var effects: Node = fixture["effects"]
+	var visual_baseline := _capture_effect_visuals(fixture)
+	_runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	_prepare_load_snapshot(false)
+	_runtime.quick_save()
+
+	var manual_retired := _start_effect_pair(effects)
+	assert_true(await _runtime.continue_from_save(1))
+	_assert_effects_neutral(fixture, visual_baseline)
+
+	var quick_retired := _start_effect_pair(effects)
+	effects._finish_shake(manual_retired["shake"])
+	effects._finish_flash(manual_retired["flash"])
+	assert_same(effects._shake_tween, quick_retired["shake"],
+		"manual-load retirees cannot clear a post-load shake")
+	assert_same(effects._flash_tween, quick_retired["flash"],
+		"manual-load retirees cannot clear a post-load flash")
+
+	assert_true(await _runtime.quick_load())
+	_assert_effects_neutral(fixture, visual_baseline)
+	effects._finish_shake(quick_retired["shake"])
+	effects._finish_flash(quick_retired["flash"])
+	_assert_effects_neutral(fixture, visual_baseline)
+
+
+func test_screen_effects_retire_across_rollback_restart_and_title_boundaries() -> void:
+	var effect_connections := SignalBus.effect_requested.get_connections().size()
+	var abort_connections := SignalBus.engine_abort_requested.get_connections().size()
+	var settings_connections := SignalBus.settings_changed.get_connections().size()
+	var fixture: Dictionary = await _instantiate_screen_effect_fixture()
+	var game: Node = fixture["game"]
+	var effects: Node = fixture["effects"]
+	var visual_baseline := _capture_effect_visuals(fixture)
+	_runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	_runtime._last_scenario_path = LOAD_FIXTURE
+	_runtime._prepare_scenario(LOAD_FIXTURE)
+	var rollback_snapshot: Dictionary = _runtime._capture_rollback_snapshot()
+
+	var rollback_retired := _start_effect_pair(effects)
+	_runtime._restore_runtime_from_snapshot(rollback_snapshot)
+	_assert_effects_neutral(fixture, visual_baseline)
+
+	var restart_retired := _start_effect_pair(effects)
+	effects._finish_shake(rollback_retired["shake"])
+	effects._finish_flash(rollback_retired["flash"])
+	assert_same(effects._shake_tween, restart_retired["shake"])
+	assert_same(effects._flash_tween, restart_retired["flash"])
+	_runtime.start_scenario(LOAD_FIXTURE)
+	_assert_effects_neutral(fixture, visual_baseline)
+
+	var title_retired := _start_effect_pair(effects)
+	effects._finish_shake(restart_retired["shake"])
+	effects._finish_flash(restart_retired["flash"])
+	assert_same(effects._shake_tween, title_retired["shake"])
+	assert_same(effects._flash_tween, title_retired["flash"])
+	var original_title_bgm: String = _runtime.config.title_bgm
+	_runtime.config.title_bgm = ""
+	_runtime.return_to_title()
+	var title_completed: bool = await wait_until(
+		func() -> bool: return not _runtime._return_to_title_pending,
+		2.0,
+		"return-to-title confirms its deferred scene transaction",
+	)
+	assert_true(title_completed)
+	_runtime.config.title_bgm = original_title_bgm
+	_assert_effects_neutral(fixture, visual_baseline)
+	effects._finish_shake(title_retired["shake"])
+	effects._finish_flash(title_retired["flash"])
+	_assert_effects_neutral(fixture, visual_baseline)
+
+	game.queue_free()
+	await get_tree().process_frame
+	assert_eq(SignalBus.effect_requested.get_connections().size(), effect_connections,
+		"scene exit releases the presenter effect listener")
+	assert_eq(SignalBus.engine_abort_requested.get_connections().size(), abort_connections,
+		"scene exit and title retirement restore the abort-listener baseline")
+	assert_eq(SignalBus.settings_changed.get_connections().size(), settings_connections,
+		"scene exit releases the presenter settings listener")
 
 
 func test_reset_for_test_invalidates_a_real_dialogue_typewriter() -> void:
@@ -589,6 +997,68 @@ func _instantiate_game_dialogue() -> Control:
 	return dialogue
 
 
+func _instantiate_screen_effect_fixture() -> Dictionary:
+	var game: Node = load("res://addons/stella/scenes/game.tscn").instantiate()
+	add_child_autoqfree(game)
+	await get_tree().process_frame
+	return {
+		"game": game,
+		"effects": game.get_node("ScreenEffects"),
+		"background": game.get_node("BackgroundLayer/ShakeRoot"),
+		"stage": game.get_node("StageLayer/ShakeRoot"),
+	}
+
+
+func _capture_effect_visuals(fixture: Dictionary) -> Dictionary:
+	var background: Control = fixture["background"]
+	var stage: Control = fixture["stage"]
+	return {
+		"background_position": background.position,
+		"background_scale": background.scale,
+		"background_pivot": background.pivot_offset,
+		"stage_position": stage.position,
+		"stage_scale": stage.scale,
+		"stage_pivot": stage.pivot_offset,
+	}
+
+
+func _start_effect_pair(effects: Node) -> Dictionary:
+	SignalBus.effect_requested.emit(
+		"shake", {"intensity": 20.0, "duration": 100.0})
+	SignalBus.effect_requested.emit(
+		"flash", {"color": "red", "duration": 100.0})
+	assert_not_null(effects._shake_tween)
+	assert_not_null(effects._flash_tween)
+	assert_not_null(effects._flash_overlay)
+	return {
+		"shake": effects._shake_tween,
+		"flash": effects._flash_tween,
+		"overlay": effects._flash_overlay,
+	}
+
+
+func _assert_effects_neutral(fixture: Dictionary, baseline: Dictionary) -> void:
+	var effects: Node = fixture["effects"]
+	var background: Control = fixture["background"]
+	var stage: Control = fixture["stage"]
+	assert_null(effects._shake_tween)
+	assert_null(effects._flash_tween)
+	assert_null(effects._flash_overlay)
+	assert_true(effects._shake_targets.is_empty())
+	assert_true(effects._shake_baselines.is_empty())
+	assert_true(effects._shake_motion_baselines.is_empty())
+	assert_true(effects._shake_coverage_baselines.is_empty())
+	assert_true(effects._queued_effect_requests.is_empty())
+	assert_eq(effects._effect_mutation_depth, 0)
+	assert_false(effects.is_processing())
+	assert_eq(background.position, baseline["background_position"])
+	assert_eq(background.scale, baseline["background_scale"])
+	assert_eq(background.pivot_offset, baseline["background_pivot"])
+	assert_eq(stage.position, baseline["stage_position"])
+	assert_eq(stage.scale, baseline["stage_scale"])
+	assert_eq(stage.pivot_offset, baseline["stage_pivot"])
+
+
 func _prepare_load_snapshot(quick: bool) -> void:
 	_runtime._last_scenario_path = LOAD_FIXTURE
 	_runtime._prepare_scenario(LOAD_FIXTURE)
@@ -640,6 +1110,18 @@ func _wait_for_replacement_activation(
 		1.0,
 		"replacement context becomes the final Presenter owner",
 	)
+
+
+func _runtime_auto_is_effective() -> bool:
+	return _runtime.auto_play.is_effective()
+
+
+func _dialogue_request_text(request: DialogueRequest) -> String:
+	var segments := request.get_segments()
+	if segments.is_empty() or not segments[0] is Dictionary:
+		return ""
+	var first_segment: Dictionary = segments[0]
+	return String(first_segment.get("text", ""))
 
 
 func _assert_load_boundary_owner(
@@ -716,6 +1198,20 @@ func _build_two_dialogue_scenario() -> ScenarioData:
 	return data
 
 
+func _build_dialogue_choice_scenario() -> ScenarioData:
+	var data := ScenarioData.new()
+	data.id = "runtime_choice_rollback_policy_test"
+	var scene := SceneData.new()
+	scene.id = "start"
+	scene.commands = [
+		_dialogue_command("snapshot before choice"),
+		_choice_boundary_command(),
+		_dialogue_command("must not start from stale choice"),
+	]
+	data.scenes.append(scene)
+	return data
+
+
 func _build_command_then_dialogue_scenario(command: CommandData) -> ScenarioData:
 	var data := ScenarioData.new()
 	data.id = "runtime_blocking_generation_test"
@@ -750,6 +1246,20 @@ func _choice_command() -> CommandData:
 			"id": "old",
 			"label": "Old",
 			"jump": "must_not_apply",
+			"set": {"leaked": "= 1"},
+		}],
+	}
+	return command
+
+
+func _choice_boundary_command() -> CommandData:
+	var command := CommandData.new()
+	command.type = "choice"
+	command.params = {
+		"prompt": "Retired choice boundary",
+		"options": [{
+			"id": "old",
+			"label": "Old",
 			"set": {"leaked": "= 1"},
 		}],
 	}

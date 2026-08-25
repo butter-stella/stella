@@ -343,7 +343,7 @@ func capture_snapshot() -> Dictionary: ...
 func restore_snapshot(snapshot: Dictionary) -> void: ...
 ```
 
-`SaveManager` 维护 provider 列表，存档时遍历调用 `capture_snapshot()` 聚合为 JSON 写入 `user://saves/save_<slot>.json`，读档时反向恢复。Scenario snapshot 同时保存剧本 ID 与版本化来源 identity；scenario-aware 读取必须二者都与目标 `ScenarioData` 一致，缺少来源 identity 的旧存档由 Runtime 拒绝，不能仅凭同名文件猜测目标。`ScenarioContext` 还只保存 chapter indicator 的 authored visibility `bool`；chapter ID/title 始终从恢复后的执行 cursor 与 `TranslationServer` 重算，Tween、Presenter/Label identity 和 barrier ticket 都不进入 JSON。缺少该 bool 的旧快照按 hidden 恢复，存在但非 bool 的快照在 restore 前原子拒绝。除了变量系统，`PresentationState` 也作为 provider 捕获基础背景、动态舞台层、BGM 与 persistent loop-SE 等表现层状态，实现真正的“所见即所存”。运行中读档、快读或回退会先把 `ScenarioEngine.context` 所有权交给新 context，再发 hard hide/全局 abort 清理旧 Presenter；旧阻塞命令的同步取消因此只能观察到 stale owner，不能把取消误报为 `scenario_ended` 或抢回最终 context。导航会先 invalidate engine run generation，再取消 Director-owned generic blocking presentation waiter；winning context 按 reset-hidden → metadata → cut target → `engine.run()` 的顺序投影，failed/superseded navigation 则 cut 恢复保留 context。
+`SaveManager` 维护 provider 列表，存档时遍历调用 `capture_snapshot()` 聚合为 JSON 写入 `user://saves/save_<slot>.json`，读档时反向恢复。Scenario snapshot 同时保存剧本 ID 与版本化来源 identity；scenario-aware 读取必须二者都与目标 `ScenarioData` 一致，缺少来源 identity 的旧存档由 Runtime 拒绝，不能仅凭同名文件猜测目标。`ScenarioContext` 还只保存 chapter indicator 的 authored visibility `bool`；chapter ID/title 始终从恢复后的执行 cursor 与 `TranslationServer` 重算，Tween、Presenter/Label identity 和 barrier ticket 都不进入 JSON。缺少该 bool 的旧快照按 hidden 恢复，存在但非 bool 的快照在 restore 前原子拒绝。除了变量系统，`PresentationState` 也作为 provider 捕获基础背景、动态舞台层、BGM 与 persistent loop-SE 等表现层状态，实现真正的“所见即所存”。运行中读档、快读或回退会先把 `ScenarioEngine.context` 所有权交给新 context，再只通知转移前捕获的 abort audience，最后 hard hide 旧 Presenter；同步创建的替换 handler 不会收到旧代际的 abort。旧阻塞命令的同步取消因此只能观察到 stale owner，不能把取消误报为 `scenario_ended` 或抢回最终 context。导航会先 invalidate engine run generation，再取消 Director-owned generic blocking presentation waiter；winning context 按 reset-hidden → metadata → cut target → `engine.run()` 的顺序投影，failed/superseded navigation 则 cut 恢复保留 context。
 
 动态舞台层以 `stage_layers: Dictionary` 保存：键是稳定业务 ID，值是经过 `StageLayerState` 归一化的完整 JSON-safe 状态。人物、事件图和其他舞台图片都使用这一份状态，不存在第二套人物快照。`PresentationState` 与 `StagePresenter` 使用同一 reducer，所以 patch 语义不会漂移。JOIN 动画进行中仍可存档；存档只包含已原子提交的 final canonical `stage_layers` 和 scenario cursor，绝不保存 operation、policy、request/batch、receipt、token、generation、Tween、barrier 或 progress，也不新增 in-flight schema。恢复顺序是 cancel old generation → reset + atomic cut canonical target → same-cursor re-dispatch；非 clear 目标已满足时以 no-work 同步完成，且零新 batch/receipt/token/Tween，不重播旧动画。clear 仍须经过 typed dispatch 取得 live projection ownership；它以 positive batch、同步 participant apply、零 transition receipt 完成。
 
@@ -354,6 +354,22 @@ BGM 使用同一 `PresentationState` 中的单一 `bgm` stable Dictionary：stop
 ### 2.6 选择系统
 
 选择的本质是「暂停引擎 → 等待玩家做出选择 → 返回选中的 option id」。
+
+`ChoiceHandler` 在发布 `choice_show` 前安装 selection/cancel/abort listener，并向
+`StellaRuntime` 取得一枚 generation-scoped policy session。该 session 对
+`auto_play_pause_on_choice` 与 `skip_stop_on_choice` 各快照一次；菜单显示期间修改设置
+只影响下一次 choice。Auto 的 `is_active` 保留用户 intent，choice token 仅把 effective
+状态暂停；有效选项的 jump/set 全部提交后才释放 exact token，且 positive effective
+edge 不会复活上一句的 Auto timer，下一命令自行建立新 tail。Skip 的 stop 策略则是
+同步且不恢复；关闭该策略时 intent 虽保留，choice 仍是 hard blocker。
+
+只有当前 options 中首个匹配 id/label 的 `choice_selected` 能完成命令。未知、重复和
+迟到 payload 都不会断开当前 listener 或提交 effects。context cancel、读档、回退、
+restart、abort 与返回标题会先使 policy generation 失效，再转移/清空
+`ScenarioEngine.context` owner；旧 handler 的取消 listener 全部释放后才 fail-closed
+停止 Auto/Skip、清 retired token 并发布旧 presentation HIDE。替换 context 若在取消
+回调中同步建立 fresh choice，其 exact token 与 UI generation 都不会被旧 cleanup
+清除。普通存档不会取消当前 choice。
 
 ```gdscript
 class_name ChoicePresenter extends Control
@@ -398,8 +414,13 @@ wrapper 不等待表现动画结束。`@parallel` 不 join 任何转场，不是
 
 ### 3.1 对话系统
 
-- 打字机效果：`RichTextLabel` + `visible_characters` 逐字递增
-- 内联标签：`{wait:500}` 暂停 500ms、`{speed:30}` 将每字间隔设为 30ms
+- 打字机效果：`RichTextLabel` + `visible_characters` 逐字递增。每条真正进入
+  active SHOW 的对话一次性快照 `character_interval` 与
+  `punctuation_pause`（毫秒设置转为秒）；每个 parsed-text codepoint 的计时为
+  当前基础间隔，加上固定集合 `，。！？；：、,.!?;:…—` 的可选标点停顿。
+  当前行不观察后续设置变更，排队行则到激活时才快照
+- 内联标签：`{wait:500}` 在字符前独立暂停 500ms、`{speed:30}` 将当前行后续
+  每字基础间隔设为 30ms；二者与标点停顿按时间相加
 - 句内头像提示：`[expr:surprised]` 在打字到达该位置时更新对话框头像，不修改舞台层
 - Backlog 数据由 Core 层 `BacklogManager` 管理，UI 层订阅显示；Core 在写入时移除 expression/effect marker 与 BBCode 格式标签，并把换行、段落、列表转换成适合普通 Button 的可见纯文本
 
@@ -421,7 +442,7 @@ Profile 可声明 panel anchors/offsets、文字矩形与 margin、对齐/行距
 
 NVL 的前缀和分隔符属于表现元数据：Presenter 按“记录间分隔符 → 当前记录前缀 → 可选角色名 → 正文”拼装屏幕累积文本，并把新增装饰字符纳入打字机可见字符偏移。纯文本页通过 `RichTextLabel.append_text()` 只解析新增 entry 并沿用累计的 parsed-character boundary；含 BBCode 或存档重建时才进入完整引擎解析路径。它不会把这些装饰写回 Core 的 segment、CommandData 正文或 Backlog 记录，`@combine` 也只构成一条 NVL 记录。Backlog 保存正文的玩家可见纯文本：BBCode 只贡献可见字符、段落/列表结构，不保存格式标签；expression 与 typewriter effect marker 也不保存。离开 NVL 会清除 ScenarioContext 的 canonical page；运行时 hard hide 会退休 Presenter 的派生显示状态，并 abort 仍由该 UI 持有的 typed owner；存读档或 Backlog 回退仍可从同一 page key 的 authored entries 恢复完整当前页。右键临时隐藏 UI 不会清页。`DialoguePresentationProfile` Resource 和 `set_presentation_profile()` 只保留为高级程序化兜底，不是普通项目的必需入口。完整语法见 [DSL.md](DSL.md#33-对话框模式切换)。
 
-Advance indicator 同样只存在于 Presentation 层。Canonical `DialogueRequest` 在 Core → Presentation 主链中自包含 Profile、provenance、NVL page state、内容版本化的 authored identity，以及只属于该命令激活的 `DialogueActivation`。Presenter、自动播放、快进和无界面 consumer 必须调用当前 request 的 `advance()` / `abort()`；同步 SHOW 回调也不会丢确认。`ScenarioContext` 同时校验 engine owner 与 active activation；context 替换会取消旧 activation，同一 context 的重入则拒绝新 activation，避免窃取仍在执行的 command owner。Presenter 对 current、queued、incoming 和 lifecycle 使用同一退休原则：typed SHOW 被更新的 typed/raw SHOW 替换、被 hard hide、场景切换或节点退出时，都会在丢失引用前明确 abort 尚未完成的 activation；清引用先于回调，因此同步发布的新 owner 不会被旧退休路径误取消。如果退休 A 的回调同步发布 C 并使外层 incoming B 失去接受资格，B 也必须在确认自己不属于 current/queue 后 abort，不能留下 pending Handler。正常推进先验证 owner、写入已读并释放 owner，再发送带 activation ID 的 `dialogue_advance_committed` 给内建 Presenter，最后广播无参数 `advance_requested` 兼容通知；因此兼容 listener 的同步重入不能改变提交结果，旧通知也不能 finalize 另一条 typed request。`request.abort()` 会终止当前 context，不会被 Engine 当作成功完成而跳到下一条。没有 pending dialogue owner 时，输入层会退回无参通知，以解除 `@wait click`。公开三参数 `show_dialogue` 与无参数 `advance_requested` 仍是兼容 adapter，raw advance 不拥有 DialogueHandler 的命令完成权。文字完成后等待布局边界（threaded label 等到排版完成并跨过一次完整绘制帧），再使用一个透明、非交互且不改动 live label 状态的 `RichTextLabel` 镜像；镜像使用相同 BBCode、theme、尺寸与滚动条占宽，并以 no-op `RichTextEffect` 从 Godot 最终 glyph transform 捕获逻辑末端。纯文本 NVL 复用镜像并只追加新条目；BBCode、自定义效果或布局输入变化会触发完整重建。由此 `[indent]`、列表前缀、段落对齐、BiDi shaping 与内部滚动条占宽都由引擎本身计算，纵向行度量、滚动位置和裁剪可见范围再由 live label 校验。动态 RichTextEffect 在每次 ready/reflow 边界采样一次，marker 在该 ready 周期内保持稳定。一个懒创建的 holder 在 ADV、NVL 和 overlay 间复用并负责 `none/pulse/bob` 动画，切换 source 时才替换内容，Presenter 退出树时终止 tween；helper 的 mutation revision 保证自定义 `set_advance_ready()` 同步重入时以新 SHOW/HIDE 为准。marker 从不拼入 `RichTextLabel.text`，因此也不会进入 segment、Backlog 或存档；系统 overlay 和右键 soft hide 保留 ready 状态，而对话式 `@overlay off` 由前一行的 advance 同步隐藏。
+Advance indicator 同样只存在于 Presentation 层。Canonical `DialogueRequest` 在 Core → Presentation 主链中自包含 Profile、provenance、NVL page state、内容版本化的 authored identity，以及只属于该命令激活的 `DialogueActivation`。Presenter、自动播放、快进和无界面 consumer 必须调用当前 request 的 `advance()` / `abort()`；同步 SHOW 回调也不会丢确认。`ScenarioContext` 同时校验 engine owner 与 active activation；context 替换会取消旧 activation，同一 context 的重入则拒绝新 activation，避免窃取仍在执行的 command owner。Presenter 对 current、queued、incoming 和 lifecycle 使用同一退休原则：typed SHOW 被更新的 typed/raw SHOW 替换、被 hard hide、场景切换或节点退出时，都会在丢失引用前明确 abort 尚未完成的 activation；清引用先于回调，因此同步发布的新 owner 不会被旧退休路径误取消。如果退休 A 的回调同步发布 C 并使外层 incoming B 失去接受资格，B 也必须在确认自己不属于 current/queue 后 abort，不能留下 pending Handler。正常推进先验证 owner、写入已读并释放 owner，再发送带 activation ID 的 `dialogue_advance_committed` 给内建 Presenter，最后广播无参数 `advance_requested` 兼容通知；因此兼容 listener 的同步重入不能改变提交结果，旧通知也不能 finalize 另一条 typed request。`request.abort()` 会终止当前 context，不会被 Engine 当作成功完成而跳到下一条。没有 pending dialogue owner 时，输入层会退回无参通知，以解除 `@wait click` 或声明了 `skippable=true` 的定时 `@wait`。公开三参数 `show_dialogue` 与无参数 `advance_requested` 仍是兼容 adapter，raw advance 不拥有 DialogueHandler 的命令完成权。文字完成后等待布局边界（threaded label 等到排版完成并跨过一次完整绘制帧），再使用一个透明、非交互且不改动 live label 状态的 `RichTextLabel` 镜像；镜像使用相同 BBCode、theme、尺寸与滚动条占宽，并以 no-op `RichTextEffect` 从 Godot 最终 glyph transform 捕获逻辑末端。纯文本 NVL 复用镜像并只追加新条目；BBCode、自定义效果或布局输入变化会触发完整重建。由此 `[indent]`、列表前缀、段落对齐、BiDi shaping 与内部滚动条占宽都由引擎本身计算，纵向行度量、滚动位置和裁剪可见范围再由 live label 校验。动态 RichTextEffect 在每次 ready/reflow 边界采样一次，marker 在该 ready 周期内保持稳定。一个懒创建的 holder 在 ADV、NVL 和 overlay 间复用并负责 `none/pulse/bob` 动画，切换 source 时才替换内容，Presenter 退出树时终止 tween；helper 的 mutation revision 保证自定义 `set_advance_ready()` 同步重入时以新 SHOW/HIDE 为准。marker 从不拼入 `RichTextLabel.text`，因此也不会进入 segment、Backlog 或存档；系统 overlay 和右键 soft hide 保留 ready 状态，而对话式 `@overlay off` 由前一行的 advance 同步隐藏。
 
 Parser 同时为 Profile 字段生成仅供诊断使用的 provenance registry：Profile 名、STLA 来源路径及每个字段的声明行。DialogueHandler 按当前运行时 Profile 名把 Profile 与 provenance 放入 typed `DialogueRequest`；Presenter 在回调首次 `await` 前复制并绑定到 `DialogueModeProfile`。indicator 的运行时警告因此可用 Profile + 字段声明行 + indicator 资源路径作为去重和定位键，并附带修复动作；多个同模式 Profile 不会互相吞掉诊断。公开三参数 `show_dialogue` 仅作为边缘兼容 adapter，不是内建 metadata 主链；诊断数据不进入 segment、Backlog 或存档。
 
@@ -431,7 +452,7 @@ Core → Presentation 的 canonical 对话与语音链均使用只读 typed DTO�
 - `[expr:surprised]` 等句内标记随打字进度更新头像
 - 头像状态与舞台层相互独立；舞台人物差分必须通过 `@stage` 更新
 
-`@combine` 的每个 segment 还可携带 `stage_ops`。DialoguePresenter 在对应 voice 开始前原子派发该批舞台操作；点击补全或快进会按顺序归约全句已声明的操作，再以单次 force-cut 投影最终画面。隐藏/读档会递增 dialogue generation，使已取消的 typewriter、voice 或 skip await 不能在新上下文中继续推进。
+`@combine` 的每个 segment 还可携带 `stage_ops`。DialoguePresenter 在对应 voice 开始前原子派发该批舞台操作；点击补全或快进会按顺序归约全句已声明的操作，再以单次 force-cut 投影最终画面。隐藏/读档会递增 dialogue generation，使已取消的字符基础间隔、标点停顿、内联 wait、voice 或 skip await 不能在新上下文中继续推进。
 
 **SD / 插画**与人物、事件图使用同一套命名层 API：
 
@@ -456,6 +477,13 @@ Core → Presentation 的 canonical 对话与语音链均使用只读 typed DTO�
 人物层与其他命名层使用完全相同的生命周期和状态；`kind=character` 只是用途标记，不会启用另一套 presenter、位置槽或存档结构。句内方括号表情只属于对话框头像，舞台上的 `Asset` / `Body` / `Face` 必须通过 `@stage` 更新。
 
 默认场景 CanvasLayer 顺序为 Background=0、Stage=1、Fade=2、UI=3；Stage 初始为空。`@bg` 与 `BackgroundPresenter` 保持独立，负责单一基础背景；StageLayer 承载人物、前景和可独立变换的场景图片。BackgroundLayer 与 StageLayer 都在全屏 `ShakeRoot` 下承载可见内容，`ScreenEffects` 因而能让二者同步震动而不移动 UI。
+
+`ScreenEffects` 在进入场景时快照 `effect_enabled`，随后只订阅该 key 的设置通知。
+内置 shake/flash 请求在队列中携带 policy epoch：禁用边缘先退休旧队列，再通过同一套
+可重入 cleanup 同步恢复 shake baseline、断开 resize/process 并移除 flash；迟到 Tween
+callback 只能匹配自己的旧 token，不能清理重新开启后的新效果。禁用时的请求仍由
+EffectHandler fire-and-forget 发布给 `SignalBus`，但不会进入内置视觉队列。`off`、engine
+abort 与场景退出复用 cleanup；fade、stage、dialogue、audio 和自定义 listener 保持独立。
 
 ### 3.3 背景系统
 
@@ -487,52 +515,62 @@ standalone `@chapter_indicator` 由 parser lowering 为单 child JOIN，和 mixe
 
 ```gdscript
 # core/settings/game_settings.gd
-class_name GameSettings extends Resource
+class_name GameSettings extends RefCounted
 
 # 文字显示
-@export var character_interval: int = 50
-@export var punctuation_pause: int = 200
-@export var click_to_complete: bool = true
-@export var text_window_opacity: float = 0.8
+var character_interval: int = 50  # 每个字符的基础毫秒数，0 合法
+var punctuation_pause: int = 200  # 固定标点 codepoint 的额外毫秒数，0 合法
+var click_to_complete: bool = true
+var text_window_opacity: float = 0.8
 
 # 自动播放
-@export var auto_play_delay: float = 1.5
-@export var auto_play_wait_voice: bool = true
-@export var auto_play_pause_on_choice: bool = true
+var auto_play_delay: float = 1.5
+var auto_play_wait_voice: bool = true
+var auto_play_pause_on_choice: bool = true
+var auto_play_click_interrupt: bool = true
 
 # 快进
-@export var skip_interval: int = 50
-@export var skip_only_read: bool = true
-@export var skip_unread_confirm: bool = true
-@export var skip_stop_on_choice: bool = true
+var skip_interval: int = 50
+var skip_only_read: bool = true
+var skip_unread_confirm: bool = true
+var skip_stop_on_choice: bool = true
 
 # 音量
-@export var master_volume: float = 1.0
-@export var bgm_volume: float = 0.8
-@export var se_volume: float = 1.0
-@export var system_se_volume: float = 1.0
-@export var voice_volume: float = 1.0
-@export var character_voice_volume: Dictionary = {}
-@export var character_voice_enabled: Dictionary = {}
+var master_volume: float = 1.0
+var bgm_volume: float = 0.8
+var se_volume: float = 1.0
+var system_se_volume: float = 1.0
+var voice_volume: float = 1.0
+var character_voice_volume: Dictionary = {}
+var character_voice_enabled: Dictionary = {}
 
 # 语音行为
-@export var voice_continue_on_advance: bool = false
-@export var voice_replay_on_backlog: bool = true
+var voice_continue_on_advance: bool = false
+var voice_replay_on_backlog: bool = true
 
 # 画面
-@export var fullscreen: bool = false
-@export var effect_enabled: bool = true
-
-# 操作
-@export var key_bindings: Dictionary = {}
+var fullscreen: bool = false
+var resolution: String = "1920x1080"
+var effect_enabled: bool = true
 ```
 
-持久化使用 `user://settings.json`，各子系统订阅 `SignalBus.settings_changed` 动态响应。信号的 `value` 始终是触发通知时该设置的完整当前值；字典设置发送独立的完整快照，而不是单角色 patch。监听器可以在同步回调中再次修改设置，后续通知也会重新读取当前值，不会发送已过期的缓存值。
+持久化使用 `user://settings.json`，各子系统订阅 `SignalBus.settings_changed` 动态响应。信号的 `value` 始终是触发通知时该设置的完整当前值；字典设置发送独立的完整快照，而不是单角色 patch。监听器可以在同步回调中再次修改设置，后续通知也会重新读取当前值，不会发送已过期的缓存值。成功的 Dictionary load 会先原子提交完整候选，再按 `GameSettings.to_dict()` 的规范顺序只通知真实变化；省略项保留、未知项忽略。`effect_enabled` 在 direct set 和持久化边界都只接受 bool，持久化候选若违反该类型则整次 load 零写入、零通知。
+
+`character_interval` 与 `punctuation_pause` 都是不设游戏上限的非负整数毫秒，
+`0` 合法。SettingsManager 在 direct set 与持久化 load 的原始值边界校验这两项；
+非法的负数、非整数或非数值会产生 warning，并分别写回 `GameSettings` 的
+50 / 200ms 默认值。JSON load 中可无损表示整数毫秒的浮点数会先归一化为整数，
+保持 save/load roundtrip。DialoguePresenter 在 active SHOW 边界原子协调两项
+settings-backed cache、转换为秒并再次做防御性校验，因此 reset 的同步重入不会
+取得新旧混合值，也绝不创建负时长计时器。direct set、reset 或成功 load 发出的通知
+更新下一行；启动阶段在创建 Presenter 前载入的值用于首行。
 
 ### 3.6 播放控制
 
-- **AutoPlayController**：文本显示完后按设定延迟自动推进，语音播放中暂缓
-- **SkipController**：快进模式，可配置仅跳已读
+- **AutoPlayController**：文本显示完后按设定延迟自动推进，语音播放中暂缓；
+  `is_active` 是用户 intent，choice-owned suspension 只改变 internal effective gate
+- **SkipController**：快进模式，可配置仅跳已读；choice 的 stop policy 关闭时可保留
+  intent，但任何旧 skip timer 都不能穿过 modal boundary
 - **ReadFlagManager**：记录已读对话。新记录使用完整 STLA source path + 规范化、已验证的语义 IR 指纹形成内容版本，再与 scene ID、该版本内递归分配的 command UID 组成结构化、无分隔符碰撞的 v2 身份。空白、注释、等价数字/字符串拼写，以及条件表达式中的等价空白/数值写法和 parser 生成的条件场景行号不改变指纹；插入、删除、移动或修改实际 authored behavior 会切换内容版本，使旧记录 fail-closed 为未读，而不会映射到 UID 相同的新台词。v2 UID 只接受非负且不超过 `2^53 - 1` 的精确 JSON 整数；公开 `mark_read()` / `mark_dialogue_read()` 与 restore 共用这一验证，调用者不能先写入一个随后无法 JSON 恢复的状态。越界或不能精确 Float→int round-trip 的恢复记录会令整份快照原子拒绝。旧 `scenario:scene:index` 格式有固有冒号歧义，恢复时保留 raw key 并只按原字符串兼容查询，不猜测 tuple；未知版本或损坏 v2 会明确拒绝且不部分应用。`DialogueHandler` 仅在当前 engine/context 所有者的 request 被正常 `advance()` 后写入，因此无界面、UI、context 替换与 abort 语义一致。记录随 save provider 进入各存档并在加载时单调合并；当前尚无独立 global progress 文件，所以进程重启后直接“新游戏”不会自动载入其他槽位的已读历史
 - **BacklogManager**：记录对话历史，支持语音重播
 

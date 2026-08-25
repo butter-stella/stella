@@ -9,6 +9,7 @@ const GAME_SCENE := preload("res://addons/stella/scenes/game.tscn")
 const DEMO_GAME_SCENE := preload("res://examples/demo/scenes/game.tscn")
 const FIXTURE_ROOT := "res://tests/fixtures/scenarios/screen_effects"
 const COVERAGE_EPSILON := 0.01
+const EFFECT_SETTINGS_PATH := "user://tests/issue138_effect_settings.json"
 
 var _game: Node2D
 var _background_layer: CanvasLayer
@@ -20,9 +21,14 @@ var _effects: Node
 var _engine: ScenarioEngine
 var _effect_events: Array[Dictionary] = []
 var _effect_listener: Callable
+var _original_settings: Dictionary
+var _original_settings_path: String
 
 
 func before_each() -> void:
+	_original_settings = StellaRuntime.settings_manager.settings.to_dict()
+	_original_settings_path = StellaRuntime.settings_manager.settings_path
+	StellaRuntime.set_setting("effect_enabled", true)
 	_engine = null
 	_game = GAME_SCENE.instantiate()
 	add_child_autoqfree(_game)
@@ -58,6 +64,12 @@ func after_each() -> void:
 	if is_instance_valid(_game):
 		_game.queue_free()
 		await get_tree().process_frame
+	for key in _original_settings:
+		StellaRuntime.settings_manager.set_value(key, _original_settings[key])
+	StellaRuntime.settings_manager.settings_path = _original_settings_path
+	if FileAccess.file_exists(EFFECT_SETTINGS_PATH):
+		DirAccess.remove_absolute(
+			ProjectSettings.globalize_path(EFFECT_SETTINGS_PATH))
 
 
 func test_builtin_shake_coverage_handles_absolute_maximum_at_all_corners() -> void:
@@ -396,6 +408,115 @@ func test_off_fixture_clears_shake_and_flash_together() -> void:
 	assert_eq(_background_shake_root.position, background_baseline)
 	assert_eq(_stage_shake_root.position, stage_baseline)
 	await _finish_fixture()
+
+
+func test_disabled_dsl_effects_complete_without_builtin_mutation_or_replay() -> void:
+	var background_baseline := Vector2(9.0, -4.0)
+	var stage_baseline := Vector2(-6.0, 7.0)
+	_background_shake_root.position = background_baseline
+	_stage_shake_root.position = stage_baseline
+	StellaRuntime.set_setting("effect_enabled", false)
+
+	_start_fixture("disabled_policy.stla")
+	if not await _wait_for_command(2,
+			"suppressed non-blocking effects reach the authored click checkpoint"):
+		return
+
+	assert_eq(_event_types(), ["shake", "flash"],
+		"the setting gates only the built-in presenter, not the public signal")
+	assert_null(_effects._shake_tween)
+	assert_null(_effects._flash_tween)
+	assert_null(_effects._flash_overlay)
+	assert_true(_effects._shake_targets.is_empty())
+	assert_eq(_background_shake_root.position, background_baseline)
+	assert_eq(_stage_shake_root.position, stage_baseline)
+
+	var custom := CommandData.new()
+	custom.type = "effect"
+	custom.params = {
+		"effect_type": "synthetic_project_effect",
+		"args": ["payload"],
+	}
+	StellaRuntime.registry.get_handler("effect").execute(
+		custom, _engine.context)
+	assert_eq(_event_types(), ["shake", "flash", "synthetic_project_effect"],
+		"project-defined effects remain observable while built-ins are disabled")
+	assert_eq(_effect_events[-1]["params"].get("args", []), ["payload"])
+	assert_null(_effects._shake_tween)
+	assert_null(_effects._flash_tween)
+
+	var fade_events: Array[Dictionary] = []
+	var stage_events: Array[Dictionary] = []
+	var on_fade := func(direction: String, duration: float) -> void:
+		fade_events.append({"direction": direction, "duration": duration})
+	var on_stage := func(operations: Array, force_cut: bool) -> void:
+		stage_events.append({
+			"operations": operations.duplicate(true),
+			"force_cut": force_cut,
+		})
+	SignalBus.fade_requested.connect(on_fade)
+	SignalBus.stage_operations_requested.connect(on_stage)
+	var fade := CommandData.new()
+	fade.type = "fade"
+	fade.params = {"direction": "out", "duration": 0.0}
+	StellaRuntime.registry.get_handler("fade").execute(fade, _engine.context)
+	var stage := CommandData.new()
+	stage.type = "stage_layer"
+	stage.params = {
+		"action": "clear",
+		"id": "",
+		"properties": {},
+		"transition": "cut",
+		"duration": 0.0,
+	}
+	StellaRuntime.registry.get_handler("stage_layer").execute(stage, _engine.context)
+	SignalBus.fade_requested.disconnect(on_fade)
+	SignalBus.stage_operations_requested.disconnect(on_stage)
+	assert_eq(fade_events, [{"direction": "out", "duration": 0.0}],
+		"effect suppression cannot consume independent fade commands")
+	assert_eq(stage_events.size(), 1,
+		"effect suppression cannot consume independent stage commands")
+	if not stage_events.is_empty():
+		assert_eq(stage_events[0]["operations"][0].get("action", ""), "clear")
+
+	StellaRuntime.set_setting("effect_enabled", true)
+	assert_null(_effects._shake_tween,
+		"suppressed shake requests are dropped rather than replayed")
+	assert_null(_effects._flash_tween,
+		"suppressed flash requests are dropped rather than replayed")
+	SignalBus.effect_requested.emit("flash", {"color": "blue", "duration": 5.0})
+	assert_not_null(_effects._flash_tween,
+		"a newly authored effect is admitted after re-enable")
+
+
+func test_successful_runtime_load_disables_active_effects_and_reset_readmits_new_ones() -> void:
+	StellaRuntime.settings_manager.settings_path = EFFECT_SETTINGS_PATH
+	StellaRuntime.set_setting("effect_enabled", false)
+	StellaRuntime.settings_manager.save()
+	StellaRuntime.set_setting("effect_enabled", true)
+
+	SignalBus.effect_requested.emit("shake", {"intensity": 20.0, "duration": 5.0})
+	SignalBus.effect_requested.emit("flash", {"color": "red", "duration": 5.0})
+	assert_not_null(_effects._shake_tween)
+	assert_not_null(_effects._flash_tween)
+	StellaRuntime.settings_manager.load_settings()
+
+	assert_false(bool(StellaRuntime.get_setting("effect_enabled")))
+	assert_null(_effects._shake_tween,
+		"the successful load notification synchronously neutralizes active shake")
+	assert_null(_effects._flash_tween,
+		"the successful load notification synchronously neutralizes active flash")
+	assert_null(_effects._flash_overlay)
+	assert_eq(_background_shake_root.position, Vector2.ZERO)
+	assert_eq(_stage_shake_root.position, Vector2.ZERO)
+
+	StellaRuntime.reset_settings()
+	assert_true(bool(StellaRuntime.get_setting("effect_enabled")))
+	SignalBus.effect_requested.emit("shake", {"intensity": 8.0, "duration": 5.0})
+	SignalBus.effect_requested.emit("flash", {"color": "blue", "duration": 5.0})
+	assert_not_null(_effects._shake_tween,
+		"reset re-enables only subsequently requested effects")
+	assert_not_null(_effects._flash_tween)
 
 
 func _start_fixture(file_name: String) -> void:
