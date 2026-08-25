@@ -43,6 +43,9 @@ const MAX_REDRAW_CONTINUOUS_SAMPLE_FETCHES := 64 * 1024 * 1024
 const REDRAW_SOURCE_BYTES_PER_PIXEL := 4
 const REDRAW_BLUR_PASS_BYTES_MOBILE := 12
 const REDRAW_BLUR_PASS_BYTES_COMPATIBILITY := 20
+const MAX_TRANSITION_TARGET_AXIS := 8192
+const MAX_TRANSITION_SNAPSHOT_BYTES := 256 * 1024 * 1024
+const MAX_TRANSITION_TEXTURE_CACHE := 16
 
 static var _next_transition_token: int = 1
 
@@ -68,6 +71,16 @@ var _completion_lifecycle_epoch: int = 1
 var _queued_stage_terminals: Array[Dictionary] = []
 var _flushing_stage_terminals: bool = false
 var _active_stage_operation_request_id: int = 0
+var _stage_participant_capability: RefCounted
+var _transition_registry := StageTransitionRegistry.new()
+var _transition_texture_cache: Dictionary = {}
+var _transition_texture_cache_order: Array[String] = []
+var _active_transition_snapshot_bytes := 0
+var _pending_transition_snapshot_bytes := 0
+var _layer_transition_projections: Dictionary = {}
+var _pending_stage_request_plans: Dictionary = {}
+var _pending_stage_preflight_states: Dictionary = {}
+var _held_stage_transactions: Dictionary = {}
 
 
 func _ready() -> void:
@@ -79,6 +92,14 @@ func _ready() -> void:
 		REDRAW_BOX_VERTICAL_SHADER_PATH
 	) as Shader
 	_redraw_texture_shader = load(REDRAW_TEXTURE_SHADER_PATH) as Shader
+	_stage_participant_capability = StellaRuntime._register_stage_presenter(self)
+	if _stage_participant_capability == null:
+		push_error("StagePresenter: Runtime participant registration failed")
+	SignalBus.stage_validate_requested.connect(_on_stage_validate_requested)
+	SignalBus.stage_accept_requested.connect(_on_stage_accept_requested)
+	SignalBus.stage_apply_readiness_requested.connect(
+		_on_stage_apply_readiness_requested)
+	SignalBus.stage_apply_requested.connect(_on_stage_apply_requested)
 	SignalBus.stage_operations_requested.connect(_on_stage_operations_requested)
 	SignalBus.stage_visuals_reset_requested.connect(
 		_on_stage_visuals_reset_requested
@@ -95,6 +116,41 @@ func _ready() -> void:
 	var viewport := get_viewport()
 	if viewport and not viewport.size_changed.is_connected(_on_viewport_size_changed):
 		viewport.size_changed.connect(_on_viewport_size_changed)
+
+
+func _exit_tree() -> void:
+	_discard_all_held_stage_transactions()
+	StellaRuntime._unregister_stage_presenter(self, _stage_participant_capability)
+	_stage_participant_capability = null
+	# Scene replacement is a terminal presentation boundary. Retire exact owners
+	# before their Tween/viewport nodes disappear so Director never keeps an
+	# unreachable JOIN or FNF receipt owned by this Presenter instance.
+	_completion_lifecycle_epoch += 1
+	_begin_completion_batch()
+	var cancelled := _clear_visuals(false)
+	for identity: Dictionary in cancelled:
+		_publish_stage_transition_terminal(identity, &"cancelled")
+	_end_completion_batch()
+	# Validation owns detached, fully prepared projection trees until the request
+	# either applies or settles. Scene replacement can retire this participant
+	# between those phases, so release those unparented allocations here instead
+	# of relying on a settled callback whose target Node is leaving the tree.
+	for record_value: Variant in _pending_stage_request_plans.values():
+		if not record_value is Dictionary:
+			continue
+		var record: Dictionary = record_value
+		_free_unclaimed_stage_plan(record.get("plan", {}))
+	_pending_stage_request_plans.clear()
+	_pending_transition_snapshot_bytes = 0
+	_pending_stage_preflight_states.clear()
+
+
+func register_transition_provider(provider: StageTransitionProvider) -> bool:
+	return _transition_registry.register_provider(provider)
+
+
+func unregister_transition_provider(kind: StringName) -> bool:
+	return _transition_registry.unregister_provider(kind)
 
 
 ## Return the live Node2D for a named layer id. Primarily useful to custom
@@ -114,7 +170,688 @@ func get_layer_ids() -> Array:
 	return _states.keys()
 
 
+func _on_stage_validate_requested(request: StageOperationRequest) -> void:
+	if (
+		_stage_participant_capability == null
+		or request == null
+		or not request.is_target(self)
+	):
+		return
+	var preflight_base := _stage_preflight_base(request)
+	if not bool(preflight_base.get("valid", false)):
+		SignalBus.reject_stage_request(
+			request,
+			self,
+			_stage_participant_capability,
+			0,
+			String(preflight_base.get(
+				"error", "Stage preflight chain is invalid")),
+		)
+		return
+	var validation := _build_stage_request_plan(
+		request, preflight_base.get("state", {}))
+	if not bool(validation.get("valid", false)):
+		SignalBus.reject_stage_request(
+			request,
+			self,
+			_stage_participant_capability,
+			int(validation.get("operation_index", -1)),
+			String(validation.get("error", "Stage preflight failed")),
+		)
+		return
+	var plan: Dictionary = validation.get("plan", {})
+	if not SignalBus.validate_stage_request(
+		request,
+		self,
+		_stage_participant_capability,
+		plan,
+	):
+		_free_unclaimed_stage_plan(plan)
+		return
+	_advance_stage_preflight_state(request, validation.get("target_state", {}))
+	var request_key := request.get_instance_id()
+	var reserved_bytes := int(plan.get("reserved_bytes", 0))
+	_pending_transition_snapshot_bytes += reserved_bytes
+	_pending_stage_request_plans[request_key] = {
+		"plan": plan,
+		"reserved_bytes": reserved_bytes,
+		"reservation_released": false,
+	}
+	request.settled.connect(
+		_on_stage_request_settled.bind(
+			request_key, request.get_preflight_chain_id()), CONNECT_ONE_SHOT)
+
+
+func _on_stage_accept_requested(request: StageOperationRequest) -> void:
+	if _stage_participant_capability == null or request == null:
+		return
+	var plan := request.get_plan(self)
+	if Vector2(plan.get("viewport_size", Vector2.ZERO)) != _viewport_size():
+		return
+	SignalBus.accept_stage_request(
+		request, self, _stage_participant_capability)
+
+
+func _on_stage_apply_readiness_requested(request: StageOperationRequest) -> void:
+	if (
+		_stage_participant_capability == null
+		or request == null
+		or not request.is_target(self)
+	):
+		return
+	var plan := request.get_plan(self)
+	var apply_validation := _validate_stage_apply_plan(request, plan)
+	if not bool(apply_validation.get("valid", false)):
+		SignalBus.fail_stage_apply(
+			request,
+			self,
+			_stage_participant_capability,
+			int(apply_validation.get("operation_index", 0)),
+			String(apply_validation.get(
+				"error", "sealed Stage plan cannot be applied")),
+		)
+		return
+	SignalBus.mark_stage_apply_ready(
+		request, self, _stage_participant_capability)
+
+
+func _on_stage_apply_requested(request: StageOperationRequest) -> void:
+	if (
+		_stage_participant_capability == null
+		or request == null
+		or not request.is_target(self)
+	):
+		return
+	var apply_validation := _validate_stage_apply_plan(request, request.get_plan(self))
+	if not bool(apply_validation.get("valid", false)):
+		SignalBus.fail_stage_apply(
+			request,
+			self,
+			_stage_participant_capability,
+			int(apply_validation.get("operation_index", 0)),
+			String(apply_validation.get(
+				"error", "sealed Stage plan could not be claimed")),
+		)
+		return
+	SignalBus.mark_stage_apply_claimed(
+		request, self, _stage_participant_capability)
+
+
+## Runtime registration hands this capability-bound callable only to SignalBus.
+## The public apply signal performs claim-only validation; after the whole
+## captured quorum claims, SignalBus invokes this uninterrupted hold/commit/
+## publish chain so ordinary listeners cannot observe or create a half-apply.
+func _run_sealed_stage_transaction_phase(
+	request: StageOperationRequest,
+	capability: RefCounted,
+	phase: StringName,
+) -> bool:
+	if (
+		request == null
+		or capability == null
+		or capability != _stage_participant_capability
+		or not request.is_target(self)
+	):
+		return false
+	var request_key := request.get_instance_id()
+	match phase:
+		&"hold":
+			if _held_stage_transactions.has(request_key):
+				return false
+			_held_stage_transactions[request_key] = {
+				"starts": _queued_transition_starts.size(),
+				"completions": _queued_transition_completions.size(),
+				"terminals": _queued_stage_terminals.size(),
+				"committed": false,
+			}
+			_begin_completion_batch()
+			return true
+		&"commit":
+			if not _held_stage_transactions.has(request_key):
+				return false
+			var plan := request.get_plan(self)
+			var operation_plans: Array = plan.get("operation_plans", [])
+			_release_stage_request_reservation(request_key)
+			var previous_request_id := _active_stage_operation_request_id
+			_active_stage_operation_request_id = request.get_request_id()
+			var apply_result := _apply_operations(
+				request.get_payloads(), request.get_force_cut(), operation_plans)
+			_active_stage_operation_request_id = previous_request_id
+			if not bool(apply_result.get("success", false)):
+				SignalBus.fail_stage_apply(
+					request,
+					self,
+					_stage_participant_capability,
+					int(apply_result.get("operation_index", 0)),
+					String(apply_result.get(
+						"error", "sealed Stage run could not be committed")),
+				)
+				return false
+			(_held_stage_transactions[request_key] as Dictionary)["committed"] = true
+			return SignalBus.acknowledge_stage_apply(
+				request, self, _stage_participant_capability)
+		&"publish":
+			if not _held_stage_transactions.has(request_key):
+				return false
+			_held_stage_transactions.erase(request_key)
+			_end_completion_batch()
+			return true
+		&"abort":
+			return _discard_held_stage_transaction(request_key)
+	return false
+
+
+func _discard_held_stage_transaction(request_key: int) -> bool:
+	var record: Dictionary = _held_stage_transactions.get(request_key, {})
+	if record.is_empty():
+		return true
+	# A rejected or retired transaction cannot publish queued receipt/completion
+	# events. Live private projection is restored either by the current Director
+	# rollback or by the newer lifecycle boundary that retired this participant.
+	_queued_transition_starts.resize(int(record.get(
+		"starts", _queued_transition_starts.size())))
+	_queued_transition_completions.resize(int(record.get(
+		"completions", _queued_transition_completions.size())))
+	_queued_stage_terminals.resize(int(record.get(
+		"terminals", _queued_stage_terminals.size())))
+	_held_stage_transactions.erase(request_key)
+	_end_completion_batch()
+	return not bool(record.get("committed", false))
+
+
+func _discard_all_held_stage_transactions() -> void:
+	for request_key_value: Variant in _held_stage_transactions.keys():
+		_discard_held_stage_transaction(int(request_key_value))
+
+
+func _on_stage_request_settled(request_key: int, preflight_chain_id: int) -> void:
+	_pending_stage_preflight_states.erase(preflight_chain_id)
+	_release_stage_request_reservation(request_key)
+	var record: Dictionary = _pending_stage_request_plans.get(request_key, {})
+	_pending_stage_request_plans.erase(request_key)
+	var plan: Dictionary = record.get("plan", {})
+	_free_unclaimed_stage_plan(plan)
+
+
+func _release_stage_request_reservation(request_key: int) -> void:
+	var record: Dictionary = _pending_stage_request_plans.get(request_key, {})
+	if record.is_empty() or bool(record.get("reservation_released", false)):
+		return
+	_pending_transition_snapshot_bytes = maxi(
+		0,
+		_pending_transition_snapshot_bytes - int(record.get("reserved_bytes", 0)),
+	)
+	record["reservation_released"] = true
+	_pending_stage_request_plans[request_key] = record
+
+
+func _free_unclaimed_stage_plan(plan: Dictionary) -> void:
+	for operation_plan_value: Variant in plan.get("operation_plans", []):
+		if not operation_plan_value is Dictionary:
+			continue
+		for projection_value: Variant in (
+			(operation_plan_value as Dictionary).get("projections", [])):
+			if not projection_value is Dictionary:
+				continue
+			var projection: Dictionary = projection_value
+			if bool(projection.get("consumed", false)):
+				continue
+			var prepared: Dictionary = projection.get("prepared", {})
+			var holder_value: Variant = prepared.get("holder")
+			if holder_value is Node and is_instance_valid(holder_value):
+				var holder := holder_value as Node
+				if holder.is_queued_for_deletion():
+					continue
+				if holder.get_parent() == null:
+					holder.free()
+				continue
+			for root_key in ["source_root", "target_root"]:
+				var root := projection.get(root_key) as Node
+				if is_instance_valid(root) and root.get_parent() == null:
+					root.free()
+
+
+func _stage_preflight_base(request: StageOperationRequest) -> Dictionary:
+	var chain_id := request.get_preflight_chain_id()
+	var run_index := request.get_preflight_run_index()
+	var run_count := request.get_preflight_run_count()
+	if chain_id <= 0 or run_count <= 1:
+		return {"valid": true, "state": _states.duplicate(true)}
+	if run_index == 0:
+		_pending_stage_preflight_states.erase(chain_id)
+		return {"valid": true, "state": _states.duplicate(true)}
+	var record_value: Variant = _pending_stage_preflight_states.get(chain_id)
+	if not record_value is Dictionary:
+		return {
+			"valid": false,
+			"error": "Stage preflight chain is missing its preceding run",
+		}
+	var record: Dictionary = record_value
+	if int(record.get("next_run_index", -1)) != run_index:
+		return {
+			"valid": false,
+			"error": "Stage preflight chain run order is invalid",
+		}
+	var state_value: Variant = record.get("state")
+	if not state_value is Dictionary:
+		return {
+			"valid": false,
+			"error": "Stage preflight chain state is invalid",
+		}
+	return {"valid": true, "state": (state_value as Dictionary).duplicate(true)}
+
+
+func _advance_stage_preflight_state(
+	request: StageOperationRequest,
+	target_state_value: Variant,
+) -> void:
+	var chain_id := request.get_preflight_chain_id()
+	var run_index := request.get_preflight_run_index()
+	var run_count := request.get_preflight_run_count()
+	if chain_id <= 0 or run_count <= 1:
+		return
+	if run_index + 1 >= run_count:
+		_pending_stage_preflight_states.erase(chain_id)
+		return
+	if not target_state_value is Dictionary:
+		_pending_stage_preflight_states.erase(chain_id)
+		return
+	_pending_stage_preflight_states[chain_id] = {
+		"next_run_index": run_index + 1,
+		"state": (target_state_value as Dictionary).duplicate(true),
+	}
+
+
+func _build_stage_request_plan(
+	request: StageOperationRequest,
+	preflight_state_value: Variant = null,
+) -> Dictionary:
+	var viewport_size := _viewport_size()
+	if (
+		not viewport_size.is_finite()
+		or viewport_size.x <= 0.0
+		or viewport_size.y <= 0.0
+	):
+		return {"valid": false, "error": "Stage viewport must have finite positive size"}
+	var axis_limit := _transition_target_axis_limit()
+	if viewport_size.x > axis_limit or viewport_size.y > axis_limit:
+		return {
+			"valid": false,
+			"error": "Stage viewport %dx%d exceeds transition axis limit %d" % [
+				int(viewport_size.x), int(viewport_size.y), axis_limit,
+			],
+		}
+	var operations := request.get_operations()
+	var initial_state: Dictionary = (
+		_states.duplicate(true)
+		if preflight_state_value == null
+		else (preflight_state_value as Dictionary).duplicate(true)
+	)
+	var simulated := initial_state.duplicate(true)
+	var operation_plans: Array = []
+	var planned_bytes := 0
+	for operation_index in range(operations.size()):
+		var operation: StagePresentationOperation = operations[operation_index]
+		var payload := operation.get_payload()
+		if not StageLayerState.validate_operation(payload, false):
+			return {
+				"valid": false,
+				"operation_index": operation_index,
+				"error": "operation failed canonical Stage validation",
+			}
+		var kind := String(payload.get("transition", "cut"))
+		var params: Dictionary = payload.get("transition_params", {})
+		var provider_validation := _transition_registry.validate_transition(
+			kind,
+			params,
+			_load_stage_transition_texture,
+		)
+		if not bool(provider_validation.get("valid", false)):
+			return {
+				"valid": false,
+				"operation_index": operation_index,
+				"error": String(provider_validation.get(
+					"error", "transition provider rejected the operation")),
+			}
+		var before := simulated
+		var reduced := StageLayerState.reduce(simulated, [payload], false)
+		if not reduced is Dictionary:
+			return {
+				"valid": false,
+				"operation_index": operation_index,
+				"error": "operation cannot be reduced",
+			}
+		simulated = (reduced as Dictionary).duplicate(true)
+		var action := String(payload.get("action", ""))
+		var layer_id := String(payload.get("id", ""))
+		var affected_ids: Array[String] = []
+		if action == "clear":
+			var clear_ids := {}
+			for value: Variant in before:
+				clear_ids[String(value)] = true
+			for value: Variant in _layers:
+				clear_ids[String(value)] = true
+			for value: Variant in clear_ids:
+				affected_ids.append(String(value))
+		elif before != simulated:
+			affected_ids.append(layer_id)
+		for affected_id: String in affected_ids:
+			if simulated.has(affected_id):
+				var resource_error := _preflight_stage_state_resources(
+					simulated[affected_id])
+				if not resource_error.is_empty():
+					return {
+						"valid": false,
+						"operation_index": operation_index,
+						"error": resource_error,
+					}
+		var is_projection := StageTransitionSpec.is_projection_effect(kind)
+		var duration := float(payload.get("duration", 0.0))
+		var snapshot_bytes := 0
+		var projection_states: Array = []
+		if (
+			is_projection
+			and not request.get_force_cut()
+			and duration > 0.0
+			and not affected_ids.is_empty()
+		):
+			snapshot_bytes = (
+				int(viewport_size.x) * int(viewport_size.y) * 8
+				* affected_ids.size()
+			)
+			planned_bytes += snapshot_bytes
+			if (
+				_active_transition_snapshot_bytes
+				+ _pending_transition_snapshot_bytes
+				+ planned_bytes
+				> MAX_TRANSITION_SNAPSHOT_BYTES
+			):
+				return {
+					"valid": false,
+					"operation_index": operation_index,
+					"error": (
+						"Stage transition snapshots require %d bytes; active budget is %d bytes"
+						% [
+							_active_transition_snapshot_bytes
+							+ _pending_transition_snapshot_bytes
+							+ planned_bytes,
+							MAX_TRANSITION_SNAPSHOT_BYTES,
+						]
+					),
+				}
+			for affected_id: String in affected_ids:
+				projection_states.append({
+					"layer_id": affected_id,
+					"source_state": (
+						(before[affected_id] as Dictionary).duplicate(true)
+						if before.has(affected_id) else null),
+					"source_live": not before.has(affected_id) and _layers.has(affected_id),
+					"target_state": (
+						(simulated[affected_id] as Dictionary).duplicate(true)
+						if simulated.has(affected_id) else null),
+				})
+		operation_plans.append({
+			"kind": kind,
+			"provider": provider_validation.get("provider"),
+			"provider_plan": (
+				provider_validation.get("plan", {}) as Dictionary).duplicate(true),
+			"snapshot_bytes": snapshot_bytes,
+			"projection_states": projection_states,
+		})
+	var allocated_holders: Array[Node] = []
+	for operation_index in range(operation_plans.size()):
+		var operation_plan: Dictionary = operation_plans[operation_index]
+		var projections: Array = []
+		for snapshot_value: Variant in operation_plan.get("projection_states", []):
+			var snapshot: Dictionary = snapshot_value
+			var layer_id := String(snapshot.get("layer_id", ""))
+			var source_root: Node2D
+			var source_state: Variant = snapshot.get("source_state")
+			if source_state is Dictionary:
+				source_root = _build_transition_snapshot_root(layer_id, source_state)
+			elif bool(snapshot.get("source_live", false)) and _layers.has(layer_id):
+				var live_root := (_layers[layer_id] as Dictionary)["root"] as Node2D
+				source_root = live_root.duplicate(0) as Node2D
+			var target_root: Node2D
+			var target_state: Variant = snapshot.get("target_state")
+			if target_state is Dictionary:
+				target_root = _build_transition_snapshot_root(layer_id, target_state)
+			for root in [source_root, target_root]:
+				if root != null:
+					var snapshot_error := _transition_snapshot_error(root)
+					if not snapshot_error.is_empty():
+						for allocated: Node in allocated_holders:
+							if is_instance_valid(allocated) and allocated.get_parent() == null:
+								allocated.free()
+						for pending_root in [source_root, target_root]:
+							if pending_root != null and pending_root.get_parent() == null:
+								pending_root.free()
+						return {
+							"valid": false,
+							"operation_index": operation_index,
+							"error": snapshot_error,
+						}
+			var provider := operation_plan.get("provider") as StageTransitionProvider
+			var prepared := _prepare_transition_projection(
+				provider,
+				operation_plan.get("provider_plan", {}),
+				source_root,
+				target_root,
+				viewport_size,
+			)
+			if prepared.is_empty():
+				for allocated: Node in allocated_holders:
+					if is_instance_valid(allocated) and allocated.get_parent() == null:
+						allocated.free()
+				for pending_root in [source_root, target_root]:
+					if pending_root != null and pending_root.get_parent() == null:
+						pending_root.free()
+				return {
+					"valid": false,
+					"operation_index": operation_index,
+					"error": "transition provider could not create its sealed material",
+				}
+			allocated_holders.append(prepared["holder"])
+			projections.append({
+				"layer_id": layer_id,
+				"source_root": source_root,
+				"target_root": target_root,
+				"prepared": prepared,
+			})
+		operation_plan.erase("projection_states")
+		operation_plan["projections"] = projections
+	return {"valid": true, "target_state": simulated.duplicate(true), "plan": {
+		"viewport_size": viewport_size,
+		"reserved_bytes": planned_bytes,
+		"expected_before_state": initial_state,
+		"operation_plans": operation_plans,
+	}}
+
+
+func _validate_stage_apply_plan(
+	request: StageOperationRequest,
+	plan: Dictionary,
+) -> Dictionary:
+	if Vector2(plan.get("viewport_size", Vector2.ZERO)) != _viewport_size():
+		return {
+			"valid": false,
+			"operation_index": 0,
+			"error": "sealed Stage viewport changed before apply",
+		}
+	var expected_state_value: Variant = plan.get("expected_before_state")
+	if not expected_state_value is Dictionary or expected_state_value != _states:
+		return {
+			"valid": false,
+			"operation_index": 0,
+			"error": "sealed Stage source state changed before apply",
+		}
+	var operation_plans_value: Variant = plan.get("operation_plans")
+	if (
+		not operation_plans_value is Array
+		or (operation_plans_value as Array).size() != request.get_operations().size()
+	):
+		return {
+			"valid": false,
+			"operation_index": 0,
+			"error": "sealed Stage operation plan count is invalid",
+		}
+	var operation_plans: Array = operation_plans_value
+	for operation_index in range(operation_plans.size()):
+		var operation_plan_value: Variant = operation_plans[operation_index]
+		if not operation_plan_value is Dictionary:
+			return {
+				"valid": false,
+				"operation_index": operation_index,
+				"error": "sealed Stage operation plan is invalid",
+			}
+		var operation_plan: Dictionary = operation_plan_value
+		var transition_kind := String(operation_plan.get("kind", ""))
+		var provider_value: Variant = operation_plan.get("provider")
+		if (
+			StageTransitionSpec.is_projection_effect(transition_kind)
+			and (
+				not provider_value is StageTransitionProvider
+				or not _transition_registry.owns_provider(
+					transition_kind, provider_value as StageTransitionProvider)
+			)
+		):
+			return {
+				"valid": false,
+				"operation_index": operation_index,
+				"error": "sealed Stage transition provider is unavailable at apply",
+			}
+		var projections_value: Variant = operation_plan.get("projections")
+		if not projections_value is Array:
+			return {
+				"valid": false,
+				"operation_index": operation_index,
+				"error": "sealed Stage projection list is invalid",
+			}
+		for projection_value: Variant in projections_value:
+			if not projection_value is Dictionary:
+				return {
+					"valid": false,
+					"operation_index": operation_index,
+					"error": "sealed Stage projection is invalid",
+				}
+			var projection: Dictionary = projection_value
+			if bool(projection.get("consumed", false)):
+				return {
+					"valid": false,
+					"operation_index": operation_index,
+					"error": "sealed Stage projection was already consumed",
+				}
+			var prepared_value: Variant = projection.get("prepared")
+			if not prepared_value is Dictionary:
+				return {
+					"valid": false,
+					"operation_index": operation_index,
+					"error": "sealed Stage projection preparation is invalid",
+				}
+			var prepared: Dictionary = prepared_value
+			var holder_value: Variant = prepared.get("holder")
+			var material_value: Variant = prepared.get("material")
+			if (
+				not holder_value is Node2D
+				or not is_instance_valid(holder_value)
+				or (holder_value as Node2D).is_queued_for_deletion()
+				or (holder_value as Node2D).get_parent() != null
+			):
+				return {
+					"valid": false,
+					"operation_index": operation_index,
+					"error": "sealed Stage projection holder is unavailable at apply",
+				}
+			if (
+				not material_value is ShaderMaterial
+				or not is_instance_valid(material_value)
+				or (material_value as ShaderMaterial).shader == null
+			):
+				return {
+					"valid": false,
+					"operation_index": operation_index,
+					"error": "sealed Stage transition material is unavailable at apply",
+				}
+	return {"valid": true}
+
+
+func _preflight_stage_state_resources(state: Dictionary) -> String:
+	for channel in ["asset", "body", "face"]:
+		var asset_id := String(state.get(channel, "")).strip_edges()
+		if asset_id.is_empty():
+			continue
+		if _load_stage_transition_texture(asset_id) == null:
+			return "Stage %s resource '%s' could not be resolved" % [channel, asset_id]
+	var redraw_value: Variant = state.get("redraw", [])
+	if redraw_value is Array:
+		for effect_value: Variant in redraw_value:
+			if not effect_value is Dictionary:
+				continue
+			var effect: Dictionary = effect_value
+			if String(effect.get("type", "")) != "clip":
+				continue
+			var clip_id := String(effect.get("asset", "")).strip_edges()
+			if not clip_id.is_empty() and _load_stage_transition_texture(clip_id) == null:
+				return "Stage redraw clip resource '%s' could not be resolved" % clip_id
+	return ""
+
+
+func _build_transition_snapshot_root(
+	layer_id: String,
+	state: Dictionary,
+) -> Node2D:
+	var record := _create_layer_record(layer_id)
+	_apply_channels_cut(record, state)
+	var visible := bool(state.get("visible", true))
+	_apply_redraw(record, state, true, false, visible)
+	_apply_transform_cut(record, state)
+	var root := record["root"] as Node2D
+	root.visible = visible
+	(record["composite"] as CanvasGroup).self_modulate.a = clampf(
+		float(state.get("opacity", 1.0)), 0.0, 1.0)
+	return root
+
+
+func _transition_snapshot_error(root: Node2D) -> String:
+	var composite := root.get_node_or_null("Composite") as CanvasGroup
+	if composite == null or not composite.visible:
+		return "Stage transition snapshot could not allocate its sealed projection"
+	return ""
+
+
+func _load_stage_transition_texture(asset_id: String) -> Texture2D:
+	var normalized := asset_id.strip_edges()
+	if normalized.is_empty():
+		return null
+	if _transition_texture_cache.has(normalized):
+		_transition_texture_cache_order.erase(normalized)
+		_transition_texture_cache_order.append(normalized)
+		return _transition_texture_cache[normalized] as Texture2D
+	var texture := _load_stage_texture(normalized)
+	if texture == null:
+		return null
+	_transition_texture_cache[normalized] = texture
+	_transition_texture_cache_order.append(normalized)
+	while _transition_texture_cache_order.size() > MAX_TRANSITION_TEXTURE_CACHE:
+		var retired := _transition_texture_cache_order.pop_front()
+		_transition_texture_cache.erase(retired)
+	return texture
+
+
+func _transition_target_axis_limit() -> int:
+	var rendering_device := RenderingServer.get_rendering_device()
+	if rendering_device == null:
+		return mini(MAX_TRANSITION_TARGET_AXIS, FALLBACK_REDRAW_TARGET_AXIS)
+	return mini(
+		MAX_TRANSITION_TARGET_AXIS,
+		int(rendering_device.limit_get(
+			RenderingDevice.LIMIT_MAX_TEXTURE_SIZE_2D)),
+	)
+
+
 func _on_stage_operations_requested(operations: Array, force_cut: bool) -> void:
+	if SignalBus.is_applying_typed_stage_request():
+		return
 	if not SignalBus.is_current_stage_operation_valid():
 		return
 	var previous_request_id := _active_stage_operation_request_id
@@ -123,27 +860,70 @@ func _on_stage_operations_requested(operations: Array, force_cut: bool) -> void:
 	_active_stage_operation_request_id = previous_request_id
 
 
-func _apply_operations(operations: Array, force_cut: bool) -> void:
+func _apply_operations(
+	operations: Array,
+	force_cut: bool,
+	transition_plans: Array = [],
+) -> Dictionary:
 	_begin_completion_batch()
 	if force_cut:
-		_apply_operations_cut(operations)
+		var cut_result := _apply_operations_cut(operations)
 		_end_completion_batch()
-		return
+		return cut_result
 
-	for raw_operation in operations:
+	for operation_index in range(operations.size()):
+		var raw_operation: Variant = operations[operation_index]
 		if not StageLayerState.validate_operation(raw_operation, true):
-			continue
+			_end_completion_batch()
+			return {
+				"success": false,
+				"operation_index": operation_index,
+				"error": "operation failed canonical Stage validation at apply",
+			}
 		var operation: Dictionary = raw_operation
+		var transition_plan: Dictionary = (
+			transition_plans[operation_index]
+			if operation_index < transition_plans.size()
+			and transition_plans[operation_index] is Dictionary
+			else {}
+		)
+		var raw_transition := String(operation.get("transition", "cut"))
+		var transition := _normalize_transition(
+			"cut" if force_cut else raw_transition)
+		if transition.is_empty():
+			_end_completion_batch()
+			return {
+				"success": false,
+				"operation_index": operation_index,
+				"error": "Stage transition provider is not registered",
+			}
+		if (
+			not force_cut
+			and float(operation.get("duration", 0.0)) > 0.0
+			and StageTransitionSpec.is_projection_effect(raw_transition)
+			and transition_plan.get("provider") == null
+		):
+			push_error(
+				"StagePresenter: transition '%s' requires typed participant preflight"
+				% raw_transition)
+			_end_completion_batch()
+			return {
+				"success": false,
+				"operation_index": operation_index,
+				"error": "projection transition lacks its sealed participant plan",
+			}
 		var before := _states.duplicate(true)
 		var reduced = StageLayerState.reduce(_states, [operation], true)
 		if not reduced is Dictionary:
 			push_warning("StagePresenter: StageLayerState.reduce returned invalid state")
-			continue
+			_end_completion_batch()
+			return {
+				"success": false,
+				"operation_index": operation_index,
+				"error": "Stage reducer failed during apply",
+			}
 
 		_states = (reduced as Dictionary).duplicate(true)
-		var transition := _normalize_transition(
-			"cut" if force_cut else String(operation.get("transition", "cut"))
-		)
 		var duration := (
 			0.0 if force_cut
 			else maxf(0.0, float(operation.get("duration", 0.0)))
@@ -162,7 +942,14 @@ func _apply_operations(operations: Array, force_cut: bool) -> void:
 			var ordered_clear_ids := clear_ids.keys()
 			ordered_clear_ids.sort()
 			for clear_id in ordered_clear_ids:
-				_remove_layer(String(clear_id), transition, duration)
+				if not _remove_layer(
+					String(clear_id), transition, duration, transition_plan):
+					_end_completion_batch()
+					return {
+						"success": false,
+						"operation_index": operation_index,
+						"error": "sealed Stage clear transition could not be installed",
+					}
 			continue
 
 		if layer_id == "":
@@ -173,32 +960,56 @@ func _apply_operations(operations: Array, force_cut: bool) -> void:
 			continue
 		var old_state: Dictionary = before.get(layer_id, {})
 		if _states.has(layer_id):
-			_apply_layer(
+			if not _apply_layer(
 				layer_id,
 				old_state,
 				_states[layer_id],
 				transition,
 				duration,
-			)
+				transition_plan,
+			):
+				_end_completion_batch()
+				return {
+					"success": false,
+					"operation_index": operation_index,
+					"error": "sealed Stage transition could not be installed",
+				}
 		elif before.has(layer_id):
-			_remove_layer(layer_id, transition, duration)
+			if not _remove_layer(layer_id, transition, duration, transition_plan):
+				_end_completion_batch()
+				return {
+					"success": false,
+					"operation_index": operation_index,
+					"error": "sealed Stage remove transition could not be installed",
+				}
 	_end_completion_batch()
+	return {"success": true}
 
 
 ## Skip/final-restore batches are reduced before any texture is touched. This
 ## makes the projection atomic and avoids loading every intermediate face from
 ## a long dialogue batch when only the final authored state can be visible.
-func _apply_operations_cut(operations: Array) -> void:
+func _apply_operations_cut(operations: Array) -> Dictionary:
 	var before := _states.duplicate(true)
 	var valid_operations: Array = []
-	for operation in operations:
-		if StageLayerState.validate_operation(operation, true):
-			valid_operations.append(operation)
+	for operation_index in range(operations.size()):
+		var operation: Variant = operations[operation_index]
+		if not StageLayerState.validate_operation(operation, true):
+			return {
+				"success": false,
+				"operation_index": operation_index,
+				"error": "operation failed canonical Stage validation at cut apply",
+			}
+		valid_operations.append(operation)
 	var affected_ids := _cut_batch_affected_ids(before, valid_operations)
 	var reduced = StageLayerState.reduce(_states, valid_operations, true)
 	if not reduced is Dictionary:
 		push_warning("StagePresenter: StageLayerState.reduce returned invalid state")
-		return
+		return {
+			"success": false,
+			"operation_index": 0,
+			"error": "Stage reducer failed during cut apply",
+		}
 	_states = (reduced as Dictionary).duplicate(true)
 
 	for layer_id in affected_ids:
@@ -207,6 +1018,7 @@ func _apply_operations_cut(operations: Array) -> void:
 			_apply_layer(id, before.get(id, {}), _states[id], "cut", 0.0)
 		elif _layers.has(id):
 			_remove_layer(id, "cut", 0.0)
+	return {"success": true}
 
 
 func _cut_batch_affected_ids(before: Dictionary, operations: Array) -> Dictionary:
@@ -379,6 +1191,9 @@ func _is_strict_transition_receipt(record: Dictionary) -> bool:
 func _on_stage_visuals_reset_requested() -> void:
 	if not SignalBus.is_current_stage_reset_valid():
 		return
+	# A newer reset owns every event it publishes. Drop only this transaction's
+	# held commit events before the reset starts its own completion batch.
+	_discard_all_held_stage_transactions()
 	# Retire every frozen legacy completion before teardown can re-enter and
 	# create a same-layer owner. Persistent per-layer counters handle ordinary
 	# replacement; this epoch also invalidates absent remove completions.
@@ -403,7 +1218,8 @@ func _apply_layer(
 	new_state: Dictionary,
 	transition: String,
 	duration: float,
-) -> void:
+	transition_plan: Dictionary = {},
+) -> bool:
 	var record := _ensure_layer(layer_id)
 	var change := _begin_layer_change(layer_id)
 	var generation := int(change["generation"])
@@ -415,9 +1231,28 @@ func _apply_layer(
 	var target_opacity := clampf(float(new_state.get("opacity", 1.0)), 0.0, 1.0)
 	var animate := (
 		duration > 0.0
-		and transition not in ["cut", "none"]
+		and transition != "cut"
 		and (old_target_visible or target_visible)
 	)
+	var provider := transition_plan.get("provider") as StageTransitionProvider
+	if animate and provider != null:
+		_apply_channels_cut(record, new_state)
+		_apply_redraw(record, new_state, true, false, target_visible)
+		_apply_transform_cut(record, new_state)
+		root.visible = target_visible
+		composite.self_modulate.a = target_opacity
+		if _start_projection_transition(
+			layer_id,
+			record,
+			new_state,
+			duration,
+			transition_plan,
+			generation,
+			false,
+			):
+				_publish_superseded_transition(change)
+				return true
+		return false
 
 	if not animate:
 		_apply_channels_cut(record, new_state)
@@ -427,7 +1262,7 @@ func _apply_layer(
 		composite.self_modulate.a = target_opacity
 		_emit_or_queue_transition_finished(layer_id, generation, true)
 		_publish_superseded_transition(change)
-		return
+		return true
 
 	root.visible = true
 	if not was_visible:
@@ -517,22 +1352,42 @@ func _apply_layer(
 	)
 	_emit_stage_transition_started(layer_id, token)
 	_publish_superseded_transition(change)
+	return true
 
 
-func _remove_layer(layer_id: String, transition: String, duration: float) -> void:
+func _remove_layer(
+	layer_id: String,
+	transition: String,
+	duration: float,
+	transition_plan: Dictionary = {},
+) -> bool:
 	if not _layers.has(layer_id):
-		return
+		return true
 	var record: Dictionary = _layers[layer_id]
 	var change := _begin_layer_change(layer_id)
 	var generation := int(change["generation"])
 	var root := record["root"] as Node2D
 	var composite := record["composite"] as CanvasGroup
+	var provider := transition_plan.get("provider") as StageTransitionProvider
+	if duration > 0.0 and transition != "cut" and provider != null:
+		if _start_projection_transition(
+			layer_id,
+			record,
+			{},
+			duration,
+			transition_plan,
+			generation,
+			true,
+			):
+				_publish_superseded_transition(change)
+				return true
+		return false
 
-	if duration <= 0.0 or transition in ["cut", "none"]:
+	if duration <= 0.0 or transition == "cut":
 		_free_layer(layer_id)
 		_emit_or_queue_transition_finished(layer_id, generation, false)
 		_publish_superseded_transition(change)
-		return
+		return true
 
 	var tween := create_tween().set_parallel(true)
 	_layer_tweens[layer_id] = tween
@@ -561,6 +1416,182 @@ func _remove_layer(layer_id: String, transition: String, duration: float) -> voi
 	)
 	_emit_stage_transition_started(layer_id, token)
 	_publish_superseded_transition(change)
+	return true
+
+
+func _start_projection_transition(
+	layer_id: String,
+	record: Dictionary,
+	target_state: Dictionary,
+	duration: float,
+	transition_plan: Dictionary,
+	generation: int,
+	removing: bool,
+) -> bool:
+	var provider := transition_plan.get("provider") as StageTransitionProvider
+	var projection := _take_preflight_projection(transition_plan, layer_id)
+	if provider == null or projection.is_empty():
+		return false
+	var prepared: Dictionary = projection.get("prepared", {})
+	var holder := prepared.get("holder") as Node2D
+	var material := prepared.get("material") as ShaderMaterial
+	if (
+		holder == null
+		or material == null
+		or material.shader == null
+		or holder.get_parent() != null
+	):
+		return false
+	holder.name = "Transition_%s" % layer_id
+	holder.z_as_relative = false
+	holder.z_index = clampi(
+		int(target_state.get(
+			"z_index", (record["root"] as Node2D).z_index)),
+		RenderingServer.CANVAS_ITEM_Z_MIN,
+		RenderingServer.CANVAS_ITEM_Z_MAX,
+	)
+	_layer_host().add_child(holder)
+	var snapshot_bytes := int(prepared.get("snapshot_bytes", 0))
+	_active_transition_snapshot_bytes += snapshot_bytes
+	_layer_transition_projections[layer_id] = {
+		"holder": holder,
+		"bytes": snapshot_bytes,
+		"removing": removing,
+	}
+	(record["root"] as Node2D).visible = false
+	var tween := create_tween()
+	_layer_tweens[layer_id] = tween
+	tween.tween_method(
+		func(progress: float) -> void:
+			material.set_shader_parameter("progress", progress),
+		0.0,
+		1.0,
+		duration,
+	)
+	var token := _claim_layer_transition(layer_id, generation)
+	tween.finished.connect(func() -> void:
+		if generation != int(_layer_generations.get(layer_id, -1)):
+			return
+		_begin_completion_batch()
+		var identity := _active_transition_identity(layer_id)
+		_layer_tweens.erase(layer_id)
+		_clear_layer_transition_token(layer_id, token)
+		_cleanup_transition_projection(layer_id, not removing)
+		if removing:
+			_free_layer(layer_id)
+		else:
+			var root := record["root"] as Node2D
+			var composite := record["composite"] as CanvasGroup
+			var target_visible := bool(target_state.get("visible", true))
+			root.visible = target_visible
+			composite.self_modulate.a = clampf(
+				float(target_state.get("opacity", 1.0)), 0.0, 1.0)
+			_emit_or_queue_transition_finished(layer_id, generation, not removing)
+		_publish_stage_transition_terminal(identity, &"completed")
+		_end_completion_batch()
+	)
+	_emit_stage_transition_started(layer_id, token)
+	return true
+
+
+func _take_preflight_projection(
+	transition_plan: Dictionary,
+	layer_id: String,
+) -> Dictionary:
+	var projections: Array = transition_plan.get("projections", [])
+	for projection_value: Variant in projections:
+		if not projection_value is Dictionary:
+			continue
+		var projection: Dictionary = projection_value
+		if (
+			String(projection.get("layer_id", "")) == layer_id
+			and not bool(projection.get("consumed", false))
+		):
+			projection["consumed"] = true
+			return projection
+	return {}
+
+
+func _new_transition_snapshot_viewport(
+	root: Node2D,
+	size: Vector2i,
+) -> SubViewport:
+	var viewport := SubViewport.new()
+	viewport.size = size
+	viewport.transparent_bg = true
+	viewport.disable_3d = true
+	viewport.use_hdr_2d = false
+	viewport.canvas_item_default_texture_filter = (
+		Viewport.DEFAULT_CANVAS_ITEM_TEXTURE_FILTER_NEAREST)
+	viewport.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
+	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	if root != null:
+		viewport.add_child(root)
+	return viewport
+
+
+func _prepare_transition_projection(
+	provider: StageTransitionProvider,
+	provider_plan: Dictionary,
+	source_root: Node2D,
+	target_root: Node2D,
+	viewport_size_value: Vector2,
+) -> Dictionary:
+	if provider == null:
+		return {}
+	var viewport_size := Vector2i(
+		maxi(1, int(viewport_size_value.x)),
+		maxi(1, int(viewport_size_value.y)),
+	)
+	var holder := Node2D.new()
+	var source_viewport := _new_transition_snapshot_viewport(
+		source_root, viewport_size)
+	var target_viewport := _new_transition_snapshot_viewport(
+		target_root, viewport_size)
+	holder.add_child(source_viewport)
+	holder.add_child(target_viewport)
+	var material := provider.create_material(
+		provider_plan,
+		source_viewport.get_texture(),
+		target_viewport.get_texture(),
+		Vector2(viewport_size),
+	)
+	if material == null or material.shader == null:
+		holder.free()
+		return {}
+	var display := ColorRect.new()
+	display.name = "Projection"
+	display.position = Vector2.ZERO
+	display.size = Vector2(viewport_size)
+	display.color = Color.WHITE
+	display.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	display.material = material
+	holder.add_child(display)
+	return {
+		"holder": holder,
+		"material": material,
+		"snapshot_bytes": int(viewport_size.x) * int(viewport_size.y) * 8,
+	}
+
+
+func _cleanup_transition_projection(layer_id: String, show_live: bool) -> void:
+	if not _layer_transition_projections.has(layer_id):
+		return
+	var projection: Dictionary = _layer_transition_projections[layer_id]
+	_layer_transition_projections.erase(layer_id)
+	_active_transition_snapshot_bytes = maxi(
+		0,
+		_active_transition_snapshot_bytes - int(projection.get("bytes", 0)),
+	)
+	var holder := projection.get("holder") as Node
+	if is_instance_valid(holder):
+		if holder.get_parent() != null:
+			holder.get_parent().remove_child(holder)
+		holder.queue_free()
+	if show_live and _layers.has(layer_id) and _states.has(layer_id):
+		var record: Dictionary = _layers[layer_id]
+		(record["root"] as Node2D).visible = bool(
+			(_states[layer_id] as Dictionary).get("visible", true))
 
 
 func _begin_completion_batch() -> void:
@@ -630,6 +1661,13 @@ func _layer_host() -> Node:
 func _ensure_layer(layer_id: String) -> Dictionary:
 	if _layers.has(layer_id):
 		return _layers[layer_id]
+	var record := _create_layer_record(layer_id)
+	_layer_host().add_child(record["root"])
+	_layers[layer_id] = record
+	return record
+
+
+func _create_layer_record(layer_id: String) -> Dictionary:
 
 	var root := Node2D.new()
 	root.name = "Layer_%d" % _next_node_index
@@ -637,7 +1675,6 @@ func _ensure_layer(layer_id: String) -> Dictionary:
 	root.set_meta("stage_layer_id", layer_id)
 	root.z_as_relative = false
 	root.visible = false
-	_layer_host().add_child(root)
 
 	var composite := CanvasGroup.new()
 	composite.name = "Composite"
@@ -659,7 +1696,7 @@ func _ensure_layer(layer_id: String) -> Dictionary:
 		sprites[channel] = sprite
 		asset_ids[channel] = ""
 
-	var record := {
+	return {
 		"root": root,
 		"composite": composite,
 		"source": source,
@@ -678,8 +1715,6 @@ func _ensure_layer(layer_id: String) -> Dictionary:
 		"redraw_pipeline_dynamic": false,
 		"redraw_dynamic_size_signature": [],
 	}
-	_layers[layer_id] = record
-	return record
 
 
 func _begin_layer_change(layer_id: String) -> Dictionary:
@@ -857,6 +1892,7 @@ func _take_active_transition(layer_id: String) -> Dictionary:
 		_layer_tweens.erase(layer_id)
 	if token > 0:
 		_clear_layer_transition_token(layer_id, token)
+	_cleanup_transition_projection(layer_id, true)
 	return identity
 
 
@@ -889,6 +1925,7 @@ func _cleanup_outgoing(record: Dictionary) -> void:
 
 func _free_layer(layer_id: String, emit_terminal: bool = true) -> Dictionary:
 	var cancelled := _take_active_transition(layer_id)
+	_cleanup_transition_projection(layer_id, false)
 	if not _layers.has(layer_id):
 		if emit_terminal:
 			_publish_stage_transition_terminal(cancelled, &"cancelled")
@@ -1921,14 +2958,10 @@ func _slide_delta(transition: String) -> Vector2:
 
 
 func _normalize_transition(raw_transition: String) -> String:
-	var transition := raw_transition.to_lower().strip_edges()
-	if transition == "":
-		return "cut"
-	if transition not in StageLayerState.VALID_TRANSITIONS:
-		push_warning(
-			"StagePresenter: unknown transition '%s'; using cut" % raw_transition
-		)
-		return "cut"
+	var transition := raw_transition
+	if not _transition_registry.has_provider(transition):
+		push_error("StagePresenter: unregistered transition '%s'" % raw_transition)
+		return ""
 	return transition
 
 

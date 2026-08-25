@@ -241,6 +241,8 @@ func test_jump_restores_presentation_state():
 	# A scenario that shows a named layer + bg before the second dialogue.
 	# After playing through, jump back to the FIRST dialogue and verify
 	# PresentationState reflects the empty initial state, not the later one.
+	var stage_presenter := StagePresenter.new()
+	add_child_autoqfree(stage_presenter)
 	var data = ScenarioData.new()
 	data.id = "pres_test"
 	var s = SceneData.new()
@@ -263,6 +265,7 @@ func test_jump_restores_presentation_state():
 		"id": "sakura",
 		"properties": {"asset": "character:sakura/smile"},
 		"transition": "cut",
+		"transition_params": {},
 		"duration": 0.0,
 	}
 	s.commands.append(show)

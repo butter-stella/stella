@@ -14,10 +14,6 @@ const _DIALOGUE_VISIBILITY_ACTIONS := ["show", "hide"]
 const _DIALOGUE_VISIBILITY_TRANSITIONS := ["cut", "fade"]
 const _LOOP_SE_ACTIONS := ["play", "stop"]
 const _BGM_ACTIONS := ["play", "mix", "pause", "resume", "stop"]
-const _STAGE_TRANSITIONS := [
-	"cut", "none", "fade", "move",
-	"slide_left", "slide_right", "slide_up", "slide_down",
-]
 const _STAGE_FIT_MODES := ["native", "contain", "cover", "stretch"]
 const _STAGE_PAIR_KEYS := [
 	"position", "origin", "scale", "zoom",
@@ -79,6 +75,7 @@ static func parse(
 	var combine_character: String = ""
 	var combine_character_set: bool = false
 	var combine_pending_stage_ops: Array = []
+	var combine_pending_stage_operation_lines: Array = []
 	var combine_start_line: int = 0
 
 	# @stage_batch state. Children are accumulated as canonical Dictionary
@@ -553,6 +550,7 @@ static func parse(
 					in_combine = false
 					combine_segments.clear()
 					combine_pending_stage_ops.clear()
+					combine_pending_stage_operation_lines.clear()
 					combine_character = ""
 					combine_character_set = false
 					combine_start_line = 0
@@ -821,6 +819,7 @@ static func parse(
 						combine_character = ""
 						combine_character_set = false
 						combine_pending_stage_ops = []
+						combine_pending_stage_operation_lines = []
 						combine_start_line = 0
 						in_combine = false
 						if combine_cmd and current_scene:
@@ -896,6 +895,7 @@ static func parse(
 					combine_character = ""
 					combine_character_set = false
 					combine_pending_stage_ops = []
+					combine_pending_stage_operation_lines = []
 					combine_start_line = token.line
 				else:
 					var cmd = _parse_at_command(token, data, true)
@@ -947,6 +947,7 @@ static func parse(
 							combine_pending_stage_ops.append(
 								cmd.params.duplicate(true)
 							)
+							combine_pending_stage_operation_lines.append(token.line)
 						elif in_parallel:
 							if cmd.type in _PARALLEL_BLOCKING_COMMANDS:
 								var blocking_type: String = (
@@ -981,8 +982,11 @@ static func parse(
 							"text": cmd.get_string("text", ""),
 							"voice": cmd.get_string("voice", ""),
 							"stage_ops": combine_pending_stage_ops.duplicate(true),
+							"stage_operation_lines": (
+								combine_pending_stage_operation_lines.duplicate()),
 						})
 						combine_pending_stage_ops = []
+						combine_pending_stage_operation_lines = []
 					elif in_parallel:
 						_record_parallel_blocking_diagnostic(
 							data, "dialogue", token.line)
@@ -1008,8 +1012,11 @@ static func parse(
 							"text": cmd.get_string("text", ""),
 							"voice": cmd.get_string("voice", ""),
 							"stage_ops": combine_pending_stage_ops.duplicate(true),
+							"stage_operation_lines": (
+								combine_pending_stage_operation_lines.duplicate()),
 						})
 						combine_pending_stage_ops = []
+						combine_pending_stage_operation_lines = []
 					elif in_parallel:
 						_record_parallel_blocking_diagnostic(
 							data, "dialogue", token.line)
@@ -1030,6 +1037,7 @@ static func parse(
 						token.line,
 					)
 					combine_pending_stage_ops.clear()
+					combine_pending_stage_operation_lines.clear()
 				else:
 					var cmd = _parse_monologue(token)
 					if cmd and current_scene:
@@ -2411,6 +2419,7 @@ static func _parse_stage_command(
 	var redraw_clip_seen := false
 	var redraw_blur_count := 0
 	var transition := "cut"
+	var transition_params: Dictionary = {}
 	var duration := 0.0
 	var invalid_operation := false
 	for index in range(property_start, parts.size()):
@@ -2438,18 +2447,25 @@ static func _parse_stage_command(
 			invalid_operation = true
 			continue
 		if key == "transition":
-			var parsed_transition := raw_value.to_lower()
-			if parsed_transition not in _STAGE_TRANSITIONS:
+			var parsed_transition := _parse_stage_transition_expression(
+				raw_value, line, data)
+			if not bool(parsed_transition.get("valid", false)):
 				_record_diagnostic(
 					data,
 					"warning",
-					"DslParser: invalid @stage transition '%s' (line %d)"
-					% [raw_value, line],
+					"DslParser: invalid @stage transition '%s': %s (line %d)"
+					% [
+						raw_value,
+						String(parsed_transition.get("error", "invalid transition expression")),
+						line,
+					],
 					line,
 				)
 				invalid_operation = true
 				continue
-			transition = parsed_transition
+			transition = String(parsed_transition["kind"])
+			transition_params = (
+				parsed_transition["params"] as Dictionary).duplicate(true)
 		elif key == "duration":
 			if (
 				not _is_finite_stage_number(raw_value)
@@ -2577,6 +2593,14 @@ static func _parse_stage_command(
 
 	if invalid_operation:
 		return null
+	if transition == "cut" and duration != 0.0:
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @stage cut/none transition requires duration=0 (line %d)" % line,
+			line,
+		)
+		return null
 	if redraw_seen:
 		properties["redraw"] = redraw_effects
 
@@ -2585,6 +2609,7 @@ static func _parse_stage_command(
 		"id": layer_id,
 		"properties": properties,
 		"transition": transition,
+		"transition_params": transition_params,
 		"duration": duration,
 	}
 	if not StageLayerState.validate_operation(operation, false):
@@ -2596,6 +2621,84 @@ static func _parse_stage_command(
 		)
 		return null
 	return _make_cmd("stage_layer", operation)
+
+
+static func _parse_stage_transition_expression(
+	encoded: String,
+	_line: int,
+	_data: ScenarioData,
+) -> Dictionary:
+	var normalized := encoded.strip_edges()
+	if normalized.is_empty():
+		return {"valid": false, "error": "transition kind cannot be empty"}
+	var kind := normalized
+	var raw_params := {}
+	var open_at := normalized.find("(")
+	if open_at >= 0:
+		if (
+			open_at == 0
+			or not normalized.ends_with(")")
+			or normalized.find("(", open_at + 1) >= 0
+			or normalized.substr(open_at + 1, normalized.length() - open_at - 2).contains(")")
+		):
+			return {"valid": false, "error": "malformed transition expression"}
+		kind = normalized.substr(0, open_at).strip_edges()
+		var body := normalized.substr(
+			open_at + 1,
+			normalized.length() - open_at - 2,
+		).strip_edges()
+		if body.is_empty():
+			return {"valid": false, "error": "transition expression requires parameters"}
+		for item_value: Variant in body.split(",", true):
+			var item := String(item_value).strip_edges()
+			if item.is_empty():
+				return {"valid": false, "error": "empty transition parameter"}
+			var equals_at := item.find("=")
+			if equals_at <= 0:
+				return {
+					"valid": false,
+					"error": "transition parameter '%s' must use key=value" % item,
+				}
+			var parameter_name := item.substr(0, equals_at).strip_edges()
+			var raw_value := item.substr(equals_at + 1).strip_edges()
+			if raw_params.has(parameter_name):
+				return {
+					"valid": false,
+					"error": "duplicate transition parameter '%s'" % parameter_name,
+				}
+			if raw_value.is_empty():
+				return {
+					"valid": false,
+					"error": "transition parameter '%s' cannot be empty" % parameter_name,
+				}
+			var typed_value := _parse_stage_transition_parameter(raw_value)
+			if not bool(typed_value.get("valid", false)):
+				return {
+					"valid": false,
+					"error": "transition parameter '%s' %s" % [
+						parameter_name,
+						String(typed_value.get("error", "is invalid")),
+					],
+				}
+			raw_params[parameter_name] = typed_value["value"]
+	elif normalized.contains(")"):
+		return {"valid": false, "error": "malformed transition expression"}
+	return StageTransitionSpec.canonicalize(kind, raw_params)
+
+
+static func _parse_stage_transition_parameter(encoded: String) -> Dictionary:
+	if encoded == "true":
+		return {"valid": true, "value": true}
+	if encoded == "false":
+		return {"valid": true, "value": false}
+	if encoded.is_valid_int():
+		return {"valid": true, "value": int(encoded)}
+	if encoded.is_valid_float():
+		var number := float(encoded)
+		if not is_finite(number):
+			return {"valid": false, "error": "must be finite"}
+		return {"valid": true, "value": number}
+	return {"valid": true, "value": encoded}
 
 
 static func _parse_stage_redraw_effect(

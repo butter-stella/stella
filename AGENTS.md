@@ -89,11 +89,11 @@ godot --headless --import
 
 # Full GUT suite; .gutconfig.json includes unit and integration directories.
 STELLA_DISABLE_LOCAL_CONFIG=1 \
-  godot -s addons/gut/gut_cmdln.gd --headless
+  godot --audio-driver Dummy -s addons/gut/gut_cmdln.gd --headless
 
 # Example targeted file.
 STELLA_DISABLE_LOCAL_CONFIG=1 \
-  godot -s addons/gut/gut_cmdln.gd --headless \
+  godot --audio-driver Dummy -s addons/gut/gut_cmdln.gd --headless \
   -gtest=res://tests/unit/test_scenario_engine.gd
 
 # Godot 4.6.1 export-pack smoke (binary tokens, compressed binary tokens,

@@ -389,7 +389,9 @@ func test_dialogue_handler_keys_nvl_pages_by_runtime_activation() -> void:
 # --- StageLayerHandler ---
 
 func test_stage_layer_handler_emits_canonical_operation_batch():
-	var handler = StageLayerHandler.new()
+	var presenter := StagePresenter.new()
+	add_child_autoqfree(presenter)
+	var handler = StageLayerHandler.new(StellaRuntime.presentation_director)
 	var received: Array = []
 	var callback = func(operations, force_cut):
 		received.append([operations.duplicate(true), force_cut])
@@ -397,8 +399,9 @@ func test_stage_layer_handler_emits_canonical_operation_batch():
 	var cmd = _build_cmd("stage_layer", {
 		"action": "show",
 		"id": " hero ",
-		"properties": {"asset": "stage:hero"},
+		"properties": {"asset": "background:bg_cafe"},
 		"transition": "fade",
+		"transition_params": {},
 		"duration": 0.25,
 	})
 
@@ -406,11 +409,64 @@ func test_stage_layer_handler_emits_canonical_operation_batch():
 
 	assert_eq(received.size(), 1)
 	assert_eq(received[0][0][0]["id"], "hero")
-	assert_eq(received[0][0][0]["properties"]["asset"], "stage:hero")
+	assert_eq(
+		received[0][0][0]["properties"]["asset"],
+		"background:bg_cafe",
+	)
 	assert_eq(received[0][0][0]["transition"], "fade")
 	assert_almost_eq(received[0][0][0]["duration"], 0.25, 0.001)
 	assert_false(received[0][1])
 	_bus.stage_operations_requested.disconnect(callback)
+
+
+func test_stage_layer_handler_wrong_transition_params_type_fails_before_submit() -> void:
+	var handler := StageLayerHandler.new(StellaRuntime.presentation_director)
+	var raw_dispatches := [0]
+	var on_stage := func(_operations: Array, _force_cut: bool) -> void:
+		raw_dispatches[0] += 1
+	_bus.stage_operations_requested.connect(on_stage)
+	var before_request_id := int(_bus._next_stage_operation_request_id)
+	var before_state: Dictionary = (
+		StellaRuntime.presentation_state.capture_snapshot())
+	var presenter_snapshots: Dictionary = {}
+	for participant: Dictionary in _bus._stage_participant_snapshot():
+		var presenter: Object = participant.get("presenter")
+		if presenter is StagePresenter:
+			presenter_snapshots[presenter.get_instance_id()] = {
+				"states": presenter._states.duplicate(true),
+				"tweens": presenter._layer_tweens.duplicate(),
+			}
+	for invalid_params: Variant in ["bad", [], null]:
+		var scenario := ScenarioData.new()
+		scenario.id = "stage_handler_wrong_transition_params"
+		scenario.source_path = "res://synthetic/stage_handler_wrong_params.stla"
+		var scene := SceneData.new()
+		scene.id = "start"
+		scenario.scenes.append(scene)
+		var context := ScenarioContext.new(scenario)
+		var command := _build_cmd("stage_layer", {
+			"action": "show",
+			"id": "must_not_commit",
+			"properties": {"asset": "stage:redraw_source"},
+			"transition": "cut",
+			"transition_params": invalid_params,
+			"duration": 0.0,
+		})
+		command.declared_line = 27
+		await handler.execute(command, context)
+		assert_push_error("res://synthetic/stage_handler_wrong_params.stla:27")
+		assert_true(context.is_finished, str(invalid_params))
+	assert_eq(int(_bus._next_stage_operation_request_id), before_request_id)
+	assert_eq(raw_dispatches[0], 0)
+	assert_eq(StellaRuntime.presentation_state.capture_snapshot(), before_state)
+	for participant: Dictionary in _bus._stage_participant_snapshot():
+		var presenter: Object = participant.get("presenter")
+		if presenter is StagePresenter and presenter_snapshots.has(
+			presenter.get_instance_id()):
+			var snapshot: Dictionary = presenter_snapshots[presenter.get_instance_id()]
+			assert_eq(presenter._states, snapshot["states"])
+			assert_eq(presenter._layer_tweens, snapshot["tweens"])
+	_bus.stage_operations_requested.disconnect(on_stage)
 
 
 func test_nested_raw_show_does_not_inherit_outer_presentation_metadata() -> void:

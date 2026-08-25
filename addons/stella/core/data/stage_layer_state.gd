@@ -12,16 +12,13 @@ const MAX_REDRAW_EFFECTS := 16
 const MAX_BLUR_RADIUS := 32
 const MAX_BLUR_PASSES := 4
 const VALID_ACTIONS := ["show", "update", "hide", "remove", "clear"]
-const VALID_TRANSITIONS := [
-	"cut", "none", "fade", "move",
-	"slide_left", "slide_right", "slide_up", "slide_down",
-]
 const VALID_FIT_MODES := ["native", "contain", "cover", "stretch"]
 const _KNOWN_OPERATION_KEYS := {
 	"action": true,
 	"id": true,
 	"properties": true,
 	"transition": true,
+	"transition_params": true,
 	"duration": true,
 }
 const _PAIR_PROPERTY_KEYS := [
@@ -190,9 +187,30 @@ static func validate_operation(
 	if not raw_transition is String and not raw_transition is StringName:
 		_warn("operation transition must be a String", report_warnings)
 		return false
-	var transition := str(raw_transition).strip_edges().to_lower()
-	if transition not in VALID_TRANSITIONS:
-		_warn("unknown transition '%s'" % str(raw_transition), report_warnings)
+	var transition := str(raw_transition)
+	if transition != transition.strip_edges().to_lower():
+		_warn("transition is not canonical", report_warnings)
+		return false
+	if not operation.has("transition_params"):
+		_warn("operation is missing transition_params", report_warnings)
+		return false
+	var transition_params: Variant = operation["transition_params"]
+	var transition_spec := StageTransitionSpec.canonicalize(
+		transition, transition_params)
+	if not bool(transition_spec.get("valid", false)):
+		_warn(
+			"invalid transition '%s': %s" % [
+				str(raw_transition),
+				String(transition_spec.get("error", "invalid parameters")),
+			],
+			report_warnings,
+		)
+		return false
+	if String(transition_spec.get("kind", "")) != transition:
+		_warn("transition is not canonical", report_warnings)
+		return false
+	if transition_params != transition_spec.get("params", {}):
+		_warn("transition_params are not canonical", report_warnings)
 		return false
 	var raw_duration = operation.get("duration", 0.0)
 	if (
@@ -201,6 +219,9 @@ static func validate_operation(
 		or float(raw_duration) < 0.0
 	):
 		_warn("operation duration must be a finite non-negative number", report_warnings)
+		return false
+	if String(transition_spec.get("kind", "")) == "cut" and float(raw_duration) != 0.0:
+		_warn("cut transition requires duration=0", report_warnings)
 		return false
 	return true
 

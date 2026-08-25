@@ -139,6 +139,9 @@ func test_presentation_state_snapshot_roundtrip():
 				{"type": "blur", "radius": [4, 2]},
 			],
 		},
+		"transition_params": {},
+		"transition": "cut",
+		"duration": 0.0,
 	}], true)
 	SignalBus.bgm_operation_committed.emit(
 		_bgm_operation(), _bgm_state())

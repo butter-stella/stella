@@ -10,6 +10,7 @@ const BOUNDARY_SAVE_DIR := "user://tests/pr175_runtime_boundary/"
 var _runtime: Node
 var _scenario_ended_count: Array[int]
 var _scenario_ended_listener: Callable
+var _owned_nodes: Array[Node] = []
 
 
 func before_each() -> void:
@@ -19,6 +20,11 @@ func before_each() -> void:
 	_runtime.save_manager.delete_save(1)
 	_runtime.save_manager.delete_quick_save()
 	_runtime.save_manager.delete_auto_save()
+	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
+	await _release_owned_nodes()
+	_owned_nodes.clear()
+	_scenario_ended_count.clear()
+	_scenario_ended_listener = Callable()
 	_scenario_ended_count = [0]
 	_scenario_ended_listener = func(_id: String) -> void:
 		_scenario_ended_count[0] += 1
@@ -40,6 +46,27 @@ func after_each() -> void:
 	_runtime.save_manager.delete_save(1)
 	_runtime.save_manager.delete_quick_save()
 	_runtime.save_manager.delete_auto_save()
+	await _release_owned_nodes()
+
+
+func _add_owned_node(node: Node) -> void:
+	_owned_nodes.append(node)
+	add_child_autoqfree(node)
+
+
+func _release_owned_nodes() -> void:
+	for node: Node in _owned_nodes:
+		if not is_instance_valid(node):
+			continue
+		if node.is_inside_tree():
+			var exited: Signal = node.tree_exited
+			if not node.is_queued_for_deletion():
+				node.queue_free()
+			await exited
+		elif is_instance_valid(node):
+			node.free()
+	_owned_nodes.clear()
+	await get_tree().process_frame
 
 
 func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
@@ -896,7 +923,7 @@ func test_screen_effects_retire_across_rollback_restart_and_title_boundaries() -
 
 func test_reset_for_test_invalidates_a_real_dialogue_typewriter() -> void:
 	var game: Node = load("res://addons/stella/scenes/game.tscn").instantiate()
-	add_child_autoqfree(game)
+	_add_owned_node(game)
 	await get_tree().process_frame
 	var dialogue: Control = game.get_node("UILayer/DialoguePanel")
 	dialogue._char_interval = 0.01
@@ -925,7 +952,7 @@ func test_reset_for_test_invalidates_a_real_dialogue_typewriter() -> void:
 
 func test_reset_for_test_cancels_a_delayed_skip_advance() -> void:
 	var game: Node = load("res://addons/stella/scenes/game.tscn").instantiate()
-	add_child_autoqfree(game)
+	_add_owned_node(game)
 	await get_tree().process_frame
 
 	_runtime.engine.load_scenario(_build_blocking_scenario())
@@ -952,7 +979,7 @@ func test_reset_for_test_cancels_a_delayed_skip_advance() -> void:
 
 func test_real_input_routes_dialogue_then_click_wait_then_dialogue() -> void:
 	var game: Node = load("res://addons/stella/scenes/game.tscn").instantiate()
-	add_child_autoqfree(game)
+	_add_owned_node(game)
 	await get_tree().process_frame
 	var input_handler: Node = game.get_node("InputHandler")
 	var dialogue: Control = game.get_node("UILayer/DialoguePanel")
@@ -990,7 +1017,7 @@ func test_real_input_routes_dialogue_then_click_wait_then_dialogue() -> void:
 
 func _instantiate_game_dialogue() -> Control:
 	var game: Node = load("res://addons/stella/scenes/game.tscn").instantiate()
-	add_child_autoqfree(game)
+	_add_owned_node(game)
 	await get_tree().process_frame
 	var dialogue: Control = game.get_node("UILayer/DialoguePanel")
 	dialogue._char_interval = 0.0
@@ -999,7 +1026,7 @@ func _instantiate_game_dialogue() -> Control:
 
 func _instantiate_screen_effect_fixture() -> Dictionary:
 	var game: Node = load("res://addons/stella/scenes/game.tscn").instantiate()
-	add_child_autoqfree(game)
+	_add_owned_node(game)
 	await get_tree().process_frame
 	return {
 		"game": game,

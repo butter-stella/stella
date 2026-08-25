@@ -16,6 +16,10 @@ var _original_auto_active: bool
 var _original_skip_active: bool
 var _original_game_state: int
 var _original_previous_game_state: int
+var _original_engine: ScenarioEngine
+var _original_stage_assets_path := ""
+var _test_stage_engine: ScenarioEngine
+var _test_stage_presenter: StagePresenter
 var _advance_callbacks: Array[Callable] = []
 var _stage_callbacks: Array[Callable] = []
 var _settings_callbacks: Array[Callable] = []
@@ -34,6 +38,10 @@ func before_each() -> void:
 	_original_skip_active = StellaRuntime.skip_controller.is_active
 	_original_game_state = StellaRuntime.game_state.current_state
 	_original_previous_game_state = StellaRuntime.game_state.previous_state
+	_original_engine = StellaRuntime.engine
+	_original_stage_assets_path = StellaRuntime.stage_assets_path
+	_test_stage_engine = null
+	_test_stage_presenter = null
 	StellaRuntime.auto_play.is_active = false
 	StellaRuntime.skip_controller.is_active = false
 	StellaRuntime.game_state.current_state = GameStateMachine.State.PLAYING
@@ -42,6 +50,12 @@ func before_each() -> void:
 
 
 func after_each() -> void:
+	if _test_stage_engine != null:
+		_test_stage_engine.stop()
+	if _test_stage_presenter != null and _test_stage_presenter.get_parent() != null:
+		_test_stage_presenter.get_parent().remove_child(_test_stage_presenter)
+	StellaRuntime.engine = _original_engine
+	StellaRuntime.stage_assets_path = _original_stage_assets_path
 	for callback in _advance_callbacks:
 		if SignalBus.advance_requested.is_connected(callback):
 			SignalBus.advance_requested.disconnect(callback)
@@ -125,6 +139,18 @@ func test_reentrant_reset_show_snapshots_the_atomic_default_pair() -> void:
 
 func test_queued_request_snapshots_settings_only_when_it_becomes_active() -> void:
 	_set_timing(100, 0)
+	var scenario := ScenarioData.new()
+	scenario.id = "typewriter_stage_fixture"
+	scenario.source_path = "res://synthetic/typewriter_stage_fixture.stla"
+	var scene := SceneData.new()
+	scene.id = "start"
+	scenario.scenes.append(scene)
+	_test_stage_engine = ScenarioEngine.new()
+	_test_stage_engine.context = ScenarioContext.new(scenario)
+	StellaRuntime.engine = _test_stage_engine
+	StellaRuntime.stage_assets_path = "res://tests/fixtures/stage/"
+	_test_stage_presenter = StagePresenter.new()
+	add_child_autoqfree(_test_stage_presenter)
 	await _create_presenter()
 	var replacement_requested := [false]
 	var callback := func(operations: Array, force_cut: bool) -> void:
@@ -144,10 +170,12 @@ func test_queued_request_snapshots_settings_only_when_it_becomes_active() -> voi
 		"stage_ops": [{
 			"action": "show",
 			"id": "timing_queue_probe",
-			"properties": {"asset": "stage:synthetic"},
+			"properties": {"asset": "stage:redraw_source"},
 			"transition": "cut",
+			"transition_params": {},
 			"duration": 0.0,
 		}],
+		"stage_operation_lines": [145],
 	}], "adv")
 	assert_true(replacement_requested[0],
 		"replacement SHOW is requested inside the owned stage dispatch")
@@ -207,6 +235,8 @@ func test_complete_hide_and_replacement_retire_punctuation_generations() -> void
 		"completion starts while the punctuation timer owns the generation")
 	assert_true(_presenter.complete_typewriter())
 	assert_false(_presenter._is_typing)
+	assert_true((_presenter._dialogue_timer_waiters as Dictionary).is_empty(),
+		"completion actively settles the punctuation waiter")
 
 	_show_text("。retired")
 	await get_tree().process_frame
@@ -215,6 +245,8 @@ func test_complete_hide_and_replacement_retire_punctuation_generations() -> void
 	await get_tree().process_frame
 	assert_eq(_presenter.text_label.text, "replacement")
 	assert_false(_presenter._is_typing)
+	assert_true((_presenter._dialogue_timer_waiters as Dictionary).is_empty(),
+		"replacement generation owns no retired waiter")
 	var replacement_gen: int = _presenter._dialogue_gen
 	# Cross the retired 200ms punctuation horizon.  Its callback must not mutate
 	# the replacement or mark it ready a second time.
@@ -229,6 +261,8 @@ func test_complete_hide_and_replacement_retire_punctuation_generations() -> void
 	SignalBus.hide_dialogue.emit()
 	assert_false(_presenter.visible)
 	assert_false(_presenter._is_typing)
+	assert_true((_presenter._dialogue_timer_waiters as Dictionary).is_empty(),
+		"hard hide synchronously settles the active generation")
 	await get_tree().create_timer(0.22).timeout
 	assert_false(_presenter.visible,
 		"hard hide keeps the retired punctuation generation unreachable")
@@ -255,6 +289,8 @@ func test_complete_hide_and_replacement_retire_punctuation_generations() -> void
 		return
 	assert_gte(Time.get_ticks_msec() - auto_started, 160,
 		"Auto cannot bypass the active punctuation boundary")
+	assert_true((_presenter._dialogue_timer_waiters as Dictionary).is_empty(),
+		"natural punctuation and Auto timeouts release their exact waiters")
 	StellaRuntime.auto_play.stop()
 
 	# Public Skip starts while a 100+200ms punctuation boundary is already
@@ -280,6 +316,8 @@ func test_complete_hide_and_replacement_retire_punctuation_generations() -> void
 	await get_tree().create_timer(0.32).timeout
 	assert_eq(advance_count[0], 2,
 		"retired punctuation timing cannot emit a late second Skip advance")
+	assert_true((_presenter._dialogue_timer_waiters as Dictionary).is_empty(),
+		"Skip cancellation leaves the Presenter timer authority empty")
 
 
 func _create_presenter() -> void:

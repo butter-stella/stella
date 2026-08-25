@@ -647,6 +647,7 @@ sakura「第一句。」 #voice:v1
 	assert_eq(segments[0]["voice"], "v1")
 	assert_eq(segments[0]["stage_ops"].size(), 1)
 	assert_eq(segments[0]["stage_ops"][0]["id"], "sakura")
+	assert_eq(segments[0]["stage_operation_lines"], [3])
 
 
 func test_combine_multiple_segments():
@@ -673,6 +674,9 @@ sakura「第三句。」 #voice:v3
 	assert_eq(segments[2]["text"], "第三句。")
 	assert_eq(segments[2]["voice"], "v3")
 	assert_eq(segments[2]["stage_ops"][0]["properties"]["asset"], "character:sakura/happy")
+	assert_eq(segments[0]["stage_operation_lines"], [3])
+	assert_eq(segments[1]["stage_operation_lines"], [5])
+	assert_eq(segments[2]["stage_operation_lines"], [7])
 
 
 func test_combine_concatenated_text_for_backlog():

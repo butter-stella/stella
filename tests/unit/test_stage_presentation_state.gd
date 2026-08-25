@@ -49,6 +49,7 @@ func test_stage_operations_are_tracked_and_json_roundtrip_exactly() -> void:
 				},
 			],
 		},
+		"transition_params": {},
 		"transition": "cut",
 		"duration": 0.0,
 	}], false)
@@ -56,6 +57,9 @@ func test_stage_operations_are_tracked_and_json_roundtrip_exactly() -> void:
 		"action": "update",
 		"id": "hero",
 		"properties": {"face": "stage:bg_outside"},
+		"transition_params": {},
+		"transition": "cut",
+		"duration": 0.0,
 	}], false)
 
 	var encoded := JSON.stringify(state.capture_snapshot())
@@ -102,6 +106,9 @@ func test_complete_projection_resets_stale_visuals_and_empty_background() -> voi
 		"action": "show",
 		"id": "stale",
 		"properties": {"asset": "stage:bg_outside"},
+		"transition_params": {},
+		"transition": "cut",
+		"duration": 0.0,
 	}], true)
 	SignalBus.bg_changed.emit("bg_school_gate", "cut", 0.0)
 	assert_not_null(presenter.get_layer_node("stale"))

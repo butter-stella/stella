@@ -14,6 +14,25 @@ const REQUIRED_CLASSES := [
 	"PresentationBatchRequest",
 	"PresentationDirector",
 ]
+const STAGE_ASSET_ROOT := "res://tests/fixtures/stage/"
+
+var _stage_runtime: Node
+var _stage_presenter: StagePresenter
+var _original_stage_assets_path := ""
+
+
+func before_each() -> void:
+	_stage_runtime = get_tree().root.get_node("StellaRuntime")
+	_original_stage_assets_path = _stage_runtime.stage_assets_path
+	_stage_runtime.stage_assets_path = STAGE_ASSET_ROOT
+	_stage_presenter = StagePresenter.new()
+	_stage_presenter.name = "PresentationBatchContractStagePresenter"
+	add_child_autoqfree(_stage_presenter)
+	await get_tree().process_frame
+
+
+func after_each() -> void:
+	_stage_runtime.stage_assets_path = _original_stage_assets_path
 
 
 func _global_class_entry(class_name_value: String) -> Dictionary:
@@ -330,7 +349,7 @@ func test_runtime_owns_exactly_one_generic_director_with_submit() -> void:
 		"StellaRuntime is the single composition root for PresentationDirector")
 
 
-func test_legacy_raw_stage_facade_remains_void_and_untyped() -> void:
+func test_public_raw_stage_facade_remains_void_and_untyped() -> void:
 	var runtime := get_tree().root.get_node("StellaRuntime")
 	assert_true(runtime.has_method("apply_stage_operations"))
 	var method_info: Dictionary = {}
@@ -344,7 +363,7 @@ func test_legacy_raw_stage_facade_remains_void_and_untyped() -> void:
 		return
 	var return_info: Dictionary = method_info.get("return", {})
 	assert_eq(int(return_info.get("type", TYPE_NIL)), TYPE_NIL,
-		"the old Dictionary facade remains fire-and-forget void")
+		"the public Dictionary facade remains fire-and-forget void")
 
 
 func test_dialogue_visibility_is_the_second_typed_operation_adapter() -> void:
@@ -394,6 +413,7 @@ func test_batch_request_defensively_preserves_mixed_authored_order() -> void:
 		"action": "show",
 		"id": "mixed",
 		"properties": {"asset": "stage:redraw_source"},
+		"transition_params": {},
 		"transition": "cut",
 		"duration": 0.0,
 	})
@@ -681,6 +701,7 @@ func test_malformed_dialogue_child_rejects_the_entire_mixed_batch_preallocation(
 		"action": "show",
 		"id": "must_not_commit",
 		"properties": {"asset": "stage:redraw_source"},
+		"transition_params": {},
 		"transition": "cut",
 		"duration": 0.0,
 	})
@@ -785,6 +806,7 @@ func test_presentation_batch_handler_preflight_is_atomic_source_located_and_curr
 				"payload": {
 					"action": "show", "id": "must_not_commit",
 					"properties": {"asset": "stage:redraw_source"},
+					"transition_params": {},
 					"transition": "cut", "duration": 0.0,
 				},
 			},
@@ -941,6 +963,7 @@ func test_signal_bus_generic_projection_defers_and_serializes_cross_queue_dispat
 				"action": "show",
 				"id": "stale",
 				"properties": {"asset": "stage:redraw_source"},
+				"transition_params": {},
 				"transition": "cut",
 				"duration": 0.0,
 			}), DialogueVisibilityPresentationOperation.new({
@@ -957,6 +980,7 @@ func test_signal_bus_generic_projection_defers_and_serializes_cross_queue_dispat
 				"action": "show",
 				"id": "mixed",
 				"properties": {"asset": "stage:redraw_source"},
+				"transition_params": {},
 				"transition": "cut",
 				"duration": 0.0,
 			}), DialogueVisibilityPresentationOperation.new({
@@ -971,6 +995,7 @@ func test_signal_bus_generic_projection_defers_and_serializes_cross_queue_dispat
 			"action": "show",
 			"id": "stage_only",
 			"properties": {"asset": "stage:redraw_source"},
+			"transition_params": {},
 			"transition": "cut",
 			"duration": 0.0,
 		}])

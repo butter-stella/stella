@@ -2,19 +2,28 @@ extends GutTest
 ## Integration test: DSL → Lexer → Parser → Engine end-to-end.
 
 var _original_presentation_snapshot: Dictionary
+var _original_stage_assets_path := ""
+var _stage_presenter: StagePresenter
 
 
 func before_each() -> void:
 	_original_presentation_snapshot = (
 		StellaRuntime.presentation_state.capture_snapshot()
 	)
+	_original_stage_assets_path = StellaRuntime.stage_assets_path
+	StellaRuntime.stage_assets_path = "res://tests/fixtures/stage/"
 	StellaRuntime.presentation_state.clear()
+	_stage_presenter = StagePresenter.new()
+	add_child_autoqfree(_stage_presenter)
 
 
 func after_each() -> void:
+	if _stage_presenter != null and _stage_presenter.get_parent() != null:
+		_stage_presenter.get_parent().remove_child(_stage_presenter)
 	StellaRuntime.presentation_state.restore_snapshot(
 		_original_presentation_snapshot
 	)
+	StellaRuntime.stage_assets_path = _original_stage_assets_path
 
 
 # Auto-advancing handlers for testing (no player input needed)
@@ -59,7 +68,7 @@ func _setup_engine(source: String, scenario_id: String = "demo") -> ScenarioEngi
 	var store = VariableStore.new()
 
 	registry.register(BgHandler.new())
-	registry.register(StageLayerHandler.new())
+	registry.register(StageLayerHandler.new(StellaRuntime.presentation_director))
 	registry.register(JumpHandler.new())
 	registry.register(SetHandler.new())
 	registry.register(ConditionHandler.new())
@@ -77,19 +86,19 @@ func test_poc_demo_runs_to_completion():
 	var source = """@chapter test
 @scene start
 @bg bg_school_gate fade 0.8
-@stage sakura show kind=character asset=character:sakura/smile position=960,80
+@stage sakura show kind=character asset=stage:redraw_source position=960,80
 sakura「你好！」
 @choice
   - "你好" -> friendly {affection += 5}
   - "……" -> cold
 
 @scene friendly
-@stage sakura update asset=character:sakura/happy
+@stage sakura update asset=stage:redraw_blur_source
 sakura「太好了！」
 @jump ending
 
 @scene cold
-@stage sakura update asset=character:sakura/sad
+@stage sakura update asset=stage:redraw_blur_order
 sakura「这样啊...」
 @jump ending
 
@@ -163,9 +172,9 @@ func test_headless_dialogue_marks_only_commands_advanced_normally() -> void:
 func test_named_stage_runs_from_dsl_through_scenario_engine():
 	var source = """@chapter test
 @scene start
-@stage base show kind=background asset=stage:room z=-10
-@stage hero show kind=character body=stage:hero_body face=stage:smile position=320,480
-@stage hero update face=stage:sad"""
+@stage base show kind=background asset=stage:redraw_source z=-10
+@stage hero show kind=character body=stage:redraw_blur_source face=stage:redraw_mask position=320,480
+@stage hero update face=stage:redraw_blur_order"""
 	var emitted_batches: Array = []
 	var callback = func(operations, force_cut):
 		emitted_batches.append([operations.duplicate(true), force_cut])
@@ -184,16 +193,16 @@ func test_named_stage_runs_from_dsl_through_scenario_engine():
 		StellaRuntime.presentation_state.capture_snapshot()["stage_layers"]
 	)
 	assert_eq(stage_layers["hero"]["position"], [320.0, 480.0])
-	assert_eq(stage_layers["hero"]["body"], "stage:hero_body")
-	assert_eq(stage_layers["hero"]["face"], "stage:sad")
+	assert_eq(stage_layers["hero"]["body"], "stage:redraw_blur_source")
+	assert_eq(stage_layers["hero"]["face"], "stage:redraw_blur_order")
 	SignalBus.stage_operations_requested.disconnect(callback)
 
 
 func test_invalid_stage_update_cannot_partially_mutate_runtime_state():
 	var source = """@chapter test
 @scene start
-@stage hero show face=stage:original opacity=0.8
-@stage hero update face=stage:must_not_apply opacity=2"""
+@stage hero show face=stage:redraw_source opacity=0.8
+@stage hero update face=stage:redraw_blur_order opacity=2"""
 	var scenario := DslParser.parse(
 		DslLexer.tokenize(source),
 		"invalid_named_stage_e2e",
@@ -217,7 +226,7 @@ func test_invalid_stage_update_cannot_partially_mutate_runtime_state():
 		emitted_batches.append([operations.duplicate(true), force_cut])
 	SignalBus.stage_operations_requested.connect(callback)
 	var registry := CommandRegistry.new()
-	registry.register(StageLayerHandler.new())
+	registry.register(StageLayerHandler.new(StellaRuntime.presentation_director))
 	var engine := ScenarioEngine.new()
 	engine.registry = registry
 	engine.load_scenario(scenario)
@@ -229,6 +238,6 @@ func test_invalid_stage_update_cannot_partially_mutate_runtime_state():
 	var stage_layers: Dictionary = (
 		StellaRuntime.presentation_state.capture_snapshot()["stage_layers"]
 	)
-	assert_eq(stage_layers["hero"]["face"], "stage:original")
+	assert_eq(stage_layers["hero"]["face"], "stage:redraw_source")
 	assert_almost_eq(stage_layers["hero"]["opacity"], 0.8, 0.001)
 	SignalBus.stage_operations_requested.disconnect(callback)

@@ -363,12 +363,21 @@ StellaRuntime.update_stage_layer("hero", {
 	],
 }, "fade", 0.2)
 
+# 投影型转场的 kind 与 typed params 分开传递；资源仍是 Stella logical ID
+StellaRuntime.update_stage_layer(
+	"hero",
+	{"face": "stage:hero/surprised"},
+	"rule",
+	0.8,
+	{"mask": "stage:masks/diagonal", "softness": 0.08, "invert": false},
+)
+
 StellaRuntime.hide_stage_layer("hero", "fade", 0.2)  # 保留节点和资源
 StellaRuntime.remove_stage_layer("hero")             # 删除单层
 StellaRuntime.clear_stage_layers()                    # 删除全部命名舞台层
 ```
 
-多个操作可通过 `apply_stage_operations(operations, force_cut)` 同批提交。该 API 使用与存档一致的 closed schema：布尔属性必须是真正的 `bool`，清空 `asset` / `body` / `face` 使用字符串 `"none"`，景深与旋转只使用 `depth_scale` / `rotation`。任何操作含非法字段、值、transition 或 duration 时，整批都会被拒绝，不会部分派发。`force_cut=true` 会先归约整批操作，再同步投影最终状态，适合快进、点击补全和读档。所有人物与其他舞台图片都同步进入同一份 `PresentationState.stage_layers`；`hide` 的层仍在快照中，`remove` / `clear` 则会移除状态。
+多个操作可通过 `apply_stage_operations(operations, force_cut)` 同批提交。public Facade 的 canonical operation 必须显式提供 `action / id / properties / transition / transition_params / duration` 六字段；缺少或错误类型的 `transition_params` 会整批 fail-close，不存在五字段兼容分支。`show_stage_layer` 等 typed helper 的参数可省略，helper 会自行发出完整六字段 payload。布尔属性必须是真正的 `bool`，清空 `asset` / `body` / `face` 使用字符串 `"none"`，景深与旋转只使用 `depth_scale` / `rotation`。`rule` 的 typed params 为 `{mask, softness, invert}`，`mosaic` 为 `{cell}`；完整参数、logical mask ID、像素公式与预算规则见 DSL 文档。任何操作含非法字段、值、transition、transition_params 或 duration 时，整批都会被拒绝，不会部分派发。DSL 中 `transition=none` 只是作者层写法，parser 会把它 lowering 为 canonical `transition=cut`；programmatic Facade 不接受 `none`、大小写或前后空白变体。含 rule/mosaic/custom projection 的 Facade batch 即使 `force_cut=true` 也必须经过唯一 Director 与 Presenter provider/resource/viewport/budget preflight；true 只把有效目标同步 cut 投影为零 Tween/receipt，绝不退回 raw signal 或跳过缺失 mask/provider 诊断。所有人物与其他舞台图片都同步进入同一份 `PresentationState.stage_layers`；`hide` 的层仍在快照中，`remove` / `clear` 则会移除状态。
 
 `redraw` 是有序的完整操作数组，而不是按类型合并的字典；更新它会原子替换整条管线，传 `[]` 会清空。支持 `color_overlay`、`brightness_contrast`、`grayscale`、`tint`、`blur` 和 `clip`；每条管线最多 16 个操作，其中最多 4 个 `blur`、1 个 `clip`。每个非零 `blur([x,y])` 都是独立 pass，对前一操作输出的 `[-x,+x] × [-y,+y]` 矩形窗口作完整等权 RGBA 平均；连续 blur 不会合并，`blur([0,0])` 则是保留在状态中的真正 no-op。`grayscale` 的 8-bit 目标灰度严格为 `(54 * R + 183 * G + 19 * B) >> 8`，再按 `amount` 与原色混合。`clip.asset` 继续使用 `background:` / `character:` / `stage:` / `res://` 或裸 stage 路径，并与普通纹理共享 `ResourceLoader` 缓存；快照只保存逻辑资源 ID，不保存 `Texture2D`。
 
@@ -501,11 +510,13 @@ WAV definition duplicate 以 source sample frame 写入 `loop_begin` / `loop_end
 「这行可在 Tween 运行时开始。」
 ```
 
-普通左键、Space 或 Enter 只会把当前 sealed JOIN 的 exact receipts snap 到 authored endpoint；`FIRE_AND_FORGET` 不 claim input。Skip 从 false 切换为 true 时 exact-finish 当前 JOIN 一次；Skip 是持续模式，新 batch 提交时已 active 则直接 force-cut。Auto 状态本身不结束 Stage JOIN。完整语法、ordering 与 fail-close 规则见 [DSL 文档](DSL.md#312-舞台批次组合stage_batch)；公开的 reference scenario 见 [`examples/demo/scenarios/stage_batch.stla`](../examples/demo/scenarios/stage_batch.stla)，它不是默认 Start Game 入口。
+普通左键、Space 或 Enter 只会把当前 sealed JOIN 的 exact receipts（包括 rule-mask/mosaic Stage projection）snap 到 authored endpoint；standalone Stage 与 `FIRE_AND_FORGET` 不 claim input，也不会消费、重放 advance 或把下一句 click 归给旧转场。Skip 从 false 切换为 true 时 exact-finish 当前 JOIN 一次；Skip 是持续模式，新 batch 提交时已 active 则在 participant seal 后直接 force-cut，不创建 projection snapshot/Tween。Auto 状态本身不结束 Stage JOIN。完整语法、ordering 与 fail-close 规则见 [DSL 文档](DSL.md#312-舞台批次组合stage_batch)；公开的 reference scenario 见 [`examples/demo/scenarios/stage_batch.stla`](../examples/demo/scenarios/stage_batch.stla)，它不是默认 Start Game 入口。
 
-高级 typed surface 由 `PresentationOperation`、`StagePresentationOperation`、`DialogueVisibilityPresentationOperation`、`DialogueClearPresentationOperation`、`ChapterIndicatorPresentationOperation`、`LoopSePresentationOperation`、`BgmPresentationOperation`、`PresentationOperationReceipt`、`PresentationBatchRequest` 和 `PresentationDirector` 组成。唯一 owner 是 `StellaRuntime.presentation_director`；项目不应自行 `new()` 第二个 Director，也不应调用 `_bind_authority()`、`_seal()` 或 `_settle()` 等下划线内部方法。同一个 Director 支持 Stage、`@dialogue_visibility`、`@dialogue_clear`、`@chapter_indicator`、`@loop_se` 与 `@bgm` 的 mixed `@presentation_batch`，在任何 apply 前完成全批 preflight/seal，再按 authored child order dispatch。它只用于需要跨 channel 共享 JOIN/FNF boundary 的高级 composition；普通 chapter/dialogue clear/显隐与 loop-SE/BGM 保持各自 standalone 写法，并由 parser lowering 到同一条 canonical child 路径。
+Rule-mask 与 mosaic 的公开合成示例位于 [`examples/demo/scenarios/stage_transitions.stla`](../examples/demo/scenarios/stage_transitions.stla)，遮罩是仓库内可再分发的 synthetic SVG；测试和示例都不依赖任何宿主项目素材。
 
-既有 `StellaRuntime.apply_stage_operations(operations, force_cut) -> void` 仍是 raw 兼容 Facade：它不返回 receipt、不等待 Tween，也不等价于 authored `@stage_batch`。standalone `@stage`、`@parallel` 和 `@combine` 的既有语义同样保持不变。
+高级 typed surface 由 `PresentationOperation`、`StagePresentationOperation`、`DialogueVisibilityPresentationOperation`、`DialogueClearPresentationOperation`、`ChapterIndicatorPresentationOperation`、`LoopSePresentationOperation`、`BgmPresentationOperation`、`PresentationOperationReceipt`、`PresentationBatchRequest` 和 `PresentationDirector` 组成。唯一 owner 是 `StellaRuntime.presentation_director`；项目不应自行 `new()` 第二个 Director，也不应调用 `_bind_authority()`、`_seal()` 或 `_settle()` 等下划线内部方法。`PresentationRequestReservation` 同样是 Runtime 内部的单次 capability，仅供 `@combine` 在同步 typed dispatch 前登记 exact owner，不是用裸 request ID 提交工作的公开 API。同一个 Director 支持 Stage、`@dialogue_visibility`、`@dialogue_clear`、`@chapter_indicator`、`@loop_se` 与 `@bgm` 的 mixed `@presentation_batch`，在任何 apply 前完成全批 preflight/seal，再按 authored child order dispatch。它只用于需要跨 channel 共享 JOIN/FNF boundary 的高级 composition；普通 chapter/dialogue clear/显隐与 loop-SE/BGM 保持各自 standalone 写法，并由 parser lowering 到同一条 canonical child 路径。
+
+公开的 `StellaRuntime.apply_stage_operations(operations, force_cut) -> void` 是 canonical programmatic Facade：它要求完整六字段 operation，不返回 receipt、不等待 Tween，也不等价于 authored `@stage_batch`。simple transition 保留同步 raw notification contract；projection transition 经 typed Director preflight 后才发布同一个 canonical notification。`@combine` 的 Stage cue 同样经 typed Director，且 parser 保留每条 cue 的 source line；segment sequencing 不因此变成 batch JOIN。
 
 ### 存档/读档
 

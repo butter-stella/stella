@@ -18,6 +18,7 @@ var _presenter: Control
 var _engine: ScenarioEngine
 var _runtime_nvl_event_count: int = 0
 var _runtime_nvl_page_keys: Array[String] = []
+var _owned_nodes: Array[Node] = []
 
 
 func before_each() -> void:
@@ -25,6 +26,7 @@ func before_each() -> void:
 	_engine = null
 	_runtime_nvl_event_count = 0
 	_runtime_nvl_page_keys.clear()
+	_owned_nodes.clear()
 	StellaRuntime.auto_play.is_active = false
 	StellaRuntime.skip_controller.is_active = false
 
@@ -36,11 +38,36 @@ func after_each() -> void:
 		await get_tree().process_frame
 	if SignalBus.show_dialogue.is_connected(_capture_runtime_nvl_event):
 		SignalBus.show_dialogue.disconnect(_capture_runtime_nvl_event)
+	SignalBus.hide_dialogue.emit()
+	await _release_owned_nodes()
+	_presenter = null
+	_engine = null
+	_runtime_nvl_page_keys.clear()
+
+
+func _add_owned_node(node: Node) -> void:
+	_owned_nodes.append(node)
+	add_child_autoqfree(node)
+
+
+func _release_owned_nodes() -> void:
+	for node: Node in _owned_nodes:
+		if not is_instance_valid(node):
+			continue
+		if node.is_inside_tree():
+			var exited: Signal = node.tree_exited
+			if not node.is_queued_for_deletion():
+				node.queue_free()
+			await exited
+		elif is_instance_valid(node):
+			node.free()
+	_owned_nodes.clear()
+	await get_tree().process_frame
 
 
 func test_nvl_profile_accumulates_three_prefixed_entries_and_restores_authored_adv() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 0.0
 
@@ -114,7 +141,7 @@ func test_nvl_profile_accumulates_three_prefixed_entries_and_restores_authored_a
 
 func test_nvl_snapshot_restore_rebuilds_the_authored_page() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 0.0
 
@@ -307,7 +334,7 @@ func test_nested_condition_inside_else_false_path_keeps_the_outer_page() -> void
 
 func test_no_profile_preserves_the_original_legacy_mode_layouts() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 0.0
 
@@ -338,7 +365,7 @@ func test_no_profile_preserves_the_original_legacy_mode_layouts() -> void:
 
 func test_nvl_profile_accepts_a_space_separator() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 0.0
 	var profile := {
@@ -356,7 +383,7 @@ func test_nvl_profile_accepts_a_space_separator() -> void:
 
 func test_nvl_prefix_is_the_first_typed_character_and_avatar_marker_is_local() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 1.0
 
@@ -383,7 +410,7 @@ func test_nvl_prefix_is_the_first_typed_character_and_avatar_marker_is_local() -
 
 func test_nvl_typewriter_keeps_history_visible_and_types_only_the_new_entry() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 0.0
 	var profile := {"entry_prefix": "・", "entry_separator": "\n"}
@@ -413,7 +440,7 @@ func test_nvl_typewriter_keeps_history_visible_and_types_only_the_new_entry() ->
 
 func test_leaving_nvl_for_overlay_or_adv_resets_the_accumulator() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 0.0
 
@@ -429,7 +456,7 @@ func test_leaving_nvl_for_overlay_or_adv_resets_the_accumulator() -> void:
 
 func test_new_nvl_page_resets_without_an_intervening_non_nvl_dialogue() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 0.0
 	var profile := {"entry_prefix": "・", "entry_separator": ""}
@@ -449,7 +476,7 @@ func test_new_nvl_page_resets_without_an_intervening_non_nvl_dialogue() -> void:
 
 func test_nvl_decoration_does_not_mutate_segments_or_backlog_text() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 1.0
 	var segments := [{
@@ -495,7 +522,7 @@ func test_combine_is_decorated_once_as_one_nvl_entry() -> void:
 	assert_eq(segments.size(), 2)
 
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 1.0
 	var context := ScenarioContext.new(scenario)
@@ -521,7 +548,7 @@ func test_resource_fallback_can_override_nvl_entry_format_independently() -> voi
 	var profile := DialoguePresentationProfile.new()
 	profile.nvl = nvl_profile
 	_presenter.presentation_profile = profile
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 0.0
 
@@ -532,7 +559,7 @@ func test_resource_fallback_can_override_nvl_entry_format_independently() -> voi
 
 func test_named_profile_without_entry_format_keeps_legacy_newline() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 0.0
 	var layout_only_profile := {"horizontal_alignment": HORIZONTAL_ALIGNMENT_CENTER}
@@ -548,7 +575,7 @@ func test_named_profile_without_entry_format_keeps_legacy_newline() -> void:
 func test_missing_nvl_profile_uses_legacy_layout_then_restores_toolbar_in_adv() -> void:
 	_presenter = FIXTURE.instantiate()
 	_presenter.presentation_profile = DialoguePresentationProfile.new()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 0.0
 
@@ -576,7 +603,7 @@ func test_invalid_profile_reports_diagnostic_and_falls_back_safely() -> void:
 
 	_presenter = FIXTURE.instantiate()
 	_presenter.presentation_profile = profile
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	assert_push_warning(
 		"DialoguePresenter profile 'nvl': entry_prefix is plain text and cannot contain BBCode brackets")
@@ -669,7 +696,7 @@ func test_profile_declarations_merge_aliases_and_strip_whitespace_comments() -> 
 
 func test_stla_properties_are_independent_and_preserve_unwritten_authored_values() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 0.0
 
@@ -701,7 +728,7 @@ func test_stla_properties_are_independent_and_preserve_unwritten_authored_values
 
 func test_profile_state_is_restored_before_unprofiled_legacy_mode() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 0.0
 
@@ -734,7 +761,7 @@ func test_profile_state_is_restored_before_unprofiled_legacy_mode() -> void:
 
 func test_soft_hidden_show_restores_and_renders_the_new_runtime_page() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 0.0
 	var profile := {"entry_prefix": "・", "entry_separator": ""}
@@ -761,7 +788,7 @@ func test_soft_hidden_show_restores_and_renders_the_new_runtime_page() -> void:
 
 func test_empty_segments_do_not_mutate_soft_hide_or_nvl_page_state() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 0.0
 	var profile := {"entry_prefix": "・", "entry_separator": ""}
@@ -787,7 +814,7 @@ func test_empty_segments_do_not_mutate_soft_hide_or_nvl_page_state() -> void:
 
 func test_soft_hidden_keyboard_restore_does_not_advance_or_start_ctrl_skip() -> void:
 	var game := GAME_SCENE.instantiate()
-	add_child_autoqfree(game)
+	_add_owned_node(game)
 	await get_tree().process_frame
 	var presenter: Control = game.get_node("%DialoguePanel")
 	var input_handler: Node = game.get_node("InputHandler")
@@ -818,7 +845,7 @@ func test_soft_hidden_keyboard_restore_does_not_advance_or_start_ctrl_skip() -> 
 
 func test_hiding_dialogue_restores_profile_state_and_clears_active_profile() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 0.0
 
@@ -915,7 +942,7 @@ func test_builtin_scenes_expose_stla_profile_targets_without_scene_editing() -> 
 
 func test_profile_visibility_baseline_and_canonical_surface_mask_are_orthogonal() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	var surface: CanvasItem = _presenter.get_node("DialogueBg")
 	surface.add_to_group("dialogue_surface")
@@ -961,7 +988,7 @@ func test_profile_visibility_baseline_and_canonical_surface_mask_are_orthogonal(
 
 func test_profile_switch_rebinds_canonical_surface_to_the_new_owned_group() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	var adv_chrome: CanvasItem = _presenter.get_node("AdvChrome")
 	var text_region: CanvasItem = _presenter.get_node("TextRegion")
@@ -995,7 +1022,7 @@ func test_profile_switch_rebinds_canonical_surface_to_the_new_owned_group() -> v
 
 func test_actual_mode_transaction_captures_new_profile_before_hidden_gate() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	var adv_chrome: CanvasItem = _presenter.get_node("AdvChrome")
 	var text_region: CanvasItem = _presenter.get_node("TextRegion")
@@ -1030,7 +1057,7 @@ func test_actual_mode_transaction_captures_new_profile_before_hidden_gate() -> v
 
 func test_profile_to_no_profile_rebuilds_default_binding_and_restores_custom_group() -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	var custom: CanvasItem = _presenter.get_node("AdvChrome")
 	var default_surface: CanvasItem = _presenter.get_node("DialogueBg")
@@ -1062,7 +1089,7 @@ func test_profile_to_no_profile_rebuilds_default_binding_and_restores_custom_gro
 
 func test_demo_voice_progress_runtime_baseline_survives_real_cut_hide_show() -> void:
 	var game: Node = load("res://examples/demo/scenes/game.tscn").instantiate()
-	add_child_autoqfree(game)
+	_add_owned_node(game)
 	await get_tree().process_frame
 	var presenter: Control = game.get_node("UILayer/DialoguePanel")
 	var voice_progress: CanvasItem = presenter.get_node(
@@ -1176,7 +1203,7 @@ func _start_scenario_fixture() -> void:
 
 func _start_runtime_fixture_at(entry_scene_id: String) -> void:
 	_presenter = FIXTURE.instantiate()
-	add_child_autoqfree(_presenter)
+	_add_owned_node(_presenter)
 	await get_tree().process_frame
 	_presenter._char_interval = 0.0
 
