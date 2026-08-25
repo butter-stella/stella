@@ -1,0 +1,30 @@
+[gd_resource type="Resource" script_class="BgmTrackDefinition" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://addons/stella/core/data/bgm_track_definition.gd" id="1_track"]
+[ext_resource type="Script" path="res://addons/stella/core/data/bgm_cue_definition.gd" id="2_cue"]
+[ext_resource type="AudioStream" path="res://tests/fixtures/audio/bgm/synthetic_loop_region.wav" id="3_stream"]
+
+[sub_resource type="Resource" id="Resource_short"]
+script = ExtResource("2_cue")
+cue_name = "short"
+loop = true
+start_position = 0.1
+loop_position = 0.25
+loop_end_position = 0.45
+
+[sub_resource type="Resource" id="Resource_tail"]
+script = ExtResource("2_cue")
+cue_name = "tail"
+loop = false
+start_position = 0.05
+loop_position = 0.2
+loop_end_position = 0.55
+
+[resource]
+script = ExtResource("1_track")
+stream = ExtResource("3_stream")
+loop = true
+start_position = 0.05
+loop_position = 0.2
+loop_end_position = 0.55
+cues = Array[ExtResource("2_cue")]([SubResource("Resource_short"), SubResource("Resource_tail")])

@@ -1,0 +1,25 @@
+[gd_resource type="Resource" script_class="BgmTrackDefinition" load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://addons/stella/core/data/bgm_track_definition.gd" id="1_track"]
+[ext_resource type="Script" path="res://addons/stella/core/data/bgm_stem_definition.gd" id="2_stem"]
+[ext_resource type="AudioStream" path="res://tests/fixtures/audio/bgm/synthetic_loop_region.wav" id="3_stream"]
+
+[sub_resource type="Resource" id="Resource_rhythm"]
+script = ExtResource("2_stem")
+stem_name = "rhythm"
+stream = ExtResource("3_stream")
+default_gain = 1.0
+
+[sub_resource type="Resource" id="Resource_harmony"]
+script = ExtResource("2_stem")
+stem_name = "harmony"
+stream = ExtResource("3_stream")
+default_gain = 0.5
+
+[resource]
+script = ExtResource("1_track")
+stems = Array[ExtResource("2_stem")]([SubResource("Resource_rhythm"), SubResource("Resource_harmony")])
+loop = true
+start_position = 0.05
+loop_position = 0.2
+loop_end_position = 0.55

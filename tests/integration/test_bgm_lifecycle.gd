@@ -111,6 +111,25 @@ func _expected_bgm_db(level: float) -> float:
 		* level)
 
 
+func _loop_region_stream(extension: String) -> AudioStream:
+	return ResourceLoader.load(
+		FIXTURE_PATH + "synthetic_loop_region." + extension) as AudioStream
+
+
+func _loop_region_definition(
+	extension: String,
+	loop: bool = true,
+	loop_end_position: float = 0.55,
+) -> BgmTrackDefinition:
+	var definition := BgmTrackDefinition.new()
+	definition.stream = _loop_region_stream(extension)
+	definition.loop = loop
+	definition.start_position = 0.05
+	definition.loop_position = 0.2
+	definition.loop_end_position = loop_end_position
+	return definition
+
+
 func _synchronized_stream() -> AudioStreamSynchronized:
 	return _player().stream as AudioStreamSynchronized
 
@@ -274,6 +293,426 @@ func test_marker_metadata_raw_default_and_nonloop_cue_are_physical() -> void:
 		float(_runtime.presentation_state.current_bgm["position"]), 0.02, 0.001)
 	assert_eq((_player().stream as AudioStreamWAV).loop_mode,
 		AudioStreamWAV.LOOP_DISABLED)
+
+
+func test_explicit_loop_end_uses_native_wav_ogg_and_mp3_mixer_boundaries() -> void:
+	for extension: String in ["wav", "ogg", "mp3"]:
+		var source := _loop_region_stream(extension)
+		assert_not_null(source, extension)
+		if source == null:
+			continue
+		assert_almost_eq(source.get_length(), 1.0, 0.06, extension)
+		var prepared: Dictionary = _audio._prepare_bgm_definition(
+			_loop_region_definition(extension), "")
+		assert_false(prepared.is_empty(), extension)
+		if prepared.is_empty():
+			continue
+		assert_eq(float(prepared["loop_end_position"]), 0.55, extension)
+		var stream := prepared["stream"] as AudioStream
+		var sample_rate := _audio._bgm_stream_sample_rate(stream)
+		assert_eq(sample_rate, 44100, extension)
+		if stream is AudioStreamWAV:
+			var wav := stream as AudioStreamWAV
+			assert_eq(wav.loop_mode, AudioStreamWAV.LOOP_FORWARD)
+			assert_eq(wav.loop_begin, 8820)
+			assert_eq(wav.loop_end, 24255)
+		else:
+			assert_true(bool(stream.get("loop")), extension)
+			assert_almost_eq(float(stream.get("loop_offset")), 0.2, 0.000001,
+				extension)
+			assert_eq(int(stream.get("beat_count")), 1, extension)
+			assert_almost_eq(float(stream.get("bpm")), 60.0 / 0.55,
+				0.000001, extension)
+			var represented_frames := int(
+				float(stream.get("beat_count")) * float(sample_rate) * 60.0
+				/ float(stream.get("bpm")))
+			assert_lt(absf(float(represented_frames) - 0.55 * sample_rate),
+				1.0, extension + " mixer boundary may not cross one source sample")
+		var playback := stream.instantiate_playback()
+		playback.start(0.0)
+		var frames := int(round(0.65 * float(AudioServer.get_mix_rate())))
+		assert_eq(playback.mix_audio(1.0, frames).size(), frames, extension)
+		assert_true(playback.is_playing(), extension)
+		assert_gt(playback.get_playback_position(), 0.19, extension)
+		assert_lt(playback.get_playback_position(), 0.41, extension)
+
+		var cue_definition := _loop_region_definition(extension)
+		var cue := BgmCueDefinition.new()
+		cue.cue_name = "short"
+		cue.loop = true
+		cue.start_position = 0.1
+		cue.loop_position = 0.25
+		cue.loop_end_position = 0.45
+		cue_definition.cues.append(cue)
+		var cue_prepared: Dictionary = _audio._prepare_bgm_definition(
+			cue_definition, "short")
+		assert_false(cue_prepared.is_empty(), extension + " cue")
+		if cue_prepared.is_empty():
+			continue
+		assert_eq(float(cue_prepared["start_position"]), 0.1, extension)
+		assert_eq(float(cue_prepared["loop_position"]), 0.25, extension)
+		assert_eq(float(cue_prepared["loop_end_position"]), 0.45, extension)
+		var cue_stream := cue_prepared["stream"] as AudioStream
+		if cue_stream is AudioStreamWAV:
+			assert_eq((cue_stream as AudioStreamWAV).loop_begin, 11025)
+			assert_eq((cue_stream as AudioStreamWAV).loop_end, 19845)
+		else:
+			assert_almost_eq(float(cue_stream.get("loop_offset")), 0.25,
+				0.000001, extension)
+			assert_eq(int(cue_stream.get("beat_count")), 1, extension)
+			var cue_frames := int(
+				float(cue_stream.get("beat_count")) * float(sample_rate) * 60.0
+				/ float(cue_stream.get("bpm")))
+			assert_lt(absf(float(cue_frames) - 0.45 * sample_rate), 1.0,
+				extension + " cue end may not cross one source sample")
+
+
+func test_beat_boundary_roundtrip_accepts_long_and_one_sample_regions() -> void:
+	for extension: String in ["ogg", "mp3"]:
+		var source := _loop_region_stream(extension)
+		var sample_rate := _audio._bgm_stream_sample_rate(source)
+		assert_eq(sample_rate, 44100, extension)
+		for loop_end_position: float in [36000.0, 1.0 / float(sample_rate)]:
+			var duplicate := source.duplicate(true) as AudioStream
+			assert_true(_audio._configure_bgm_beat_loop_end(
+				duplicate, loop_end_position, sample_rate),
+				"%s end=%s" % [extension, loop_end_position])
+			var represented_frames := int(
+				float(duplicate.get("beat_count")) * float(sample_rate) * 60.0
+				/ float(duplicate.get("bpm")))
+			assert_lt(absf(
+				float(represented_frames) - loop_end_position * sample_rate),
+				1.0, "%s end=%s" % [extension, loop_end_position])
+		var minimum := _loop_region_definition(
+			extension, true, 1.0 / float(sample_rate))
+		minimum.start_position = 0.0
+		minimum.loop_position = 0.0
+		assert_false(_audio._prepare_bgm_definition(minimum, "").is_empty(),
+			extension + " accepts the minimum one-source-sample legal region")
+		var overflow_duplicate := source.duplicate(true) as AudioStream
+		assert_false(_audio._configure_bgm_beat_loop_end(
+			overflow_duplicate, 36000.0, 96000),
+			extension + " rejects a mixer boundary beyond signed 32-bit frames")
+
+
+func test_natural_sentinel_clears_definition_markers_but_raw_preserves_them() -> void:
+	for extension: String in ["ogg", "mp3"]:
+		var source := _loop_region_stream(extension).duplicate(true) as AudioStream
+		source.set("loop", false)
+		source.set("loop_offset", 0.17)
+		source.set("beat_count", 1)
+		source.set("bpm", 120.0)
+		var raw: Dictionary = _audio._prepare_raw_bgm_stream(source)
+		assert_false(raw.is_empty(), extension)
+		var raw_duplicate := raw.get("stream") as AudioStream
+		assert_true(bool(raw_duplicate.get("loop")), extension)
+		assert_almost_eq(float(raw_duplicate.get("loop_offset")), 0.17,
+			0.000001, extension)
+		assert_eq(int(raw_duplicate.get("beat_count")), 1, extension)
+		assert_eq(float(raw_duplicate.get("bpm")), 120.0, extension)
+		assert_false(bool(source.get("loop")), extension)
+		assert_almost_eq(float(source.get("loop_offset")), 0.17,
+			0.000001, extension)
+		assert_eq(int(source.get("beat_count")), 1, extension)
+		assert_eq(float(source.get("bpm")), 120.0, extension)
+
+		var definition := _loop_region_definition(extension, true, -1.0)
+		definition.stream = source
+		var prepared: Dictionary = _audio._prepare_bgm_definition(definition, "")
+		assert_false(prepared.is_empty(), extension)
+		var definition_duplicate := prepared.get("stream") as AudioStream
+		assert_true(bool(definition_duplicate.get("loop")), extension)
+		assert_almost_eq(float(definition_duplicate.get("loop_offset")), 0.2,
+			0.000001, extension)
+		assert_eq(int(definition_duplicate.get("beat_count")), 0, extension)
+		assert_eq(float(definition_duplicate.get("bpm")), 0.0, extension)
+		assert_eq(int(source.get("beat_count")), 1,
+			extension + " definition preparation cannot mutate raw metadata")
+
+	var wav := _loop_region_stream("wav").duplicate(true) as AudioStreamWAV
+	wav.loop_mode = AudioStreamWAV.LOOP_PINGPONG
+	wav.loop_begin = 7497
+	wav.loop_end = 22050
+	var raw_wav: Dictionary = _audio._prepare_raw_bgm_stream(wav)
+	var raw_wav_duplicate := raw_wav.get("stream") as AudioStreamWAV
+	assert_eq(raw_wav_duplicate.loop_mode, AudioStreamWAV.LOOP_PINGPONG)
+	assert_eq(raw_wav_duplicate.loop_begin, 7497)
+	assert_eq(raw_wav_duplicate.loop_end, 22050)
+	assert_eq(wav.loop_mode, AudioStreamWAV.LOOP_PINGPONG)
+	assert_eq(wav.loop_begin, 7497)
+	assert_eq(wav.loop_end, 22050)
+
+
+func test_raw_bpm_only_metadata_preserves_natural_end_and_remains_playable() -> void:
+	for extension: String in ["ogg", "mp3"]:
+		var source := _loop_region_stream(extension).duplicate(true) as AudioStream
+		source.set("loop", false)
+		source.set("loop_offset", 0.17)
+		source.set("beat_count", 0)
+		source.set("bpm", 120.0)
+		var raw: Dictionary = _audio._prepare_raw_bgm_stream(source)
+		assert_false(raw.is_empty(), extension + " BPM-only metadata is valid")
+		if raw.is_empty():
+			continue
+		assert_almost_eq(float(raw["loop_end_position"]), source.get_length(),
+			0.000001, extension + " beat_count=0 keeps the physical end")
+		var duplicate := raw["stream"] as AudioStream
+		assert_true(bool(duplicate.get("loop")), extension)
+		assert_almost_eq(float(duplicate.get("loop_offset")), 0.17,
+			0.000001, extension)
+		assert_eq(int(duplicate.get("beat_count")), 0, extension)
+		assert_eq(float(duplicate.get("bpm")), 120.0, extension)
+		var playback := duplicate.instantiate_playback()
+		playback.start(0.0)
+		var frames := int(round(1.1 * float(AudioServer.get_mix_rate())))
+		assert_eq(playback.mix_audio(1.0, frames).size(), frames, extension)
+		assert_true(playback.is_playing(), extension)
+		assert_gt(playback.get_playback_position(), 0.16, extension)
+		assert_lt(playback.get_playback_position(), 0.45, extension)
+		assert_false(bool(source.get("loop")), extension)
+		assert_eq(int(source.get("beat_count")), 0, extension)
+		assert_eq(float(source.get("bpm")), 120.0, extension)
+		for invalid_bpm: float in [NAN, INF, -1.0]:
+			assert_eq(_audio._native_compressed_bgm_loop_region(
+				0.17, invalid_bpm, 0, source.get_length()), {},
+				"%s rejects invalid BPM %s independently" % [extension, invalid_bpm])
+		assert_eq(_audio._native_compressed_bgm_loop_region(
+			0.17, 120.0, -1, source.get_length()), {},
+			extension + " rejects a negative beat count")
+		assert_eq(_audio._native_compressed_bgm_loop_region(
+			0.17, 0.0, 1, source.get_length()), {},
+			extension + " positive beat count requires positive BPM")
+
+
+func test_nonloop_explicit_end_keeps_the_complete_natural_tail() -> void:
+	for extension: String in ["wav", "ogg", "mp3"]:
+		var prepared: Dictionary = _audio._prepare_bgm_definition(
+			_loop_region_definition(extension, false), "")
+		assert_false(prepared.is_empty(), extension)
+		if prepared.is_empty():
+			continue
+		var stream := prepared["stream"] as AudioStream
+		if stream is AudioStreamWAV:
+			assert_eq((stream as AudioStreamWAV).loop_mode,
+				AudioStreamWAV.LOOP_DISABLED)
+		else:
+			assert_false(bool(stream.get("loop")), extension)
+			assert_eq(int(stream.get("beat_count")), 0, extension)
+			assert_eq(float(stream.get("bpm")), 0.0, extension)
+		var playback := stream.instantiate_playback()
+		playback.start(0.0)
+		var frames := int(round(0.7 * float(AudioServer.get_mix_rate())))
+		assert_eq(playback.mix_audio(1.0, frames).size(), frames, extension)
+		assert_true(playback.is_playing(), extension)
+		assert_gt(playback.get_playback_position(), 0.6,
+			extension + " explicit end must not truncate loop=false playback")
+
+
+func test_invalid_or_unsupported_loop_regions_fail_mixed_preflight_atomically() -> void:
+	var definition := ResourceLoader.load(
+		FIXTURE_PATH + "synthetic_loop_region_track.tres") as BgmTrackDefinition
+	assert_not_null(definition)
+	if definition == null:
+		return
+	var original := {
+		"start_position": definition.start_position,
+		"loop_position": definition.loop_position,
+		"loop_end_position": definition.loop_end_position,
+	}
+	var cases := [
+		{"start_position": 0.3, "loop_position": 0.2, "loop_end_position": 0.55},
+		{"start_position": 0.05, "loop_position": 0.2, "loop_end_position": 0.2},
+		{"start_position": 0.05, "loop_position": 0.2, "loop_end_position": 1.01},
+		{"start_position": 0.05, "loop_position": 0.2, "loop_end_position": NAN},
+		{"start_position": 0.05, "loop_position": 0.2, "loop_end_position": INF},
+		{"start_position": 0.05, "loop_position": 0.2, "loop_end_position": -2.0},
+	]
+	for index in range(cases.size()):
+		var case: Dictionary = cases[index]
+		definition.start_position = float(case["start_position"])
+		definition.loop_position = float(case["loop_position"])
+		definition.loop_end_position = float(case["loop_end_position"])
+		var stage_emissions := [0]
+		var on_stage := func(_operations: Array, _force_cut: bool) -> void:
+			stage_emissions[0] += 1
+		SignalBus.stage_operations_requested.connect(on_stage)
+		var line := 110 + index
+		var request := _submit([
+			StagePresentationOperation.new({
+				"action": "show", "id": "invalid_region",
+				"properties": {"asset": "stage:synthetic"},
+				"transition": "cut", "duration": 0.0,
+			}, {"source_path": SOURCE_PATH, "line": 109}),
+			_operation("play", "synthetic_loop_region_track", "", 1.0,
+				0.0, line),
+		], PresentationBatchRequest.Policy.JOIN)
+		assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.FAILED,
+			str(case))
+		assert_eq(stage_emissions[0], 0, str(case))
+		assert_false(_runtime.presentation_state.stage_layers.has("invalid_region"),
+			str(case))
+		assert_eq(_runtime.presentation_state.current_bgm, {}, str(case))
+		assert_eq(_audio._bgm_channel, {}, str(case))
+		assert_push_error("%s:%d" % [SOURCE_PATH, line])
+		SignalBus.stage_operations_requested.disconnect(on_stage)
+	definition.start_position = float(original["start_position"])
+	definition.loop_position = float(original["loop_position"])
+	definition.loop_end_position = float(original["loop_end_position"])
+
+	var short_cue := definition.cues[0]
+	var original_cue_end := short_cue.loop_end_position
+	short_cue.loop_end_position = short_cue.loop_position
+	var invalid_unused_cue := _submit([
+		StagePresentationOperation.new({
+			"action": "show", "id": "invalid_unused_cue",
+			"properties": {"asset": "stage:synthetic"},
+			"transition": "cut", "duration": 0.0,
+		}, {"source_path": SOURCE_PATH, "line": 119}),
+		_operation("play", "synthetic_loop_region_track", "", 1.0, 0.0, 120),
+	], PresentationBatchRequest.Policy.JOIN)
+	assert_eq(invalid_unused_cue.get_outcome(),
+		PresentationBatchRequest.Outcome.FAILED)
+	assert_false(_runtime.presentation_state.stage_layers.has("invalid_unused_cue"))
+	assert_eq(_runtime.presentation_state.current_bgm, {})
+	assert_push_error(SOURCE_PATH + ":120")
+	short_cue.loop_end_position = original_cue_end
+
+	var unsupported := BgmTrackDefinition.new()
+	var unsupported_stream := AudioStreamSynchronized.new()
+	unsupported_stream.stream_count = 1
+	unsupported_stream.set_sync_stream(0, _loop_region_stream("wav"))
+	assert_gt(unsupported_stream.get_length(), 0.0)
+	unsupported.stream = unsupported_stream
+	unsupported.start_position = 0.0
+	unsupported.loop_position = 0.01
+	unsupported.loop_end_position = 0.02
+	assert_eq(_audio._prepare_bgm_definition(unsupported, ""), {},
+		"unsupported formats fail closed without importer-side conversion")
+
+
+func test_explicit_end_is_shared_by_stems_and_mix_or_volume_never_restarts() -> void:
+	var started := _submit([_operation(
+		"play", "synthetic_loop_region_stems", "", 0.8, 0.0, 121)])
+	assert_eq(started.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	var player := _player()
+	var synchronized := _synchronized_stream()
+	assert_not_null(player)
+	assert_not_null(synchronized)
+	if synchronized == null:
+		return
+	assert_eq(synchronized.stream_count, 2)
+	for index in range(synchronized.stream_count):
+		var child := synchronized.get_sync_stream(index) as AudioStreamWAV
+		assert_not_null(child)
+		assert_eq(child.loop_begin, 8820)
+		assert_eq(child.loop_end, 24255,
+			"every synchronized child receives the one shared region")
+	player.seek(0.4)
+	var cursor := player.get_playback_position()
+	var same_play := _submit([_operation(
+		"play", "synthetic_loop_region_stems", "", 0.6, 0.0, 122)])
+	assert_eq(same_play.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_gt(same_play.get_batch_id(), 0,
+		"same-target play still performs positive resource preflight")
+	assert_same(_player(), player)
+	assert_same(_synchronized_stream(), synchronized)
+	assert_almost_eq(player.get_playback_position(), cursor, 0.015)
+	var mixed := _submit([_operation(
+		"mix", "", "", 1.0, 0.0, 123,
+		{"harmony": 0.25, "rhythm": 1.0})])
+	assert_eq(mixed.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_same(_player(), player)
+	assert_same(_synchronized_stream(), synchronized)
+	assert_almost_eq(player.get_playback_position(), cursor, 0.015)
+
+
+func test_explicit_end_survives_pause_save_rollback_resume_and_restart_cursor() -> void:
+	_submit([_operation("play", "synthetic_loop_region_track", "", 0.75)])
+	var original_player := _player()
+	original_player.seek(0.4)
+	_submit([_operation("pause")])
+	assert_true(original_player.stream_paused)
+	var snapshot: Dictionary = _runtime.presentation_state.capture_snapshot()
+	var snapshot_keys: Array = (snapshot["bgm"] as Dictionary).keys()
+	snapshot_keys.sort()
+	assert_eq(snapshot_keys, [
+		"asset", "cue", "loop", "position", "status", "stem_mix", "volume",
+	], "loop end remains resource metadata, never a new save field")
+	assert_gt(float(snapshot["bgm"]["position"]), 0.3)
+	assert_lt(float(snapshot["bgm"]["position"]), 0.55)
+
+	_runtime.presentation_state.restore_snapshot(snapshot)
+	_runtime.presentation_state.apply_to_presenters()
+	var restored_player := _player()
+	assert_not_same(restored_player, original_player)
+	assert_true(restored_player.stream_paused)
+	assert_almost_eq(restored_player.get_playback_position(),
+		float(snapshot["bgm"]["position"]), 0.02)
+	assert_eq((restored_player.stream as AudioStreamWAV).loop_end, 24255)
+	_submit([_operation("resume")])
+	assert_same(_player(), restored_player)
+	assert_false(restored_player.stream_paused)
+	_submit([_operation("pause")])
+	var paused_player := _player()
+	_submit([_operation("play", "synthetic_loop_region_track")])
+	assert_not_same(_player(), paused_player)
+	assert_almost_eq(float(_runtime.presentation_state.current_bgm["position"]),
+		0.05, 0.001, "play from paused restarts at the authored cursor")
+	assert_eq((_player().stream as AudioStreamWAV).loop_end, 24255)
+
+
+func test_explicit_region_fnf_join_skip_abort_and_stale_receipts_are_inert() -> void:
+	_submit([_operation("play", "synthetic_loop_region_stems")])
+	var player := _player()
+	var synchronized := _synchronized_stream()
+	var target := {"harmony": 1.0, "rhythm": 0.25}
+	var fnf := _submit([_operation("mix", "", "", 1.0, 8.0, 124, target)])
+	assert_eq(fnf.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	var fnf_receipt: Dictionary = (
+		_audio._bgm_channel["receipt"] as Dictionary).duplicate(true)
+	var fnf_tween: Tween = _audio._bgm_channel["tween"]
+	var aligned := _submit([
+		_operation("mix", "", "", 1.0, 3.0, 125, target),
+	], PresentationBatchRequest.Policy.JOIN)
+	assert_eq(aligned.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_false(fnf_tween.is_valid())
+	assert_same(_player(), player)
+	assert_same(_synchronized_stream(), synchronized)
+	var stable_channel: Dictionary = _audio._bgm_channel.duplicate(true)
+	_audio.call("_complete_bgm_receipt", fnf_receipt)
+	assert_eq(_audio._bgm_channel, stable_channel)
+
+	var skip_join := _submit([_operation(
+		"mix", "", "", 1.0, 10.0, 126,
+		{"harmony": 0.5, "rhythm": 0.5})
+	], PresentationBatchRequest.Policy.JOIN)
+	var skip_receipt: Dictionary = (
+		_audio._bgm_channel["receipt"] as Dictionary).duplicate(true)
+	_runtime.skip_controller.is_active = true
+	_runtime.presentation_director.call(
+		"_finish_latest_join_for_skip", _runtime.presentation_director._generation)
+	assert_eq(skip_join.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_same(_player(), player)
+	assert_same(_synchronized_stream(), synchronized)
+	stable_channel = _audio._bgm_channel.duplicate(true)
+	_audio.call("_complete_bgm_receipt", skip_receipt)
+	assert_eq(_audio._bgm_channel, stable_channel)
+	_runtime.skip_controller.is_active = false
+
+	var context := _context()
+	var abort_join := _submit([_operation(
+		"mix", "", "", 1.0, 10.0, 127,
+		{"harmony": 0.2, "rhythm": 0.8})
+	], PresentationBatchRequest.Policy.JOIN, context)
+	var abort_receipt: Dictionary = (
+		_audio._bgm_channel["receipt"] as Dictionary).duplicate(true)
+	context.request_cancellation()
+	assert_eq(abort_join.get_outcome(), PresentationBatchRequest.Outcome.CANCELLED)
+	assert_same(_player(), player)
+	assert_same(_synchronized_stream(), synchronized)
+	stable_channel = _audio._bgm_channel.duplicate(true)
+	_audio.call("_complete_bgm_receipt", abort_receipt)
+	assert_eq(_audio._bgm_channel, stable_channel)
 
 
 func test_synchronized_stems_play_on_one_player_with_one_canonical_state() -> void:
