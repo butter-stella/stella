@@ -14,7 +14,7 @@ func _ready() -> void:
 
 
 func _enter_title_scene(title_scene: PackedScene) -> void:
-	var error := get_tree().change_scene_to_packed(title_scene)
+	var error := _change_scene_to_packed(title_scene)
 	if error == OK:
 		return
 
@@ -23,8 +23,12 @@ func _enter_title_scene(title_scene: PackedScene) -> void:
 		% error_string(error)
 	)
 	if title_scene != DEFAULT_TITLE_SCENE:
-		var fallback_error := get_tree().change_scene_to_packed(DEFAULT_TITLE_SCENE)
+		var fallback_error := _change_scene_to_packed(DEFAULT_TITLE_SCENE)
 		if fallback_error == OK:
 			StellaRuntime.title_scene_path = StellaRuntime.DEFAULT_TITLE_SCENE
 			return
-	get_tree().quit(1)
+	StellaRuntime.request_quit(1)
+
+
+func _change_scene_to_packed(scene: PackedScene) -> Error:
+	return get_tree().change_scene_to_packed(scene)

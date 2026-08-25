@@ -141,8 +141,9 @@ func _assert_reduced_snapshot_families_validate(
 					assert_true(presentation_dict.get("bg") is String,
 						"%s presentation_state.bg should be a String" % label)
 				if presentation_dict.has("bgm"):
-					assert_true(presentation_dict.get("bgm") is String,
-						"%s presentation_state.bgm should be a String" % label)
+					assert_true(BgmChannelState.validate_snapshot_state(
+						presentation_dict.get("bgm"), false),
+						"%s presentation_state.bgm should use the exact stable Dictionary schema" % label)
 				if presentation_dict.has("stage_layers"):
 					var stage_layers: Variant = presentation_dict.get("stage_layers")
 					assert_true(stage_layers is Dictionary,
@@ -902,7 +903,7 @@ func _disconnect_game_presenters():
 			"dialogue_visibility_transition_receipts_finish_requested",
 			"dialogue_visibility_visuals_reset_requested",
 			"dialogue_visibility_state_apply_requested",
-			"bgm_play", "bgm_stop", "se_play",
+			"se_play",
 			"dialogue_requested", "dialogue_backlog_effects_resolved",
 			"voice_play", "voice_playback_requested", "voice_playback_event",
 			"dialogue_voice_replay_requested",

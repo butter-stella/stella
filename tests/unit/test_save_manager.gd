@@ -88,7 +88,7 @@ func _make_valid_save_snapshot() -> Dictionary:
 		"presentation_state": {
 			"bg": "",
 			"stage_layers": {},
-			"bgm": "",
+			"bgm": {},
 		},
 		"read_flags": {"save_validation:start:0": true},
 		"unlocks": {"cg": ["safe"]},
@@ -498,6 +498,50 @@ func test_loop_se_snapshot_schema_is_exact_and_old_saves_default_empty() -> void
 	assert_false(old_save["presentation_state"].has("loop_se_channels"))
 	assert_true(_manager.validate_data_for_scenario(old_save, scenario),
 		"pre-#167 saves default to no persistent channels")
+
+
+func test_bgm_snapshot_schema_is_exact_and_legacy_string_read_fails_closed() -> void:
+	var scenario := _make_validation_scenario()
+	var valid := _make_valid_save_snapshot()
+	valid["presentation_state"]["bgm"] = {
+		"asset": "synthetic_theme",
+		"cue": "intro",
+		"loop": false,
+		"position": 1.25,
+		"status": "paused",
+		"volume": 0.6,
+	}
+	assert_true(_manager.validate_data_for_scenario(valid, scenario))
+	var round_tripped: Variant = JSON.parse_string(JSON.stringify(valid))
+	assert_true(round_tripped is Dictionary)
+	if round_tripped is Dictionary:
+		assert_true(_manager.validate_data_for_scenario(round_tripped, scenario))
+
+	for invalid_bgm: Variant in [
+		"synthetic_theme",
+		[],
+		valid["presentation_state"]["bgm"].merged({"status": "fading"}, true),
+		valid["presentation_state"]["bgm"].merged({"position": -0.1}, true),
+		valid["presentation_state"]["bgm"].merged({"volume": 1.1}, true),
+		valid["presentation_state"]["bgm"].merged({"tween": 0.5}, true),
+	]:
+		var invalid := _make_valid_save_snapshot()
+		invalid["presentation_state"]["bgm"] = invalid_bgm
+		assert_false(_manager.validate_data_for_scenario(invalid, scenario))
+
+	var provider := MockProvider.new("presentation_state")
+	provider.data = {"preserved": true}
+	_manager.register_provider(provider)
+	_manager._ensure_dir()
+	var legacy := _make_valid_save_snapshot()
+	legacy["presentation_state"]["bgm"] = "synthetic_theme"
+	var file := FileAccess.open(_save_dir + "save_1.json", FileAccess.WRITE)
+	file.store_string(JSON.stringify(legacy))
+	file.close()
+	assert_null(_manager.read_save_data(1),
+		"the unversioned legacy String never enters the runtime restore boundary")
+	assert_false(_manager.load_save(1))
+	assert_eq(provider.data, {"preserved": true})
 
 
 func test_dialogue_visibility_schema_is_exact_and_never_truthy_coerced() -> void:

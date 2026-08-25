@@ -8,6 +8,10 @@ const LoopSeOperationRequestType = preload(
 	"res://addons/stella/core/data/loop_se_operation_request.gd")
 const LoopSeStateCaptureRequestType = preload(
 	"res://addons/stella/core/data/loop_se_state_capture_request.gd")
+const BgmOperationRequestType = preload(
+	"res://addons/stella/core/data/bgm_operation_request.gd")
+const BgmStateCaptureRequestType = preload(
+	"res://addons/stella/core/data/bgm_state_capture_request.gd")
 
 # Dialogue
 ## Canonical internal request. Core and built-in presenters consume this typed,
@@ -177,6 +181,9 @@ func request_voice_playback(
 ) -> VoicePlaybackResponse:
 	var request := VoicePlaybackRequest.new(asset, character, owner_validator)
 	var response := VoicePlaybackResponse.new()
+	if _runtime_audio_shutdown_started:
+		response._resolve(false)
+		return response
 	if not request.is_current():
 		response._resolve(false)
 		return response
@@ -697,6 +704,42 @@ signal loop_se_state_capture_requested(request: LoopSeStateCaptureRequest)
 signal loop_se_positions_committed(positions: Dictionary)
 signal loop_se_presenter_registered()
 
+# Single persistent BGM lifecycle channel
+signal bgm_validate_requested(request: BgmOperationRequest)
+signal bgm_accept_requested(request: BgmOperationRequest)
+signal bgm_apply_requested(request: BgmOperationRequest)
+signal bgm_operation_committed(
+	operation: BgmPresentationOperation,
+	state: Dictionary,
+)
+signal bgm_transition_receipt_started(
+	presenter_instance_id: int,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+)
+signal bgm_transition_terminal(
+	presenter_instance_id: int,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+	outcome: StringName,
+)
+signal bgm_transition_receipts_finish_requested(transitions: Array)
+signal bgm_projection_reset_requested(epoch: int)
+signal bgm_state_apply_requested(state: Dictionary, generation: int)
+signal bgm_title_cut_requested(asset: String, generation: int)
+signal bgm_state_capture_requested(request: BgmStateCaptureRequest)
+signal bgm_position_committed(position: float)
+signal bgm_natural_stop_committed()
+signal bgm_presenter_registered()
+
+# Runtime-owned graceful shutdown performs a synchronous capability handshake
+# with the same unique AudioPresenter that owns every Stella audio projection.
+# The Runtime observes the later AudioServer mix boundary; the Bus only proves
+# that all Stella audio was retired before that observation begins.
+signal runtime_audio_shutdown_requested(request_serial: int)
+
 var _stage_operation_queue: Array[Dictionary] = []
 var _stage_operation_dispatching := false
 var _stage_operation_dispatch_stack: Array[int] = []
@@ -720,6 +763,20 @@ var _loop_se_participant_authority := RefCounted.new()
 var _loop_se_registrar_authority: Object
 var _loop_se_presenter: WeakRef
 var _loop_se_capability: RefCounted
+var _bgm_epoch := 1
+var _bgm_epoch_stack: Array[int] = []
+var _dispatching_bgm_request: BgmOperationRequest
+var _applying_bgm_request: BgmOperationRequest
+var _capturing_bgm_request: BgmStateCaptureRequest
+var _bgm_participant_authority := RefCounted.new()
+var _bgm_registrar_authority: Object
+var _bgm_presenter: WeakRef
+var _bgm_capability: RefCounted
+var _next_runtime_audio_shutdown_serial := 1
+var _dispatching_runtime_audio_shutdown_serial := 0
+var _runtime_audio_shutdown_acknowledged := false
+var _runtime_audio_shutdown_started := false
+var _runtime_audio_shutdown_epochs_retired := false
 var _presentation_operation_queue: Array[Dictionary] = []
 var _presentation_enqueue_serial := 1
 var _presentation_projection_depth := 0
@@ -740,28 +797,6 @@ func configure_loop_se_registrar(authority: Object) -> bool:
 	return _loop_se_registrar_authority == authority
 
 
-func register_loop_se_presenter(
-	presenter: Object,
-	registrar_authority: Object,
-) -> RefCounted:
-	if (
-		registrar_authority != _loop_se_registrar_authority
-		or presenter == null
-		or not is_instance_valid(presenter)
-		or not presenter is Node
-		or (presenter as Node).is_queued_for_deletion()
-	):
-		return null
-	var registered := _current_loop_se_presenter()
-	if registered != null:
-		if registered == presenter:
-			return _loop_se_capability
-		return null
-	_loop_se_presenter = weakref(presenter)
-	_loop_se_capability = RefCounted.new()
-	return _loop_se_capability
-
-
 func announce_loop_se_presenter_registered(
 	presenter: Object,
 	capability: RefCounted,
@@ -770,19 +805,6 @@ func announce_loop_se_presenter_registered(
 		return false
 	loop_se_presenter_registered.emit()
 	return true
-
-
-func unregister_loop_se_presenter(
-	presenter: Object,
-	capability: RefCounted,
-	registrar_authority: Object,
-) -> void:
-	if (
-		registrar_authority == _loop_se_registrar_authority
-		and _loop_se_participant_identity_matches(presenter, capability)
-	):
-		_loop_se_presenter = null
-		_loop_se_capability = null
 
 
 func reject_loop_se_request(
@@ -892,7 +914,10 @@ func reset_loop_se_presentation() -> int:
 
 
 func reset_and_apply_loop_se_state(channels: Dictionary) -> int:
-	if not LoopSeChannelState.validate_channels(channels, true):
+	if (
+		_runtime_audio_shutdown_started
+		or not LoopSeChannelState.validate_channels(channels, true)
+	):
 		return 0
 	return _reset_loop_se_projection(channels)
 
@@ -901,7 +926,10 @@ func apply_loop_se_targets_state(
 	channels: Dictionary,
 	targets: Array,
 ) -> bool:
-	if not LoopSeChannelState.validate_channels(channels, true):
+	if (
+		_runtime_audio_shutdown_started
+		or not LoopSeChannelState.validate_channels(channels, true)
+	):
 		return false
 	var normalized_targets: Array[String] = []
 	for target_value: Variant in targets:
@@ -975,6 +1003,400 @@ func _loop_se_participant_identity_matches(
 	)
 
 
+func configure_bgm_registrar(authority: Object) -> bool:
+	if authority == null:
+		return false
+	if _bgm_registrar_authority == null:
+		_bgm_registrar_authority = authority
+	return _bgm_registrar_authority == authority
+
+
+func announce_bgm_presenter_registered(
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _bgm_participant_identity_matches(presenter, capability):
+		return false
+	bgm_presenter_registered.emit()
+	return true
+
+
+## StellaRuntime admits the concrete AudioPresenter as one atomic participant.
+## Preflight both owner slots before mutating either, so a duplicate or split
+## owner can never connect raw audio signals with only half the typed contract.
+func register_audio_presenter(
+	presenter: Object,
+	loop_se_registrar_authority: Object,
+	bgm_registrar_authority: Object,
+) -> Dictionary:
+	if (
+		loop_se_registrar_authority != _loop_se_registrar_authority
+		or bgm_registrar_authority != _bgm_registrar_authority
+		or presenter == null
+		or not is_instance_valid(presenter)
+		or not presenter is Node
+		or (presenter as Node).is_queued_for_deletion()
+	):
+		return {}
+	var loop_se_owner := _current_loop_se_presenter()
+	var bgm_owner := _current_bgm_presenter()
+	if loop_se_owner != null or bgm_owner != null:
+		if loop_se_owner == presenter and bgm_owner == presenter:
+			return {
+				"bgm": _bgm_capability,
+				"loop_se": _loop_se_capability,
+			}
+		return {}
+	_loop_se_presenter = weakref(presenter)
+	_loop_se_capability = RefCounted.new()
+	_bgm_presenter = weakref(presenter)
+	_bgm_capability = RefCounted.new()
+	return {
+		"bgm": _bgm_capability,
+		"loop_se": _loop_se_capability,
+	}
+
+
+func unregister_audio_presenter(
+	presenter: Object,
+	loop_se_capability: RefCounted,
+	bgm_capability: RefCounted,
+	loop_se_registrar_authority: Object,
+	bgm_registrar_authority: Object,
+) -> bool:
+	if (
+		loop_se_registrar_authority != _loop_se_registrar_authority
+		or bgm_registrar_authority != _bgm_registrar_authority
+		or presenter == null
+		or not is_instance_valid(presenter)
+		or _loop_se_presenter == null
+		or _bgm_presenter == null
+		or _loop_se_presenter.get_ref() != presenter
+		or _bgm_presenter.get_ref() != presenter
+		or loop_se_capability != _loop_se_capability
+		or bgm_capability != _bgm_capability
+	):
+		return false
+	_loop_se_presenter = null
+	_loop_se_capability = null
+	_bgm_presenter = null
+	_bgm_capability = null
+	return true
+
+
+## Retire the complete Runtime-owned audio projection through its unique typed
+## presenter. The presenter latches against reentrant playback, resets BGM and
+## loop-SE through their canonical lifecycle paths, retires one-shots/voice, and
+## acknowledges only after every local owner has been cleared.
+func quiesce_runtime_audio_for_shutdown() -> bool:
+	if _dispatching_runtime_audio_shutdown_serial != 0:
+		return false
+	_runtime_audio_shutdown_started = true
+	var bgm_presenter := _current_bgm_presenter()
+	var loop_se_presenter := _current_loop_se_presenter()
+	if bgm_presenter == null and loop_se_presenter == null:
+		return true
+	if bgm_presenter == null or loop_se_presenter != bgm_presenter:
+		return false
+	var request_serial := _next_runtime_audio_shutdown_serial
+	_next_runtime_audio_shutdown_serial += 1
+	_dispatching_runtime_audio_shutdown_serial = request_serial
+	_runtime_audio_shutdown_acknowledged = false
+	runtime_audio_shutdown_requested.emit(request_serial)
+	_cancel_queued_presentation_for_runtime_shutdown()
+	_dispatching_runtime_audio_shutdown_serial = 0
+	var acknowledged := _runtime_audio_shutdown_acknowledged
+	_runtime_audio_shutdown_acknowledged = false
+	return acknowledged
+
+
+## The terminal latch is global because AudioPresenter replacement remains
+## possible while StellaRuntime waits for the next real AudioServer mix. A new
+## Presenter must be born closed rather than briefly admitting playback.
+func runtime_audio_shutdown_has_started() -> bool:
+	return _runtime_audio_shutdown_started
+
+
+## Exactly the unique dual-capability owner may retire the canonical epochs.
+## The retirement is globally once-only so replacing that owner during the mix
+## wait cannot advance epochs a second time on a repeated quit request.
+func retire_runtime_audio_epochs_for_shutdown(
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if (
+		not _runtime_audio_shutdown_started
+		or not _bgm_participant_identity_matches(presenter, capability)
+		or _current_loop_se_presenter() != presenter
+	):
+		return false
+	if _runtime_audio_shutdown_epochs_retired:
+		return true
+	_runtime_audio_shutdown_epochs_retired = true
+	reset_bgm_presentation()
+	reset_loop_se_presentation()
+	return true
+
+
+func _cancel_queued_presentation_for_runtime_shutdown() -> void:
+	var mixed_requests := _presentation_operation_queue.duplicate()
+	var stage_requests := _stage_operation_queue.duplicate()
+	var visibility_requests := _dialogue_visibility_queue.duplicate()
+	_presentation_operation_queue.clear()
+	_stage_operation_queue.clear()
+	_dialogue_visibility_queue.clear()
+	for request: Dictionary in mixed_requests:
+		presentation_operation_request_finished.emit(
+			int(request.get("request_id", 0)), false)
+	for request: Dictionary in stage_requests:
+		stage_operation_request_finished.emit(
+			int(request.get("request_id", 0)), false)
+	for request: Dictionary in visibility_requests:
+		presentation_operation_request_finished.emit(
+			int(request.get("request_id", 0)), false)
+
+
+func acknowledge_runtime_audio_shutdown(
+	presenter: Object,
+	capability: RefCounted,
+	request_serial: int,
+) -> bool:
+	if (
+		request_serial <= 0
+		or request_serial != _dispatching_runtime_audio_shutdown_serial
+		or not _bgm_participant_identity_matches(presenter, capability)
+		or _current_loop_se_presenter() != presenter
+		or not _runtime_audio_shutdown_bus_is_idle()
+	):
+		return false
+	_runtime_audio_shutdown_acknowledged = true
+	return true
+
+
+func _runtime_audio_shutdown_bus_is_idle() -> bool:
+	return (
+		_presentation_operation_queue.is_empty()
+		and _stage_operation_queue.is_empty()
+		and _dialogue_visibility_queue.is_empty()
+		and not _presentation_unified_draining
+		and _presentation_projection_depth == 0
+		and not _stage_operation_dispatching
+		and not _dialogue_visibility_dispatching
+		and _stage_operation_dispatch_stack.is_empty()
+		and _stage_operation_epoch_stack.is_empty()
+		and _dialogue_visibility_dispatch_stack.is_empty()
+		and _dialogue_visibility_epoch_stack.is_empty()
+		and _loop_se_epoch_stack.is_empty()
+		and _bgm_epoch_stack.is_empty()
+		and _dispatching_loop_se_request == null
+		and _applying_loop_se_request == null
+		and _capturing_loop_se_request == null
+		and _dispatching_bgm_request == null
+		and _applying_bgm_request == null
+		and _capturing_bgm_request == null
+		and _dispatching_chapter_indicator_request == null
+		and _applying_chapter_indicator_request == null
+	)
+
+
+func reject_bgm_request(
+	request: BgmOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	error: String,
+) -> bool:
+	if not _bgm_request_target_is_current(request, presenter, capability, false):
+		return false
+	return request._reject(error, _bgm_participant_authority)
+
+
+func validate_bgm_request(
+	request: BgmOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _bgm_request_target_is_current(request, presenter, capability, false):
+		return false
+	return request._validate(presenter, _bgm_participant_authority)
+
+
+func accept_bgm_request(
+	request: BgmOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _bgm_request_target_is_current(request, presenter, capability, false):
+		return false
+	return request._accept(presenter, _bgm_participant_authority)
+
+
+func acknowledge_bgm_apply(
+	request: BgmOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	committed_state: Dictionary,
+) -> bool:
+	if not _bgm_request_target_is_current(request, presenter, capability, true):
+		return false
+	return request._apply(
+		presenter, committed_state, _bgm_participant_authority)
+
+
+func capture_bgm_position() -> float:
+	var presenter := _current_bgm_presenter()
+	if presenter == null:
+		return 0.0
+	var request := BgmStateCaptureRequestType.new()
+	request._bind_authority(_bgm_participant_authority)
+	_capturing_bgm_request = request
+	bgm_state_capture_requested.emit(request)
+	_capturing_bgm_request = null
+	return request.get_position() if request.is_resolved() else 0.0
+
+
+func resolve_bgm_state_capture(
+	request: BgmStateCaptureRequest,
+	presenter: Object,
+	capability: RefCounted,
+	position: float,
+) -> bool:
+	if (
+		request == null
+		or request != _capturing_bgm_request
+		or not _bgm_participant_identity_matches(presenter, capability)
+	):
+		return false
+	return request._resolve(position, _bgm_participant_authority)
+
+
+func commit_bgm_position(
+	presenter: Object,
+	capability: RefCounted,
+	position: float,
+) -> bool:
+	if (
+		not _bgm_participant_identity_matches(presenter, capability)
+		or not is_finite(position)
+		or position < 0.0
+	):
+		return false
+	bgm_position_committed.emit(position)
+	return true
+
+
+func commit_bgm_natural_stop(
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _bgm_participant_identity_matches(presenter, capability):
+		return false
+	bgm_natural_stop_committed.emit()
+	return true
+
+
+func current_bgm_epoch() -> int:
+	return _bgm_epoch
+
+
+func is_current_bgm_operation_valid() -> bool:
+	if _bgm_epoch_stack.is_empty():
+		return true
+	return _bgm_epoch_stack.back() == _bgm_epoch
+
+
+func reset_bgm_presentation() -> int:
+	return _reset_bgm_projection({})
+
+
+func reset_and_apply_bgm_state(state: Dictionary) -> int:
+	if (
+		_runtime_audio_shutdown_started
+		or not BgmChannelState.validate_snapshot_state(state, true)
+	):
+		return 0
+	return _reset_bgm_projection(state)
+
+
+func apply_bgm_state(state: Dictionary) -> bool:
+	if (
+		_runtime_audio_shutdown_started
+		or not BgmChannelState.validate_snapshot_state(state, true)
+	):
+		return false
+	bgm_state_apply_requested.emit(state.duplicate(true), _bgm_epoch)
+	return true
+
+
+## Title configuration uses the same Runtime-owned channel projection but does
+## not create an authored lifecycle owner or a save-state commit.
+func apply_title_bgm_cut(asset: String) -> int:
+	if _runtime_audio_shutdown_started:
+		return 0
+	var normalized := asset.strip_edges()
+	var epoch := _reset_bgm_projection({})
+	if normalized.is_empty() or normalized != asset:
+		return epoch
+	bgm_title_cut_requested.emit(normalized, epoch)
+	return epoch
+
+
+func _reset_bgm_projection(state: Dictionary) -> int:
+	_mark_presentation_projection_retirement_started()
+	_bgm_epoch += 1
+	var reset_epoch := _bgm_epoch
+	for request: Dictionary in _presentation_operation_queue:
+		if _request_belongs_to_retained_projection(request):
+			request["bgm_epoch"] = reset_epoch
+	_dispatching_bgm_request = null
+	_applying_bgm_request = null
+	bgm_projection_reset_requested.emit(reset_epoch)
+	if reset_epoch == _bgm_epoch and not state.is_empty():
+		bgm_state_apply_requested.emit(state.duplicate(true), reset_epoch)
+	return reset_epoch
+
+
+func _bgm_request_target_is_current(
+	request: BgmOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	applying: bool,
+) -> bool:
+	return (
+		request != null
+		and request == (
+			_applying_bgm_request if applying else _dispatching_bgm_request)
+		and _bgm_participant_identity_matches(presenter, capability)
+		and request.is_target(presenter)
+	)
+
+
+func _current_bgm_presenter() -> Object:
+	if _bgm_presenter == null:
+		return null
+	var presenter: Object = _bgm_presenter.get_ref()
+	if not _bgm_participant_identity_matches(presenter, _bgm_capability):
+		_bgm_presenter = null
+		_bgm_capability = null
+		return null
+	return presenter
+
+
+func _bgm_participant_identity_matches(
+	presenter: Object,
+	capability: Object,
+) -> bool:
+	return (
+		presenter != null
+		and capability != null
+		and capability == _bgm_capability
+		and _bgm_presenter != null
+		and is_instance_valid(presenter)
+		and presenter is Node
+		and not (presenter as Node).is_queued_for_deletion()
+		and _bgm_presenter.get_ref() == presenter
+	)
+
+
 ## Allocate an identity before submission when a caller needs to own the exact
 ## transitions caused by its batch. Most callers can omit this and let
 ## emit_stage_operations allocate an anonymous identity.
@@ -1031,6 +1453,9 @@ func emit_dialogue_visibility_operations(
 ) -> int:
 	if request_id <= 0:
 		request_id = reserve_stage_operation_request_id()
+	if _runtime_audio_shutdown_started:
+		presentation_operation_request_finished.emit(request_id, false)
+		return request_id
 	for operation_value: Variant in operations:
 		if not DialogueVisibilityState.validate_operation(operation_value, true):
 			presentation_operation_request_finished.emit(request_id, false)
@@ -1067,6 +1492,9 @@ func emit_presentation_operations(
 ) -> int:
 	if request_id <= 0:
 		request_id = reserve_stage_operation_request_id()
+	if _runtime_audio_shutdown_started:
+		presentation_operation_request_finished.emit(request_id, false)
+		return request_id
 	for operation_value: Variant in operations:
 		if not operation_value is PresentationOperation:
 			presentation_operation_request_finished.emit(request_id, false)
@@ -1080,10 +1508,13 @@ func emit_presentation_operations(
 				and not DialogueVisibilityState.validate_operation(payload, true))
 			or (operation is LoopSePresentationOperation
 				and not LoopSeChannelState.validate_operation(payload, true))
+			or (operation is BgmPresentationOperation
+				and not BgmChannelState.validate_operation(payload, true))
 			or not operation is StagePresentationOperation
 				and not operation is DialogueVisibilityPresentationOperation
 				and not operation is ChapterIndicatorPresentationOperation
 				and not operation is LoopSePresentationOperation
+				and not operation is BgmPresentationOperation
 		):
 			presentation_operation_request_finished.emit(request_id, false)
 			return request_id
@@ -1096,6 +1527,7 @@ func emit_presentation_operations(
 		"visibility_epoch": _dialogue_visibility_epoch,
 		"chapter_epoch": _chapter_indicator_epoch,
 		"loop_se_epoch": _loop_se_epoch,
+		"bgm_epoch": _bgm_epoch,
 		"enqueue_serial": _presentation_enqueue_serial,
 		"projection_lifecycle_id": _active_presentation_projection_lifecycle_id,
 		"born_after_retirement": _presentation_projection_retirement_started,
@@ -1303,6 +1735,7 @@ func _drain_presentation_operation_queue_once() -> void:
 	var visibility_epoch := int(request.get("visibility_epoch", 0))
 	var chapter_epoch := int(request.get("chapter_epoch", 0))
 	var loop_se_epoch := int(request.get("loop_se_epoch", 0))
+	var bgm_epoch := int(request.get("bgm_epoch", 0))
 	var operations: Array = request.get("operations", [])
 	var force_cut := bool(request.get("force_cut", false))
 	var apply_started_callback: Callable = request.get(
@@ -1311,6 +1744,7 @@ func _drain_presentation_operation_queue_once() -> void:
 	var uses_dialogue_visibility := false
 	var uses_chapter_indicator := false
 	var uses_loop_se := false
+	var uses_bgm := false
 	for operation_value: Variant in operations:
 		if operation_value is StagePresentationOperation:
 			uses_stage = true
@@ -1320,13 +1754,17 @@ func _drain_presentation_operation_queue_once() -> void:
 			uses_chapter_indicator = true
 		elif operation_value is LoopSePresentationOperation:
 			uses_loop_se = true
+		elif operation_value is BgmPresentationOperation:
+			uses_bgm = true
 	_stage_operation_dispatch_stack.append(request_id)
 	_stage_operation_epoch_stack.append(stage_epoch)
 	_dialogue_visibility_dispatch_stack.append(request_id)
 	_dialogue_visibility_epoch_stack.append(visibility_epoch)
 	_loop_se_epoch_stack.append(loop_se_epoch)
+	_bgm_epoch_stack.append(bgm_epoch)
 	var chapter_requests: Dictionary = {}
 	var loop_se_requests: Dictionary = {}
+	var bgm_requests: Dictionary = {}
 	var preflight_valid := true
 	for operation_value: Variant in operations:
 		if operation_value is ChapterIndicatorPresentationOperation:
@@ -1409,17 +1847,54 @@ func _drain_presentation_operation_queue_once() -> void:
 				preflight_valid = false
 				break
 			loop_se_requests[operation.get_instance_id()] = loop_request
+		elif operation_value is BgmPresentationOperation:
+			var operation: BgmPresentationOperation = operation_value
+			var bgm_request := BgmOperationRequestType.new(
+				operation.get_payload(), operation.get_source())
+			bgm_request._bind_authority(
+				_bgm_participant_authority,
+				_bgm_participant_identity_matches,
+			)
+			bgm_request._snapshot_presenter(
+				_current_bgm_presenter(),
+				_bgm_capability,
+				_bgm_participant_authority,
+			)
+			_dispatching_bgm_request = bgm_request
+			bgm_validate_requested.emit(bgm_request)
+			if (
+				bgm_epoch != _bgm_epoch
+				or not bgm_request._seal_validation(
+					request_id, _bgm_participant_authority)
+			):
+				_report_bgm_rejection(
+					bgm_request.get_source(), bgm_request.get_validation_errors())
+				preflight_valid = false
+				break
+			bgm_request._set_force_cut(force_cut, _bgm_participant_authority)
+			bgm_accept_requested.emit(bgm_request)
+			if not bgm_request.was_accepted() or not bgm_request.presenter_is_live():
+				_report_bgm_rejection(
+					bgm_request.get_source(),
+					["the sealed AudioPresenter did not accept the captured binding"],
+				)
+				preflight_valid = false
+				break
+			bgm_requests[operation.get_instance_id()] = bgm_request
 	_dispatching_chapter_indicator_request = null
 	_dispatching_loop_se_request = null
+	_dispatching_bgm_request = null
 	var epochs_valid := _presentation_operation_epochs_are_current(
 		stage_epoch,
 		visibility_epoch,
 		chapter_epoch,
 		loop_se_epoch,
+		bgm_epoch,
 		uses_stage,
 		uses_dialogue_visibility,
 		uses_chapter_indicator,
 		uses_loop_se,
+		uses_bgm,
 	)
 	if not preflight_valid or not epochs_valid:
 		for chapter_request_value: Variant in chapter_requests.values():
@@ -1428,6 +1903,10 @@ func _drain_presentation_operation_queue_once() -> void:
 		for loop_request_value: Variant in loop_se_requests.values():
 			(loop_request_value as LoopSeOperationRequest)._finish(
 				false, false, _loop_se_participant_authority)
+		for bgm_request_value: Variant in bgm_requests.values():
+			(bgm_request_value as BgmOperationRequest)._finish(
+				false, false, _bgm_participant_authority)
+		_bgm_epoch_stack.pop_back()
 		_loop_se_epoch_stack.pop_back()
 		_dialogue_visibility_epoch_stack.pop_back()
 		_dialogue_visibility_dispatch_stack.pop_back()
@@ -1506,15 +1985,36 @@ func _drain_presentation_operation_queue_once() -> void:
 				break
 			loop_se_operation_committed.emit(operation)
 			operation_index += 1
+		elif operation is BgmPresentationOperation:
+			var bgm_request: BgmOperationRequest = bgm_requests.get(
+				operation.get_instance_id())
+			if apply_started_callback.is_valid():
+				apply_started_callback.call([operation.get_channel()])
+			_applying_bgm_request = bgm_request
+			bgm_apply_requested.emit(bgm_request)
+			_applying_bgm_request = null
+			if (
+				bgm_request == null
+				or not bgm_request.was_applied()
+				or not bgm_request.presenter_is_live()
+				or bgm_epoch != _bgm_epoch
+			):
+				delivered = false
+				break
+			bgm_operation_committed.emit(
+				operation, bgm_request.get_committed_state())
+			operation_index += 1
 		if not _presentation_operation_epochs_are_current(
 			stage_epoch,
 			visibility_epoch,
 			chapter_epoch,
 			loop_se_epoch,
+			bgm_epoch,
 			uses_stage,
 			uses_dialogue_visibility,
 			uses_chapter_indicator,
 			uses_loop_se,
+			uses_bgm,
 		):
 			delivered = false
 			break
@@ -1524,6 +2024,10 @@ func _drain_presentation_operation_queue_once() -> void:
 	for loop_request_value: Variant in loop_se_requests.values():
 		(loop_request_value as LoopSeOperationRequest)._finish(
 			delivered, false, _loop_se_participant_authority)
+	for bgm_request_value: Variant in bgm_requests.values():
+		(bgm_request_value as BgmOperationRequest)._finish(
+			delivered, false, _bgm_participant_authority)
+	_bgm_epoch_stack.pop_back()
 	_loop_se_epoch_stack.pop_back()
 	_dialogue_visibility_epoch_stack.pop_back()
 	_dialogue_visibility_dispatch_stack.pop_back()
@@ -1537,10 +2041,12 @@ func _drain_presentation_operation_queue_once() -> void:
 			visibility_epoch,
 			chapter_epoch,
 			loop_se_epoch,
+			bgm_epoch,
 			uses_stage,
 			uses_dialogue_visibility,
 			uses_chapter_indicator,
 			uses_loop_se,
+			uses_bgm,
 		),
 	)
 
@@ -1550,10 +2056,12 @@ func _presentation_operation_epochs_are_current(
 	visibility_epoch: int,
 	chapter_epoch: int,
 	loop_se_epoch: int,
+	bgm_epoch: int,
 	uses_stage: bool,
 	uses_dialogue_visibility: bool,
 	uses_chapter_indicator: bool,
 	uses_loop_se: bool,
+	uses_bgm: bool,
 ) -> bool:
 	return (
 		(not uses_stage or stage_epoch == _stage_operation_epoch)
@@ -1566,6 +2074,7 @@ func _presentation_operation_epochs_are_current(
 			or chapter_epoch == _chapter_indicator_epoch
 		)
 		and (not uses_loop_se or loop_se_epoch == _loop_se_epoch)
+		and (not uses_bgm or bgm_epoch == _bgm_epoch)
 	)
 
 
@@ -1665,6 +2174,9 @@ func emit_stage_operations(
 ) -> int:
 	if request_id <= 0:
 		request_id = reserve_stage_operation_request_id()
+	if _runtime_audio_shutdown_started:
+		stage_operation_request_finished.emit(request_id, false)
+		return request_id
 	for operation in operations:
 		if not StageLayerState.validate_operation(operation, true):
 			push_warning(
@@ -1787,8 +2299,6 @@ func _next_presentation_queue_name() -> String:
 	return String(candidates[0].get("queue", ""))
 
 # Audio
-signal bgm_play(asset: String, fade_duration: float)
-signal bgm_stop(fade_duration: float)
 signal se_play(asset: String)
 signal voice_play(asset: String, character: String)
 signal voice_playback_requested(request: VoicePlaybackRequest)
@@ -2183,6 +2693,17 @@ func _report_loop_se_rejection(source: Dictionary, errors: Array) -> void:
 		messages.append("request invalidated during preflight")
 	push_error(
 		"%s loop-SE request rejected: %s"
+		% [_chapter_indicator_source_label(source), "; ".join(messages)])
+
+
+func _report_bgm_rejection(source: Dictionary, errors: Array) -> void:
+	var messages: Array[String] = []
+	for error_value: Variant in errors:
+		messages.append(String(error_value))
+	if messages.is_empty():
+		messages.append("request invalidated during preflight")
+	push_error(
+		"%s BGM request rejected: %s"
 		% [_chapter_indicator_source_label(source), "; ".join(messages)])
 
 

@@ -242,6 +242,11 @@ func _read_data(path: String, scenario_data: ScenarioData = null) -> Variant:
 	for key: Variant in data:
 		if key != "timestamp" and not data[key] is Dictionary:
 			return null
+	if (
+		data.has("presentation_state")
+		and not _presentation_snapshot_is_valid(data["presentation_state"])
+	):
+		return null
 	if scenario_data != null and not validate_data_for_scenario(data, scenario_data):
 		return null
 	return data
@@ -437,9 +442,13 @@ func _presentation_snapshot_is_valid(
 	if not raw_snapshot is Dictionary:
 		return false
 	var snapshot: Dictionary = raw_snapshot
-	for key: String in ["bg", "bgm"]:
-		if snapshot.has(key) and not snapshot[key] is String:
-			return false
+	if snapshot.has("bg") and not snapshot["bg"] is String:
+		return false
+	if (
+		snapshot.has("bgm")
+		and not BgmChannelState.validate_snapshot_state(snapshot["bgm"], false)
+	):
+		return false
 	if snapshot.has("stage_layers"):
 		if not snapshot["stage_layers"] is Dictionary:
 			return false

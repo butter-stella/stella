@@ -53,7 +53,7 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 	var old_unlock_manager: UnlockManager = _runtime.unlock_manager
 	var old_flowchart_visited: FlowchartVisitedState = _runtime.flowchart_visited
 	var audio_presenter: Node = _runtime.get_node("AudioPresenter")
-	var bgm_player: AudioStreamPlayer = audio_presenter._bgm_player
+	var bgm_player := _install_synthetic_bgm(audio_presenter)
 	var se_player: AudioStreamPlayer = audio_presenter._se_players[0]
 	var voice_player: AudioStreamPlayer = audio_presenter._voice_player
 	var system_se_player: AudioStreamPlayer = audio_presenter._system_se_player
@@ -75,7 +75,7 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 	_runtime.settings_manager.set_value("master_volume", 0.1)
 	assert_almost_eq(audio_presenter._se_players[0].volume_db, -20.0, 0.01,
 		"persistent audio nodes should reflect the dirty setting before reset")
-	for player: AudioStreamPlayer in [bgm_player, se_player, voice_player, system_se_player]:
+	for player: AudioStreamPlayer in [se_player, voice_player, system_se_player]:
 		player.stream = AudioStreamGenerator.new()
 		player.play()
 	assert_true(bgm_player.playing)
@@ -89,7 +89,10 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 	_runtime.presentation_state.stage_layers["dirty"] = (
 		StageLayerState.normalize_full({"asset": "stage:dirty"})
 	)
-	_runtime.presentation_state.current_bgm = "dirty_bgm"
+	_runtime.presentation_state.current_bgm = {
+		"asset": "dirty_bgm", "cue": "", "loop": true, "position": 0.0,
+		"status": "playing", "volume": 1.0,
+	}
 	_runtime.game_state.current_state = GameStateMachine.State.BACKLOG
 	_runtime.game_state.previous_state = GameStateMachine.State.PLAYING
 	_runtime.scenario_graph = ScenarioGraph.new()
@@ -116,12 +119,11 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 	assert_eq(_runtime.settings_manager.settings.character_voice_volume, {})
 	assert_almost_eq(audio_presenter._se_players[0].volume_db, 0.0, 0.01,
 		"reset defaults must be reapplied to the persistent AudioPresenter")
-	assert_false(bgm_player.playing,
-		"reset must stop BGM before returning")
+	assert_false(is_instance_valid(bgm_player),
+		"reset must retire the dynamic BGM voice before returning")
 	assert_false(se_player.playing, "reset must stop looping or synthetic SE")
 	assert_false(voice_player.playing, "reset must stop voice playback")
 	assert_false(system_se_player.playing, "reset must stop system SE playback")
-	assert_null(bgm_player.stream)
 	assert_null(se_player.stream)
 	assert_null(voice_player.stream)
 	assert_null(system_se_player.stream)
@@ -130,7 +132,7 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 	assert_eq(_runtime.presentation_state.capture_snapshot(), {
 		"bg": "",
 		"stage_layers": {},
-		"bgm": "",
+		"bgm": {},
 		"loop_se_channels": {},
 		"dialogue_visibility": {
 			"surface": true,
@@ -204,11 +206,11 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 
 func test_runtime_reset_immediately_reapplies_audio_defaults() -> void:
 	var audio_presenter: Node = _runtime.get_node("AudioPresenter")
-	var bgm_player: AudioStreamPlayer = audio_presenter._bgm_player
+	var bgm_player := _install_synthetic_bgm(audio_presenter)
 	var se_players: Array = audio_presenter._se_players
 	var voice_player: AudioStreamPlayer = audio_presenter._voice_player
 	var system_se_player: AudioStreamPlayer = audio_presenter._system_se_player
-	for player: AudioStreamPlayer in [bgm_player, voice_player, system_se_player]:
+	for player: AudioStreamPlayer in [voice_player, system_se_player]:
 		player.stream = AudioStreamGenerator.new()
 		player.play()
 	for player: AudioStreamPlayer in se_players:
@@ -233,13 +235,19 @@ func test_runtime_reset_immediately_reapplies_audio_defaults() -> void:
 	assert_almost_eq(voice_player.volume_db, -80.0, 0.01,
 		"muting the current character should affect an active voice immediately")
 
-	# Exercise the stale-target race directly: resetting while a fade-in still
-	# targets the dirty volume must cancel that target before it can be applied.
-	bgm_player.volume_db = -80.0
-	audio_presenter._start_bgm_fade_in(0.05)
+	# An authored-level Tween remains valid across a live settings reset: every
+	# frame multiplies its level by the current setting instead of restoring a
+	# captured dB target from the old settings snapshot.
+	var voice: Dictionary = audio_presenter._bgm_channel["current"]
+	audio_presenter._set_bgm_voice_level(0.0, voice)
+	var tween := audio_presenter.create_tween()
+	audio_presenter._bgm_channel["tween"] = tween
+	tween.tween_method(
+		audio_presenter._set_bgm_voice_level.bind(voice), 0.0, 1.0, 0.05)
 	_runtime.reset_settings()
 
-	assert_almost_eq(bgm_player.volume_db, linear_to_db(0.8), 0.01)
+	assert_almost_eq(bgm_player.volume_db, -80.0, 0.01,
+		"settings reset must not terminate the authored BGM lifecycle Tween")
 	for player: AudioStreamPlayer in se_players:
 		assert_almost_eq(player.volume_db, 0.0, 0.01)
 	assert_almost_eq(system_se_player.volume_db, 0.0, 0.01)
@@ -250,7 +258,7 @@ func test_runtime_reset_immediately_reapplies_audio_defaults() -> void:
 
 	await get_tree().create_timer(0.1).timeout
 	assert_almost_eq(bgm_player.volume_db, linear_to_db(0.8), 0.01,
-		"a killed fade-in must not restore its pre-reset target")
+		"the authored Tween must keep using the live default settings multiplier")
 
 
 func test_reset_for_test_does_not_advance_past_aborted_dialogue() -> void:
@@ -657,6 +665,19 @@ func _assert_blocking_load_boundary(
 	assert_eq(_runtime.game_state.current_state, GameStateMachine.State.PLAYING)
 	assert_true(dialogue._current_dialogue_activation.is_pending(),
 		"loaded content remains the final blocking owner")
+
+
+func _install_synthetic_bgm(audio_presenter: Node) -> AudioStreamPlayer:
+	var stream := AudioStreamGenerator.new()
+	var voice: Dictionary = audio_presenter._create_bgm_voice(
+		stream, "synthetic", "", true, 0.0, 0.0, 1.0)
+	audio_presenter._bgm_channel = audio_presenter._new_bgm_channel()
+	audio_presenter._bgm_channel["current"] = voice
+	audio_presenter._bgm_channel["target_state"] = {
+		"asset": "synthetic", "cue": "", "loop": true, "position": 0.0,
+		"status": "playing", "volume": 1.0,
+	}
+	return voice["player"] as AudioStreamPlayer
 
 
 func _build_blocking_scenario() -> ScenarioData:

@@ -289,7 +289,10 @@ registry.register(DialogueHandler.new(read_flags))
 StellaRuntime.start_game()           # 开始新游戏
 StellaRuntime.load_game(slot_id)     # 读档并进入游戏
 StellaRuntime.return_to_title()      # 返回标题
+StellaRuntime.request_quit()         # 安全退休音频后退出
 ```
+
+自定义标题、性能模式或其他宿主退出入口必须调用 `request_quit(exit_code=0)`，不要直接 `get_tree().quit()`。该 API 与内置标题、`StellaAction.QUIT` 和 OS close 共用同一个幂等边界：OS close 先自动存档，唯一 AudioPresenter 再退休 BGM/loop-SE/Voice/SE，Runtime 观察真实 AudioServer mix 回绕并给主线程一次 cleanup boundary 后退出。ack、driver 或 timing 非法及有界等待耗尽会以非零状态 fail-close。Godot 4.6.1 的 raw `--quit-after` 存在上游 audio-driver teardown 顺序限制（godotengine/godot#76745 / #122742），不能用于验证 active-audio 的产品 clean shutdown。
 
 ### 当前章节标题与可见目标
 
@@ -416,6 +419,33 @@ standalone 默认 fire-and-forget，不需要 policy、transition、duration 或
 
 资源从 `[paths] se` 解析，只接受 OGG/WAV；格式 stream 会先 duplicate 再启用 loop，所以普通 one-shot 不受影响，并保留已有 OGG/WAV loop marker。same channel 的 asset+volume 相同是 no-op；只改 volume 保留 player/position；换 asset 才 crossfade，任意时刻最多一个 incoming 与一个 outgoing。缺失资源会在 mixed batch 的任何 child mutation 前按 authored line 拒绝整批。session/new-game/title reset 会清 channels；普通场景和 UI replacement 不会。
 
+### BGM lifecycle 与 cue marker
+
+BGM 只有一个 `bgm:main` channel。普通作者使用四条短 standalone 命令；默认立即执行并 fire-and-forget，动画必须显式写 `fade=`：
+
+```stla
+@bgm play theme
+@bgm play evening cue=bridge volume=0.7 fade=1.0
+@bgm pause fade=0.2
+@bgm resume fade=0.2
+@bgm stop fade=1.0
+```
+
+replacement 的 `fade` 是 outgoing 淡出与 incoming 淡入重叠的整个总时长。需要等待或 mixed 原子提交时，只复用现有 typed contract；每个 batch 最多一个 BGM child：
+
+```stla
+@presentation_batch policy=join
+  @bgm play evening cue=bridge fade=0.8
+  @stage evening show asset=stage:evening transition=fade duration=0.8
+@end
+```
+
+same playing asset+cue+volume 会重新完成 resource/Presenter positive preflight，但稳定时不 seek、不重启 player；只改 volume 保留 cursor。若同 action 的上一条 FNF fade 尚未结束，新 aligned JOIN 会先 exact-finish 旧 receipt 到唯一 authored endpoint，再以零新 Tween 同步完成，旧 token 之后保持 inert。paused 下 `play` 从 cue start 重播，`resume` 才继续保存的 cursor。pause/resume/play/stop fade 都由同一 Director receipt 驱动，普通 advance 与 Skip 只 exact-finish 当前 JOIN；Auto 本身不制造 ack。context/global abort 会 cut 当前 Tween 到已提交 stable target；reset/load/rollback/restart/title 与 stale callback 使用同一 generation/ownership边界。
+
+原始 OGG/MP3/WAV 默认从 0 开始、循环到 stream end，并保留格式中合法的 loop marker。需要 authored start/loop marker 或 named cue 时，创建 `BgmTrackDefinition` Resource，设置 `stream`、`loop`、`start_position`、`loop_position`，并可添加完整的 `BgmCueDefinition`。named cue 不继承 track default；每个定义都必须满足有限正 stream length 以及 `0 <= start_position <= loop_position < length`，`loop=false` 时 marker 仍存在但不会启用循环。这一版不支持 `loop_end`。资源/cue/marker 缺失、歧义或非法会在 mixed child 的任何 mutation 前按 BGM authored line fail-close。公开 synthetic reference 见 [`examples/demo/scenarios/bgm_lifecycle.stla`](../examples/demo/scenarios/bgm_lifecycle.stla) 与对应 redistributable `.tres`。
+
+旧 `@bgm asset [fade]` / `@bgm off [fade]` 已删除，必须迁移为 `play` / `stop` action grammar；Runtime 中没有第二 BGM handler 或 legacy alias。
+
 ### 声明式 Stage 批次：JOIN 与 fire-and-forget
 
 当多个命名 Stage 层必须在同一 authored boundary 提交，且后续对话或音频必须等待全部转场到达终态时，使用 `policy=join`：
@@ -442,7 +472,7 @@ standalone 默认 fire-and-forget，不需要 policy、transition、duration 或
 
 普通左键、Space 或 Enter 只会把当前 sealed JOIN 的 exact receipts snap 到 authored endpoint；`FIRE_AND_FORGET` 不 claim input。Skip 从 false 切换为 true 时 exact-finish 当前 JOIN 一次；Skip 是持续模式，新 batch 提交时已 active 则直接 force-cut。Auto 状态本身不结束 Stage JOIN。完整语法、ordering 与 fail-close 规则见 [DSL 文档](DSL.md#312-舞台批次组合stage_batch)；公开的 reference scenario 见 [`examples/demo/scenarios/stage_batch.stla`](../examples/demo/scenarios/stage_batch.stla)，它不是默认 Start Game 入口。
 
-高级 typed surface 由 `PresentationOperation`、`StagePresentationOperation`、`DialogueVisibilityPresentationOperation`、`ChapterIndicatorPresentationOperation`、`LoopSePresentationOperation`、`PresentationOperationReceipt`、`PresentationBatchRequest` 和 `PresentationDirector` 组成。唯一 owner 是 `StellaRuntime.presentation_director`；项目不应自行 `new()` 第二个 Director，也不应调用 `_bind_authority()`、`_seal()` 或 `_settle()` 等下划线内部方法。同一个 Director 支持 Stage、`@dialogue_visibility`、`@chapter_indicator` 与 `@loop_se` 的 mixed `@presentation_batch`，在任何 apply 前完成全批 preflight/seal，再按 authored child order dispatch。它只用于需要跨 channel 共享 JOIN/FNF boundary 的高级 composition；普通 chapter/dialogue 显隐与 loop-SE 保持各自 standalone 写法，并由 parser lowering 到同一条 canonical child 路径。
+高级 typed surface 由 `PresentationOperation`、`StagePresentationOperation`、`DialogueVisibilityPresentationOperation`、`ChapterIndicatorPresentationOperation`、`LoopSePresentationOperation`、`BgmPresentationOperation`、`PresentationOperationReceipt`、`PresentationBatchRequest` 和 `PresentationDirector` 组成。唯一 owner 是 `StellaRuntime.presentation_director`；项目不应自行 `new()` 第二个 Director，也不应调用 `_bind_authority()`、`_seal()` 或 `_settle()` 等下划线内部方法。同一个 Director 支持 Stage、`@dialogue_visibility`、`@chapter_indicator`、`@loop_se` 与 `@bgm` 的 mixed `@presentation_batch`，在任何 apply 前完成全批 preflight/seal，再按 authored child order dispatch。它只用于需要跨 channel 共享 JOIN/FNF boundary 的高级 composition；普通 chapter/dialogue 显隐与 loop-SE/BGM 保持各自 standalone 写法，并由 parser lowering 到同一条 canonical child 路径。
 
 既有 `StellaRuntime.apply_stage_operations(operations, force_cut) -> void` 仍是 raw 兼容 Facade：它不返回 receipt、不等待 Tween，也不等价于 authored `@stage_batch`。standalone `@stage`、`@parallel` 和 `@combine` 的既有语义同样保持不变。
 
@@ -490,7 +520,7 @@ legacy_snapshot["scenario_context"]["scenario_source_identity"] = (
 
 在游戏内读档、快读或从 Backlog/选项/流程图回退时，Runtime 会先把 engine context 所有权转交给恢复后的 context，再清理旧画面和阻塞命令。旧对话的取消不会触发自然 `scenario_ended`，恢复后的 context 始终是最终执行 owner；自定义 Presenter 仍只需遵守上文的 request `advance()` / `abort()` 契约。
 
-JOIN 动画进行中可以存档。存档记录已原子提交的 final canonical Stage target、loop-SE 的 `{asset, loop, volume, position}` 与 scenario cursor；operation、policy、request/batch、receipt、token、generation、Tween、barrier、fade progress 与 outgoing player 都不入档。恢复时先 cancel old generation，再 reset + atomic cut canonical target，最后在 same cursor 重新派发。loop-SE 从保存 position 以单 player 恢复；same asset+volume 仍须通过 AudioPresenter/resource preflight，player 完全稳定对齐时不 seek、不 duplicate、不创建 receipt。Stage 的非 clear target 已满足时以 no-work 同步完成；canonical clear 仍须经过 typed dispatch，以接管 canonical state 已为空但仍在 remove transition 中的 live projection。
+JOIN 动画进行中可以存档。存档记录已原子提交的 final canonical Stage target、loop-SE 的 `{asset, loop, volume, position}`、BGM 的 `{asset, cue, loop, position, status, volume}`（stopped 为 `{}`）与 scenario cursor；operation、policy、request/batch、receipt、token、generation、Tween、barrier、fade progress 与 outgoing player 都不入档。恢复时先 cancel old generation，再 reset + atomic cut canonical target，最后在 same cursor 重新派发。BGM pause fade 存档会采样保存瞬间 cursor，但恢复直接是稳定 paused；crossfade 存档只保存 incoming target/current incoming cursor。这是有意的 cut projection，不恢复 Tween progress。loop-SE/BGM 的 same target 仍须通过 AudioPresenter/resource preflight。旧版 String `bgm` 存档不是带版本的公共 schema，generic read 与 scenario-aware load 都在任何 provider mutation 前 fail-close；如产品确需旧档，应由宿主版本化迁移工具先转换，Stella Runtime 不保留 legacy 分支。
 
 ### 播放控制
 
@@ -551,7 +581,7 @@ StellaRuntime.save_settings()        # 保存设置到磁盘
 | DSL 指令 | 文件路径 |
 |----------|---------|
 | `@bg bg_school` | `{backgrounds_path}/bg_school.png` |
-| `@bgm bgm_spring` | `{bgm_path}/bgm_spring.ogg` (或 .mp3) |
+| `@bgm play bgm_spring` | `{bgm_path}/bgm_spring.ogg` / `.mp3` / `.wav`，或 `BgmTrackDefinition` `.tres` / `.res` |
 | `@se se_click` | `{se_path}/se_click.ogg` (或 .wav) |
 
 路径前缀通过 `stella.cfg` 的 `[paths]` 段配置，也可在代码中直接设置 `StellaRuntime` 的属性。
@@ -617,8 +647,10 @@ sakura（内心独白）
 sakura「[expr:sad]我有点担心。」
 
 // 音频
-@bgm bgm_spring
-@bgm off
+@bgm play bgm_spring fade=0.8
+@bgm pause
+@bgm resume fade=0.2
+@bgm stop fade=0.8
 @se se_click
 
 // 选择

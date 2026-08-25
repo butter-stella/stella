@@ -2231,8 +2231,11 @@ func test_advance_during_owned_voice_emit_blocks_retired_audio_tail() -> void:
 
 	assert_true(did_advance[0])
 	assert_false(_presenter._playback_queue_active)
-	assert_null(late_audio._voice_player.stream,
-		"AudioPresenter connected after the advance listener rejects retired audio")
+	assert_null(late_audio._bgm_capability)
+	assert_null(late_audio._loop_se_capability)
+	assert_null(late_audio._voice_player,
+		"a late duplicate fails atomic admission before becoming an audio consumer")
+	assert_eq(late_audio.get_child_count(), 0)
 
 
 func test_owned_voice_tail_cannot_restart_retired_audio() -> void:

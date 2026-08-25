@@ -7,5 +7,5 @@
   @stage b update position=64,32 transition=move duration=10
   @stage c hide transition=fade duration=10
 @end
-@bgm off
+@se se_select
 「atomic join tail」

@@ -1,63 +1,8 @@
 extends GutTest
-## Tests for BgmController, SeController, VoiceController.
+## Tests for one-shot SE, Voice, Fade, and Wait command handlers.
 ## These controllers manage AudioStreamPlayers and respond to SignalBus signals.
 ## Since we're testing in headless mode, we test the logic and signal wiring,
 ## not actual audio playback.
-
-
-# --- BgmHandler ---
-
-func test_bgm_handler_type():
-	var handler = BgmHandler.new()
-	assert_eq(handler.get_command_type(), "bgm")
-
-
-func test_bgm_handler_emits_play_signal():
-	var received: Array = []
-	var bus = get_tree().root.get_node("SignalBus")
-	bus.bgm_play.connect(func(a, f): received.append({"asset": a, "fade": f}))
-
-	var handler = BgmHandler.new()
-	var cmd = CommandData.new()
-	cmd.type = "bgm"
-	cmd.params = {"asset": "bgm_spring", "fade_duration": 1.5}
-
-	var ctx = ScenarioContext.new()
-	await handler.execute(cmd, ctx)
-
-	assert_eq(received.size(), 1)
-	assert_eq(received[0]["asset"], "bgm_spring")
-
-
-func test_bgm_handler_stop_emits_signal():
-	var received: Array = []
-	var bus = get_tree().root.get_node("SignalBus")
-	bus.bgm_stop.connect(func(f): received.append(f))
-
-	var handler = BgmHandler.new()
-	var cmd = CommandData.new()
-	cmd.type = "bgm"
-	cmd.params = {"off": true, "fade_duration": 2.0}
-
-	var ctx = ScenarioContext.new()
-	await handler.execute(cmd, ctx)
-
-	assert_eq(received.size(), 1)
-	assert_almost_eq(received[0], 2.0, 0.01)
-
-
-func test_bgm_handler_defaults():
-	var received: Array = []
-	var bus = get_tree().root.get_node("SignalBus")
-	bus.bgm_play.connect(func(a, f): received.append({"fade": f}))
-
-	var handler = BgmHandler.new()
-	var cmd = CommandData.new()
-	cmd.type = "bgm"
-	cmd.params = {"asset": "bgm_test"}
-	await handler.execute(cmd, ScenarioContext.new())
-
-	assert_almost_eq(received[0]["fade"], 1.0, 0.01)
 
 
 # --- SeHandler ---

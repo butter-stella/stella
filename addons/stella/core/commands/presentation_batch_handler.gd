@@ -15,6 +15,9 @@ const EXACT_CHAPTER_INDICATOR_PAYLOAD_KEYS := [
 const EXACT_LOOP_SE_PAYLOAD_KEYS := [
 	"action", "asset", "channel", "fade_duration", "resume_position", "volume",
 ]
+const EXACT_BGM_PAYLOAD_KEYS := [
+	"action", "asset", "cue", "fade_duration", "resume_position", "volume",
+]
 
 var _director: PresentationDirector
 var _presentation_state: PresentationState
@@ -91,6 +94,9 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 			"loop_se":
 				typed_operations.append(
 					LoopSePresentationOperation.new(payload, operation_source))
+			"bgm":
+				typed_operations.append(
+					BgmPresentationOperation.new(payload, operation_source))
 	var policy := (
 		PresentationBatchRequest.Policy.JOIN
 		if String(validation["policy"]) == "join"
@@ -166,6 +172,9 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 	var saw_chapter_indicator := false
 	var seen_loop_se_channels: Dictionary = {}
 	var loop_se_operations: Array = []
+	var saw_bgm := false
+	var bgm_operations: Array = []
+	var bgm_line := data.declared_line
 	for index in range(operations.size()):
 		if not operation_lines[index] is int or int(operation_lines[index]) <= 0:
 			return {"valid": false, "error": "operation line must be a positive integer", "line": data.declared_line}
@@ -248,6 +257,18 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 					return {"valid": false, "error": "duplicate loop-SE channel '%s'" % channel_id, "line": int(operation_lines[index])}
 				seen_loop_se_channels[channel_id] = true
 				loop_se_operations.append(payload.duplicate(true))
+			"bgm":
+				var bgm_keys := payload.keys()
+				bgm_keys.sort()
+				if bgm_keys != EXACT_BGM_PAYLOAD_KEYS:
+					return {"valid": false, "error": "BGM payload must use the canonical six-field schema", "line": int(operation_lines[index])}
+				if not BgmChannelState.validate_operation(payload, false):
+					return {"valid": false, "error": "BGM payload failed canonical validation", "line": int(operation_lines[index])}
+				if saw_bgm:
+					return {"valid": false, "error": "duplicate BGM channel", "line": int(operation_lines[index])}
+				saw_bgm = true
+				bgm_line = int(operation_lines[index])
+				bgm_operations.append(payload.duplicate(true))
 			_:
 				return {"valid": false, "error": "unsupported presentation operation kind '%s'" % kind, "line": int(operation_lines[index])}
 		canonical_operations.append({
@@ -274,6 +295,21 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 	)
 	var loop_se_target := LoopSeChannelState.reduce(
 		loop_se_before, loop_se_operations, false)
+	var bgm_before := (
+		_presentation_state.current_bgm.duplicate(true)
+		if _presentation_state != null
+		else {}
+	)
+	if (
+		not bgm_operations.is_empty()
+		and not BgmChannelState.operation_is_supported(
+			bgm_before, bgm_operations[0])
+	):
+		return {
+			"valid": false,
+			"error": "BGM lifecycle action requires an active track",
+			"line": bgm_line,
+		}
 	return {
 		"valid": true,
 		"policy": policy,
@@ -284,10 +320,12 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 		"target_visibility": visibility_target,
 		"before_loop_se": loop_se_before,
 		"target_loop_se": loop_se_target,
+		"before_bgm": bgm_before,
 		"no_work": (
 			stage_target == stage_before
 			and visibility_target == visibility_before
 			and loop_se_operations.is_empty()
+			and bgm_operations.is_empty()
 			and visibility_operations.is_empty()
 			and not saw_chapter_indicator
 		),

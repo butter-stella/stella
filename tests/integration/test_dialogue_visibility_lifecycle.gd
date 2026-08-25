@@ -2134,7 +2134,7 @@ func test_h_retained_visual_apply_is_a_side_effect_free_content_and_gate_cut() -
 	_runtime.presentation_state.restore_snapshot({
 		"bg": "",
 		"stage_layers": {},
-		"bgm": "",
+		"bgm": {},
 		"dialogue_visibility": {
 			"surface": false, "quick_menu": true,
 		},
@@ -2230,7 +2230,7 @@ func test_h_nvl_visual_cut_restores_each_entry_with_its_own_profile() -> void:
 		"avatar_expression": "", "nvl_entries": context.nvl_page_entries,
 	}
 	_runtime.presentation_state.restore_snapshot({
-		"bg": "", "stage_layers": {}, "bgm": "",
+		"bg": "", "stage_layers": {}, "bgm": {},
 		"dialogue_visibility": {"surface": true, "quick_menu": true},
 		"dialogue_content": content,
 	})

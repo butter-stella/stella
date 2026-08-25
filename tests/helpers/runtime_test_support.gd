@@ -32,10 +32,8 @@ static func reset_for_test(runtime: Node, tree: SceneTree) -> void:
 	SignalBus.voice_finished.emit()
 	runtime._close_current_overlay()
 
-	# The public presentation reset has no global SE/system-SE stop and models a
-	# zero-duration BGM stop as an asynchronous tween. Tests need a synchronous
-	# boundary, so clear the persistent audio node directly after exercising the
-	# normal signals above.
+	# The canonical BGM reset is synchronous. One-shot SE/system-SE have no public
+	# stop lifecycle, so test isolation clears those private pools directly.
 	_reset_audio_for_test(audio_presenter)
 
 	# Overlay cleanup and aborted handler/typewriter continuations resume on the
@@ -108,9 +106,6 @@ static func advance_dialogue_for_test(tree: SceneTree) -> bool:
 static func _reset_audio_for_test(audio_presenter: Node) -> void:
 	if audio_presenter == null:
 		return
-	audio_presenter._cancel_bgm_tween()
-	audio_presenter._bgm_player.stop()
-	audio_presenter._bgm_player.stream = null
 	for player: AudioStreamPlayer in audio_presenter._se_players:
 		player.stop()
 		player.stream = null

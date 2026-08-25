@@ -89,7 +89,7 @@ func _snapshot_with_dialogue(
 	return {
 		"bg": "",
 		"stage_layers": {},
-		"bgm": "",
+		"bgm": {},
 		"loop_se_channels": {},
 		"dialogue_visibility": visibility.duplicate(true),
 		"dialogue_content": content.duplicate(true),
@@ -489,12 +489,10 @@ func test_old_snapshot_without_dialogue_fields_uses_canonical_defaults() -> void
 	state.restore_snapshot({
 		"bg": "legacy",
 		"stage_layers": {},
-		"bgm": "legacy_bgm",
 	})
 	var snapshot := state.capture_snapshot()
 	_assert_dialogue_defaults(snapshot)
 	assert_eq(snapshot.get("bg"), "legacy")
-	assert_eq(snapshot.get("bgm"), "legacy_bgm")
 
 
 func test_inactive_content_is_normalized_exactly_without_hidden_payload() -> void:

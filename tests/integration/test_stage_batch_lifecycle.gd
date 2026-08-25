@@ -37,7 +37,7 @@ var _presenter: StagePresenter
 var _dialogue_requests: Array[DialogueRequest] = []
 var _batch_observations: Array[Dictionary] = []
 var _started_transitions: Array[Dictionary] = []
-var _bgm_stop_count := 0
+var _audio_count := 0
 var _original_stage_assets_path := ""
 var _original_title_scene_path := ""
 var _temporary_inputs: Array[Node] = []
@@ -58,7 +58,7 @@ func before_each() -> void:
 	SignalBus.dialogue_requested.connect(_on_dialogue_requested)
 	SignalBus.stage_operations_requested.connect(_on_stage_operations_requested)
 	SignalBus.stage_transition_started.connect(_on_stage_transition_started)
-	SignalBus.bgm_stop.connect(_on_bgm_stop)
+	SignalBus.se_play.connect(_on_audio)
 
 
 func after_each() -> void:
@@ -78,8 +78,8 @@ func after_each() -> void:
 	):
 		SignalBus.stage_transition_started.disconnect(
 			_on_stage_transition_started)
-	if SignalBus.bgm_stop.is_connected(_on_bgm_stop):
-		SignalBus.bgm_stop.disconnect(_on_bgm_stop)
+	if SignalBus.se_play.is_connected(_on_audio):
+		SignalBus.se_play.disconnect(_on_audio)
 	_runtime.stage_assets_path = _original_stage_assets_path
 	_runtime.title_scene_path = _original_title_scene_path
 	_runtime.delete_save(SAVE_SLOT)
@@ -99,7 +99,7 @@ func _on_stage_operations_requested(
 		"operations": operations.duplicate(true),
 		"force_cut": force_cut,
 		"dialogues_at_boundary": _dialogue_requests.size(),
-		"bgm_stops_at_boundary": _bgm_stop_count,
+		"audio_at_boundary": _audio_count,
 		"canonical": _runtime.presentation_state.stage_layers.duplicate(true),
 	})
 
@@ -126,15 +126,15 @@ func _on_stage_transition_started(
 	})
 
 
-func _on_bgm_stop(_fade_duration: float) -> void:
-	_bgm_stop_count += 1
+func _on_audio(_asset: String) -> void:
+	_audio_count += 1
 
 
 func _clear_observations() -> void:
 	_dialogue_requests.clear()
 	_batch_observations.clear()
 	_started_transitions.clear()
-	_bgm_stop_count = 0
+	_audio_count = 0
 
 
 func _wait_until(predicate: Callable, max_frames: int = 120) -> bool:
@@ -481,10 +481,10 @@ func test_a1_atomic_boundary_commits_three_members_before_tail() -> void:
 			return "%s:%s" % [operation["id"], operation["action"]]
 	), ["a:show", "b:update", "c:hide"])
 	assert_eq(int(batch["dialogues_at_boundary"]), 0)
-	assert_eq(int(batch["bgm_stops_at_boundary"]), 0)
+	assert_eq(int(batch["audio_at_boundary"]), 0)
 	assert_eq(_dialogue_requests.size(), 0,
 		"JOIN blocks its following dialogue")
-	assert_eq(_bgm_stop_count, 0, "JOIN blocks its following audio command")
+	assert_eq(_audio_count, 0, "JOIN blocks its following audio command")
 	var canonical: Dictionary = _runtime.presentation_state.stage_layers
 	assert_true(canonical.has("a"))
 	assert_eq(canonical["b"]["position"], [64.0, 32.0])
@@ -878,7 +878,7 @@ func test_a2_zero_token_join_is_synchronous_and_n_tokens_are_exact() -> void:
 	_finish_records([exact[2]])
 	assert_true(await _wait_until(
 		func() -> bool: return _dialogue_requests.size() == 1))
-	assert_eq(_bgm_stop_count, 1)
+	assert_eq(_audio_count, 1)
 	assert_eq(settled_events, [[
 		request_ids[0], PresentationBatchRequest.Outcome.COMPLETED,
 	]], "the first valid exact terminal set settles once as COMPLETED")
@@ -1314,7 +1314,7 @@ func test_a3_fire_and_forget_orders_batches_then_releases_audio_and_dialogue() -
 			return (
 				_batch_observations.size() >= 2
 				and _dialogue_requests.size() == 1
-				and _bgm_stop_count == 1
+				and _audio_count == 1
 			),
 	))
 	assert_eq(_batch_observations.size(), 2)
@@ -1411,7 +1411,7 @@ func test_a3_preseal_fnf_cancel_fail_closes_only_its_current_owner() -> void:
 @stage_batch policy=fire_and_forget
   @stage queued show asset=stage:redraw_source transition=fade duration=10
 @end
-@bgm off
+@se se_select
 「cancelled FNF tail」""", "stage_batch_preseal_fnf_cancel")
 		var context := context_holder[0] as ScenarioContext
 		context_was_current[0] = (
@@ -1478,7 +1478,7 @@ func test_a3_preseal_fnf_cancel_fail_closes_only_its_current_owner() -> void:
 	assert_null(_presenter.get_layer_node("queued"))
 	assert_true(_presenter._layer_tweens.is_empty())
 	assert_true(_presenter._layer_transition_tokens.is_empty())
-	assert_eq(_bgm_stop_count, 0)
+	assert_eq(_audio_count, 0)
 	assert_eq(_dialogue_requests, [],
 		"the failed command cannot release its audio/dialogue tail")
 

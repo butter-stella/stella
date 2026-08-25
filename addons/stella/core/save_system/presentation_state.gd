@@ -3,7 +3,7 @@ class_name PresentationState extends RefCounted
 
 var current_bg: String = ""
 var stage_layers: Dictionary = {}
-var current_bgm: String = ""
+var current_bgm: Dictionary = {}
 var loop_se_channels: Dictionary = {}
 var dialogue_visibility: Dictionary = DialogueVisibilityState.default_state()
 var dialogue_content: Dictionary = _inactive_dialogue_content()
@@ -20,8 +20,10 @@ func connect_signals() -> void:
 		return
 	SignalBus.bg_changed.connect(_on_bg_changed)
 	SignalBus.stage_operations_requested.connect(_on_stage_operations)
-	SignalBus.bgm_play.connect(_on_bgm_play)
-	SignalBus.bgm_stop.connect(_on_bgm_stop)
+	SignalBus.bgm_operation_committed.connect(_on_bgm_operation_committed)
+	SignalBus.bgm_position_committed.connect(_on_bgm_position_committed)
+	SignalBus.bgm_natural_stop_committed.connect(_on_bgm_natural_stop_committed)
+	SignalBus.bgm_presenter_registered.connect(_on_bgm_presenter_registered)
 	SignalBus.loop_se_operation_committed.connect(_on_loop_se_operation_committed)
 	SignalBus.loop_se_positions_committed.connect(_on_loop_se_positions_committed)
 	SignalBus.loop_se_presenter_registered.connect(_on_loop_se_presenter_registered)
@@ -37,8 +39,10 @@ func disconnect_signals() -> void:
 		return
 	SignalBus.bg_changed.disconnect(_on_bg_changed)
 	SignalBus.stage_operations_requested.disconnect(_on_stage_operations)
-	SignalBus.bgm_play.disconnect(_on_bgm_play)
-	SignalBus.bgm_stop.disconnect(_on_bgm_stop)
+	SignalBus.bgm_operation_committed.disconnect(_on_bgm_operation_committed)
+	SignalBus.bgm_position_committed.disconnect(_on_bgm_position_committed)
+	SignalBus.bgm_natural_stop_committed.disconnect(_on_bgm_natural_stop_committed)
+	SignalBus.bgm_presenter_registered.disconnect(_on_bgm_presenter_registered)
 	SignalBus.loop_se_operation_committed.disconnect(_on_loop_se_operation_committed)
 	SignalBus.loop_se_positions_committed.disconnect(_on_loop_se_positions_committed)
 	SignalBus.loop_se_presenter_registered.disconnect(_on_loop_se_presenter_registered)
@@ -52,13 +56,15 @@ func disconnect_signals() -> void:
 func clear() -> void:
 	current_bg = ""
 	stage_layers.clear()
-	current_bgm = ""
+	current_bgm.clear()
 	loop_se_channels.clear()
 	dialogue_visibility = DialogueVisibilityState.default_state()
 	dialogue_content = _inactive_dialogue_content()
 
 
 func capture_snapshot() -> Dictionary:
+	var captured_bgm := BgmChannelState.with_position(
+		current_bgm, SignalBus.capture_bgm_position())
 	var captured_loop_se := LoopSeChannelState.with_positions(
 		loop_se_channels,
 		SignalBus.capture_loop_se_positions(),
@@ -66,7 +72,7 @@ func capture_snapshot() -> Dictionary:
 	return {
 		"bg": current_bg,
 		"stage_layers": stage_layers.duplicate(true),
-		"bgm": current_bgm,
+		"bgm": captured_bgm,
 		"loop_se_channels": captured_loop_se,
 		"dialogue_visibility": dialogue_visibility.duplicate(true),
 		"dialogue_content": dialogue_content.duplicate(true),
@@ -75,7 +81,12 @@ func capture_snapshot() -> Dictionary:
 
 func restore_snapshot(snapshot: Dictionary) -> void:
 	current_bg = String(snapshot.get("bg", ""))
-	current_bgm = String(snapshot.get("bgm", ""))
+	current_bgm.clear()
+	var restored_bgm: Variant = snapshot.get("bgm", {})
+	if BgmChannelState.validate_snapshot_state(restored_bgm, false):
+		current_bgm = (restored_bgm as Dictionary).duplicate(true)
+	else:
+		push_warning("PresentationState: invalid BGM snapshot; using stopped state")
 	loop_se_channels.clear()
 	var restored_loop_se: Variant = snapshot.get("loop_se_channels", {})
 	if LoopSeChannelState.validate_channels(restored_loop_se, false):
@@ -184,11 +195,8 @@ func apply_to_presenters(runtime_binding: Dictionary = {}) -> void:
 			)
 		SignalBus.reset_and_apply_stage_state(stage_layers)
 		SignalBus.reset_and_apply_loop_se_state(loop_se_channels)
+		SignalBus.reset_and_apply_bgm_state(current_bgm)
 		SignalBus.bg_changed.emit(current_bg, "none", 0.0)
-		if current_bgm != "":
-			SignalBus.bgm_play.emit(current_bgm, 0.0)
-		else:
-			SignalBus.bgm_stop.emit(0.0)
 	)
 
 
@@ -202,12 +210,29 @@ func _on_stage_operations(operations: Array, _force_cut: bool) -> void:
 	stage_layers = StageLayerState.reduce(stage_layers, operations)
 
 
-func _on_bgm_play(asset: String, _fade_duration: float) -> void:
-	current_bgm = asset
+func _on_bgm_operation_committed(
+	operation: BgmPresentationOperation,
+	state: Dictionary,
+) -> void:
+	if (
+		operation == null
+		or not SignalBus.is_current_bgm_operation_valid()
+		or not BgmChannelState.validate_snapshot_state(state, false)
+	):
+		return
+	current_bgm = state.duplicate(true)
 
 
-func _on_bgm_stop(_fade_duration: float) -> void:
-	current_bgm = ""
+func _on_bgm_position_committed(position: float) -> void:
+	current_bgm = BgmChannelState.with_position(current_bgm, position)
+
+
+func _on_bgm_natural_stop_committed() -> void:
+	current_bgm.clear()
+
+
+func _on_bgm_presenter_registered() -> void:
+	SignalBus.reset_and_apply_bgm_state(current_bgm)
 
 
 func _on_loop_se_operation_committed(operation: LoopSePresentationOperation) -> void:

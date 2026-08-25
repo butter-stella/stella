@@ -4,7 +4,7 @@
 
 @scene start "序章 — 樱花树下"
 
-@bgm bgm_spring
+@bgm play synthetic_bgm cue=opening volume=0.04 fade=0.3
 @bg bg_school_gate fade 1.0
 @stage sakura show kind=character asset=character:sakura/smile position=960,80 origin=720,0 scale=0.8 z=10 transition=fade duration=0.3
 
@@ -90,7 +90,7 @@ sakura「[expr:smile]学姐对谁都很温柔呢。」 #voice:sakura_010
 
 @scene cafe "放学后的咖啡店"
 
-@bgm bgm_cafe
+@bgm play synthetic_bgm cue=bridge volume=0.04 fade=0.3
 @bg bg_cafe slide_right 0.7
 @stage sakura show kind=character asset=character:sakura/happy position=480,80 origin=720,0 scale=0.8 z=10 transition=fade duration=0.3
 @stage senpai show kind=character asset=character:senpai/default position=1440,80 origin=720,0 scale=0.8 z=11 transition=fade duration=0.3
@@ -158,7 +158,7 @@ sakura「教室在二楼最左边那间！」 #voice:sakura_017
 @scene ending "尾声"
 
 @chapter_indicator hide transition=fade duration=0.25
-@bgm bgm_ending
+@bgm play synthetic_bgm cue=finale volume=0.04 fade=0.3
 @bg bg_outside slide_up 0.8
 @stage clear transition=fade duration=0.3
 
