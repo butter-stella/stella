@@ -671,7 +671,7 @@ func _assert_blocking_load_boundary(
 func _install_synthetic_bgm(audio_presenter: Node) -> AudioStreamPlayer:
 	var stream := AudioStreamGenerator.new()
 	var voice: Dictionary = audio_presenter._create_bgm_voice(
-		stream, "synthetic", "", true, 0.0, 0.0, 1.0, {}, [])
+		stream, "synthetic", "", true, 0.0, 0.0, 1.0, {}, [], {})
 	audio_presenter._bgm_channel = audio_presenter._new_bgm_channel()
 	audio_presenter._bgm_channel["current"] = voice
 	audio_presenter._bgm_channel["target_state"] = {

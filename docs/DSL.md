@@ -393,7 +393,7 @@ BGM 是单一固定 channel，唯一 public grammar 是：
 @bgm stop [fade=<seconds>]
 ```
 
-`volume` 默认 `1`，所有 action 的 `fade` 都默认 `0`；最短 `@bgm play asset` 没有增加任何参数负担。`mix=` 只用于 play 时设定 multi-stem 初始配比，`@bgm mix` 只改变当前 multi-stem 配比。mix spec 以逗号分隔 stem；裸 stem 的 gain 为 `1`，显式 gain 必须是有限的 `0..1`，资源中存在但未列出的 stem 规范化为 `0`。重复/未知 stem、空项、全零 mix 和非法 gain 都 fail-close。`fade` 是整个 replacement crossfade 或 stem mix 的总时长，不是先淡出再淡入的两段时长。standalone BGM 默认 fire-and-forget；需要等待淡变或与 Stage 等 child 共用原子边界时，只使用现有 `@presentation_batch`：
+`volume` 默认 `1`，所有 action 的 `fade` 都默认 `0`；最短 `@bgm play asset` 没有增加任何参数负担。`mix=` 只用于 play 时设定 multi-stem 初始配比，`@bgm mix` 只改变当前 multi-stem 配比。mix spec 以逗号分隔 stem；裸 stem 的 gain 为 `1`，显式 gain 必须是有限的 `0..1`，资源中存在但未列出的 stem 规范化为 `0`。重复/未知 stem、空项、全零 mix 和非法 gain 都 fail-close。gain `0` 在物理 mixer 中是 exact silence，不会被映射为有限 dB floor。`fade` 是整个 replacement crossfade 或 stem mix 的总时长，不是先淡出再淡入的两段时长。standalone BGM 默认 fire-and-forget；需要等待淡变或与 Stage 等 child 共用原子边界时，只使用现有 `@presentation_batch`：
 
 ```stla
 @presentation_batch policy=join
@@ -416,7 +416,7 @@ loop_position = 4.2
 cues = [<BgmCueDefinition cue_name="evening" ...>]
 ```
 
-`BgmTrackDefinition` 是严格 sum schema：`stream` 与 `stems` 必须且只能设置一个。single-stream 继续使用上面的 `stream`。multi-stem 则把 `stream` 留空，并提供 2..32 个 `BgmStemDefinition {stem_name, stream, default_gain}`；名称必须唯一，`default_gain` 为有限 `0..1`，且默认 mix 至少一个 gain 大于 0。所有 stem 必须同为 OGG、MP3 或 WAV，报告相同有限正长度；WAV 还必须具有相同 `mix_rate`、`stereo` 和 sample `format`。Presenter 预检成功后把它们装入一个 `AudioStreamSynchronized`，因此相位对齐并只占一个 `bgm:main` player。
+`BgmTrackDefinition` 是严格 sum schema：`stream` 与 `stems` 必须且只能设置一个。single-stream 继续使用上面的 `stream`。multi-stem 则把 `stream` 留空，并提供 2..32 个 `BgmStemDefinition {stem_name, stream, default_gain}`；名称必须唯一，`default_gain` 为有限 `0..1`，且默认 mix 至少一个 gain 大于 0。所有 stem 必须同为 OGG、MP3 或 WAV，报告相同有限正长度；WAV 还必须具有相同 `mix_rate`、`stereo` 和 sample `format`。Presenter 预检成功后把它们装入一个 `AudioStreamSynchronized`，因此相位对齐并只占一个 `bgm:main` player。正在播放的 same asset+cue 只有在 ordered stem names、default gains、源流内容/格式与选中 marker 组成的 resource signature 完全一致时才允许原地 play/mix；合法 hot reload 若改变该 signature，会在 mixed batch 的任何 child mutation 前 fail-close。
 
 每个 default/cue 的 `start_position` 与 `loop_position` 必须有限、非负且对每个 stem 都满足 `start_position <= loop_position < stream length`；即使 `loop=false` 也保留同一完整 marker schema，只是不启用循环。循环区间从 `loop_position` 到 stream 末尾；这一版没有 `loop_end`。stream 无法报告有限正长度、stem metadata 不一致、cue/stem 重名/非法/缺失、marker 越界、资源缺失/歧义或格式不支持时，Director 会在 mixed batch 的任何 child mutation 前按 BGM child 的 `source_path:line` 拒绝整批。
 

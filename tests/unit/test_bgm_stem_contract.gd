@@ -172,6 +172,49 @@ func test_mix_operation_requires_an_active_multi_stem_state() -> void:
 	assert_false(BgmChannelState.operation_has_work(stems, aligned))
 
 
+func test_stem_mix_identity_preserves_sub_approximate_authored_delta() -> void:
+	var first := {"harmony": 0.5, "rhythm": 1.0}
+	var changed := {"harmony": 0.5000001, "rhythm": 1.0}
+	assert_true(is_equal_approx(first["harmony"], changed["harmony"]),
+		"the regression delta must stay below Godot approximate equality")
+	assert_false(BgmChannelState.stem_mix_equal(first, changed),
+		"unquantized canonical gain identity is exact")
+
+
+func test_godot_46_synchronized_zero_gain_mixes_exact_silence() -> void:
+	var source := ResourceLoader.load(
+		"res://tests/fixtures/audio/bgm/synthetic_raw.tres") as AudioStream
+	assert_not_null(source)
+	if source == null:
+		return
+	var audible := AudioStreamSynchronized.new()
+	audible.stream_count = 1
+	audible.set_sync_stream(0, source)
+	audible.set_sync_stream_volume(0, 0.0)
+	var audible_playback := audible.instantiate_playback()
+	audible_playback.start(0.0)
+	var audible_frames := audible_playback.mix_audio(1.0, 32)
+	var has_nonzero_frame := false
+	for frame: Vector2 in audible_frames:
+		has_nonzero_frame = has_nonzero_frame or frame != Vector2.ZERO
+	assert_true(has_nonzero_frame,
+		"the synthetic source must prove that it contains nonzero samples")
+
+	var silent := AudioStreamSynchronized.new()
+	silent.stream_count = 1
+	silent.set_sync_stream(0, source)
+	silent.set_sync_stream_volume(0, -INF)
+	assert_eq(silent.get_sync_stream_volume(0), -INF,
+		"Godot 4.6.1 retains negative infinity as the exact mute value")
+	var silent_playback := silent.instantiate_playback()
+	silent_playback.start(0.0)
+	var silent_frames := silent_playback.mix_audio(1.0, 32)
+	assert_eq(silent_frames.size(), 32)
+	for frame: Vector2 in silent_frames:
+		assert_eq(frame, Vector2.ZERO,
+			"a nonzero synchronized child at canonical gain 0 must add no sample")
+
+
 func test_synchronized_stream_limit_is_exactly_the_godot_46_limit() -> void:
 	assert_eq(AudioStreamSynchronized.MAX_STREAMS, 32)
 	var maximum: Dictionary = {}

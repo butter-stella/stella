@@ -253,7 +253,7 @@ static func stem_mix_equal(first: Dictionary, second: Dictionary) -> bool:
 	for stem_name: Variant in first.keys():
 		if (
 			not second.has(stem_name)
-			or not is_equal_approx(float(first[stem_name]), float(second[stem_name]))
+			or float(first[stem_name]) != float(second[stem_name])
 		):
 			return false
 	return true

@@ -356,7 +356,7 @@ func test_mix_fade_preserves_player_stream_and_cursor() -> void:
 	var before_position := player.get_playback_position()
 	var mix_join := _submit([
 		_operation("mix", "", "", 1.0, 2.0, 21,
-			{"harmony": 1.0, "rhythm": 0.25}),
+			{"harmony": 1.0, "rhythm": 0.0}),
 	], PresentationBatchRequest.Policy.JOIN)
 	assert_false(mix_join.is_settled())
 	assert_same(_player(), player)
@@ -365,17 +365,60 @@ func test_mix_fade_preserves_player_stream_and_cursor() -> void:
 	var tween: Tween = _audio._bgm_channel.get("tween")
 	assert_true(tween.custom_step(1.0))
 	assert_almost_eq(_stem_db("harmony"), linear_to_db(0.5), 0.01)
-	assert_almost_eq(_stem_db("rhythm"), linear_to_db(0.625), 0.01)
+	assert_almost_eq(_stem_db("rhythm"), linear_to_db(0.5), 0.01)
 	assert_same(_player(), player)
 	assert_same(_synchronized_stream(), synchronized)
 	assert_true(tween.custom_step(1.0))
 	tween.custom_step(0.000001)
 	assert_eq(mix_join.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
 	assert_almost_eq(_stem_db("harmony"), 0.0, 0.01)
-	assert_almost_eq(_stem_db("rhythm"), linear_to_db(0.25), 0.01)
+	assert_eq(_stem_db("rhythm"), -INF,
+		"the authored fade endpoint uses Godot exact silence, not a finite dB floor")
 	assert_eq(_runtime.presentation_state.current_bgm["stem_mix"], {
-		"harmony": 1.0, "rhythm": 0.25,
+		"harmony": 1.0, "rhythm": 0.0,
 	})
+	var synchronized_playback := synchronized.instantiate_playback()
+	synchronized_playback.start(0.0)
+	var mixed_frames := synchronized_playback.mix_audio(1.0, 32)
+	var harmony_index := (
+		(_audio._bgm_channel["current"] as Dictionary)["stem_names"] as Array
+	).find("harmony")
+	var harmony_playback := synchronized.get_sync_stream(
+		harmony_index).instantiate_playback()
+	harmony_playback.start(0.0)
+	var harmony_only_frames := harmony_playback.mix_audio(1.0, 32)
+	assert_eq(mixed_frames, harmony_only_frames,
+		"the faded-to-zero nonzero rhythm source contributes exactly no samples")
+
+
+func test_sub_approximate_mix_and_same_play_update_physical_and_saved_gain() -> void:
+	_submit([_operation("play", "synthetic_stems", "", 1.0, 0.0, 30,
+		{"harmony": 0.5, "rhythm": 1.0})])
+	var player := _player()
+	var synchronized := _synchronized_stream()
+	var first_delta := 0.5000001
+	assert_true(is_equal_approx(0.5, first_delta))
+	_submit([_operation("mix", "", "", 1.0, 0.0, 31,
+		{"harmony": first_delta, "rhythm": 1.0})])
+	assert_same(_player(), player)
+	assert_same(_synchronized_stream(), synchronized)
+	assert_eq(_runtime.presentation_state.current_bgm["stem_mix"]["harmony"],
+		first_delta)
+	assert_eq((_audio._bgm_channel["current"] as Dictionary)
+		["stem_mix"]["harmony"], first_delta)
+	assert_almost_eq(_stem_db("harmony"), linear_to_db(first_delta), 0.000001)
+
+	var second_delta := 0.5000002
+	assert_true(is_equal_approx(first_delta, second_delta))
+	_submit([_operation("play", "synthetic_stems", "", 1.0, 0.0, 32,
+		{"harmony": second_delta, "rhythm": 1.0})])
+	assert_same(_player(), player)
+	assert_same(_synchronized_stream(), synchronized)
+	assert_eq(_runtime.presentation_state.current_bgm["stem_mix"]["harmony"],
+		second_delta)
+	assert_eq((_audio._bgm_channel["current"] as Dictionary)
+		["stem_mix"]["harmony"], second_delta)
+	assert_almost_eq(_stem_db("harmony"), linear_to_db(second_delta), 0.000001)
 
 
 func test_aligned_mix_hands_fnf_to_join_without_a_second_tween() -> void:
@@ -543,6 +586,115 @@ func test_invalid_hot_reloaded_stem_and_replacement_stale_token_do_not_pollute()
 	assert_eq(_runtime.presentation_state.current_bgm["stem_mix"], committed_mix)
 	assert_eq(_audio._bgm_channel.get("receipt", {}), {})
 
+
+func test_valid_hot_reload_schema_changes_fail_mixed_preflight_before_stage() -> void:
+	_submit([_operation("play", "synthetic_stems")])
+	var player := _player()
+	var synchronized := _synchronized_stream()
+	var definition := ResourceLoader.load(
+		FIXTURE_PATH + "synthetic_stems.tres") as BgmTrackDefinition
+	var original_stems: Array[BgmStemDefinition] = definition.stems.duplicate()
+	var original_names := original_stems.map(func(stem: BgmStemDefinition) -> String:
+		return stem.stem_name
+	)
+	var original_signature: Dictionary = (
+		(_audio._bgm_channel["current"] as Dictionary)["resource_signature"]
+		as Dictionary).duplicate(true)
+	var stage_emissions := [0]
+	var on_stage := func(_operations: Array, _force_cut: bool) -> void:
+		stage_emissions[0] += 1
+	SignalBus.stage_operations_requested.connect(on_stage)
+
+	for mutation: String in ["add", "rename", "reorder"]:
+		definition.stems.clear()
+		for stem: BgmStemDefinition in original_stems:
+			definition.stems.append(stem)
+		if mutation == "add":
+			var extra := BgmStemDefinition.new()
+			extra.stem_name = "melody"
+			extra.stream = original_stems[0].stream
+			extra.default_gain = 0.25
+			definition.stems.append(extra)
+		elif mutation == "rename":
+			definition.stems[0].stem_name = "melody"
+		else:
+			definition.stems.reverse()
+		var state_before: Dictionary = (
+			_runtime.presentation_state.current_bgm.duplicate(true))
+		var rejected := _submit([
+			StagePresentationOperation.new({
+				"action": "show", "id": "schema_guard",
+				"properties": {"asset": "stage:synthetic"},
+				"transition": "cut", "duration": 0.0,
+			}, {"source_path": SOURCE_PATH, "line": 59}),
+			_operation("mix", "", "", 1.0, 0.0, 60,
+				{"harmony": 1.0, "rhythm": 0.25}),
+		], PresentationBatchRequest.Policy.JOIN)
+		assert_eq(rejected.get_outcome(), PresentationBatchRequest.Outcome.FAILED,
+			mutation)
+		assert_push_error(SOURCE_PATH + ":60")
+		assert_eq(stage_emissions[0], 0,
+			mutation + " must fail during all-participant preflight")
+		assert_eq(_runtime.presentation_state.current_bgm, state_before, mutation)
+		assert_same(_player(), player, mutation)
+		assert_same(_synchronized_stream(), synchronized, mutation)
+		assert_eq((_audio._bgm_channel["current"] as Dictionary)
+			["resource_signature"], original_signature, mutation)
+		if mutation == "rename":
+			definition.stems[0].stem_name = String(original_names[0])
+
+	definition.stems.clear()
+	for stem: BgmStemDefinition in original_stems:
+		definition.stems.append(stem)
+	SignalBus.stage_operations_requested.disconnect(on_stage)
+
+
+func test_restore_rejects_changed_full_schema_and_reorder_rebuilds_by_name() -> void:
+	_submit([_operation("play", "synthetic_stems", "", 0.8, 0.0, 61,
+		{"harmony": 0.4, "rhythm": 0.8})])
+	var snapshot: Dictionary = _runtime.presentation_state.capture_snapshot()
+	var definition := ResourceLoader.load(
+		FIXTURE_PATH + "synthetic_stems.tres") as BgmTrackDefinition
+	var original_stems: Array[BgmStemDefinition] = definition.stems.duplicate()
+	var original_first_name := original_stems[0].stem_name
+
+	var extra := BgmStemDefinition.new()
+	extra.stem_name = "melody"
+	extra.stream = original_stems[0].stream
+	extra.default_gain = 0.25
+	definition.stems.append(extra)
+	_runtime.presentation_state.restore_snapshot(snapshot)
+	_runtime.presentation_state.apply_to_presenters()
+	assert_push_error("AudioPresenter: cannot project saved BGM state")
+	assert_eq(_audio._bgm_channel, {},
+		"an added valid stem cannot silently expand a saved full mix")
+	assert_eq(_runtime.presentation_state.current_bgm, snapshot["bgm"])
+	definition.stems.pop_back()
+	_runtime.presentation_state.apply_to_presenters()
+	assert_not_null(_player())
+
+	definition.stems[0].stem_name = "melody"
+	_runtime.presentation_state.restore_snapshot(snapshot)
+	_runtime.presentation_state.apply_to_presenters()
+	assert_push_error("AudioPresenter: cannot project saved BGM state")
+	assert_eq(_audio._bgm_channel, {},
+		"a valid renamed stem cannot silently drop a saved full-mix key")
+	definition.stems[0].stem_name = original_first_name
+	_runtime.presentation_state.apply_to_presenters()
+	assert_not_null(_player())
+
+	definition.stems.reverse()
+	_runtime.presentation_state.restore_snapshot(snapshot)
+	_runtime.presentation_state.apply_to_presenters()
+	assert_not_null(_player())
+	assert_true(_player().stream is AudioStreamSynchronized)
+	assert_eq(_runtime.presentation_state.current_bgm, snapshot["bgm"])
+	assert_eq((_audio._bgm_channel["current"] as Dictionary)["stem_names"],
+		["harmony", "rhythm"],
+		"restore owns a fresh synchronized stream and maps the full mix by name")
+	assert_almost_eq(_stem_db("harmony"), linear_to_db(0.4), 0.01)
+	assert_almost_eq(_stem_db("rhythm"), linear_to_db(0.8), 0.01)
+	definition.stems.reverse()
 
 func test_same_target_positive_preflight_and_volume_reuses_exact_cursor() -> void:
 	_submit([_operation("play", "synthetic_track", "", 0.8)])
