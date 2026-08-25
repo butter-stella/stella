@@ -724,6 +724,104 @@ func test_a_standalone_join_preserves_dialogue_ownership_and_group_independence(
 		"the finishing advance cannot cross into the following Dialogue")
 
 
+func test_a_fade_join_naturally_completes_and_cleans_exact_visual_work() -> void:
+	if not _require_contract() or not _start_scene("standalone_join"):
+		return
+	assert_true(await _wait_for_dialogues(1))
+	assert_true(_advance_dialogue(0))
+	assert_true(await _wait_until(func() -> bool:
+		return _latest_request(PresentationBatchRequest.Policy.JOIN) != null))
+	var request := _latest_request(PresentationBatchRequest.Policy.JOIN)
+	assert_not_null(request)
+	var expected_tail := [{
+		"request_id": request.get_batch_id(), "delivered": true,
+	}]
+	assert_eq(_presentation_tails, expected_tail,
+		"fade JOIN publishes its generic dispatch tail exactly once")
+	assert_false(request.is_settled(), "fade JOIN remains owned until Tween finish")
+	var active: Dictionary = _dialogue_presenter.get("_dialogue_visibility_active")
+	assert_true(active.has("surface"), "fade owns one exact target generation")
+	if not active.has("surface"):
+		return
+	var work: Dictionary = active["surface"]
+	assert_true(work.get("tween") is Tween,
+		"fade active record owns its real Godot Tween")
+	if not work.get("tween") is Tween:
+		return
+	(work["tween"] as Tween).custom_step(20.0)
+	assert_true(await _wait_until(func() -> bool: return request.is_settled()))
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(_presentation_tails, expected_tail,
+		"natural Tween terminal cannot republish the JOIN dispatch tail")
+	var completed_terminals := 0
+	for record: Dictionary in _visibility_terminals:
+		if (
+			record.get("operation_request_id") == request.get_batch_id()
+			and record.get("outcome") == &"completed"
+		):
+			completed_terminals += 1
+	assert_eq(completed_terminals, 1)
+	_assert_no_visibility_visual_work()
+
+
+func test_a_zero_participant_fade_is_positive_zero_receipt_and_synchronous() -> void:
+	if not _require_contract() or not _start_scene("standalone_join"):
+		return
+	assert_true(await _wait_for_dialogues(1))
+	var empty_surface := Control.new()
+	empty_surface.name = "ZeroParticipantSurface"
+	empty_surface.add_to_group("zero_participant_surface")
+	empty_surface.visible = false
+	_dialogue_presenter.add_child(empty_surface)
+	assert_false(empty_surface.is_in_group("dialogue_surface"))
+	assert_false(empty_surface.is_in_group("quick_menu"))
+	var operation_script := _global_class_script(
+		"DialogueVisibilityPresentationOperation")
+	assert_not_null(operation_script)
+	if operation_script == null:
+		return
+	var operation: PresentationOperation = operation_script.new({
+		"target": "surface", "action": "hide",
+		"transition": "fade", "duration": 20.0,
+	}, {
+		"current": {
+			"profile_name": "zero_participant",
+			"profile": {},
+			"provenance": {},
+			"surface_groups": ["zero_participant_surface"],
+			"quick_menu_groups": ["quick_menu"],
+		},
+		"default": {
+			"surface_groups": ["dialogue_surface"],
+			"quick_menu_groups": ["quick_menu"],
+		},
+		"nvl_entries": [],
+	})
+	var terminal_count := _visibility_terminals.size()
+	var token_serial := int(_dialogue_presenter.get(
+		"_dialogue_visibility_token_serial"))
+	var request := _director().submit(
+		_typed_operations([operation]),
+		PresentationBatchRequest.Policy.JOIN,
+		_runtime.engine.context,
+		{"source_path": "res://synthetic/zero_participant.stla", "line": 1},
+	)
+	assert_gt(request.get_batch_id(), 0)
+	assert_true(request.is_settled(), "zero participants settle at the dispatch tail")
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(request.get_receipts(), [])
+	assert_eq(_presentation_tails, [{
+		"request_id": request.get_batch_id(), "delivered": true,
+	}])
+	assert_false(_director()._entries.has(request.get_batch_id()))
+	assert_eq(_dialogue_presenter.get("_dialogue_visibility_active"), {})
+	assert_eq(int(_dialogue_presenter.get(
+		"_dialogue_visibility_token_serial")), token_serial)
+	assert_eq(_visibility_terminals.size(), terminal_count,
+		"duration cannot schedule a later terminal without a participant Tween")
+	assert_false(_visibility_snapshot().get("surface", true))
+
+
 func test_b_mixed_join_seals_authored_stage_and_dialogue_receipt_union() -> void:
 	if not _require_contract() or not _start_scene("mixed_join"):
 		return
@@ -812,6 +910,548 @@ func test_c_sealed_fnf_releases_dialogue_and_backlog_without_claiming_advance() 
 	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
 
 
+func test_c_fnf_fade_naturally_retires_visual_receipt_after_scenario_release() -> void:
+	if not _require_contract() or not _start_scene("fire_and_forget"):
+		return
+	assert_true(await _wait_for_dialogues(1))
+	assert_true(_advance_dialogue(0))
+	assert_true(await _wait_for_dialogues(2))
+	var request := _latest_request(PresentationBatchRequest.Policy.FIRE_AND_FORGET)
+	assert_not_null(request)
+	if request == null:
+		return
+	assert_true(request.is_settled())
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	var expected_tail := [{
+		"request_id": request.get_batch_id(), "delivered": true,
+	}]
+	assert_eq(_presentation_tails, expected_tail,
+		"FNF publishes its generic dispatch tail exactly once before visual completion")
+	assert_true(_director()._entries.has(request.get_batch_id()),
+		"settled FNF retains only its live visual receipt ledger")
+	var active: Dictionary = _dialogue_presenter.get("_dialogue_visibility_active")
+	var work: Dictionary = active.get("surface", {})
+	assert_true(work.get("tween") is Tween)
+	if not work.get("tween") is Tween:
+		return
+	(work["tween"] as Tween).custom_step(20.0)
+	assert_true(await _wait_until(func() -> bool:
+		return not _director()._entries.has(request.get_batch_id())))
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED,
+		"natural visual terminal cannot revise settled FNF outcome")
+	assert_eq(_presentation_tails, expected_tail,
+		"natural FNF terminal cannot republish its generic dispatch tail")
+	_assert_no_visibility_visual_work()
+
+
+func test_c_direct_state_apply_cancels_live_fnf_visual_owner_before_restore() -> void:
+	if not _require_contract() or not _start_scene("standalone_join"):
+		return
+	assert_true(await _wait_for_dialogues(1))
+	var surface_baseline: Array = []
+	for node: CanvasItem in _owned_group_nodes(&"dialogue_surface"):
+		surface_baseline.append([
+			node.get_instance_id(), node.visible,
+			node.modulate.a, node.self_modulate.a,
+		])
+	var request := _submit_visibility(
+		"surface", "hide", PresentationBatchRequest.Policy.FIRE_AND_FORGET)
+	assert_not_null(request)
+	if request == null or request.get_receipts().is_empty():
+		return
+	var receipt: PresentationOperationReceipt = request.get_receipts()[0]
+	var active: Dictionary = _dialogue_presenter.get("_dialogue_visibility_active")
+	var old_identity: Dictionary = (active.get("surface", {}) as Dictionary).duplicate()
+	var old_tween := old_identity.get("tween") as Tween
+	assert_not_null(old_tween)
+	if old_tween == null:
+		return
+	assert_true(request.is_settled())
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_true(_director()._entries.has(request.get_batch_id()))
+	var supplied_visibility := {"surface": true, "quick_menu": false}
+	var supplied_binding: Dictionary = (
+		_runtime._runtime_dialogue_visibility_binding(_runtime.engine.context)
+	).duplicate(true)
+	var supplied_current: Dictionary = supplied_binding.get("current", {})
+	assert_eq(supplied_current.get("profile_name"), "message",
+		"state apply uses the current authored message profile")
+	assert_true(supplied_current.get("profile") is Dictionary)
+	if not supplied_current.get("profile") is Dictionary:
+		return
+	var supplied_profile: Dictionary = supplied_current.get("profile", {})
+	assert_false(supplied_profile.is_empty())
+	assert_eq(supplied_profile.get("surface_groups"), ["dialogue_surface"])
+	assert_eq(supplied_profile.get("quick_menu_groups"), ["quick_menu"])
+	assert_eq(supplied_current.get("surface_groups"), ["dialogue_surface"])
+	assert_eq(supplied_current.get("quick_menu_groups"), ["quick_menu"])
+	assert_true(supplied_current.get("provenance") is Dictionary)
+	if not supplied_current.get("provenance") is Dictionary:
+		return
+	var supplied_provenance: Dictionary = supplied_current.get("provenance", {})
+	assert_false(supplied_provenance.is_empty())
+	assert_eq(supplied_provenance.get("source_path"), SCENARIO_PATH)
+	assert_eq(supplied_provenance.get("profile_name"), "message")
+	assert_true(supplied_provenance.get("field_lines") is Dictionary)
+	if not supplied_provenance.get("field_lines") is Dictionary:
+		return
+	var supplied_field_lines: Dictionary = supplied_provenance.get("field_lines", {})
+	assert_eq(supplied_field_lines.get("surface_groups"), 3)
+	assert_eq(supplied_field_lines.get("quick_menu_groups"), 3)
+	var supplied_content := {
+		"version": 1,
+		"active": true,
+		"mode": "adv",
+		"profile_name": "message",
+		"declarative_presentation": true,
+		"character": "sakura",
+		"segments": [{"text": "C4 retained ADV projection."}],
+		"avatar_expression": "happy",
+		"nvl_entries": [],
+	}
+	var tail_count := _presentation_tails.size()
+	var terminal_count := _visibility_terminals.size()
+	SignalBus.dialogue_visibility_state_apply_requested.emit(
+		supplied_visibility, supplied_content, supplied_binding)
+	assert_false(old_tween.is_valid())
+	assert_eq(_dialogue_presenter.get("_dialogue_visibility_active"), {})
+	assert_false(_director()._entries.has(request.get_batch_id()))
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(_presentation_tails.size(), tail_count)
+	var cancelled_records := _visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return (
+				record.get("operation_request_id") == receipt.get_batch_id()
+				and record.get("token") == receipt.get_token()
+				and record.get("generation") == receipt.get_generation()
+				and record.get("outcome") == &"cancelled"
+			)
+	)
+	assert_eq(cancelled_records.size(), 1)
+	assert_eq(_visibility_terminals.size(), terminal_count + 1)
+	assert_eq(_dialogue_presenter.get("_canonical_dialogue_visibility"),
+		supplied_visibility)
+	assert_eq(_dialogue_presenter.get("_dialogue_visibility_runtime_binding"),
+		supplied_binding)
+	assert_eq(_dialogue_presenter.get("_dialogue_segments"),
+		supplied_content.get("segments", []))
+	assert_eq(_dialogue_presenter.get("_current_mode"), "adv")
+	assert_eq(_dialogue_presenter.get("_current_character"), "sakura")
+	assert_eq(_dialogue_presenter.get("_current_avatar_expression"), "happy")
+	assert_true(_dialogue_presenter.get("_active_uses_stla_presentation"))
+	var active_profile := _dialogue_presenter.get(
+		"_active_stla_mode_profile") as DialogueModeProfile
+	assert_not_null(active_profile)
+	if active_profile == null:
+		return
+	assert_eq(active_profile.surface_groups, ["dialogue_surface"])
+	assert_eq(active_profile.quick_menu_groups, ["quick_menu"])
+	assert_eq((active_profile.get("_stla_provenance") as Dictionary).get(
+		"profile_name", ""), "message")
+	assert_false(_dialogue_presenter.get("_nvl_has_entries"))
+	assert_eq(_dialogue_presenter.get("_nvl_render_source"), "")
+	assert_eq(_dialogue_presenter.get("_nvl_text"), "")
+	assert_eq((_dialogue_presenter.get_node(
+		"TextRegion/NameLabel") as Label).text, "sakura")
+	assert_eq((_dialogue_presenter.get_node(
+		"TextRegion/TextLabel") as RichTextLabel).text,
+		"C4 retained ADV projection.")
+	assert_true((_dialogue_presenter.get_node(
+		"AvatarContainer") as CanvasItem).visible)
+	var winning_avatar_texture := (_dialogue_presenter.get_node(
+		"AvatarContainer/AvatarTexture") as TextureRect).texture
+	assert_not_null(winning_avatar_texture)
+	var restored_surface: Array = []
+	for node: CanvasItem in _owned_group_nodes(&"dialogue_surface"):
+		restored_surface.append([
+			node.get_instance_id(), node.visible,
+			node.modulate.a, node.self_modulate.a,
+		])
+	assert_eq(restored_surface, surface_baseline,
+		"state apply restores the exact authored/profile surface baseline")
+	assert_true(_all_owned_hidden(&"quick_menu"))
+	var winning_visual := _visibility_visual_snapshot()
+	var winning_content := supplied_content.duplicate(true)
+	var winning_binding: Dictionary = (
+		_dialogue_presenter.get("_dialogue_visibility_runtime_binding") as Dictionary
+	).duplicate(true)
+	var winning_profile: DialogueModeProfile = (
+		_dialogue_presenter.get("_active_stla_mode_profile") as DialogueModeProfile
+	)
+	_dialogue_presenter.call("_complete_dialogue_visibility_target", "surface", old_identity)
+	_emit_visibility_finish(receipt)
+	assert_eq(_visibility_terminals.size(), terminal_count + 1)
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_false(_director()._entries.has(request.get_batch_id()))
+	assert_eq(_dialogue_presenter.get("_canonical_dialogue_visibility"),
+		supplied_visibility)
+	assert_eq(_dialogue_presenter.get("_current_mode"), winning_content["mode"])
+	assert_eq(_dialogue_presenter.get("_current_character"),
+		winning_content["character"])
+	assert_eq(_dialogue_presenter.get("_current_avatar_expression"),
+		winning_content["avatar_expression"])
+	assert_eq(_dialogue_presenter.get("_dialogue_segments"),
+		winning_content["segments"])
+	assert_eq(winning_content["nvl_entries"], [])
+	assert_false(_dialogue_presenter.get("_nvl_has_entries"))
+	assert_eq(_dialogue_presenter.get("_nvl_render_source"), "")
+	assert_true(_dialogue_presenter.get("_active_uses_stla_presentation"))
+	assert_same(_dialogue_presenter.get("_active_stla_mode_profile"),
+		winning_profile)
+	assert_eq((_dialogue_presenter.get_node(
+		"TextRegion/NameLabel") as Label).text, "sakura")
+	assert_eq((_dialogue_presenter.get_node(
+		"TextRegion/TextLabel") as RichTextLabel).text,
+		"C4 retained ADV projection.")
+	assert_same((_dialogue_presenter.get_node(
+		"AvatarContainer/AvatarTexture") as TextureRect).texture,
+		winning_avatar_texture)
+	assert_eq(_dialogue_presenter.get("_dialogue_visibility_runtime_binding"),
+		winning_binding)
+	assert_eq(_visibility_visual_snapshot(), winning_visual)
+	assert_true(_all_owned_hidden(&"quick_menu"))
+	assert_eq(_presentation_tails.size(), tail_count)
+
+
+func test_c_settled_fnf_is_retired_once_by_incompatible_profile_signature() -> void:
+	if not _require_contract() or not _start_scene("standalone_join"):
+		return
+	assert_true(await _wait_for_dialogues(1))
+	var request := _submit_visibility(
+		"surface", "hide", PresentationBatchRequest.Policy.FIRE_AND_FORGET)
+	assert_not_null(request)
+	if request == null or request.get_receipts().is_empty():
+		return
+	assert_true(request.is_settled())
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	var receipt: PresentationOperationReceipt = request.get_receipts()[0]
+	var active: Dictionary = _dialogue_presenter.get("_dialogue_visibility_active")
+	var old_identity: Dictionary = (active.get("surface", {}) as Dictionary).duplicate()
+	var old_tween := old_identity.get("tween") as Tween
+	assert_not_null(old_tween)
+	if old_tween == null:
+		return
+	var old_surface: CanvasItem = _dialogue_presenter.get_node("DialogueBg")
+	var new_surface := Control.new()
+	new_surface.name = "Issue166ReplacementSurface"
+	new_surface.visible = true
+	_dialogue_presenter.add_child(new_surface)
+	new_surface.add_to_group("replacement_surface")
+	var replacement_surface_groups: Array[String] = ["replacement_surface"]
+	var replacement_quick_menu_groups: Array[String] = ["quick_menu"]
+	var profile := DialogueModeProfile.from_dictionary({
+		"surface_groups": replacement_surface_groups,
+		"quick_menu_groups": replacement_quick_menu_groups,
+	}, {
+		"profile_name": "replacement",
+		"source_path": "res://synthetic/profile_switch.stla",
+		"field_lines": {"surface_groups": 4, "quick_menu_groups": 4},
+	})
+	var tail_count := _presentation_tails.size()
+	_dialogue_presenter.call(
+		"_apply_dialogue_mode_presentation", "adv", profile, true)
+	assert_false(old_tween.is_valid(), "incompatible profile kills the old target Tween")
+	var superseded := 0
+	for record: Dictionary in _visibility_terminals:
+		if (
+			record.get("operation_request_id") == request.get_batch_id()
+			and record.get("outcome") == &"superseded"
+		):
+			superseded += 1
+	assert_eq(superseded, 1)
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_true(old_surface.visible, "old profile group restores its authored state")
+	assert_false(new_surface.visible, "new profile group immediately inherits canonical hide")
+	assert_eq(_dialogue_presenter.get("_dialogue_visibility_active"), {})
+	var visual_after := _visibility_visual_snapshot()
+	_dialogue_presenter.call("_complete_dialogue_visibility_target", "surface", old_identity)
+	_emit_visibility_finish(receipt)
+	assert_eq(_visibility_visual_snapshot(), visual_after)
+	assert_eq(_presentation_tails.size(), tail_count)
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+
+
+func test_c_sidecar_only_binding_change_preserves_unrelated_target_owner() -> void:
+	if not _require_contract() or not _start_scene("standalone_join"):
+		return
+	assert_true(await _wait_for_dialogues(1))
+	var surface_request := _submit_visibility(
+		"surface", "hide", PresentationBatchRequest.Policy.FIRE_AND_FORGET)
+	var quick_request := _submit_visibility(
+		"quick_menu", "hide", PresentationBatchRequest.Policy.FIRE_AND_FORGET)
+	assert_not_null(surface_request)
+	assert_not_null(quick_request)
+	if (
+		surface_request == null or surface_request.get_receipts().is_empty()
+		or quick_request == null or quick_request.get_receipts().is_empty()
+	):
+		return
+	var surface_receipt: PresentationOperationReceipt = surface_request.get_receipts()[0]
+	var quick_receipt: PresentationOperationReceipt = quick_request.get_receipts()[0]
+	var active_before: Dictionary = _dialogue_presenter.get(
+		"_dialogue_visibility_active")
+	var quick_before: Dictionary = (active_before.get(
+		"quick_menu", {}) as Dictionary).duplicate()
+	var quick_tween := quick_before.get("tween") as Tween
+	assert_not_null(quick_tween)
+	if quick_tween == null:
+		return
+	var quick_terminal_count := _visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return record.get("operation_request_id") == quick_request.get_batch_id()
+	).size()
+	var binding: Dictionary = (
+		_dialogue_presenter.get("_dialogue_visibility_runtime_binding") as Dictionary
+	).duplicate(true)
+	binding["nvl_entries"] = [{
+		"profile_name": "unrelated_sidecar", "profile": {}, "provenance": {},
+		"surface_groups": ["unused_nvl_surface"],
+		"quick_menu_groups": ["unused_nvl_quick"],
+	}]
+	binding["unrelated_sidecar"] = {"revision": 166}
+	var operation_script := _global_class_script(
+		"DialogueVisibilityPresentationOperation")
+	assert_not_null(operation_script)
+	if operation_script == null:
+		return
+	var operation: PresentationOperation = operation_script.new({
+		"target": "surface", "action": "hide",
+		"transition": "fade", "duration": 10.0,
+	}, binding)
+	var tail_count := _presentation_tails.size()
+	var replacement := _director().submit(
+		_typed_operations([operation]),
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		_runtime.engine.context,
+		{"source_path": "res://synthetic/sidecar_only.stla", "line": 2},
+	)
+	assert_gt(replacement.get_batch_id(), surface_request.get_batch_id())
+	assert_eq(_presentation_tails.size(), tail_count + 1)
+	assert_eq(_visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return (
+				record.get("operation_request_id") == surface_receipt.get_batch_id()
+				and record.get("outcome") == &"superseded"
+			)
+	).size(), 1, "incoming surface operation supersedes only its same target")
+	var active_after: Dictionary = _dialogue_presenter.get(
+		"_dialogue_visibility_active")
+	var quick_after: Dictionary = active_after.get("quick_menu", {})
+	assert_eq(quick_after.get("token"), quick_before.get("token"))
+	assert_eq(quick_after.get("generation"), quick_before.get("generation"))
+	assert_eq(quick_after.get("operation_request_id"),
+		quick_before.get("operation_request_id"))
+	assert_same(quick_after.get("tween"), quick_tween)
+	assert_true(quick_tween.is_valid())
+	assert_true(_director()._entries.has(quick_request.get_batch_id()))
+	assert_eq(_visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return record.get("operation_request_id") == quick_request.get_batch_id()
+	).size(), quick_terminal_count,
+		"surface same-target supersession cannot terminal quick-menu")
+	assert_eq(replacement.get_receipts().size(), 1)
+	if replacement.get_receipts().size() != 1:
+		return
+	var replacement_receipt: PresentationOperationReceipt = replacement.get_receipts()[0]
+	var surface_after: Dictionary = active_after.get("surface", {})
+	var surface_tween := surface_after.get("tween") as Tween
+	assert_not_null(surface_tween)
+	if surface_tween == null:
+		return
+	var surface_visual_before_quick_finish: Array = []
+	for state_value: Variant in surface_after.get("nodes", []):
+		var state: Dictionary = state_value
+		var node := state.get("node") as CanvasItem
+		if is_instance_valid(node):
+			surface_visual_before_quick_finish.append([
+				node.get_instance_id(), node.visible,
+				node.modulate.a, node.self_modulate.a,
+			])
+	var surface_terminal_count := _visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return record.get("operation_request_id") == replacement.get_batch_id()
+	).size()
+	var replacement_outcome := replacement.get_outcome()
+	var replacement_settled := replacement.is_settled()
+	var quick_outcome := quick_request.get_outcome()
+	var tail_after_replacement := _presentation_tails.size()
+	_emit_visibility_finish(quick_receipt)
+	var quick_completed := _visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return (
+				record.get("presenter_instance_id")
+					== quick_receipt.get_presenter_instance_id()
+				and record.get("target") == "quick_menu"
+				and record.get("token") == quick_receipt.get_token()
+				and record.get("operation_request_id") == quick_receipt.get_batch_id()
+				and record.get("generation") == quick_receipt.get_generation()
+				and record.get("outcome") == &"completed"
+			)
+	)
+	assert_eq(quick_completed.size(), 1,
+		"quick-menu finish terminals its exact receipt once")
+	assert_eq(_visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return record.get("operation_request_id") == quick_request.get_batch_id()
+	).size(), quick_terminal_count + 1)
+	assert_eq(quick_request.get_outcome(), quick_outcome)
+	assert_eq(quick_request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_false(_director()._entries.has(quick_request.get_batch_id()))
+	assert_false(quick_tween.is_valid())
+	var active_after_quick_finish: Dictionary = _dialogue_presenter.get(
+		"_dialogue_visibility_active")
+	assert_false(active_after_quick_finish.has("quick_menu"))
+	assert_eq(_presentation_tails.size(), tail_after_replacement)
+	assert_eq(replacement.get_outcome(), replacement_outcome)
+	assert_eq(replacement.is_settled(), replacement_settled)
+	assert_true(_director()._entries.has(replacement.get_batch_id()))
+	var surface_still_active: Dictionary = active_after_quick_finish.get("surface", {})
+	assert_eq(surface_still_active.get("token"), replacement_receipt.get_token())
+	assert_eq(surface_still_active.get("generation"),
+		replacement_receipt.get_generation())
+	assert_eq(surface_still_active.get("operation_request_id"),
+		replacement_receipt.get_batch_id())
+	assert_same(surface_still_active.get("tween"), surface_tween)
+	assert_true(surface_tween.is_valid())
+	assert_eq(_visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return record.get("operation_request_id") == replacement.get_batch_id()
+	).size(), surface_terminal_count)
+	var surface_visual_after_quick_finish: Array = []
+	for state_value: Variant in surface_still_active.get("nodes", []):
+		var state: Dictionary = state_value
+		var node := state.get("node") as CanvasItem
+		if is_instance_valid(node):
+			surface_visual_after_quick_finish.append([
+				node.get_instance_id(), node.visible,
+				node.modulate.a, node.self_modulate.a,
+			])
+	assert_eq(surface_visual_after_quick_finish, surface_visual_before_quick_finish,
+		"finishing quick-menu cannot disturb the surface winner visual")
+	_emit_visibility_finish(replacement_receipt)
+	var surface_completed := _visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return (
+				record.get("presenter_instance_id")
+					== replacement_receipt.get_presenter_instance_id()
+				and record.get("target") == "surface"
+				and record.get("token") == replacement_receipt.get_token()
+				and record.get("operation_request_id")
+					== replacement_receipt.get_batch_id()
+				and record.get("generation")
+					== replacement_receipt.get_generation()
+				and record.get("outcome") == &"completed"
+			)
+	)
+	assert_eq(surface_completed.size(), 1,
+		"surface finish terminals its exact replacement receipt once")
+	assert_eq(_visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return record.get("operation_request_id") == replacement.get_batch_id()
+	).size(), surface_terminal_count + 1)
+	assert_eq(replacement.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_false(_director()._entries.has(replacement.get_batch_id()))
+	assert_false(surface_tween.is_valid())
+	assert_false((_dialogue_presenter.get(
+		"_dialogue_visibility_active") as Dictionary).has("surface"))
+	assert_eq(_presentation_tails.size(), tail_after_replacement)
+
+
+func test_d_same_canonical_live_fnf_is_superseded_by_positive_winner() -> void:
+	if not _require_contract() or not _start_scene("standalone_join"):
+		return
+	assert_true(await _wait_for_dialogues(1))
+	var old_request := _submit_visibility(
+		"surface", "hide", PresentationBatchRequest.Policy.FIRE_AND_FORGET)
+	assert_not_null(old_request)
+	if old_request == null or old_request.get_receipts().is_empty():
+		return
+	var old_receipt: PresentationOperationReceipt = old_request.get_receipts()[0]
+	var winner := _submit_visibility(
+		"surface", "hide", PresentationBatchRequest.Policy.JOIN)
+	assert_not_null(winner)
+	if winner == null:
+		return
+	assert_gt(winner.get_batch_id(), 0,
+		"same canonical target with live FNF work allocates a winner")
+	assert_gt(winner.get_batch_id(), old_request.get_batch_id())
+	assert_eq(winner.get_receipts().size(), 1)
+	if winner.get_receipts().size() != 1:
+		return
+	var winning_receipt: PresentationOperationReceipt = winner.get_receipts()[0]
+	assert_ne(winning_receipt.get_token(), old_receipt.get_token())
+	assert_ne(winning_receipt.get_generation(), old_receipt.get_generation())
+	var superseded_count := 0
+	for record: Dictionary in _visibility_terminals:
+		if (
+			record.get("operation_request_id") == old_request.get_batch_id()
+			and record.get("outcome") == &"superseded"
+		):
+			superseded_count += 1
+	assert_eq(superseded_count, 1)
+	var active: Dictionary = _dialogue_presenter.get("_dialogue_visibility_active")
+	var work: Dictionary = active.get("surface", {})
+	assert_true(work.get("tween") is Tween)
+	if not work.get("tween") is Tween:
+		return
+	var expected_tails := [
+		{"request_id": old_request.get_batch_id(), "delivered": true},
+		{"request_id": winner.get_batch_id(), "delivered": true},
+	]
+	assert_eq(_presentation_tails, expected_tails,
+		"supersession preserves the old tail and publishes the winner tail once")
+	var winner_outcome := winner.get_outcome()
+	var winner_settled := winner.is_settled()
+	var winner_entry_present := _director()._entries.has(winner.get_batch_id())
+	var winner_identity := {
+		"token": winning_receipt.get_token(),
+		"generation": winning_receipt.get_generation(),
+		"operation_request_id": winning_receipt.get_batch_id(),
+	}
+	var canonical_before := _visibility_snapshot()
+	var visual_before := _visibility_visual_snapshot()
+	var old_outcome := old_request.get_outcome()
+	var old_terminal_count := superseded_count
+	var winner_terminal_count := 0
+	for record: Dictionary in _visibility_terminals:
+		if record.get("operation_request_id") == winner.get_batch_id():
+			winner_terminal_count += 1
+	_emit_visibility_terminal(old_receipt)
+	_emit_visibility_finish(old_receipt)
+	assert_eq(_visibility_terminals.filter(func(record: Dictionary) -> bool:
+		return record.get("operation_request_id") == old_request.get_batch_id()
+	).size(), old_terminal_count + 1,
+		"the test-injected old public terminal is observed exactly once")
+	assert_eq(winner.get_outcome(), winner_outcome)
+	assert_eq(winner.is_settled(), winner_settled)
+	assert_eq(_director()._entries.has(winner.get_batch_id()), winner_entry_present)
+	var active_after_old: Dictionary = _dialogue_presenter.get(
+		"_dialogue_visibility_active")
+	var current_after_old: Dictionary = active_after_old.get("surface", {})
+	assert_eq({
+		"token": current_after_old.get("token"),
+		"generation": current_after_old.get("generation"),
+		"operation_request_id": current_after_old.get("operation_request_id"),
+	}, winner_identity,
+		"late old exact identity cannot replace the winning Presenter owner")
+	assert_eq(_visibility_snapshot(), canonical_before)
+	assert_eq(_visibility_visual_snapshot(), visual_before)
+	assert_eq(old_request.get_outcome(), old_outcome)
+	assert_eq(_presentation_tails, expected_tails)
+	var winner_terminals_after_old := 0
+	for record: Dictionary in _visibility_terminals:
+		if record.get("operation_request_id") == winner.get_batch_id():
+			winner_terminals_after_old += 1
+	assert_eq(winner_terminals_after_old, winner_terminal_count,
+		"old terminal cannot duplicate the winner terminal")
+	(work["tween"] as Tween).custom_step(20.0)
+	assert_true(await _wait_until(winner.is_settled))
+	assert_eq(winner.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(_presentation_tails, expected_tails,
+		"winner natural completion cannot republish either generic tail")
+	_assert_no_visibility_visual_work()
+
+
 func test_d_same_channel_supersession_rejects_the_old_visibility_generation() -> void:
 	if not _require_contract() or not _start_scene("standalone_join"):
 		return
@@ -827,6 +1467,10 @@ func test_d_same_channel_supersession_rejects_the_old_visibility_generation() ->
 		PresentationBatchRequest.Outcome.COMPLETED)
 	assert_eq(old_request.get_receipts().size(), 1)
 	var old_receipt: PresentationOperationReceipt = old_request.get_receipts()[0]
+	var old_active: Dictionary = _dialogue_presenter.get(
+		"_dialogue_visibility_active")
+	var old_identity: Dictionary = (old_active.get(
+		"surface", {}) as Dictionary).duplicate()
 	var old_late_settlements: Array = []
 	old_request.settled.connect(func(batch_id: int, outcome: int) -> void:
 		old_late_settlements.append([batch_id, outcome]))
@@ -846,19 +1490,83 @@ func test_d_same_channel_supersession_rejects_the_old_visibility_generation() ->
 	assert_true(_director()._entries.has(winner.get_batch_id()))
 	var old_settlements := [old_request.get_outcome(), old_request.is_settled()]
 	var winner_settled := winner.is_settled()
+	var winner_outcome := winner.get_outcome()
 	var dialogue_count := _dialogue_requests.size()
 	var tail_count := _presentation_tails.size()
 	var visual_before := _visibility_visual_snapshot()
+	var canonical_before := _visibility_snapshot()
+	var active_before_old_callback: Dictionary = _dialogue_presenter.get(
+		"_dialogue_visibility_active")
+	var winner_active: Dictionary = (active_before_old_callback.get(
+		"surface", {}) as Dictionary).duplicate()
+	var winner_tween := winner_active.get("tween") as Tween
+	assert_not_null(winner_tween)
+	if winner_tween == null:
+		return
+	var winner_identity := {
+		"operation_request_id": winner_active.get("operation_request_id"),
+		"token": winner_active.get("token"),
+		"generation": winner_active.get("generation"),
+	}
+	assert_eq(winner_identity, {
+		"operation_request_id": winning_receipt.get_batch_id(),
+		"token": winning_receipt.get_token(),
+		"generation": winning_receipt.get_generation(),
+	})
+	var winner_terminal_count := _visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return record.get("operation_request_id") == winner.get_batch_id()
+	).size()
+	var winner_terminal_ledger: Array = _visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return record.get("operation_request_id") == winner.get_batch_id()
+	).duplicate(true)
+	var winner_entry: Dictionary = (
+		_director()._entries.get(winner.get_batch_id(), {}) as Dictionary
+	).duplicate()
+	var tails_before_old_callback := _presentation_tails.duplicate(true)
+	var old_terminal_count := _visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return record.get("operation_request_id") == old_request.get_batch_id()
+	).size()
 	_emit_visibility_terminal(old_receipt)
 	_emit_visibility_finish(old_receipt)
-	await get_tree().process_frame
+	_dialogue_presenter.call(
+		"_complete_dialogue_visibility_target", "surface", old_identity)
 	assert_eq([old_request.get_outcome(), old_request.is_settled()], old_settlements)
 	assert_eq(winner.is_settled(), winner_settled)
+	assert_eq(winner.get_outcome(), winner_outcome)
 	assert_true(_director()._entries.has(winner.get_batch_id()))
+	assert_eq(_director()._entries.get(winner.get_batch_id()), winner_entry)
 	assert_eq(_dialogue_requests.size(), dialogue_count)
 	assert_eq(_presentation_tails.size(), tail_count)
+	assert_eq(_presentation_tails, tails_before_old_callback)
+	assert_eq(_visibility_snapshot(), canonical_before)
 	assert_eq(_visibility_visual_snapshot(), visual_before,
 		"old exact terminal/finish cannot cut the winning generation")
+	var active_after_old_callback: Dictionary = _dialogue_presenter.get(
+		"_dialogue_visibility_active")
+	var winner_after_old_callback: Dictionary = active_after_old_callback.get(
+		"surface", {})
+	assert_eq({
+		"operation_request_id": winner_after_old_callback.get("operation_request_id"),
+		"token": winner_after_old_callback.get("token"),
+		"generation": winner_after_old_callback.get("generation"),
+	}, winner_identity)
+	assert_same(winner_after_old_callback.get("tween"), winner_tween)
+	assert_true(winner_tween.is_valid())
+	assert_eq(_visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return record.get("operation_request_id") == winner.get_batch_id()
+	).size(), winner_terminal_count)
+	assert_eq(_visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return record.get("operation_request_id") == winner.get_batch_id()
+	), winner_terminal_ledger)
+	assert_eq(_visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return record.get("operation_request_id") == old_request.get_batch_id()
+	).size(), old_terminal_count + 1)
 	assert_eq(old_late_settlements, [],
 		"an already settled FNF never emits a second settlement")
 	SignalBus.emit_advance_requested()
@@ -914,6 +1622,7 @@ func test_e_persistent_and_dispatch_edge_skip_cut_exact_mixed_owner_once() -> vo
 	var edge_once := [false]
 	var preseal := [{}]
 	var edge_request := [null]
+	var quick_participant_count := [-1]
 	var settlements: Array = []
 	var on_first_stage_receipt := func(
 		_presenter_id: int,
@@ -940,6 +1649,8 @@ func test_e_persistent_and_dispatch_edge_skip_cut_exact_mixed_owner_once() -> vo
 				outcome: int,
 			) -> void: settlements.append([batch_id, outcome]), CONNECT_ONE_SHOT)
 		SignalBus.emit_advance_requested()
+		quick_participant_count[0] = (_dialogue_presenter.call(
+			"_dialogue_visibility_fade_participants", "quick_menu") as Array).size()
 		_runtime.skip_controller.is_active = true
 	SignalBus.stage_transition_receipt_started.connect(
 		on_first_stage_receipt, CONNECT_ONE_SHOT)
@@ -948,12 +1659,15 @@ func test_e_persistent_and_dispatch_edge_skip_cut_exact_mixed_owner_once() -> vo
 	assert_true(_advance_dialogue(0))
 	assert_true(await _wait_for_dialogues(2))
 	assert_eq(preseal[0], {"sealed": false, "settled": false})
+	assert_eq(quick_participant_count[0], 0,
+		"dispatch-edge quick-menu fade has no real participants")
 	assert_not_null(edge_request[0])
 	if edge_request[0] != null:
 		var request: PresentationBatchRequest = edge_request[0]
 		assert_eq(_receipt_channels(request), [
-			"stage:skipped", "dialogue:surface", "dialogue:quick_menu",
+			"stage:skipped", "dialogue:surface",
 		])
+		assert_false(_receipt_channels(request).has("dialogue:quick_menu"))
 		assert_true(request.is_settled())
 		assert_eq(request.get_outcome(),
 			PresentationBatchRequest.Outcome.COMPLETED)
@@ -961,6 +1675,11 @@ func test_e_persistent_and_dispatch_edge_skip_cut_exact_mixed_owner_once() -> vo
 			request.get_batch_id(), PresentationBatchRequest.Outcome.COMPLETED,
 		]])
 		assert_false(_director()._entries.has(request.get_batch_id()))
+	assert_false(_visibility_snapshot().get("quick_menu", true))
+	assert_true(_all_owned_hidden(&"quick_menu"))
+	var active_after_edge: Dictionary = _dialogue_presenter.get(
+		"_dialogue_visibility_active")
+	assert_false(active_after_edge.has("quick_menu"))
 	assert_true(_dialogue_requests[1].get_activation().is_pending(),
 		"preseal ordinary advance cannot replay across the dispatch tail")
 	var dialogue_count := _dialogue_requests.size()

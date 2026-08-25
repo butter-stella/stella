@@ -220,7 +220,11 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 		"before_visibility": visibility_before,
 		"target_stage": stage_target,
 		"target_visibility": visibility_target,
-		"no_work": stage_target == stage_before and visibility_target == visibility_before,
+		"no_work": (
+			stage_target == stage_before
+			and visibility_target == visibility_before
+			and visibility_operations.is_empty()
+		),
 	}
 
 

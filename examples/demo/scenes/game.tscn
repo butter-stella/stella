@@ -146,7 +146,7 @@ offset_bottom = -45.0
 grow_horizontal = 2
 grow_vertical = 2
 
-[node name="AvatarContainer" type="MarginContainer" parent="UILayer/DialoguePanel/HBox" unique_id=120143067]
+[node name="AvatarContainer" type="MarginContainer" parent="UILayer/DialoguePanel/HBox" unique_id=120143067 groups=["dialogue_surface"]]
 unique_name_in_owner = true
 visible = false
 layout_mode = 2
@@ -188,7 +188,7 @@ layout_mode = 2
 theme_override_colors/font_color = Color(1, 0.72, 0.77, 1)
 theme_override_font_sizes/font_size = 24
 
-[node name="VoiceProgressBar" type="ProgressBar" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox/NameRow"]
+[node name="VoiceProgressBar" type="ProgressBar" parent="UILayer/DialoguePanel/HBox/TextArea/MarginContainer/VBox/NameRow" groups=["dialogue_surface"]]
 layout_mode = 2
 size_flags_vertical = 4
 custom_minimum_size = Vector2(120, 2)

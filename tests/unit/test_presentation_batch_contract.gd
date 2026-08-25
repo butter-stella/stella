@@ -444,6 +444,201 @@ func test_director_accepts_true_empty_visibility_as_positive_zero_receipt_batch(
 	runtime.presentation_state.restore_snapshot(snapshot)
 
 
+func test_visibility_no_work_respects_live_target_receipt_ownership() -> void:
+	var visibility_script := _global_class_script(
+		"DialogueVisibilityPresentationOperation")
+	assert_not_null(visibility_script)
+	if visibility_script == null:
+		return
+	var runtime := get_tree().root.get_node("StellaRuntime")
+	var director: PresentationDirector = runtime.presentation_director
+	var snapshot: Dictionary = runtime.presentation_state.capture_snapshot()
+	runtime.presentation_state.clear()
+	var context := _programmatic_context(CommandData.new())
+	var dispatches: Array[Dictionary] = []
+	var active_identity := [{}]
+	var token := [700]
+	var generation := [40]
+	var on_visibility := func(operations: Array, _force_cut: bool) -> void:
+		var request_id := SignalBus.current_dialogue_visibility_request_id()
+		var payload: Dictionary = (operations[0] as PresentationOperation).get_payload()
+		var target := String(payload["target"])
+		var prior: Dictionary = active_identity[0]
+		if not prior.is_empty() and target == prior["target"]:
+			SignalBus.dialogue_visibility_transition_terminal.emit(
+				31, target, prior["token"],
+				prior["request_id"], prior["generation"],
+				&"superseded")
+		token[0] += 1
+		generation[0] += 1
+		active_identity[0] = {
+			"target": target, "token": token[0], "request_id": request_id,
+			"generation": generation[0],
+		}
+		dispatches.append((active_identity[0] as Dictionary).duplicate(true))
+		SignalBus.dialogue_visibility_transition_receipt_started.emit(
+			31, target, token[0], request_id, generation[0])
+	SignalBus.dialogue_visibility_operations_requested.connect(on_visibility)
+
+	var same_without_owner := director.submit(
+		[visibility_script.new({
+			"target": "surface", "action": "show",
+			"transition": "fade", "duration": 0.25,
+		}) as PresentationOperation],
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		context, {"source_path": "res://synthetic/no_work.stla", "line": 1})
+	assert_eq(same_without_owner.get_batch_id(), 0,
+		"canonical equality without active ownership remains true no-work")
+
+	var old_request := director.submit(
+		[visibility_script.new({
+			"target": "surface", "action": "hide",
+			"transition": "fade", "duration": 0.25,
+		}) as PresentationOperation],
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		context, {"source_path": "res://synthetic/active.stla", "line": 2})
+	assert_gt(old_request.get_batch_id(), 0)
+	assert_true(old_request.is_settled(), "FNF settles before its visual receipt")
+	assert_eq(old_request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(dispatches.size(), 1)
+
+	var unrelated_no_work := director.submit(
+		[visibility_script.new({
+			"target": "quick_menu", "action": "show",
+			"transition": "fade", "duration": 0.25,
+		}) as PresentationOperation],
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		context, {"source_path": "res://synthetic/unrelated.stla", "line": 3})
+	assert_eq(unrelated_no_work.get_batch_id(), 0,
+		"an active surface receipt cannot block quick-menu no-work")
+
+	var replacement := director.submit(
+		[visibility_script.new({
+			"target": "surface", "action": "hide",
+			"transition": "fade", "duration": 0.25,
+		}) as PresentationOperation],
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		context, {"source_path": "res://synthetic/replacement.stla", "line": 4})
+	assert_gt(replacement.get_batch_id(), 0,
+		"same canonical target with an active receipt must dispatch")
+	assert_ne(replacement.get_batch_id(), old_request.get_batch_id())
+	assert_eq(dispatches.size(), 2)
+	if dispatches.size() == 2:
+		assert_ne(dispatches[0]["token"], dispatches[1]["token"])
+		assert_ne(dispatches[0]["generation"], dispatches[1]["generation"])
+	var replacement_receipts: Array = replacement.get_receipts().duplicate()
+	assert_false(replacement_receipts.is_empty(),
+		"replacement owns the complete defensive receipt union")
+	var synthetic_receipts: Array = replacement_receipts.filter(
+		func(receipt_value: Variant) -> bool:
+			if not receipt_value is PresentationOperationReceipt:
+				return false
+			var receipt: PresentationOperationReceipt = receipt_value
+			return (
+				receipt.get_batch_id() == replacement.get_batch_id()
+				and receipt.get_presenter_instance_id() == 31
+				and receipt.get_channel() == &"dialogue:surface"
+				and receipt.get_token() == active_identity[0]["token"]
+				and receipt.get_generation() == active_identity[0]["generation"]
+			)
+	)
+	assert_eq(synthetic_receipts.size(), 1,
+		"the defensive union contains the exact synthetic receipt once")
+	var quick_menu_before_terminal: Variant = runtime.presentation_state.capture_snapshot().get(
+		"dialogue_visibility", {}).get("quick_menu")
+	var unrelated_outcome := unrelated_no_work.get_outcome()
+	var unrelated_settled := unrelated_no_work.is_settled()
+	var seen_receipt_identities: Dictionary = {}
+	var finish_records: Array[Dictionary] = []
+	for receipt_value: Variant in replacement_receipts:
+		assert_true(receipt_value is PresentationOperationReceipt)
+		if not receipt_value is PresentationOperationReceipt:
+			continue
+		var receipt: PresentationOperationReceipt = receipt_value
+		var channel := String(receipt.get_channel())
+		var target := channel.trim_prefix("dialogue:")
+		assert_eq(receipt.get_batch_id(), replacement.get_batch_id())
+		assert_gt(receipt.get_presenter_instance_id(), 0)
+		assert_eq(channel, "dialogue:surface")
+		assert_eq(target, "surface")
+		if channel != "dialogue:surface" or target != "surface":
+			continue
+		assert_gt(receipt.get_token(), 0)
+		assert_gt(receipt.get_generation(), 0)
+		var identity_key := "%d:%d:%s:%d:%d" % [
+			receipt.get_batch_id(), receipt.get_presenter_instance_id(),
+			channel, receipt.get_token(), receipt.get_generation(),
+		]
+		assert_false(seen_receipt_identities.has(identity_key),
+			"replacement receipt five-field identity is unique")
+		seen_receipt_identities[identity_key] = true
+		SignalBus.dialogue_visibility_transition_terminal.emit(
+			receipt.get_presenter_instance_id(), target, receipt.get_token(),
+			receipt.get_batch_id(), receipt.get_generation(), &"completed")
+		finish_records.append({
+			"presenter_instance_id": receipt.get_presenter_instance_id(),
+			"target": target,
+			"token": receipt.get_token(),
+			"operation_request_id": receipt.get_batch_id(),
+			"generation": receipt.get_generation(),
+		})
+	assert_false(director._entries.has(replacement.get_batch_id()))
+	assert_true(replacement.is_settled())
+	assert_eq(replacement.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(runtime.presentation_state.capture_snapshot().get(
+		"dialogue_visibility", {}).get("quick_menu"), quick_menu_before_terminal)
+	assert_eq(unrelated_no_work.get_outcome(), unrelated_outcome)
+	assert_eq(unrelated_no_work.is_settled(), unrelated_settled)
+	var replacement_outcome := replacement.get_outcome()
+	var replacement_settled := replacement.is_settled()
+	var synthetic_owner := (active_identity[0] as Dictionary).duplicate(true)
+	SignalBus.dialogue_visibility_transition_receipts_finish_requested.emit(
+		finish_records)
+	assert_false(director._entries.has(replacement.get_batch_id()),
+		"late terminal cannot revive the replacement ledger")
+	assert_eq(replacement.get_outcome(), replacement_outcome)
+	assert_eq(replacement.is_settled(), replacement_settled)
+	assert_eq(active_identity[0], synthetic_owner)
+	assert_eq(runtime.presentation_state.capture_snapshot().get(
+		"dialogue_visibility", {}).get("quick_menu"), quick_menu_before_terminal)
+	assert_eq(unrelated_no_work.get_outcome(), unrelated_outcome)
+	assert_eq(unrelated_no_work.is_settled(), unrelated_settled)
+	var after_terminal := director.submit(
+		[visibility_script.new({
+			"target": "surface", "action": "hide",
+			"transition": "fade", "duration": 0.25,
+		}) as PresentationOperation],
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		context, {"source_path": "res://synthetic/terminal.stla", "line": 5})
+	assert_eq(after_terminal.get_batch_id(), 0,
+		"exact terminal restores canonical no-work")
+	if SignalBus.dialogue_visibility_operations_requested.is_connected(on_visibility):
+		SignalBus.dialogue_visibility_operations_requested.disconnect(on_visibility)
+	runtime.presentation_state.restore_snapshot(snapshot)
+
+
+func test_handler_never_short_circuits_authored_visibility_before_director() -> void:
+	var runtime := get_tree().root.get_node("StellaRuntime")
+	var handler := PresentationBatchHandler.new(
+		runtime.presentation_director, runtime.presentation_state)
+	var command := CommandData.new()
+	command.type = "presentation_batch"
+	command.declared_line = 10
+	command.params = {
+		"policy": "fire_and_forget",
+		"operations": [{
+			"kind": "dialogue_visibility",
+			"payload": {"target": "surface", "action": "show",
+				"transition": "fade", "duration": 0.25},
+		}],
+		"operation_lines": [11],
+	}
+	var validation: Dictionary = handler.call("_validate_and_reduce", command)
+	assert_true(bool(validation.get("valid", false)))
+	assert_false(bool(validation.get("no_work", true)),
+		"Handler must pass authored visibility equality to Director ownership preflight")
+
+
 func test_malformed_dialogue_child_rejects_the_entire_mixed_batch_preallocation() -> void:
 	var visibility_script := _global_class_script(
 		"DialogueVisibilityPresentationOperation")

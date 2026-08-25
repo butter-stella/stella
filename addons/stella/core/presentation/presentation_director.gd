@@ -89,8 +89,15 @@ func submit(
 		request._settle(PresentationBatchRequest.Outcome.FAILED, _authority)
 		return request
 	if bool(preflight.get("no_work", false)):
-		request._settle(PresentationBatchRequest.Outcome.COMPLETED, _authority)
-		return request
+		var authored_targets: Array = preflight.get("dialogue_targets", [])
+		var has_target_owner := false
+		for target_value: Variant in authored_targets:
+			if _has_active_dialogue_visibility_owner(String(target_value)):
+				has_target_owner = true
+				break
+		if not has_target_owner:
+			request._settle(PresentationBatchRequest.Outcome.COMPLETED, _authority)
+			return request
 
 	var request_id := SignalBus.reserve_stage_operation_request_id()
 	var entry := {
@@ -110,6 +117,7 @@ func submit(
 		"generation": _generation,
 		"accept_advance_serial": SignalBus.current_advance_dispatch_serial(),
 		"context_cancel": Callable(),
+		"dialogue_targets": (preflight.get("dialogue_targets", []) as Array).duplicate(),
 	}
 	_entries[request_id] = entry
 	if context != null:
@@ -427,12 +435,35 @@ func _preflight_operations(
 		"before_visibility": before_visibility,
 		"target_state": simulated,
 		"target_visibility": target_visibility,
+		"dialogue_targets": seen_targets.keys(),
 		"no_work": (
 			simulated == before_state
 			and target_visibility == before_visibility
 			and not saw_clear
 		),
 	}
+
+
+func _has_active_dialogue_visibility_owner(target: String) -> bool:
+	for request_id_value: Variant in _entries:
+		var entry: Dictionary = _entries[request_id_value]
+		if int(entry.get("generation", -1)) != _generation:
+			continue
+		if target not in (entry.get("dialogue_targets", []) as Array):
+			continue
+		var terminal_keys: Dictionary = entry.get("terminal_keys", {})
+		if not bool(entry.get("sealed", false)):
+			return true
+		for receipt_value: Variant in entry.get("receipts", []):
+			if not receipt_value is PresentationOperationReceipt:
+				continue
+			var receipt: PresentationOperationReceipt = receipt_value
+			if (
+				String(receipt.get_channel()) == "dialogue:%s" % target
+				and not terminal_keys.has(_receipt_key(receipt))
+			):
+				return true
+	return false
 
 
 func _diagnostic_source(source: Dictionary) -> Dictionary:

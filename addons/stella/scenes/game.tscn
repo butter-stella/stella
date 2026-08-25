@@ -112,7 +112,7 @@ offset_bottom = -45.0
 grow_horizontal = 2
 grow_vertical = 2
 
-[node name="AvatarContainer" type="MarginContainer" parent="UILayer/DialoguePanel/HBox"]
+[node name="AvatarContainer" type="MarginContainer" parent="UILayer/DialoguePanel/HBox" groups=["dialogue_surface"]]
 unique_name_in_owner = true
 visible = false
 layout_mode = 2

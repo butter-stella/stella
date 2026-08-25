@@ -85,6 +85,12 @@ var _dialogue_visibility_generation: Dictionary = {
 }
 var _dialogue_visibility_nodes: Dictionary = {}
 var _dialogue_visibility_binding: Dictionary = {}
+var _dialogue_visibility_runtime_binding: Dictionary = {}
+var _dialogue_visibility_profile_baseline: Dictionary = {}
+var _dialogue_visibility_effective_signatures: Dictionary = {
+	"surface": "",
+	"quick_menu": "",
+}
 var _dialogue_visibility_active: Dictionary = {}
 
 # A configured wait glyph is presentation-only. It is created lazily so
@@ -1403,6 +1409,8 @@ func _show_dialogue_now(
 		avatar_expr = initial_inline_expr
 		_avatar_expressions[character] = avatar_expr
 	# Skip projects only the combined final state, avoiding a segment-zero flash.
+	_update_dialogue_visibility_node_baseline(name_label)
+	_update_dialogue_visibility_node_baseline(text_label)
 	if not _should_skip_current():
 		_update_avatar(character, avatar_expr, mode)
 
@@ -2601,38 +2609,233 @@ func _apply_dialogue_mode_presentation(
 	stla_mode_profile: DialogueModeProfile = null,
 	uses_stla_presentation: bool = false,
 ) -> bool:
-	# Every transition starts from the exact scene-authored baseline. This also
-	# scrubs opt-in profile fields before returning to an unprofiled legacy mode.
-	_restore_authored_presentation()
-	if (not uses_stla_presentation
-		and stla_mode_profile == null and presentation_profile == null):
-		_apply_legacy_mode_layout(mode)
-		return false
-
 	var mode_profile := stla_mode_profile
 	if mode_profile == null and presentation_profile != null:
 		mode_profile = presentation_profile.get_mode(mode)
-	if mode_profile == null:
-		if mode == "adv":
-			return true
-		_apply_legacy_mode_layout(mode)
-		return false
-
-	var errors := mode_profile.validation_errors()
-	if not errors.is_empty():
+	var profile_is_valid := mode_profile != null
+	if mode_profile != null:
+		var errors := mode_profile.validation_errors()
+		profile_is_valid = errors.is_empty()
 		for error in errors:
 			_profile_warning(mode, String(error))
-		if mode == "adv":
-			return true
+	var binding := _dialogue_visibility_binding_for_profile(
+		mode_profile if profile_is_valid else null)
+	var signatures := _dialogue_visibility_signatures(
+		mode, mode_profile if profile_is_valid else null, binding)
+	var affected_targets := _dialogue_visibility_changed_targets(signatures)
+	var preserved_work := _preserve_dialogue_visibility_work(affected_targets)
+	_retire_dialogue_visibility_targets(affected_targets, &"superseded")
+	_restore_authored_presentation(false)
+	var uses_profile := profile_is_valid
+	if profile_is_valid:
+		_apply_mode_profile(mode, mode_profile, false)
+	elif mode != "adv" or (
+		not uses_stla_presentation
+		and stla_mode_profile == null
+		and presentation_profile == null
+	):
 		_apply_legacy_mode_layout(mode)
-		return false
-
-	_apply_mode_profile(mode, mode_profile)
-	return true
+		uses_profile = false
+	_resolve_dialogue_visibility_binding(binding, false)
+	_capture_dialogue_visibility_profile_baseline()
+	_dialogue_visibility_effective_signatures = signatures.duplicate(true)
+	_apply_canonical_dialogue_visibility()
+	_restore_preserved_dialogue_visibility_work(preserved_work)
+	return uses_profile or (
+		mode == "adv"
+		and (uses_stla_presentation or presentation_profile != null)
+	)
 
 
 func _resolve_nvl_entry_format() -> Dictionary:
 	return _resolve_nvl_entry_format_for_profile(_active_stla_mode_profile)
+
+
+func _dialogue_visibility_binding_for_profile(
+	profile: DialogueModeProfile,
+) -> Dictionary:
+	var defaults := (
+		_dialogue_visibility_runtime_binding.get("default", {
+			"surface_groups": ["dialogue_surface"],
+			"quick_menu_groups": ["quick_menu"],
+		}) as Dictionary
+	).duplicate(true)
+	var current: Dictionary = {}
+	if profile != null:
+		var provenance := profile.get("_stla_provenance") as Dictionary
+		current = (
+			_dialogue_visibility_runtime_binding.get("current", {}) as Dictionary
+		).duplicate(true)
+		var previous_profile_name := String(current.get("profile_name", ""))
+		current["profile_name"] = String(provenance.get("profile_name", ""))
+		if (
+			not current.get("profile", null) is Dictionary
+			or previous_profile_name
+				!= String(provenance.get("profile_name", ""))
+		):
+			current["profile"] = {}
+		current["provenance"] = provenance.duplicate(true)
+		current["surface_groups"] = profile.surface_groups.duplicate()
+		current["quick_menu_groups"] = profile.quick_menu_groups.duplicate()
+	else:
+		current = {
+			"profile_name": "",
+			"profile": {},
+			"provenance": {},
+			"surface_groups": (defaults.get("surface_groups", []) as Array).duplicate(),
+			"quick_menu_groups": (defaults.get("quick_menu_groups", []) as Array).duplicate(),
+		}
+	var binding := _dialogue_visibility_runtime_binding.duplicate(true)
+	binding["current"] = current
+	binding["default"] = defaults
+	return binding
+
+
+func _dialogue_visibility_signatures(
+	mode: String,
+	profile: DialogueModeProfile,
+	binding: Dictionary,
+) -> Dictionary:
+	return {
+		"surface": _dialogue_visibility_target_signature(
+			mode, profile, binding, "surface"),
+		"quick_menu": _dialogue_visibility_target_signature(
+			mode, profile, binding, "quick_menu"),
+	}
+
+
+func _dialogue_visibility_target_signature(
+	mode: String,
+	profile: DialogueModeProfile,
+	binding: Dictionary,
+	target: String,
+) -> String:
+	var current := binding.get("current", {}) as Dictionary
+	var provenance := current.get("provenance", {}) as Dictionary
+	var field_name := "%s_groups" % target
+	var target_groups := _normalized_group_signature(
+		current.get(field_name, []))
+	var provenance_lines: Array[String] = []
+	var raw_field_lines := provenance.get("field_lines", {}) as Dictionary
+	for relevant_field: String in [field_name, "visibility_groups"]:
+		if not raw_field_lines.has(relevant_field):
+			continue
+		provenance_lines.append(
+			"%s=%d" % [relevant_field, int(raw_field_lines[relevant_field])])
+	var visibility_groups: Array[String] = []
+	if profile != null:
+		var target_nodes := _binding_nodes_for_groups(target_groups)
+		var target_ids: Dictionary = {}
+		for node: CanvasItem in target_nodes:
+			target_ids[node.get_instance_id()] = true
+		var visibility_names: Array = profile.visibility_groups.keys()
+		visibility_names.sort()
+		for group_value: Variant in visibility_names:
+			var group_name := String(group_value)
+			var affects_target := false
+			for node: CanvasItem in _find_auxiliary_group_nodes(StringName(group_name)):
+				if target_ids.has(node.get_instance_id()):
+					affects_target = true
+					break
+			if not affects_target:
+				continue
+			visibility_groups.append(
+				"%s=%s" % [group_name, bool(profile.visibility_groups[group_value])])
+	return JSON.stringify({
+		"mode": mode,
+		"profile_name": String(current.get("profile_name", "")),
+		"source_path": String(provenance.get("source_path", "")),
+		"field_lines": provenance_lines,
+		"target": target,
+		"groups": target_groups,
+		"visibility_groups": visibility_groups,
+	})
+
+
+func _normalized_group_signature(raw_groups: Variant) -> Array[String]:
+	var groups: Array[String] = []
+	if raw_groups is Array:
+		for group_value: Variant in raw_groups:
+			var group_name := String(group_value).strip_edges()
+			if not group_name.is_empty() and group_name not in groups:
+				groups.append(group_name)
+	groups.sort()
+	return groups
+
+
+func _dialogue_visibility_changed_targets(signatures: Dictionary) -> Array[String]:
+	var changed: Array[String] = []
+	for target: String in ["surface", "quick_menu"]:
+		if String(signatures.get(target, "")) != String(
+			_dialogue_visibility_effective_signatures.get(target, "")):
+			changed.append(target)
+	return changed
+
+
+func _dialogue_visibility_profile_from_binding(
+	binding: Dictionary,
+) -> DialogueModeProfile:
+	var current := binding.get("current", {}) as Dictionary
+	var profile_value: Variant = current.get("profile", {})
+	if profile_value is DialogueModeProfile:
+		return profile_value as DialogueModeProfile
+	if profile_value is Dictionary and not (profile_value as Dictionary).is_empty():
+		return DialogueModeProfile.from_dictionary(
+			profile_value as Dictionary,
+			current.get("provenance", {}) as Dictionary,
+		)
+	return null
+
+
+func _retire_dialogue_visibility_targets(
+	targets: Array[String],
+	outcome: StringName,
+) -> void:
+	for target: String in targets:
+		_retire_dialogue_visibility_target(target, outcome)
+
+
+func _preserve_dialogue_visibility_work(
+	affected_targets: Array[String],
+) -> Dictionary:
+	var preserved: Dictionary = {}
+	for target: String in ["surface", "quick_menu"]:
+		if target in affected_targets or not _dialogue_visibility_active.has(target):
+			continue
+		var baseline: Dictionary = {}
+		var visuals: Array[Dictionary] = []
+		for node_value: Variant in _dialogue_visibility_nodes.get(target, []):
+			var node: CanvasItem = node_value
+			if not is_instance_valid(node):
+				continue
+			var instance_id := node.get_instance_id()
+			if _dialogue_visibility_profile_baseline.has(instance_id):
+				baseline[instance_id] = (
+					_dialogue_visibility_profile_baseline[instance_id] as Dictionary
+				).duplicate()
+			visuals.append({
+				"node": node,
+				"visible": node.visible,
+				"modulate": node.modulate,
+			})
+		preserved[target] = {"baseline": baseline, "visuals": visuals}
+	return preserved
+
+
+func _restore_preserved_dialogue_visibility_work(preserved: Dictionary) -> void:
+	for target_value: Variant in preserved:
+		var entry: Dictionary = preserved[target_value]
+		for baseline_key: Variant in (entry.get("baseline", {}) as Dictionary):
+			_dialogue_visibility_profile_baseline[baseline_key] = (
+				entry["baseline"][baseline_key] as Dictionary
+			).duplicate()
+		for visual_value: Variant in entry.get("visuals", []):
+			var visual: Dictionary = visual_value
+			var node := visual.get("node") as CanvasItem
+			if not is_instance_valid(node):
+				continue
+			node.visible = bool(visual.get("visible", true))
+			node.modulate = visual.get("modulate", node.modulate)
 
 
 func _resolve_nvl_entry_format_for_profile(
@@ -2654,7 +2857,23 @@ func _resolve_nvl_entry_format_for_profile(
 	return {"prefix": prefix, "separator": separator}
 
 
-func _apply_mode_profile(mode: String, profile: DialogueModeProfile) -> void:
+func _apply_mode_profile(
+	mode: String,
+	profile: DialogueModeProfile,
+	commit_visibility: bool = true,
+) -> void:
+	var direct_binding: Dictionary = {}
+	var direct_signatures: Dictionary = {}
+	var direct_preserved: Dictionary = {}
+	if commit_visibility:
+		direct_binding = _dialogue_visibility_binding_for_profile(profile)
+		direct_signatures = _dialogue_visibility_signatures(
+			mode, profile, direct_binding)
+		var affected_targets := _dialogue_visibility_changed_targets(
+			direct_signatures)
+		direct_preserved = _preserve_dialogue_visibility_work(affected_targets)
+		_retire_dialogue_visibility_targets(affected_targets, &"superseded")
+		_restore_authored_presentation(false)
 	var override_panel_anchors := profile.overrides_property(&"panel_anchors")
 	var override_panel_offsets := profile.overrides_property(&"panel_offsets")
 	if override_panel_anchors or override_panel_offsets:
@@ -2729,7 +2948,12 @@ func _apply_mode_profile(mode: String, profile: DialogueModeProfile) -> void:
 		for node in nodes:
 			_capture_auxiliary_visibility(node)
 			node.visible = bool(profile.visibility_groups[group_name_value])
-	_apply_canonical_dialogue_visibility()
+	if commit_visibility:
+		_resolve_dialogue_visibility_binding(direct_binding, false)
+		_capture_dialogue_visibility_profile_baseline()
+		_dialogue_visibility_effective_signatures = direct_signatures.duplicate(true)
+		_apply_canonical_dialogue_visibility()
+		_restore_preserved_dialogue_visibility_work(direct_preserved)
 
 
 func _apply_legacy_mode_layout(mode: String) -> void:
@@ -2768,7 +2992,8 @@ func _capture_authored_presentation() -> void:
 		_authored_presentation["text_area_size_flags_vertical"] = _text_area.size_flags_vertical
 
 
-func _restore_authored_presentation() -> void:
+func _restore_authored_presentation(apply_canonical_gate: bool = true) -> void:
+	_restore_dialogue_visibility_profile_baseline()
 	if _authored_presentation.is_empty():
 		return
 	_restore_control_rect(self, _authored_presentation["panel_rect"])
@@ -2800,7 +3025,8 @@ func _restore_authored_presentation() -> void:
 		var node: CanvasItem = entry["node"]
 		if is_instance_valid(node):
 			node.visible = entry["visible"]
-	_apply_canonical_dialogue_visibility()
+	if apply_canonical_gate:
+		_apply_canonical_dialogue_visibility()
 
 
 func _capture_control_rect(control: Control) -> Dictionary:
@@ -2861,22 +3087,103 @@ func _capture_dialogue_visibility_nodes() -> void:
 	_resolve_dialogue_visibility_binding({})
 
 
-func _apply_canonical_dialogue_visibility() -> void:
+func _restore_dialogue_visibility_profile_baseline() -> void:
+	for entry_value: Variant in _dialogue_visibility_profile_baseline.values():
+		var entry: Dictionary = entry_value
+		var node: CanvasItem = entry.get("node")
+		if not is_instance_valid(node):
+			continue
+		node.visible = bool(entry.get("visible", true))
+		var restored_modulate := node.modulate
+		restored_modulate.a = float(entry.get("alpha", restored_modulate.a))
+		node.modulate = restored_modulate
+	_dialogue_visibility_profile_baseline.clear()
+
+
+func _capture_dialogue_visibility_profile_baseline() -> void:
+	_dialogue_visibility_profile_baseline.clear()
+	for target: String in _dialogue_visibility_nodes:
+		for node_value: Variant in _dialogue_visibility_nodes.get(target, []):
+			var node: CanvasItem = node_value
+			if not is_instance_valid(node):
+				continue
+			_dialogue_visibility_profile_baseline[node.get_instance_id()] = {
+				"node": node,
+				"visible": node.visible,
+				"alpha": node.modulate.a,
+			}
+
+
+func _update_dialogue_visibility_node_baseline(node: CanvasItem) -> void:
+	if node == null or not is_instance_valid(node):
+		return
+	for target: String in _dialogue_visibility_nodes:
+		if node not in (_dialogue_visibility_nodes.get(target, []) as Array):
+			continue
+		_dialogue_visibility_profile_baseline[node.get_instance_id()] = {
+			"node": node,
+			"visible": node.visible,
+			"alpha": node.modulate.a,
+		}
+		return
+
+
+func _sync_dialogue_visibility_target_baseline(target: String) -> void:
+	if (
+		not bool(_canonical_dialogue_visibility.get(target, true))
+		or _dialogue_visibility_active.has(target)
+	):
+		return
+	for node_value: Variant in _dialogue_visibility_nodes.get(target, []):
+		var node: CanvasItem = node_value
+		if is_instance_valid(node):
+			_update_dialogue_visibility_node_baseline(node)
+
+
+func _dialogue_visibility_fade_participants(target: String) -> Array[Dictionary]:
+	var participants: Array[Dictionary] = []
+	for node_value: Variant in _dialogue_visibility_nodes.get(target, []):
+		var node: CanvasItem = node_value
+		if not is_instance_valid(node):
+			continue
+		var baseline := (
+			_dialogue_visibility_profile_baseline.get(
+				node.get_instance_id(),
+				{"visible": node.visible, "alpha": node.modulate.a},
+			) as Dictionary
+		)
+		var baseline_alpha := float(baseline.get("alpha", node.modulate.a))
+		if not bool(baseline.get("visible", true)) or is_zero_approx(baseline_alpha):
+			continue
+		participants.append({
+			"node": node,
+			"visible": true,
+			"alpha": baseline_alpha,
+		})
+	return participants
+
+
+func _apply_canonical_dialogue_visibility(active_target: String = "") -> void:
 	for target: String in _canonical_dialogue_visibility.keys():
+		if _dialogue_visibility_active.has(target) and target != active_target:
+			continue
 		for node_value: Variant in _dialogue_visibility_nodes.get(target, []):
 			var node: CanvasItem = node_value
 			if is_instance_valid(node):
 				_capture_auxiliary_visibility(node)
 				var baseline := (
-					_auxiliary_visibility_baseline.get(
+					_dialogue_visibility_profile_baseline.get(
 						node.get_instance_id(),
-						{"visible": node.visible}
+						{"visible": node.visible, "alpha": node.modulate.a}
 					) as Dictionary
 				)
 				node.visible = (
 					bool(_canonical_dialogue_visibility[target])
 					and bool(baseline.get("visible", true))
 				)
+				var canonical_modulate := node.modulate
+				canonical_modulate.a = float(baseline.get("alpha", canonical_modulate.a))
+				node.modulate = canonical_modulate
 
 
 func _emit_dialogue_visibility_receipt(
@@ -2907,34 +3214,114 @@ func _on_dialogue_visibility_operations_requested(
 	var request_id := SignalBus.current_dialogue_visibility_request_id()
 	if not SignalBus.is_current_dialogue_visibility_operation_valid():
 		return
+	var request_binding: Dictionary = {}
+	for operation_value: Variant in operations:
+		if (
+			operation_value is PresentationOperation
+			and operation_value.has_method("get_runtime_binding")
+		):
+			request_binding = operation_value.call("get_runtime_binding") as Dictionary
+			break
+	if (
+		_dialogue_visibility_nodes.is_empty()
+		or (
+			not request_binding.is_empty()
+			and request_binding != _dialogue_visibility_runtime_binding
+		)
+	):
+		if _dialogue_visibility_nodes.is_empty():
+			_resolve_dialogue_visibility_binding(request_binding)
+		elif not request_binding.is_empty():
+			var incoming_profile := _dialogue_visibility_profile_from_binding(
+				request_binding)
+			var incoming_signatures := _dialogue_visibility_signatures(
+				_current_mode, incoming_profile, request_binding)
+			var affected_targets := _dialogue_visibility_changed_targets(
+				incoming_signatures)
+			if affected_targets.is_empty():
+				_dialogue_visibility_runtime_binding = request_binding.duplicate(true)
+			else:
+				var preserved_work := _preserve_dialogue_visibility_work(
+					affected_targets)
+				_retire_dialogue_visibility_targets(
+					affected_targets, &"superseded")
+				_restore_authored_presentation(false)
+				var incoming_profile_valid := incoming_profile != null
+				if incoming_profile != null:
+					var incoming_errors := incoming_profile.validation_errors()
+					incoming_profile_valid = incoming_errors.is_empty()
+					for error_value: Variant in incoming_errors:
+						_profile_warning(_current_mode, String(error_value))
+				if incoming_profile_valid:
+					_apply_mode_profile(_current_mode, incoming_profile, false)
+				else:
+					_apply_legacy_mode_layout(_current_mode)
+				_resolve_dialogue_visibility_binding(request_binding, false)
+				_capture_dialogue_visibility_profile_baseline()
+				_dialogue_visibility_effective_signatures = (
+					incoming_signatures.duplicate(true))
+				_apply_canonical_dialogue_visibility()
+				_restore_preserved_dialogue_visibility_work(preserved_work)
 	for operation_value: Variant in operations:
 		var payload: Dictionary = {}
-		var runtime_binding: Dictionary = {}
 		if operation_value is PresentationOperation:
 			payload = (operation_value as PresentationOperation).get_payload()
-			if operation_value.has_method("get_runtime_binding"):
-				runtime_binding = operation_value.call("get_runtime_binding")
 		elif operation_value is Dictionary:
 			payload = (operation_value as Dictionary).duplicate(true)
-		_resolve_dialogue_visibility_binding(runtime_binding)
 		var target := String(payload.get("target", "")).strip_edges()
 		if target not in ["surface", "quick_menu"]:
 			continue
 		_retire_dialogue_visibility_target(target, &"superseded")
+		_sync_dialogue_visibility_target_baseline(target)
 		_dialogue_visibility_generation[target] = int(
 			_dialogue_visibility_generation.get(target, 1)
 		) + 1
-		_canonical_dialogue_visibility[target] = String(
-			payload.get("action", "show")
-		) == "show"
-		_apply_canonical_dialogue_visibility()
+		var target_visible := String(payload.get("action", "show")) == "show"
 		if force_cut or (
 			String(payload.get("transition", "cut")) == "cut"
 			and float(payload.get("duration", 0.0)) <= 0.0
 		):
+			_canonical_dialogue_visibility[target] = target_visible
+			_apply_canonical_dialogue_visibility(target)
+			continue
+		var node_states := _dialogue_visibility_fade_participants(target)
+		if node_states.is_empty():
+			_canonical_dialogue_visibility[target] = target_visible
+			_apply_canonical_dialogue_visibility(target)
 			continue
 		var identity := _emit_dialogue_visibility_receipt(target, request_id)
-		_dialogue_visibility_active[target] = identity.duplicate(true)
+		var tween := create_tween()
+		tween.set_parallel(true)
+		identity["tween"] = tween
+		identity["nodes"] = node_states
+		identity["target_visible"] = target_visible
+		_dialogue_visibility_active[target] = identity
+		_canonical_dialogue_visibility[target] = target_visible
+		if target_visible:
+			_apply_canonical_dialogue_visibility(target)
+			for state: Dictionary in node_states:
+				var node: CanvasItem = state["node"]
+				if not is_instance_valid(node) or not bool(state["visible"]):
+					continue
+				var transparent := node.modulate
+				transparent.a = 0.0
+				node.modulate = transparent
+				tween.tween_property(node, "modulate:a", float(state["alpha"]), float(payload["duration"]))
+		else:
+			for state: Dictionary in node_states:
+				var node: CanvasItem = state["node"]
+				if not is_instance_valid(node):
+					continue
+				node.visible = bool(state["visible"])
+				var baseline_modulate := node.modulate
+				baseline_modulate.a = float(state["alpha"])
+				node.modulate = baseline_modulate
+				tween.tween_property(node, "modulate:a", 0.0, float(payload["duration"]))
+		var terminal_identity := identity.duplicate()
+		var on_finished := func() -> void:
+			_complete_dialogue_visibility_target(
+				String(terminal_identity.get("target", "")), terminal_identity)
+		tween.finished.connect(on_finished, CONNECT_ONE_SHOT)
 
 
 func _on_dialogue_visibility_state_apply_requested(
@@ -2942,8 +3329,10 @@ func _on_dialogue_visibility_state_apply_requested(
 	content: Dictionary,
 	runtime_binding: Dictionary,
 ) -> void:
+	for target: String in ["surface", "quick_menu"]:
+		_retire_dialogue_visibility_target(target, &"cancelled")
 	_canonical_dialogue_visibility = visibility.duplicate(true)
-	_resolve_dialogue_visibility_binding(runtime_binding)
+	_dialogue_visibility_runtime_binding = runtime_binding.duplicate(true)
 	_apply_visual_only_dialogue_restore(content, runtime_binding)
 	_apply_canonical_dialogue_visibility()
 
@@ -2983,10 +3372,19 @@ func _on_dialogue_visibility_transition_receipts_finish_requested(
 				!= int(active.get("generation", -2))
 		):
 			continue
-		_retire_dialogue_visibility_target(target, &"completed")
+		_complete_dialogue_visibility_target(target, active)
 
 
-func _resolve_dialogue_visibility_binding(runtime_binding: Dictionary) -> void:
+func _resolve_dialogue_visibility_binding(
+	runtime_binding: Dictionary,
+	restore_profile_baseline: bool = true,
+) -> void:
+	if restore_profile_baseline:
+		_restore_dialogue_visibility_profile_baseline()
+	if not runtime_binding.is_empty():
+		_dialogue_visibility_runtime_binding = runtime_binding.duplicate(true)
+	elif not _dialogue_visibility_runtime_binding.is_empty():
+		runtime_binding = _dialogue_visibility_runtime_binding.duplicate(true)
 	var current := (
 		runtime_binding.get("current", {}) as Dictionary
 	).duplicate(true)
@@ -3054,8 +3452,13 @@ func _resolve_dialogue_visibility_binding(runtime_binding: Dictionary) -> void:
 			resolved["quick_menu_groups"] = []
 			surface_nodes = []
 			quick_nodes = []
+	var resolved_current := current.duplicate(true)
+	resolved_current["profile_name"] = profile_name
+	resolved_current["provenance"] = provenance.duplicate(true)
+	resolved_current["surface_groups"] = resolved["surface_groups"].duplicate()
+	resolved_current["quick_menu_groups"] = resolved["quick_menu_groups"].duplicate()
 	_dialogue_visibility_binding = {
-		"current": resolved.duplicate(true),
+		"current": resolved_current,
 		"default": defaults.duplicate(true),
 		"profile_name": profile_name,
 		"provenance": provenance.duplicate(true),
@@ -3064,6 +3467,7 @@ func _resolve_dialogue_visibility_binding(runtime_binding: Dictionary) -> void:
 		"surface": surface_nodes,
 		"quick_menu": quick_nodes,
 	}
+	_capture_dialogue_visibility_profile_baseline()
 
 
 func _normalize_dialogue_visibility_groups(
@@ -3228,6 +3632,7 @@ func _apply_visual_only_dialogue_restore(
 	_segment_presentation_complete = false
 	_next_stage_segment_index = 0
 	if not bool(content.get("active", false)):
+		_apply_dialogue_mode_presentation("adv", null, false)
 		visible = false
 		_reset_nvl_accumulator()
 		name_label.text = ""
@@ -3248,9 +3653,12 @@ func _apply_visual_only_dialogue_restore(
 			current.get("provenance", {}) as Dictionary,
 		)
 		_active_stla_mode_profile = mode_profile
-		_apply_mode_profile(_current_mode, mode_profile)
+		_apply_dialogue_mode_presentation(
+			_current_mode, mode_profile, _active_uses_stla_presentation)
 	else:
 		_active_stla_mode_profile = null
+		_apply_dialogue_mode_presentation(
+			_current_mode, null, _active_uses_stla_presentation)
 	if _current_mode == "nvl":
 		name_label.text = ""
 		name_label.visible = false
@@ -3301,6 +3709,8 @@ func _apply_visual_only_dialogue_restore(
 			name_label.visible = false
 		text_label.text = full_text
 		text_label.visible_characters = -1
+	_update_dialogue_visibility_node_baseline(name_label)
+	_update_dialogue_visibility_node_baseline(text_label)
 	_update_avatar(_current_character, _current_avatar_expression, _current_mode)
 
 
@@ -3312,6 +3722,10 @@ func _retire_dialogue_visibility_target(
 		return
 	var active: Dictionary = _dialogue_visibility_active[target]
 	_dialogue_visibility_active.erase(target)
+	var tween := active.get("tween") as Tween
+	if tween != null and tween.is_valid():
+		tween.kill()
+	_restore_dialogue_visibility_temporary_state(active)
 	(SignalBus.get(&"dialogue_visibility_transition_terminal") as Signal).emit(
 		get_instance_id(),
 		target,
@@ -3319,6 +3733,57 @@ func _retire_dialogue_visibility_target(
 		int(active.get("operation_request_id", 0)),
 		int(active.get("generation", 0)),
 		outcome,
+	)
+
+
+func _dialogue_visibility_identity_is_current(
+	target: String,
+	identity: Dictionary,
+) -> bool:
+	if not _dialogue_visibility_active.has(target):
+		return false
+	var active: Dictionary = _dialogue_visibility_active[target]
+	return (
+		int(active.get("token", -1)) == int(identity.get("token", -2))
+		and int(active.get("operation_request_id", -1))
+			== int(identity.get("operation_request_id", -2))
+		and int(active.get("generation", -1))
+			== int(identity.get("generation", -2))
+	)
+
+
+func _restore_dialogue_visibility_temporary_state(active: Dictionary) -> void:
+	for state_value: Variant in active.get("nodes", []):
+		var state: Dictionary = state_value
+		var node := state.get("node") as CanvasItem
+		if not is_instance_valid(node):
+			continue
+		var restored := node.modulate
+		restored.a = float(state.get("alpha", restored.a))
+		node.modulate = restored
+
+
+func _complete_dialogue_visibility_target(
+	target: String,
+	identity: Dictionary,
+) -> void:
+	if not _dialogue_visibility_identity_is_current(target, identity):
+		return
+	var active: Dictionary = _dialogue_visibility_active[target]
+	_dialogue_visibility_active.erase(target)
+	var tween := active.get("tween") as Tween
+	if tween != null and tween.is_valid():
+		tween.kill()
+	_restore_dialogue_visibility_temporary_state(active)
+	_canonical_dialogue_visibility[target] = bool(active.get("target_visible", true))
+	_apply_canonical_dialogue_visibility()
+	(SignalBus.get(&"dialogue_visibility_transition_terminal") as Signal).emit(
+		get_instance_id(),
+		target,
+		int(active.get("token", 0)),
+		int(active.get("operation_request_id", 0)),
+		int(active.get("generation", 0)),
+		&"completed",
 	)
 
 
@@ -3632,6 +4097,7 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 		_current_avatar_expression = ""
 		_avatar_container.visible = false
 		_avatar_texture.texture = null
+		_update_dialogue_visibility_node_baseline(_avatar_container)
 		return
 
 	var config = _config_loader.get_config(character)
@@ -3641,6 +4107,7 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 		_current_avatar_expression = ""
 		_avatar_container.visible = false
 		_avatar_texture.texture = null
+		_update_dialogue_visibility_node_baseline(_avatar_container)
 		return
 
 	# Load the character's expression sprite and crop via AtlasTexture
@@ -3653,6 +4120,7 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 		_current_avatar_expression = ""
 		_avatar_container.visible = false
 		_avatar_texture.texture = null
+		_update_dialogue_visibility_node_baseline(_avatar_container)
 		return
 
 	var source_tex = load(sprite_path) as Texture2D
@@ -3665,6 +4133,7 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 		_current_avatar_expression = ""
 		_avatar_container.visible = false
 		_avatar_texture.texture = null
+		_update_dialogue_visibility_node_baseline(_avatar_container)
 		return
 
 	_current_character = character
@@ -3674,6 +4143,7 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 	atlas.region = config.avatar_rect
 	_avatar_texture.texture = atlas
 	_avatar_container.visible = true
+	_update_dialogue_visibility_node_baseline(_avatar_container)
 	_apply_canonical_dialogue_visibility()
 
 
