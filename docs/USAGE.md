@@ -84,6 +84,7 @@ stage = "res://art/stage/"
 bgm = "res://audio/bgm/"
 se = "res://audio/se/"
 voice = "res://audio/voice/"
+voice_dsp = "res://audio/voice_dsp/"
 
 [features]
 cg_gallery = false
@@ -121,6 +122,7 @@ scenario = "res://scenarios/main.stla"
 
 [paths]
 voice = "res://audio/voice/"
+voice_dsp = "res://audio/voice_dsp/"
 
 [overrides]
 game_scene = "res://scenes/game.tscn"
@@ -135,6 +137,7 @@ scenario = "res://private_preview/scenarios/preview.stla"
 
 [paths]
 voice = "res://private_preview/audio/voice/"
+voice_dsp = "res://private_preview/audio/voice_dsp/"
 
 [overrides]
 game_scene = "res://private_preview/ui/preview_game.tscn"
@@ -709,6 +712,7 @@ owner，再发布旧 choice HIDE，因此同步回调不能推进旧剧情或误
 // 对话
 sakura「台词」
 sakura「台词」 #voice:voice_id
+sakura「电话里的台词」 #voice:voice_id #voice_dsp:telephone
 「旁白」
 sakura（内心独白）
 

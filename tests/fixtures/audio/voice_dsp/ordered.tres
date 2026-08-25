@@ -1,0 +1,23 @@
+[gd_resource type="Resource" script_class="VoiceDspChainDefinition" load_steps=5 format=3]
+
+[ext_resource type="Script" uid="uid://ilmgh5b6md28" path="res://addons/stella/core/data/voice_dsp_chain_definition.gd" id="1_chain"]
+[ext_resource type="Script" uid="uid://bf4jwpvd5w1n2" path="res://addons/stella/core/data/voice_dsp_band_pass_effect.gd" id="2_band"]
+[ext_resource type="Script" uid="uid://c1fmmww7d3jme" path="res://addons/stella/core/data/voice_dsp_delay_effect.gd" id="3_delay"]
+[ext_resource type="Script" uid="uid://ba14rdlwqv3m1" path="res://addons/stella/core/data/voice_dsp_effect_definition.gd" id="4_base"]
+
+[sub_resource type="Resource" id="BandPass_ordered"]
+script = ExtResource("2_band")
+center_hz = 2400.0
+bandwidth_hz = 2000.0
+order = 1
+
+[sub_resource type="Resource" id="Delay_ordered"]
+script = ExtResource("3_delay")
+time_ms = 300.0
+feedback = 0.35
+mix = 0.35
+
+[resource]
+script = ExtResource("1_chain")
+effects = Array[ExtResource("4_base")]([SubResource("BandPass_ordered"), SubResource("Delay_ordered")])
+tail_seconds = 0.6

@@ -967,7 +967,7 @@ static func parse(
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 				choice_cmd = null
 				pending_options = []
-				var cmd = _parse_dialogue(token)
+				var cmd = _parse_dialogue(token, data)
 				if cmd and current_scene:
 					if in_combine:
 						var char_name = cmd.get_string("character", "")
@@ -981,6 +981,8 @@ static func parse(
 						combine_segments.append({
 							"text": cmd.get_string("text", ""),
 							"voice": cmd.get_string("voice", ""),
+							"voice_dsp": cmd.get_string("voice_dsp", ""),
+							"voice_dsp_line": cmd.get_int("voice_dsp_line", 0),
 							"stage_ops": combine_pending_stage_ops.duplicate(true),
 							"stage_operation_lines": (
 								combine_pending_stage_operation_lines.duplicate()),
@@ -998,7 +1000,7 @@ static func parse(
 				_flush_choice(choice_cmd, pending_options, current_scene, if_stack)
 				choice_cmd = null
 				pending_options = []
-				var cmd = _parse_narration(token)
+				var cmd = _parse_narration(token, data)
 				if cmd and current_scene:
 					if in_combine:
 						if not combine_character_set:
@@ -1011,6 +1013,8 @@ static func parse(
 						combine_segments.append({
 							"text": cmd.get_string("text", ""),
 							"voice": cmd.get_string("voice", ""),
+							"voice_dsp": cmd.get_string("voice_dsp", ""),
+							"voice_dsp_line": cmd.get_int("voice_dsp_line", 0),
 							"stage_ops": combine_pending_stage_ops.duplicate(true),
 							"stage_operation_lines": (
 								combine_pending_stage_operation_lines.duplicate()),
@@ -1039,7 +1043,7 @@ static func parse(
 					combine_pending_stage_ops.clear()
 					combine_pending_stage_operation_lines.clear()
 				else:
-					var cmd = _parse_monologue(token)
+					var cmd = _parse_monologue(token, data)
 					if cmd and current_scene:
 						if in_parallel:
 							_record_parallel_blocking_diagnostic(
@@ -1185,6 +1189,18 @@ static func _semantic_command(
 	var semantic_params := command.params.duplicate(true)
 	if command.type in ["stage_batch", "presentation_batch"]:
 		semantic_params.erase("operation_lines")
+	if semantic_params.get("segments") is Array:
+		var semantic_segments: Array = []
+		for segment_value: Variant in semantic_params["segments"]:
+			if not segment_value is Dictionary:
+				semantic_segments.append(segment_value)
+				continue
+			var segment := (segment_value as Dictionary).duplicate(true)
+			segment.erase("stage_operation_lines")
+			segment.erase("voice_dsp_line")
+			semantic_segments.append(segment)
+		semantic_params["segments"] = semantic_segments
+	semantic_params.erase("voice_dsp_line")
 	return [
 		command.type,
 		_semantic_value(semantic_params, synthetic_scene_ids),
@@ -3416,7 +3432,7 @@ static func _parse_set_expression(expr: String) -> Dictionary:
 
 # --- Dialogue ---
 
-static func _parse_dialogue(token: DslToken) -> CommandData:
+static func _parse_dialogue(token: DslToken, data: ScenarioData) -> CommandData:
 	var raw = token.raw_text
 	var bracket_start = raw.find("\u300c")  # 「
 	var bracket_end = raw.rfind("\u300d")    # 」
@@ -3427,18 +3443,24 @@ static func _parse_dialogue(token: DslToken) -> CommandData:
 	var character = raw.substr(0, bracket_start).strip_edges()
 	var text = raw.substr(bracket_start + 1, bracket_end - bracket_start - 1)
 
-	var voice := _extract_voice_tag(raw, bracket_end)
+	var metadata := _parse_dialogue_metadata(raw, bracket_end, token, data)
+	if not bool(metadata["valid"]):
+		return null
 
 	var params := {
 		"character": character,
 		"text": text,
-		"voice": voice,
+		"voice": metadata["voice"],
+		"voice_dsp": metadata["voice_dsp"],
+		"voice_dsp_line": metadata["voice_dsp_line"],
 		"presentation_from_context": true,
 	}
-	return _make_cmd("dialogue", params)
+	var command := _make_cmd("dialogue", params)
+	command.declared_line = token.line
+	return command
 
 
-static func _parse_narration(token: DslToken) -> CommandData:
+static func _parse_narration(token: DslToken, data: ScenarioData) -> CommandData:
 	var raw = token.raw_text
 	var bracket_start = raw.find("\u300c")
 	var bracket_end = raw.rfind("\u300d")
@@ -3447,18 +3469,24 @@ static func _parse_narration(token: DslToken) -> CommandData:
 		return null
 
 	var text = raw.substr(bracket_start + 1, bracket_end - bracket_start - 1)
-	var voice := _extract_voice_tag(raw, bracket_end)
+	var metadata := _parse_dialogue_metadata(raw, bracket_end, token, data)
+	if not bool(metadata["valid"]):
+		return null
 
 	var params := {
 		"character": "",
 		"text": text,
-		"voice": voice,
+		"voice": metadata["voice"],
+		"voice_dsp": metadata["voice_dsp"],
+		"voice_dsp_line": metadata["voice_dsp_line"],
 		"presentation_from_context": true,
 	}
-	return _make_cmd("dialogue", params)
+	var command := _make_cmd("dialogue", params)
+	command.declared_line = token.line
+	return command
 
 
-static func _parse_monologue(token: DslToken) -> CommandData:
+static func _parse_monologue(token: DslToken, data: ScenarioData) -> CommandData:
 	var raw = token.raw_text
 	var paren_start = raw.find("\uff08")  # （
 	var paren_end = raw.rfind("\uff09")    # ）
@@ -3468,23 +3496,94 @@ static func _parse_monologue(token: DslToken) -> CommandData:
 
 	var character = raw.substr(0, paren_start).strip_edges()
 	var text = raw.substr(paren_start + 1, paren_end - paren_start - 1)
-	var voice := _extract_voice_tag(raw, paren_end)
+	var metadata := _parse_dialogue_metadata(raw, paren_end, token, data)
+	if not bool(metadata["valid"]):
+		return null
 
-	return _make_cmd("dialogue", {
+	var command := _make_cmd("dialogue", {
 		"character": character,
 		"text": text,
-		"voice": voice,
+		"voice": metadata["voice"],
+		"voice_dsp": metadata["voice_dsp"],
+		"voice_dsp_line": metadata["voice_dsp_line"],
 		"mode": "monologue",
 	})
+	command.declared_line = token.line
+	return command
 
 
-static func _extract_voice_tag(raw: String, closing_index: int) -> String:
-	var trailing := raw.substr(closing_index + 1).strip_edges()
-	var voice_prefix := "#voice:"
-	var voice_index := trailing.find(voice_prefix)
-	if voice_index == -1:
-		return ""
-	return trailing.substr(voice_index + voice_prefix.length()).strip_edges()
+static func _parse_dialogue_metadata(
+	raw: String,
+	closing_index: int,
+	token: DslToken,
+	data: ScenarioData,
+) -> Dictionary:
+	var trailing := _strip_inline_comment(
+		raw.substr(closing_index + 1).strip_edges())
+	var result := {
+		"valid": true,
+		"voice": "",
+		"voice_dsp": "",
+		"voice_dsp_line": 0,
+	}
+	if trailing.is_empty():
+		return result
+	var seen_voice := false
+	var seen_dsp := false
+	for token_value in _split_args(trailing):
+		var metadata_token := String(token_value)
+		if metadata_token.begins_with("#voice:"):
+			if seen_voice:
+				_record_dialogue_metadata_error(
+					data, token, "duplicate #voice metadata")
+				result["valid"] = false
+				continue
+			var voice := metadata_token.substr("#voice:".length())
+			if voice.is_empty():
+				_record_dialogue_metadata_error(
+					data, token, "#voice asset cannot be empty")
+				result["valid"] = false
+			seen_voice = true
+			result["voice"] = voice
+		elif metadata_token.begins_with("#voice_dsp:"):
+			if seen_dsp:
+				_record_dialogue_metadata_error(
+					data, token, "duplicate #voice_dsp metadata")
+				result["valid"] = false
+				continue
+			var preset := metadata_token.substr("#voice_dsp:".length())
+			if not VoiceDspChainDefinition.is_logical_preset_id(preset):
+				_record_dialogue_metadata_error(
+					data, token,
+					"#voice_dsp must use a bounded Stella logical preset id")
+				result["valid"] = false
+			seen_dsp = true
+			result["voice_dsp"] = preset
+			result["voice_dsp_line"] = token.line
+		else:
+			_record_dialogue_metadata_error(
+				data, token,
+				"unknown dialogue metadata '%s'" % metadata_token)
+			result["valid"] = false
+	if seen_dsp and not seen_voice:
+		_record_dialogue_metadata_error(
+			data, token, "#voice_dsp requires #voice on the same dialogue")
+		result["valid"] = false
+	return result
+
+
+static func _record_dialogue_metadata_error(
+	data: ScenarioData,
+	token: DslToken,
+	detail: String,
+) -> void:
+	_record_diagnostic(
+		data,
+		"error",
+		"DslParser: %s at %s"
+			% [detail, _source_location(data, token.line)],
+		token.line,
+	)
 
 
 # --- @if/@else/@end ---

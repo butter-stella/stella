@@ -74,7 +74,7 @@ func _populate():
 		# the playback uses the same voice queue + progress bar as the in-game
 		# toolbar replay, AND the playback state lives in the always-present
 		# DialoguePresenter (closing the backlog overlay does NOT cancel audio).
-		var entry_voices: Array = entry.get("voices", [])
+		var entry_voices: Array = entry.get("voice_segments", [])
 		var entry_char = entry.get("character", "")
 		if entry_voices.size() > 0 and StellaRuntime.get_setting("voice_replay_on_backlog") != false:
 			var replay_btn = Button.new()
@@ -84,7 +84,8 @@ func _populate():
 			replay_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 			var voices_snapshot = entry_voices.duplicate()
 			replay_btn.pressed.connect(func():
-				SignalBus.dialogue_voice_replay_requested.emit(voices_snapshot, entry_char)
+				SignalBus.dialogue_voice_segment_replay_requested.emit(
+					voices_snapshot, entry_char)
 			)
 			hbox.add_child(replay_btn)
 

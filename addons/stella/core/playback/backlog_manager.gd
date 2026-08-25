@@ -80,6 +80,7 @@ func add_entry(
 		"character": character,
 		"text": "",
 		"voices": [],
+		"voice_segments": [],
 		"command_uid": command_uid,
 		"entry_id": stable_entry_id,
 		"snapshot": snapshot_func.call() if snapshot_func.is_valid() else null,
@@ -137,14 +138,21 @@ func _update_entry_text(
 ) -> void:
 	var full_text := ""
 	var voices: Array = []
+	var voice_segments: Array = []
 	for seg in segments:
 		full_text += DialogueTextNormalizer.to_plain_text(
 			String(seg.get("text", "")), registered_effect_registry)
 		var voice := String(seg.get("voice", ""))
 		if not voice.is_empty():
 			voices.append(voice)
+			voice_segments.append({
+				"voice": voice,
+				"voice_dsp": String(seg.get("voice_dsp", "")),
+				"voice_dsp_line": int(seg.get("voice_dsp_line", 0)),
+			})
 	entry["text"] = full_text
 	entry["voices"] = voices
+	entry["voice_segments"] = voice_segments
 
 
 func get_entries() -> Array:

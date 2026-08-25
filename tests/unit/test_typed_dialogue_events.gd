@@ -121,7 +121,7 @@ func test_voice_request_and_events_hide_mutable_protocol_fields() -> void:
 
 	_assert_getter_only(request, [
 		"asset", "character", "owner_validator", "handled", "accepted",
-		"playback_token", "completion_state",
+		"playback_token", "completion_state", "dsp_preset", "source",
 	])
 	_assert_getter_only(physical, [
 		"kind", "playback_token", "character", "asset", "position",

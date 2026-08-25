@@ -50,6 +50,7 @@ var stage_assets_path: String = "res://art/stage/"
 var bgm_path: String = "res://audio/bgm/"
 var se_path: String = "res://audio/se/"
 var voice_path: String = "res://audio/voice/"
+var voice_dsp_path: String = "res://audio/voice_dsp/"
 
 ## Scene paths
 var title_scene_path: String = ""
@@ -479,6 +480,7 @@ func _apply_config() -> void:
 	bgm_path = config.bgm_path
 	se_path = config.se_path
 	voice_path = config.voice_path
+	voice_dsp_path = config.voice_dsp_path
 
 	if config.title_scene != "":
 		title_scene_path = config.title_scene

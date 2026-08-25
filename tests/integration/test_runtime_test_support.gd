@@ -243,7 +243,11 @@ func test_runtime_reset_immediately_reapplies_audio_defaults() -> void:
 		return
 	var se_players: Array = audio_presenter._se_players
 	var voice_player: AudioStreamPlayer = audio_presenter._voice_player
+	var voice_bus_index := AudioServer.get_bus_index(audio_presenter._voice_dsp_bus_name)
 	var system_se_player: AudioStreamPlayer = audio_presenter._system_se_player
+	assert_gte(voice_bus_index, 0, "the Runtime voice Presenter must own its private DSP bus")
+	if voice_bus_index < 0:
+		return
 	for player: AudioStreamPlayer in [voice_player, system_se_player]:
 		player.stream = AudioStreamGenerator.new()
 		player.play()
@@ -263,11 +267,20 @@ func test_runtime_reset_immediately_reapplies_audio_defaults() -> void:
 	for player: AudioStreamPlayer in se_players:
 		assert_almost_eq(player.volume_db, linear_to_db(0.5 * 0.3), 0.01)
 	assert_almost_eq(system_se_player.volume_db, linear_to_db(0.5 * 0.2), 0.01)
-	assert_almost_eq(voice_player.volume_db, linear_to_db(0.5 * 0.6 * 0.25), 0.01)
+	assert_almost_eq(voice_player.volume_db, 0.0, 0.01,
+		"the active voice source remains unity-gain")
+	assert_almost_eq(
+		AudioServer.get_bus_volume_db(voice_bus_index),
+		linear_to_db(0.5 * 0.6 * 0.25),
+		0.01,
+		"the private post-effect bus owns the exact effective voice gain",
+	)
 
 	_runtime.settings_manager.set_character_voice_enabled("sakura", false)
-	assert_almost_eq(voice_player.volume_db, -80.0, 0.01,
-		"muting the current character should affect an active voice immediately")
+	assert_almost_eq(voice_player.volume_db, 0.0, 0.01,
+		"muting must not double-apply gain at the active source")
+	assert_almost_eq(AudioServer.get_bus_volume_db(voice_bus_index), -80.0, 0.01,
+		"muting the current character should affect source and buffered tail immediately")
 
 	# An authored-level Tween remains valid across a live settings reset: every
 	# frame multiplies its level by the current setting instead of restoring a
@@ -286,7 +299,9 @@ func test_runtime_reset_immediately_reapplies_audio_defaults() -> void:
 		assert_almost_eq(player.volume_db, 0.0, 0.01)
 	assert_almost_eq(system_se_player.volume_db, 0.0, 0.01)
 	assert_almost_eq(voice_player.volume_db, 0.0, 0.01,
-		"reset clears the current character mute and volume overrides")
+		"the voice source remains unity-gain after settings reset")
+	assert_almost_eq(AudioServer.get_bus_volume_db(voice_bus_index), 0.0, 0.01,
+		"reset clears character overrides at the single post-effect authority")
 	assert_eq(_runtime.settings_manager.settings.character_voice_volume, {})
 	assert_eq(_runtime.settings_manager.settings.character_voice_enabled, {})
 

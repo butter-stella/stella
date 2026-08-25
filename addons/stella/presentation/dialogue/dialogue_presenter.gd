@@ -276,6 +276,8 @@ func _ready():
 	SignalBus.advance_dispatch_started.connect(_on_advance_dispatch_started)
 	SignalBus.voice_playback_event.connect(_on_voice_playback_event)
 	SignalBus.dialogue_voice_replay_requested.connect(_on_dialogue_voice_replay_requested)
+	SignalBus.dialogue_voice_segment_replay_requested.connect(
+		_on_dialogue_voice_segment_replay_requested)
 	SignalBus.scenario_started_event.connect(_on_scenario_started)
 	SignalBus.scene_changed_event.connect(_on_scene_changed)
 	SignalBus.scenario_ended_event.connect(_on_scenario_ended)
@@ -787,6 +789,32 @@ func _on_dialogue_voice_replay_requested(voices: Array, character: String) -> vo
 			"voice": String(v),
 		})
 	_request_voice_replay(character, segments, false)
+
+
+func _on_dialogue_voice_segment_replay_requested(
+	segments: Array,
+	character: String,
+) -> void:
+	if segments.is_empty():
+		return
+	var canonical_segments: Array = []
+	for segment_value: Variant in segments:
+		var selection := _voice_dsp_selection_for_segment(segment_value)
+		if not bool(selection.get("valid", false)):
+			return
+		var voice := String((segment_value as Dictionary).get("voice", ""))
+		if voice.is_empty():
+			return
+		canonical_segments.append({
+			"text": "",
+			"voice": voice,
+			"voice_dsp": String(selection.get("preset", "")),
+			"voice_dsp_line": int(
+				(segment_value as Dictionary).get("voice_dsp_line", 0)),
+			"stage_ops": [],
+			"stage_operation_lines": [],
+		})
+	_request_voice_replay(character, canonical_segments, false)
 
 
 ## Replay is audio-only: it never folds or redispatches authored stage cues.
@@ -2595,6 +2623,11 @@ func _run_voice_queue(
 			_retire_voice_queue_if_current(queue_gen)
 			return
 		var voice := String(seg.get("voice", ""))
+		var dsp_selection := _voice_dsp_selection_for_segment(seg)
+		if not bool(dsp_selection.get("valid", false)):
+			_retire_voice_queue_if_current(queue_gen)
+			return
+		var voice_dsp := String(dsp_selection.get("preset", ""))
 		var should_request_voice := (
 			voice != "" and not _should_skip_current())
 		previous_voice_token = -1
@@ -2603,7 +2636,13 @@ func _run_voice_queue(
 		if should_request_voice:
 			_current_voice = voice
 			var voice_response := SignalBus.request_voice_playback(
-				voice, character, owner_validator)
+				voice,
+				character,
+				owner_validator,
+				true,
+				voice_dsp,
+				dsp_selection.get("source", {}),
+			)
 			if not _voice_queue_is_current(owner_gen, queue_gen):
 				_retire_voice_queue_if_current(queue_gen)
 				return
@@ -2611,7 +2650,6 @@ func _run_voice_queue(
 				previous_voice_token = voice_response.get_playback_token()
 				previous_completion_state = voice_response.get_completion()
 				_playback_voice_token = previous_voice_token
-
 	# Wait for the LAST segment's voice to actually finish before declaring the
 	# whole dialogue voice playback done. Otherwise dialogue_voice_finished
 	# would fire the instant the last segment STARTS playing, hiding the
@@ -2636,6 +2674,47 @@ func _run_voice_queue(
 				return
 			if not _voice_queue_is_current(owner_gen, queue_gen):
 				return
+
+
+func _voice_dsp_selection_for_segment(segment: Variant) -> Dictionary:
+	if not segment is Dictionary:
+		push_error("DialoguePresenter: voice segment must be a Dictionary")
+		return {"valid": false}
+	var voice_value: Variant = (segment as Dictionary).get("voice", "")
+	var preset_value: Variant = (segment as Dictionary).get("voice_dsp", "")
+	if not voice_value is String or not preset_value is String:
+		push_error(
+			"DialoguePresenter: voice and voice_dsp segment fields must be Strings")
+		return {"valid": false}
+	var preset := String(preset_value)
+	if preset.is_empty():
+		return {"valid": true, "preset": "", "source": {}}
+	if String(voice_value).is_empty():
+		push_error("DialoguePresenter: voice_dsp requires a voice asset")
+		return {"valid": false}
+	if not VoiceDspChainDefinition.is_logical_preset_id(preset):
+		push_error("DialoguePresenter: voice_dsp must be a Stella logical preset id")
+		return {"valid": false}
+	var line_value: Variant = (segment as Dictionary).get("voice_dsp_line", 0)
+	if not line_value is int or int(line_value) < 0:
+		push_error("DialoguePresenter: voice_dsp source line must be a nonnegative int")
+		return {"valid": false}
+	var source_path := ""
+	var scenario_id := ""
+	var context: ScenarioContext = (
+		StellaRuntime.engine.context if StellaRuntime.engine != null else null)
+	if context != null and context.scenario_data != null:
+		source_path = context.scenario_data.source_path
+		scenario_id = context.scenario_data.id
+	return {
+		"valid": true,
+		"preset": preset,
+		"source": {
+			"source_path": source_path,
+			"scenario_id": scenario_id,
+			"line": int(line_value),
+		},
+	}
 
 
 func _apply_segment_presentation(

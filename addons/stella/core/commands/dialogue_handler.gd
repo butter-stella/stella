@@ -41,6 +41,8 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 		segments = [{
 			"text": data.get_string("text", ""),
 			"voice": data.get_string("voice", ""),
+			"voice_dsp": data.get_string("voice_dsp", ""),
+			"voice_dsp_line": data.get_int("voice_dsp_line", 0),
 			"stage_ops": data.params.get("stage_ops", []).duplicate(true),
 			"stage_operation_lines": data.params.get(
 				"stage_operation_lines", []).duplicate(),
