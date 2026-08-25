@@ -20,6 +20,7 @@ const CONFIGURED_TITLE_PROBE := "res://addons/stella/scenes/game.tscn"
 
 var _runtime: Node
 var _dialogue_requests: Array[DialogueRequest] = []
+var _owned_nodes: Array[Node] = []
 
 
 func before_each() -> void:
@@ -27,11 +28,34 @@ func before_each() -> void:
 	_runtime._navigation_scene_change_override = Callable()
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
 	_dialogue_requests.clear()
+	_owned_nodes.clear()
 
 
 func after_each() -> void:
 	_runtime._navigation_scene_change_override = Callable()
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
+	await _release_owned_nodes()
+	_dialogue_requests.clear()
+
+
+func _add_owned_node(node: Node) -> void:
+	_owned_nodes.append(node)
+	add_child_autoqfree(node)
+
+
+func _release_owned_nodes() -> void:
+	for node: Node in _owned_nodes:
+		if not is_instance_valid(node):
+			continue
+		if node.is_inside_tree():
+			var exited: Signal = node.tree_exited
+			if not node.is_queued_for_deletion():
+				node.queue_free()
+			await exited
+		elif is_instance_valid(node):
+			node.free()
+	_owned_nodes.clear()
+	await get_tree().process_frame
 
 
 func _wait_until(predicate: Callable, max_frames: int = 120) -> bool:
@@ -72,13 +96,13 @@ func _make_presenter(name: String) -> Control:
 	label.name = "Title"
 	presenter.add_child(label)
 	presenter.set("title_label_path", NodePath("Title"))
-	add_child_autoqfree(presenter)
+	_add_owned_node(presenter)
 	return presenter
 
 
 func test_rotated_capability_cannot_ack_an_old_request_snapshot() -> void:
 	var presenter := Node.new()
-	add_child_autoqfree(presenter)
+	_add_owned_node(presenter)
 	var authority := RefCounted.new()
 	var old_capability := RefCounted.new()
 	var new_capability := RefCounted.new()
@@ -744,7 +768,7 @@ func test_inherited_slot_owner_loss_blocks_the_second_scene_submit() -> void:
 func test_accepted_choice_backlog_restore_waits_for_new_scene_presenter() -> void:
 	_runtime.game_state.current_state = GameStateMachine.State.PLAYING
 	var old_game: Node = load("res://addons/stella/scenes/game.tscn").instantiate()
-	add_child_autoqfree(old_game)
+	_add_owned_node(old_game)
 	await get_tree().process_frame
 	var choice_shows := [0]
 	var dialogue_requests: Array[DialogueRequest] = []
@@ -788,7 +812,7 @@ func test_accepted_choice_backlog_restore_waits_for_new_scene_presenter() -> voi
 	old_game.queue_free()
 	await get_tree().process_frame
 	var new_game: Node = load("res://addons/stella/scenes/game.tscn").instantiate()
-	add_child_autoqfree(new_game)
+	_add_owned_node(new_game)
 	await get_tree().process_frame
 	var new_dialogue: Control = new_game.get_node("UILayer/DialoguePanel")
 	new_dialogue._char_interval = 0.0
@@ -813,7 +837,7 @@ func test_accepted_choice_backlog_restore_waits_for_new_scene_presenter() -> voi
 func test_accepted_choice_rollback_superseded_by_latest_failure_recovers_once() -> void:
 	_runtime.game_state.current_state = GameStateMachine.State.PLAYING
 	var old_game: Node = load("res://addons/stella/scenes/game.tscn").instantiate()
-	add_child_autoqfree(old_game)
+	_add_owned_node(old_game)
 	await get_tree().process_frame
 	var choice_shows := [0]
 	var dialogue_requests: Array[DialogueRequest] = []
@@ -862,7 +886,7 @@ func test_accepted_choice_rollback_superseded_by_latest_failure_recovers_once() 
 	old_game.queue_free()
 	await get_tree().process_frame
 	var new_game: Node = load("res://addons/stella/scenes/game.tscn").instantiate()
-	add_child_autoqfree(new_game)
+	_add_owned_node(new_game)
 	await get_tree().process_frame
 	_runtime._on_navigation_scene_changed()
 	assert_true(await _wait_until(func() -> bool: return choice_shows[0] == 2))
@@ -889,7 +913,7 @@ func test_accepted_choice_rollback_superseded_by_latest_failure_recovers_once() 
 func test_real_dialogue_scene_exit_cannot_poison_fresh_slot_recovery() -> void:
 	_runtime.game_state.current_state = GameStateMachine.State.PLAYING
 	var old_game: Node = load("res://addons/stella/scenes/game.tscn").instantiate()
-	add_child_autoqfree(old_game)
+	_add_owned_node(old_game)
 	await get_tree().process_frame
 	var old_dialogue: Control = old_game.get_node("UILayer/DialoguePanel")
 	old_dialogue._char_interval = 0.02
@@ -906,6 +930,7 @@ func test_real_dialogue_scene_exit_cannot_poison_fresh_slot_recovery() -> void:
 	_runtime.engine.run()
 	assert_true(await _wait_until(func() -> bool: return requests.size() == 1))
 	var old_activation: DialogueActivation = requests[0].get_activation()
+	var old_dialogue_generation: int = int(old_dialogue.get("_dialogue_gen"))
 	assert_true(old_activation.is_pending())
 
 	var first_navigation: int = _runtime._begin_navigation(
@@ -923,12 +948,19 @@ func test_real_dialogue_scene_exit_cannot_poison_fresh_slot_recovery() -> void:
 	var latest_navigation: int = _runtime._begin_navigation(
 		"real_dialogue_latest_failure", true)
 	_runtime._finish_navigation(latest_navigation)
+	var old_game_exited: Signal = old_game.tree_exited
 	old_game.queue_free()
-	await get_tree().process_frame
+	await old_game_exited
+	assert_gt(int(old_dialogue.get("_dialogue_gen")), old_dialogue_generation)
+	assert_eq((old_dialogue.get("_dialogue_timer_waiters") as Dictionary).size(), 0)
+	assert_eq((old_dialogue.get("_voice_event_waiters") as Dictionary).size(), 0)
+	assert_eq((old_dialogue.get("_next_frame_waiters") as Dictionary).size(), 0)
+	assert_eq((old_dialogue.get("_queued_dialogue_requests") as Array).size(), 0)
+	assert_eq((old_dialogue.get("_deferred_lifecycle_boundary") as Dictionary).size(), 0)
 	assert_false(retained_context.is_finished)
 	assert_eq(retained_context.current_command_index, 0)
 	var new_game: Node = load("res://addons/stella/scenes/game.tscn").instantiate()
-	add_child_autoqfree(new_game)
+	_add_owned_node(new_game)
 	await get_tree().process_frame
 	var new_dialogue: Control = new_game.get_node("UILayer/DialoguePanel")
 	new_dialogue._char_interval = 0.0
@@ -943,7 +975,17 @@ func test_real_dialogue_scene_exit_cannot_poison_fresh_slot_recovery() -> void:
 	assert_true(requests[1].get_activation().is_pending())
 	assert_same(new_dialogue.get("_current_dialogue_activation"),
 		requests[1].get_activation())
+	var replacement_activation: DialogueActivation = requests[1].get_activation()
 	_runtime.engine.cancel_current_run()
+	SignalBus.hide_dialogue.emit()
+	assert_false(replacement_activation.is_pending())
+	assert_null(new_dialogue.get("_current_dialogue_activation"))
+	assert_false(new_dialogue.get("_is_typing"))
+	assert_true((new_dialogue.get("_next_frame_waiters") as Dictionary).is_empty(),
+		"hard hide synchronously retires the accepted SHOW frame authority")
+	requests.clear()
+	old_activation = null
+	replacement_activation = null
 	SignalBus.dialogue_requested.disconnect(on_dialogue)
 	_runtime.engine.scenario_started.disconnect(on_started)
 
@@ -1039,7 +1081,7 @@ func test_reentrant_cut_projection_cannot_be_overwritten_by_old_fade_tail() -> v
 func test_skip_activation_tail_cannot_touch_the_fresh_real_dialogue_owner() -> void:
 	_runtime.game_state.current_state = GameStateMachine.State.PLAYING
 	var game: Node = load("res://addons/stella/scenes/game.tscn").instantiate()
-	add_child_autoqfree(game)
+	_add_owned_node(game)
 	await get_tree().process_frame
 	var dialogue: Control = game.get_node("UILayer/DialoguePanel")
 	var indicator: Control = game.get_node("UILayer/ChapterIndicator")

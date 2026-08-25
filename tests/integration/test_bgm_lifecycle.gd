@@ -6,19 +6,30 @@ const FailingBootstrap = preload(
 	"res://tests/fixtures/startup/failing_bootstrap.gd")
 const SOURCE_PATH := "res://synthetic/bgm_lifecycle.stla"
 const FIXTURE_PATH := "res://tests/fixtures/audio/bgm/"
+const STAGE_ASSET_ROOT := "res://tests/fixtures/stage/"
 
 var _runtime: Node
 var _audio: AudioPresenter
+var _stage_presenter: StagePresenter
 var _original_bgm_path: String
 var _original_se_path: String
 var _original_voice_path: String
+var _original_stage_assets_path := ""
+var _original_audio_playback_speed_scale := 1.0
 var _receipts: Array[Dictionary] = []
 var _terminals: Array[Dictionary] = []
 
 
 func before_each() -> void:
 	_runtime = get_tree().root.get_node("StellaRuntime")
+	_original_audio_playback_speed_scale = AudioServer.playback_speed_scale
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
+	_original_stage_assets_path = _runtime.stage_assets_path
+	_runtime.stage_assets_path = STAGE_ASSET_ROOT
+	_stage_presenter = StagePresenter.new()
+	_stage_presenter.name = "BgmLifecycleStagePresenter"
+	add_child_autoqfree(_stage_presenter)
+	await get_tree().process_frame
 	_audio = _runtime.get_node("AudioPresenter") as AudioPresenter
 	_audio._shutdown_quiesced = false
 	SignalBus._runtime_audio_shutdown_started = false
@@ -41,6 +52,8 @@ func after_each() -> void:
 	_runtime.bgm_path = _original_bgm_path
 	_runtime.se_path = _original_se_path
 	_runtime.voice_path = _original_voice_path
+	_runtime.stage_assets_path = _original_stage_assets_path
+	AudioServer.playback_speed_scale = _original_audio_playback_speed_scale
 	_runtime.skip_controller.is_active = false
 	_audio._shutdown_quiesced = false
 	SignalBus._runtime_audio_shutdown_started = false
@@ -225,6 +238,7 @@ func test_missing_or_invalid_resource_rejects_mixed_batch_atomically() -> void:
 			StagePresentationOperation.new({
 				"action": "show", "id": "atomic",
 				"properties": {"asset": "character:sakura/smile"},
+				"transition_params": {},
 				"transition": "cut", "duration": 0.0,
 			}, {"source_path": SOURCE_PATH, "line": 9}),
 			_operation("play", String(case["asset"]), String(case.get("cue", "")), 1.0, 0.0,
@@ -540,7 +554,8 @@ func test_invalid_or_unsupported_loop_regions_fail_mixed_preflight_atomically() 
 		var request := _submit([
 			StagePresentationOperation.new({
 				"action": "show", "id": "invalid_region",
-				"properties": {"asset": "stage:synthetic"},
+				"properties": {"asset": "stage:redraw_source"},
+				"transition_params": {},
 				"transition": "cut", "duration": 0.0,
 			}, {"source_path": SOURCE_PATH, "line": 109}),
 			_operation("play", "synthetic_loop_region_track", "", 1.0,
@@ -565,7 +580,8 @@ func test_invalid_or_unsupported_loop_regions_fail_mixed_preflight_atomically() 
 	var invalid_unused_cue := _submit([
 		StagePresentationOperation.new({
 			"action": "show", "id": "invalid_unused_cue",
-			"properties": {"asset": "stage:synthetic"},
+			"properties": {"asset": "stage:redraw_source"},
+			"transition_params": {},
 			"transition": "cut", "duration": 0.0,
 		}, {"source_path": SOURCE_PATH, "line": 119}),
 		_operation("play", "synthetic_loop_region_track", "", 1.0, 0.0, 120),
@@ -607,23 +623,34 @@ func test_explicit_end_is_shared_by_stems_and_mix_or_volume_never_restarts() -> 
 		assert_eq(child.loop_begin, 8820)
 		assert_eq(child.loop_end, 24255,
 			"every synchronized child receives the one shared region")
+	# Freeze wall-clock drift without changing the player's playing/paused state
+	# or the Presenter compatibility signature under measurement.
+	var measurement_speed := AudioServer.playback_speed_scale
+	AudioServer.playback_speed_scale = 0.000001
 	player.seek(0.4)
 	var cursor := player.get_playback_position()
 	var same_play := _submit([_operation(
 		"play", "synthetic_loop_region_stems", "", 0.6, 0.0, 122)])
-	assert_eq(same_play.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
-	assert_gt(same_play.get_batch_id(), 0,
-		"same-target play still performs positive resource preflight")
-	assert_same(_player(), player)
-	assert_same(_synchronized_stream(), synchronized)
-	assert_almost_eq(player.get_playback_position(), cursor, 0.015)
+	var same_player := _player()
+	var same_stream := _synchronized_stream()
+	var same_position := player.get_playback_position()
 	var mixed := _submit([_operation(
 		"mix", "", "", 1.0, 0.0, 123,
 		{"harmony": 0.25, "rhythm": 1.0})])
+	var mixed_player := _player()
+	var mixed_stream := _synchronized_stream()
+	var mixed_position := player.get_playback_position()
+	AudioServer.playback_speed_scale = measurement_speed
+	assert_eq(same_play.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_gt(same_play.get_batch_id(), 0,
+		"same-target play still performs positive resource preflight")
+	assert_same(same_player, player)
+	assert_same(same_stream, synchronized)
+	assert_almost_eq(same_position, cursor, 0.015)
 	assert_eq(mixed.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
-	assert_same(_player(), player)
-	assert_same(_synchronized_stream(), synchronized)
-	assert_almost_eq(player.get_playback_position(), cursor, 0.015)
+	assert_same(mixed_player, player)
+	assert_same(mixed_stream, synchronized)
+	assert_almost_eq(mixed_position, cursor, 0.015)
 
 
 func test_explicit_end_survives_pause_save_rollback_resume_and_restart_cursor() -> void:
@@ -1063,7 +1090,8 @@ func test_valid_hot_reload_schema_changes_fail_mixed_preflight_before_stage() ->
 		var rejected := _submit([
 			StagePresentationOperation.new({
 				"action": "show", "id": "schema_guard",
-				"properties": {"asset": "stage:synthetic"},
+				"properties": {"asset": "stage:redraw_source"},
+				"transition_params": {},
 				"transition": "cut", "duration": 0.0,
 			}, {"source_path": SOURCE_PATH, "line": 59}),
 			_operation("mix", "", "", 1.0, 0.0, 60,
@@ -1719,7 +1747,8 @@ func test_first_quiesce_invalidates_queued_preseal_mixed_audio_without_late_appl
 		queued_requests.append(_submit([
 			StagePresentationOperation.new({
 				"action": "show", "id": "queued_after_quit",
-				"properties": {"asset": "stage:synthetic"},
+				"properties": {"asset": "stage:redraw_source"},
+				"transition_params": {},
 				"transition": "cut", "duration": 0.0,
 			}, {"source_path": SOURCE_PATH, "line": 92}),
 			_operation("play", "synthetic_raw", "", 0.6, 0.0, 93),
@@ -1729,7 +1758,8 @@ func test_first_quiesce_invalidates_queued_preseal_mixed_audio_without_late_appl
 	var outer := _submit([
 		StagePresentationOperation.new({
 			"action": "show", "id": "preseal_before_quit",
-			"properties": {"asset": "stage:synthetic"},
+			"properties": {"asset": "stage:redraw_source"},
+			"transition_params": {},
 			"transition": "cut", "duration": 0.0,
 		}, {"source_path": SOURCE_PATH, "line": 90}),
 		_operation("play", "synthetic_track", "", 0.7, 0.0, 91),

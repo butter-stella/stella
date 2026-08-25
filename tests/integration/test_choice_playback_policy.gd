@@ -49,6 +49,9 @@ func after_each() -> void:
 		if is_instance_valid(viewport):
 			viewport.queue_free()
 	await get_tree().process_frame
+	_contexts.clear()
+	_viewports.clear()
+	_connections.clear()
 
 
 func test_four_setting_combinations_keep_independent_three_phase_state() -> void:

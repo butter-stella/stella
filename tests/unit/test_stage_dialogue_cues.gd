@@ -8,6 +8,9 @@ var _original_skip_active: bool
 var _original_auto_active: bool
 var _original_voice_enabled: Dictionary
 var _original_presentation_snapshot: Dictionary
+var _original_engine: ScenarioEngine
+var _original_stage_assets_path := ""
+var _original_backgrounds_path := ""
 
 
 func before_each() -> void:
@@ -26,6 +29,20 @@ func before_each() -> void:
 	StellaRuntime.skip_controller.is_active = false
 	StellaRuntime.auto_play.is_active = false
 	StellaRuntime.set_setting("character_voice_enabled", {})
+	_original_engine = StellaRuntime.engine
+	_original_stage_assets_path = StellaRuntime.stage_assets_path
+	_original_backgrounds_path = StellaRuntime.backgrounds_path
+	StellaRuntime.stage_assets_path = "res://examples/demo/art/stage/"
+	StellaRuntime.backgrounds_path = "res://examples/demo/art/backgrounds/"
+	var scenario := ScenarioData.new()
+	scenario.id = "stage_dialogue_cues"
+	scenario.source_path = "res://tests/fixtures/scenarios/stage_dialogue_cues.stla"
+	var scene := SceneData.new()
+	scene.id = "start"
+	scenario.scenes.append(scene)
+	var test_engine := ScenarioEngine.new()
+	test_engine.context = ScenarioContext.new(scenario)
+	StellaRuntime.engine = test_engine
 	_game_scene = load("res://addons/stella/scenes/game.tscn").instantiate()
 	add_child_autoqfree(_game_scene)
 	await get_tree().process_frame
@@ -43,6 +60,9 @@ func after_each() -> void:
 	StellaRuntime.presentation_state.restore_snapshot(
 		_original_presentation_snapshot
 	)
+	StellaRuntime.engine = _original_engine
+	StellaRuntime.stage_assets_path = _original_stage_assets_path
+	StellaRuntime.backgrounds_path = _original_backgrounds_path
 
 
 func _stage_op(
@@ -51,12 +71,21 @@ func _stage_op(
 	properties: Dictionary = {},
 	transition: String = "cut",
 	duration: float = 0.0,
+	transition_params: Dictionary = {},
 ) -> Dictionary:
+	var spec := StageTransitionSpec.canonicalize(
+		transition, transition_params)
+	var canonical_transition := transition
+	var canonical_params := transition_params.duplicate(true)
+	if bool(spec.get("valid", false)):
+		canonical_transition = String(spec.get("kind", transition))
+		canonical_params = (spec.get("params", {}) as Dictionary).duplicate(true)
 	return {
 		"action": action,
 		"id": layer_id,
 		"properties": properties,
-		"transition": transition,
+		"transition_params": canonical_params,
+		"transition": canonical_transition,
 		"duration": duration,
 	}
 
@@ -76,6 +105,146 @@ func _open_synthetic_dialogue_voice_session() -> void:
 	_dialogue._playback_total_duration = 1.0
 
 
+func test_projection_cues_use_typed_director_and_preserve_segment_order() -> void:
+	var presenter := _game_scene.get_node("StageLayer") as StagePresenter
+	var raw_batches: Array[Dictionary] = []
+	var receipts: Array[Dictionary] = []
+	var on_stage := func(operations: Array, force_cut: bool) -> void:
+		raw_batches.append({
+			"operations": operations.duplicate(true),
+			"force_cut": force_cut,
+		})
+	var on_receipt := func(
+		presenter_id: int,
+		layer_id: String,
+		token: int,
+		operation_request_id: int,
+		generation: int,
+	) -> void:
+		if presenter_id == presenter.get_instance_id():
+			receipts.append({
+				"presenter_instance_id": presenter_id,
+				"layer_id": layer_id,
+				"token": token,
+				"operation_request_id": operation_request_id,
+				"generation": generation,
+			})
+	SignalBus.stage_operations_requested.connect(on_stage)
+	SignalBus.stage_transition_receipt_started.connect(on_receipt)
+	var first_id: int = _dialogue._apply_segment_presentation({
+		"stage_ops": [_stage_op(
+			"show",
+			"typed_combine",
+			{"asset": "background:bg_cafe"},
+			"rule",
+			10.0,
+			{"mask": "stage:masks/diagonal"},
+		)],
+		"stage_operation_lines": [31],
+	}, false)
+	var second_id: int = _dialogue._apply_segment_presentation({
+		"stage_ops": [_stage_op(
+			"update",
+			"typed_combine",
+			{"opacity": 0.5},
+			"mosaic",
+			10.0,
+		)],
+		"stage_operation_lines": [37],
+	}, false)
+	assert_gt(first_id, 0)
+	assert_gt(second_id, first_id)
+	assert_eq(raw_batches.size(), 2)
+	assert_eq(raw_batches[0]["operations"][0]["transition"], "rule")
+	assert_eq(raw_batches[1]["operations"][0]["transition"], "mosaic")
+	assert_false(bool(raw_batches[0]["force_cut"]))
+	assert_false(bool(raw_batches[1]["force_cut"]))
+	assert_eq(presenter.get_layer_state("typed_combine")["opacity"], 0.5)
+	assert_eq(receipts.size(), 2)
+	assert_true(_dialogue._stage_operation_request_owners.is_empty())
+	assert_true(_dialogue._stage_operation_request_results.is_empty())
+	SignalBus.stage_transition_receipts_finish_requested.emit(
+		receipts.duplicate(true))
+	SignalBus.stage_transition_receipt_started.disconnect(on_receipt)
+	SignalBus.stage_operations_requested.disconnect(on_stage)
+
+
+func test_projection_cue_failure_is_source_located_and_owner_clean() -> void:
+	var presenter := _game_scene.get_node("StageLayer") as StagePresenter
+	var before := presenter._states.duplicate(true)
+	var raw_batches := [0]
+	var on_stage := func(_operations: Array, _force_cut: bool) -> void:
+		raw_batches[0] += 1
+	SignalBus.stage_operations_requested.connect(on_stage)
+	var request_id: int = _dialogue._apply_segment_presentation({
+		"stage_ops": [_stage_op(
+			"show",
+			"missing_combine",
+			{"asset": "background:bg_cafe"},
+			"rule",
+			1.0,
+			{"mask": "stage:masks/definitely_missing"},
+		)],
+		"stage_operation_lines": [45],
+	}, false)
+	assert_push_error(
+		"res://tests/fixtures/scenarios/stage_dialogue_cues.stla:45")
+	assert_push_error("[runtime] Stage request rejected: presenter ")
+	assert_gt(request_id, 0)
+	assert_eq(raw_batches[0], 0)
+	assert_eq(presenter._states, before)
+	assert_true(presenter._layer_tweens.is_empty())
+	assert_true(presenter._layer_transition_projections.is_empty())
+	assert_true(_dialogue._stage_operation_request_owners.is_empty())
+	assert_true(_dialogue._stage_operation_request_results.is_empty())
+	SignalBus.stage_operations_requested.disconnect(on_stage)
+
+
+func test_force_cut_combine_still_validates_projection_and_sidecar() -> void:
+	var presenter := _game_scene.get_node("StageLayer") as StagePresenter
+	var raw_batches: Array[Dictionary] = []
+	var receipts := [0]
+	var on_stage := func(operations: Array, force_cut: bool) -> void:
+		raw_batches.append({
+			"operations": operations.duplicate(true),
+			"force_cut": force_cut,
+		})
+	var on_receipt := func(_p: int, _l: String, _t: int, _r: int, _g: int) -> void:
+		receipts[0] += 1
+	SignalBus.stage_operations_requested.connect(on_stage)
+	SignalBus.stage_transition_receipt_started.connect(on_receipt)
+	_dialogue._apply_segment_presentation({
+		"stage_ops": [_stage_op(
+			"show",
+			"cut_combine",
+			{"asset": "background:bg_cafe"},
+			"mosaic",
+			10.0,
+		)],
+		"stage_operation_lines": [58],
+	}, true)
+	assert_eq(raw_batches.size(), 1)
+	assert_true(bool(raw_batches[0]["force_cut"]))
+	assert_eq(raw_batches[0]["operations"][0]["transition"], "mosaic")
+	assert_eq(receipts[0], 0)
+	assert_true(presenter._layer_tweens.is_empty())
+	assert_true(presenter._layer_transition_projections.is_empty())
+	var malformed_id: int = _dialogue._apply_segment_presentation({
+		"stage_ops": [_stage_op(
+			"update", "cut_combine", {"opacity": 0.25}, "mosaic", 0.0)],
+		"stage_operation_lines": [],
+	}, true)
+	assert_push_error("source-line sidecar is malformed")
+	assert_gt(malformed_id, 0)
+	assert_eq(raw_batches.size(), 1)
+	assert_true(_dialogue._stage_operation_request_owners.is_empty())
+	assert_true(_dialogue._stage_operation_request_results.is_empty())
+	assert_true((StellaRuntime.presentation_director as PresentationDirector)
+		._pending_request_reservations.is_empty())
+	SignalBus.stage_transition_receipt_started.disconnect(on_receipt)
+	SignalBus.stage_operations_requested.disconnect(on_stage)
+
+
 func test_owned_stage_reentrant_show_retires_old_lifecycle_and_transition() -> void:
 	var presenter := _game_scene.get_node("StageLayer") as StagePresenter
 	SignalBus.show_dialogue.emit("", [{
@@ -83,7 +252,7 @@ func test_owned_stage_reentrant_show_retires_old_lifecycle_and_transition() -> v
 	}], "adv")
 	_open_synthetic_dialogue_voice_session()
 	SignalBus.emit_stage_operations([
-		_stage_op("show", "owned", {"asset": "stage:bg_cafe"}),
+		_stage_op("show", "owned", {"asset": "background:bg_cafe"}),
 	], true)
 
 	var presenter_callback := Callable(presenter, "_on_stage_operations_requested")
@@ -113,6 +282,7 @@ func test_owned_stage_reentrant_show_retires_old_lifecycle_and_transition() -> v
 		"stage_ops": [_stage_op(
 			"update", "owned", {"opacity": 0.25}, "fade", 10.0
 		)],
+		"stage_operation_lines": [273],
 	}, false, 0, 1, _dialogue._playback_queue_gen)
 
 	assert_true(replacement_requested[0])
@@ -159,10 +329,11 @@ func test_owned_stage_reentrant_hide_unwinds_before_following_show() -> void:
 		"stage_ops": [_stage_op(
 			"show",
 			"hide_owned",
-			{"asset": "stage:bg_cafe"},
+			{"asset": "background:bg_cafe"},
 			"fade",
 			10.0,
 		)],
+		"stage_operation_lines": [319],
 	}, false, 0, 1, _dialogue._playback_queue_gen)
 
 	assert_true(hide_requested[0])
@@ -190,10 +361,11 @@ func test_finalization_queued_show_beats_finished_listener_backlog_replay() -> v
 		"stage_ops": [_stage_op(
 			"show",
 			"final_owned",
-			{"asset": "stage:bg_cafe"},
+			{"asset": "background:bg_cafe"},
 			"fade",
 			10.0,
 		)],
+		"stage_operation_lines": [350],
 	}]
 	_dialogue._next_stage_segment_index = 0
 	_dialogue._segment_presentation_complete = false
@@ -247,10 +419,11 @@ func test_exit_during_final_stage_dispatch_retires_deferred_lifecycle() -> void:
 		"stage_ops": [_stage_op(
 			"show",
 			"exit_owned",
-			{"asset": "stage:bg_cafe"},
+			{"asset": "background:bg_cafe"},
 			"fade",
 			10.0,
 		)],
+		"stage_operation_lines": [407],
 	}]
 	_dialogue._next_stage_segment_index = 0
 	_dialogue._segment_presentation_complete = false
@@ -330,8 +503,8 @@ func test_replay_does_not_dispatch_remaining_stage_until_advance() -> void:
 	_dialogue._dialogue_segments = [
 		{"text": "one", "voice": "narration_001", "stage_ops": []},
 		{"text": "two", "voice": "", "stage_ops": [
-			_stage_op("show", "remaining", {"asset": "stage:bg_cafe"}),
-		]},
+			_stage_op("show", "remaining", {"asset": "background:bg_cafe"}),
+		], "stage_operation_lines": [493]},
 	]
 	_dialogue._dialogue_voice_character = ""
 	_dialogue._next_stage_segment_index = 1
@@ -371,8 +544,9 @@ func test_stage_dispatch_defers_replay_and_queued_show_wins() -> void:
 	SignalBus.stage_operations_requested.connect(on_stage)
 	SignalBus.show_dialogue.emit("", [{
 		"text": "old", "voice": "", "stage_ops": [
-			_stage_op("show", "dispatching", {"asset": "stage:bg_cafe"}),
+			_stage_op("show", "dispatching", {"asset": "background:bg_cafe"}),
 		],
+		"stage_operation_lines": [534],
 	}], "adv")
 
 	assert_true(requested[0])
@@ -398,7 +572,8 @@ func test_segment_stage_batch_is_emitted_before_voice():
 	var segments := [{
 		"text": "cue",
 		"voice": "sakura_013",
-		"stage_ops": [_stage_op("show", "hero", {"asset": "stage:hero"})],
+		"stage_ops": [_stage_op("show", "hero", {"asset": "background:bg_cafe"})],
+		"stage_operation_lines": [561],
 	}]
 
 	SignalBus.show_dialogue.emit("sakura", segments, "adv")
@@ -418,11 +593,11 @@ func test_missing_or_muted_voice_cannot_block_later_stage_cues():
 	SignalBus.stage_operations_requested.connect(callback)
 	var segments := [
 		{"text": "one", "voice": "__missing", "stage_ops": [
-			_stage_op("show", "first", {"asset": "stage:first"}),
-		]},
+			_stage_op("show", "first", {"asset": "background:bg_cafe"}),
+		], "stage_operation_lines": [581]},
 		{"text": "two", "voice": "sakura_013", "stage_ops": [
-			_stage_op("show", "second", {"asset": "stage:second"}),
-		]},
+			_stage_op("show", "second", {"asset": "background:bg_cafe"}),
+		], "stage_operation_lines": [584]},
 	]
 	StellaRuntime.set_setting("character_voice_enabled", {"sakura": false})
 
@@ -440,8 +615,14 @@ func test_finalize_emits_only_operations_from_undispatched_segments():
 		batches.append([operations.duplicate(true), force_cut])
 	SignalBus.stage_operations_requested.connect(callback)
 	var segments := [
-		{"stage_ops": [_stage_op("update", "hero", {"opacity": 0.2})]},
-		{"stage_ops": [_stage_op("show", "hero", {"asset": "stage:hero"})]},
+		{
+			"stage_ops": [_stage_op("update", "hero", {"opacity": 0.2})],
+			"stage_operation_lines": [603],
+		},
+		{
+			"stage_ops": [_stage_op("show", "hero", {"asset": "background:bg_cafe"})],
+			"stage_operation_lines": [604],
+		},
 	]
 	_dialogue._next_stage_segment_index = 1
 
@@ -459,8 +640,14 @@ func test_finalize_never_replays_fully_dispatched_non_idempotent_batch():
 	var callback = func(operations, _force_cut): batches.append(operations)
 	SignalBus.stage_operations_requested.connect(callback)
 	var segments := [
-		{"stage_ops": [_stage_op("update", "hero", {"opacity": 0.2})]},
-		{"stage_ops": [_stage_op("show", "hero", {"asset": "stage:hero"})]},
+		{
+			"stage_ops": [_stage_op("update", "hero", {"opacity": 0.2})],
+			"stage_operation_lines": [622],
+		},
+		{
+			"stage_ops": [_stage_op("show", "hero", {"asset": "background:bg_cafe"})],
+			"stage_operation_lines": [623],
+		},
 	]
 	_dialogue._next_stage_segment_index = segments.size()
 
@@ -480,12 +667,13 @@ func test_normal_advance_force_cuts_an_already_dispatched_final_tween():
 	SignalBus.stage_operations_requested.connect(operation_callback)
 	SignalBus.stage_transitions_finish_requested.connect(finish_callback)
 	SignalBus.emit_stage_operations([
-		_stage_op("show", "hero", {"asset": "stage:bg_cafe"}),
+		_stage_op("show", "hero", {"asset": "background:bg_cafe"}),
 	], true)
 	var segment := {
 		"stage_ops": [_stage_op(
 			"update", "hero", {"position": [640.0, 360.0]}, "move", 1.0
 		)],
+		"stage_operation_lines": [647],
 	}
 	_dialogue._apply_segment_presentation(segment, false)
 	operation_batches.clear()
@@ -512,13 +700,17 @@ func test_synchronous_completion_cannot_replay_the_current_segment():
 	var segments := [{
 		"text": "",
 		"voice": "",
-		"stage_ops": [
-			_stage_op("update", "newcomer", {"opacity": 0.2}),
-			_stage_op("show", "newcomer"),
-		],
+		"stage_ops": [_stage_op("show", "newcomer", {"opacity": 0.2})],
+		"stage_operation_lines": [676],
 	}]
 	_dialogue._dialogue_segments = segments.duplicate(true)
 	var presenter := _game_scene.get_node("StageLayer") as StagePresenter
+	var raw_dispatches := [0]
+	var on_stage := func(operations: Array, _force_cut: bool) -> void:
+		for operation: Dictionary in operations:
+			if String(operation.get("id", "")) == "newcomer":
+				raw_dispatches[0] += 1
+	SignalBus.stage_operations_requested.connect(on_stage)
 	presenter.layer_transition_finished.connect(func(layer_id: String):
 		if layer_id == "newcomer":
 			_dialogue.finalize_current_dialogue_for_advance()
@@ -527,11 +719,17 @@ func test_synchronous_completion_cannot_replay_the_current_segment():
 	_dialogue._start_voice_playback(
 		"", segments, _dialogue._dialogue_gen, false, true)
 
-	assert_eq(
-		StellaRuntime.presentation_state.stage_layers["newcomer"]["opacity"],
-		1.0,
-		"update-before-show must not be reduced a second time during re-entry",
+	assert_eq(raw_dispatches[0], 1,
+		"synchronous finalization must not redispatch the current segment")
+	assert_true(StellaRuntime.presentation_state.stage_layers.has("newcomer"))
+	assert_almost_eq(
+		float(StellaRuntime.presentation_state.stage_layers["newcomer"]["opacity"]),
+		0.2,
+		0.001,
 	)
+	assert_true(_dialogue._segment_presentation_complete)
+	assert_true(_dialogue._stage_operation_request_owners.is_empty())
+	SignalBus.stage_operations_requested.disconnect(on_stage)
 
 
 func test_early_stage_listener_defers_finalize_until_presenter_consumes_batch():
@@ -549,8 +747,9 @@ func test_early_stage_listener_defers_finalize_until_presenter_consumes_batch():
 		"text": "",
 		"voice": "",
 		"stage_ops": [_stage_op(
-			"show", "hero", {"asset": "stage:bg_cafe"}, "fade", 1.0
+			"show", "hero", {"asset": "background:bg_cafe"}, "fade", 1.0
 		)],
+		"stage_operation_lines": [712],
 	}]
 	_dialogue._dialogue_segments = segments.duplicate(true)
 
@@ -584,10 +783,11 @@ func test_complete_typewriter_during_stage_dispatch_finishes_late_tween() -> voi
 		"stage_ops": [_stage_op(
 			"show",
 			"completion_owned",
-			{"asset": "stage:bg_cafe"},
+			{"asset": "background:bg_cafe"},
 			"fade",
 			10.0,
 		)],
+		"stage_operation_lines": [745],
 	}], "adv")
 
 	assert_true(completed[0])
@@ -632,10 +832,11 @@ func test_raw_advance_finalizes_retiring_stage_before_queued_show() -> void:
 			"stage_ops": [_stage_op(
 				"show",
 				"retiring_stage",
-				{"asset": "stage:bg_cafe"},
+				{"asset": "background:bg_cafe"},
 				"fade",
 				10.0,
 			)],
+			"stage_operation_lines": [793],
 		},
 		{
 			"text": "tail",
@@ -643,10 +844,11 @@ func test_raw_advance_finalizes_retiring_stage_before_queued_show() -> void:
 			"stage_ops": [_stage_op(
 				"show",
 				"retiring_tail",
-				{"asset": "stage:bg_cafe"},
+				{"asset": "background:bg_cafe"},
 				"fade",
 				10.0,
 			)],
+			"stage_operation_lines": [804],
 		},
 	], "adv")
 
@@ -695,10 +897,11 @@ func test_queued_batch_keeps_dispatch_guard_until_late_presenter_finishes() -> v
 			"stage_ops": [_stage_op(
 				"show",
 				"queued_owned",
-				{"asset": "stage:bg_cafe"},
+				{"asset": "background:bg_cafe"},
 				"fade",
 				10.0,
 			)],
+			"stage_operation_lines": [856],
 		}], "adv")
 	SignalBus.stage_operations_requested.connect(outer_callback)
 
@@ -733,10 +936,11 @@ func test_reset_cancellation_stops_queued_dialogue_stage_and_voice() -> void:
 			"stage_ops": [_stage_op(
 				"show",
 				"must_not_land",
-				{"asset": "stage:bg_cafe"},
+				{"asset": "background:bg_cafe"},
 				"fade",
 				10.0,
 			)],
+			"stage_operation_lines": [894],
 		}], _dialogue._dialogue_gen, false, true)
 		SignalBus.reset_stage_visuals()
 	SignalBus.stage_operations_requested.connect(outer_callback)
@@ -764,8 +968,9 @@ func test_force_cut_completion_cannot_reenter_final_batch():
 	SignalBus.stage_operations_requested.connect(operation_callback)
 	_dialogue._dialogue_segments = [{
 		"stage_ops": [_stage_op(
-			"show", "hero", {"asset": "stage:bg_cafe"}, "fade", 1.0
+			"show", "hero", {"asset": "background:bg_cafe"}, "fade", 1.0
 		)],
+		"stage_operation_lines": [927],
 	}]
 	presenter.layer_transition_finished.connect(func(layer_id: String):
 		if layer_id == "hero":
@@ -783,7 +988,7 @@ func test_force_cut_completion_cannot_reenter_final_batch():
 func test_animated_clear_tracks_and_finishes_a_pending_remove_visual():
 	var presenter := _game_scene.get_node("StageLayer") as StagePresenter
 	SignalBus.emit_stage_operations([
-		_stage_op("show", "ghost", {"asset": "stage:bg_cafe"}),
+		_stage_op("show", "ghost", {"asset": "background:bg_cafe"}),
 	], true)
 	SignalBus.emit_stage_operations([
 		_stage_op("remove", "ghost", {}, "fade", 10.0),
@@ -794,6 +999,7 @@ func test_animated_clear_tracks_and_finishes_a_pending_remove_visual():
 		"text": "",
 		"voice": "",
 		"stage_ops": [_stage_op("clear", "", {}, "fade", 1.0)],
+		"stage_operation_lines": [956],
 	}]
 	_dialogue._dialogue_segments = segments.duplicate(true)
 
@@ -814,7 +1020,7 @@ func test_animated_clear_tracks_and_finishes_a_pending_remove_visual():
 func test_nested_generic_stage_request_is_not_owned_by_dialogue_batch():
 	var presenter := _game_scene.get_node("StageLayer") as StagePresenter
 	SignalBus.emit_stage_operations([
-		_stage_op("show", "hero", {"asset": "stage:bg_cafe"}),
+		_stage_op("show", "hero", {"asset": "background:bg_cafe"}),
 	], true)
 	var dialogue_callback := Callable(_dialogue, "_on_stage_transition_started")
 	SignalBus.stage_transition_started.disconnect(dialogue_callback)
@@ -849,6 +1055,7 @@ func test_nested_generic_stage_request_is_not_owned_by_dialogue_batch():
 		"stage_ops": [_stage_op(
 			"update", "hero", {"opacity": 0.5}, "fade", 10.0
 		)],
+		"stage_operation_lines": [1010],
 	}
 	_dialogue._dialogue_segments = [segment.duplicate(true)]
 	_dialogue._next_stage_segment_index = 1
@@ -892,8 +1099,9 @@ func test_reentrant_new_dialogue_prevents_stale_avatar_and_ui_projection():
 		"text": "[expr:sad]OLD",
 		"voice": "",
 		"stage_ops": [_stage_op(
-			"show", "old_stage", {"asset": "stage:bg_cafe"}, "fade", 10.0
+			"show", "old_stage", {"asset": "background:bg_cafe"}, "fade", 10.0
 		)],
+		"stage_operation_lines": [1055],
 	}], "adv")
 
 	assert_true(reentered[0])
@@ -924,10 +1132,11 @@ func test_stale_outer_dispatch_drains_new_dialogue_pending_finalization():
 				"stage_ops": [_stage_op(
 					"show",
 					"new_stage",
-					{"asset": "stage:bg_cafe"},
+					{"asset": "background:bg_cafe"},
 					"fade",
 					10.0,
 				)],
+				"stage_operation_lines": [1085],
 			}], "adv")
 		elif layer_id == "new_stage" and not requested_finalize[0]:
 			requested_finalize[0] = true
@@ -940,10 +1149,11 @@ func test_stale_outer_dispatch_drains_new_dialogue_pending_finalization():
 		"stage_ops": [_stage_op(
 			"show",
 			"outer_stage",
-			{"asset": "stage:bg_cafe"},
+			{"asset": "background:bg_cafe"},
 			"fade",
 			10.0,
 		)],
+		"stage_operation_lines": [1101],
 	}], "adv")
 
 	assert_true(reentered[0])
@@ -976,10 +1186,11 @@ func test_reentrant_voice_started_cannot_run_stale_segment_presentation():
 		"stage_ops": [_stage_op(
 			"show",
 			"stale_stage",
-			{"asset": "stage:bg_cafe"},
+			{"asset": "background:bg_cafe"},
 			"fade",
 			10.0,
 		)],
+		"stage_operation_lines": [1137],
 	}], "adv")
 
 	assert_true(reentered[0])
@@ -1014,6 +1225,7 @@ func test_early_reentrant_show_waits_for_late_stage_presenter_listener():
 				"move",
 				10.0,
 			)],
+			"stage_operation_lines": [1171],
 		}], "adv")
 	SignalBus.stage_operations_requested.connect(early_callback)
 	SignalBus.stage_operations_requested.connect(presenter_callback)
@@ -1024,10 +1236,11 @@ func test_early_reentrant_show_waits_for_late_stage_presenter_listener():
 		"stage_ops": [_stage_op(
 			"show",
 			"shared",
-			{"asset": "stage:bg_cafe"},
+			{"asset": "background:bg_cafe"},
 			"fade",
 			10.0,
 		)],
+		"stage_operation_lines": [1185],
 	}], "adv")
 
 	assert_true(reentered[0])
@@ -1055,7 +1268,7 @@ func test_early_reentrant_show_waits_for_late_stage_presenter_listener():
 func test_dialogue_batch_queued_by_external_stage_dispatch_keeps_ownership():
 	var presenter := _game_scene.get_node("StageLayer") as StagePresenter
 	SignalBus.emit_stage_operations([
-		_stage_op("show", "hero", {"asset": "stage:bg_cafe"}),
+		_stage_op("show", "hero", {"asset": "background:bg_cafe"}),
 	], true)
 	var opened_dialogue := [false]
 	var external_callback = func(operations: Array, _force_cut: bool):
@@ -1074,6 +1287,7 @@ func test_dialogue_batch_queued_by_external_stage_dispatch_keeps_ownership():
 				"move",
 				10.0,
 			)],
+			"stage_operation_lines": [1231],
 		}], "adv")
 	SignalBus.stage_operations_requested.connect(external_callback)
 
@@ -1108,10 +1322,11 @@ func test_finalize_folds_a_dialogue_batch_that_has_not_dispatched_yet():
 			"stage_ops": [_stage_op(
 				"show",
 				"authored_final",
-				{"asset": "stage:bg_cafe"},
+				{"asset": "background:bg_cafe"},
 				"fade",
 				10.0,
 			)],
+			"stage_operation_lines": [1269],
 		}], "adv")
 		finalized[0] = true
 		_dialogue.finalize_current_dialogue_for_advance()

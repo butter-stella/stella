@@ -50,6 +50,7 @@ func _operation(layer_id: String, properties: Dictionary) -> Dictionary:
 		"action": "show",
 		"id": layer_id,
 		"properties": properties,
+		"transition_params": {},
 		"transition": "cut",
 		"duration": 0.0,
 	}

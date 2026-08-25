@@ -30,6 +30,7 @@ var _translations: Array[Translation] = []
 var _original_locale := ""
 var _temporary_connections: Array[Dictionary] = []
 var _hostile_payload_count := 0
+var _owned_nodes: Array[Node] = []
 
 
 func before_each() -> void:
@@ -43,6 +44,7 @@ func before_each() -> void:
 	_chapter_events.clear()
 	_scenario_started_count = 0
 	_hostile_payload_count = 0
+	_owned_nodes.clear()
 	_original_locale = TranslationServer.get_locale()
 	SignalBus.dialogue_requested.connect(_on_dialogue_requested)
 	SignalBus.scenario_started_event.connect(_on_scenario_started)
@@ -76,6 +78,29 @@ func after_each() -> void:
 	_runtime.delete_quick_save()
 	_runtime.delete_auto_save()
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
+	await _release_owned_nodes()
+	_dialogue_requests.clear()
+	_chapter_events.clear()
+
+
+func _add_owned_node(node: Node) -> void:
+	_owned_nodes.append(node)
+	add_child_autoqfree(node)
+
+
+func _release_owned_nodes() -> void:
+	for node: Node in _owned_nodes:
+		if not is_instance_valid(node):
+			continue
+		if node.is_inside_tree():
+			var exited: Signal = node.tree_exited
+			if not node.is_queued_for_deletion():
+				node.queue_free()
+			await exited
+		elif is_instance_valid(node):
+			node.free()
+	_owned_nodes.clear()
+	await get_tree().process_frame
 
 
 func _on_dialogue_requested(request: DialogueRequest) -> void:
@@ -170,6 +195,16 @@ func _assert_chapter(
 	assert_eq(bool(_runtime.call("is_chapter_indicator_visible")), expected_visible)
 
 
+func _chapter_indicator_participant_ids() -> Array[int]:
+	var result: Array[int] = []
+	for participant: Dictionary in SignalBus._chapter_indicator_participant_snapshot():
+		var presenter: Object = participant.get("presenter")
+		if presenter != null:
+			result.append(presenter.get_instance_id())
+	result.sort()
+	return result
+
+
 func _add_translation(locale: String, key: String, value: String) -> void:
 	var translation := Translation.new()
 	translation.locale = locale
@@ -191,7 +226,7 @@ func _make_presenter(name: String = "ProjectChapterIndicator") -> Dictionary:
 	label.name = "ProjectOwnedTitle"
 	presenter.add_child(label)
 	presenter.set("title_label_path", NodePath("ProjectOwnedTitle"))
-	add_child_autoqfree(presenter)
+	_add_owned_node(presenter)
 	return {"root": presenter, "label": label}
 
 
@@ -540,6 +575,9 @@ func test_programmatic_orphan_scene_keeps_authored_target_until_metadata_exists(
 func test_confirmed_title_clears_then_continue_restores_auto_saved_target() -> void:
 	if not _require_contract():
 		return
+	var expected_title_scene: PackedScene = _runtime.resolve_title_scene()
+	var expected_title_scene_path: String = expected_title_scene.resource_path
+	var baseline_participant_ids: Array[int] = _chapter_indicator_participant_ids()
 	assert_true(await _start_fixture(LIFECYCLE_PATH))
 	assert_true(await _advance_to_next_dialogue())
 	_assert_chapter("prologue", "chapter.contract.prologue", true)
@@ -558,6 +596,23 @@ func test_confirmed_title_clears_then_continue_restores_auto_saved_target() -> v
 	assert_true(await _wait_until(
 		func() -> bool: return _dialogue_requests.size() > request_count))
 	_assert_chapter("prologue", "chapter.contract.prologue", true)
+
+	_runtime.return_to_title()
+	assert_true(await _wait_until(
+		func() -> bool: return not _runtime._return_to_title_pending))
+	assert_eq(
+		_runtime.game_state.current_state, GameStateMachine.State.TITLE,
+		"fixture cleanup must restore the public title state",
+	)
+	assert_not_null(get_tree().current_scene)
+	assert_eq(
+		get_tree().current_scene.scene_file_path, expected_title_scene_path,
+		"fixture cleanup must re-enter the configured title scene",
+	)
+	assert_eq(
+		_chapter_indicator_participant_ids(), baseline_participant_ids,
+		"the continue fixture must retire its real game Presenter before teardown",
+	)
 
 
 func test_mutating_one_listener_payload_cannot_change_quorum_or_other_skins() -> void:
@@ -767,7 +822,7 @@ func test_semantic_and_existing_physical_inputs_complete_only_the_fade() -> void
 		var input_script: Script = load(
 			"res://addons/stella/presentation/input/input_handler.gd")
 		var input_handler: Node = input_script.new()
-		add_child_autoqfree(input_handler)
+		_add_owned_node(input_handler)
 		await get_tree().process_frame
 		assert_true(await _start_transition_and_wait_for_commit(
 			TRANSITION_PATH, [presenter]))

@@ -3,7 +3,7 @@ extends GutTest
 ##
 ## Sources are deliberately synthetic. Valid blocks compile to one addressable
 ## command while every invalid block fails closed without leaking child stage
-## commands. The legacy @stage, @parallel, and @combine surfaces remain intact.
+## commands. The existing @stage, @parallel, and @combine surfaces remain intact.
 
 
 const SOURCE_PATH := "res://tests/fixtures/scenarios/stage_batch/parser_probe.stla"
@@ -103,7 +103,7 @@ func test_join_block_compiles_one_exact_ordered_command() -> void:
 	), ["a", "b", "c"], "child source order is preserved")
 	for operation_value: Variant in operations:
 		assert_eq(_sorted_keys(operation_value as Dictionary), [
-			"action", "duration", "id", "properties", "transition",
+			"action", "duration", "id", "properties", "transition", "transition_params",
 		])
 	assert_eq(operations[0]["action"], "show")
 	assert_eq(operations[1]["properties"]["position"], [42.0, 24.0])
@@ -376,16 +376,16 @@ func test_batch_requires_an_active_scene() -> void:
 	assert_true(_has_error_at(chapter_gap, "scene", 2))
 
 
-func test_legacy_stage_parallel_and_combine_are_not_reinterpreted() -> void:
+func test_existing_stage_parallel_and_combine_are_not_reinterpreted() -> void:
 	var data := _parse("""@chapter synthetic
 @scene start
-@stage legacy show asset=stage:redraw_source
+@stage standalone show asset=stage:redraw_source
 @parallel
 @bg off
 @end
 @combine
 @stage cue update face=stage:redraw_source
-「legacy cue」
+「existing cue」
 @end""")
 	assert_eq(_error_diagnostics(data), [], str(data.diagnostics))
 	var commands := _all_commands(data)
@@ -393,6 +393,11 @@ func test_legacy_stage_parallel_and_combine_are_not_reinterpreted() -> void:
 		func(command: CommandData) -> String: return command.type
 	), ["stage_layer", "parallel", "dialogue"])
 	assert_eq(_batch_commands(data), [],
-		"#164 does not alias any legacy composition spelling")
+		"#164 does not reinterpret any existing composition spelling")
 	assert_eq(commands[2].params["segments"][0]["stage_ops"].size(), 1,
 		"@combine keeps its private segment cue semantics")
+	assert_eq(
+		commands[2].params["segments"][0]["stage_operation_lines"].size(),
+		1,
+		"@combine preserves one exact authored line per private Stage cue",
+	)

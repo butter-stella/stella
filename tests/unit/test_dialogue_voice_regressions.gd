@@ -10,6 +10,18 @@ func before_each():
 	await get_tree().process_frame
 
 
+func after_each() -> void:
+	if is_instance_valid(_game_scene):
+		var scene_exited: Signal = _game_scene.tree_exited
+		_game_scene.queue_free()
+		await scene_exited
+		# Tree exit wakes the stale SHOW continuation. Cross its next main-thread
+		# boundary so the test-owned ExpressionTimeline local releases before GUT
+		# snapshots this test's orphan state.
+		await get_tree().process_frame
+	_game_scene = null
+
+
 func _get_stage_presenter() -> StagePresenter:
 	return _game_scene.get_node("StageLayer") as StagePresenter
 
@@ -21,6 +33,191 @@ func _open_logical_voice_session(dialogue: Control) -> void:
 	dialogue._playback_dialogue_finished_emitted = false
 	dialogue._playback_aborted = false
 	dialogue._playback_queue_active = true
+
+
+func _record_queue_wait(
+	dialogue: Control,
+	expected_token: int,
+	completion: VoicePlaybackCompletion,
+	dialogue_gen: int,
+	queue_gen: int,
+	results: Array[bool],
+) -> void:
+	results.append(await dialogue._wait_for_voice_playback_finished(
+		expected_token, completion, dialogue_gen, queue_gen))
+
+
+func _record_auto_wait(
+	dialogue: Control,
+	dialogue_gen: int,
+	attempt: int,
+	results: Array[bool],
+) -> void:
+	results.append(await dialogue._wait_for_active_voice_finished(
+		dialogue_gen, attempt))
+
+
+func _record_next_frame_wait(
+	dialogue: Control,
+	dialogue_gen: int,
+	results: Array[bool],
+) -> void:
+	results.append(await dialogue._await_owned_next_frame(
+		dialogue_gen, &"show"))
+
+
+func _configure_owned_queue(dialogue: Control) -> Dictionary:
+	var dialogue_gen: int = dialogue._dialogue_gen
+	var queue_gen: int = dialogue._publish_next_voice_queue_generation()
+	dialogue._playback_owner_dialogue_gen = dialogue_gen
+	dialogue._playback_queue_active = true
+	dialogue._playback_aborted = false
+	return {"dialogue_gen": dialogue_gen, "queue_gen": queue_gen}
+
+
+func test_voice_event_waiters_exit_settles_queue_and_auto_without_an_event() -> void:
+	var dialogue := _game_scene.get_node("UILayer/DialoguePanel") as Control
+	var queue := _configure_owned_queue(dialogue)
+	var queue_results: Array[bool] = []
+	_record_queue_wait(
+		dialogue,
+		71,
+		VoicePlaybackCompletion.new(),
+		queue["dialogue_gen"],
+		queue["queue_gen"],
+		queue_results,
+	)
+	dialogue._voice_playing = true
+	dialogue._active_voice_token = 72
+	dialogue._auto_attempt_serial += 1
+	var auto_attempt: int = dialogue._auto_attempt_serial
+	dialogue._auto_pending_dialogue_gen = queue["dialogue_gen"]
+	dialogue._auto_pending_attempt = auto_attempt
+	var auto_results: Array[bool] = []
+	_record_auto_wait(
+		dialogue, queue["dialogue_gen"], auto_attempt, auto_results)
+	assert_eq(dialogue._voice_event_waiters.size(), 2)
+	var waiter_authority: Dictionary = dialogue._voice_event_waiters
+
+	dialogue.free()
+
+	assert_eq(queue_results, [false])
+	assert_eq(auto_results, [false])
+	assert_true(waiter_authority.is_empty(),
+		"tree exit erases waiter authority before waking continuations")
+
+
+func test_next_frame_waiter_exit_settles_false_and_erases_authority() -> void:
+	var dialogue := _game_scene.get_node("UILayer/DialoguePanel") as Control
+	var results: Array[bool] = []
+	_record_next_frame_wait(dialogue, dialogue._dialogue_gen, results)
+	assert_eq(dialogue._next_frame_waiters.size(), 1)
+	var waiter_authority: Dictionary = dialogue._next_frame_waiters
+
+	dialogue.free()
+
+	assert_eq(results, [false])
+	assert_true(waiter_authority.is_empty(),
+		"tree exit erases the next-frame authority before waking SHOW")
+
+
+func test_next_frame_waiter_rejects_unknown_purpose_without_authority() -> void:
+	var dialogue := _game_scene.get_node("UILayer/DialoguePanel") as Control
+	var result: bool = await dialogue._await_owned_next_frame(
+		dialogue._dialogue_gen, &"unknown")
+
+	assert_false(result)
+	assert_true(dialogue._next_frame_waiters.is_empty())
+
+
+func test_replacement_generation_cancels_only_the_old_next_frame_waiter() -> void:
+	var dialogue := _game_scene.get_node("UILayer/DialoguePanel") as Control
+	var old_results: Array[bool] = []
+	_record_next_frame_wait(dialogue, dialogue._dialogue_gen, old_results)
+	var replacement_gen: int = dialogue._publish_next_dialogue_generation()
+	assert_eq(old_results, [false])
+	assert_true(dialogue._next_frame_waiters.is_empty())
+
+	var replacement_results: Array[bool] = []
+	_record_next_frame_wait(dialogue, replacement_gen, replacement_results)
+	assert_eq(dialogue._next_frame_waiters.size(), 1)
+	await get_tree().process_frame
+
+	assert_eq(replacement_results, [true],
+		"the disconnected old callback cannot consume the replacement waiter")
+	assert_true(dialogue._next_frame_waiters.is_empty())
+
+
+func test_next_frame_waiter_natural_frame_settles_true_exactly_once() -> void:
+	var dialogue := _game_scene.get_node("UILayer/DialoguePanel") as Control
+	var results: Array[bool] = []
+	_record_next_frame_wait(dialogue, dialogue._dialogue_gen, results)
+
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+	assert_eq(results, [true])
+	assert_true(dialogue._next_frame_waiters.is_empty())
+
+
+func test_invalid_event_rewait_is_not_consumed_twice_by_outer_delivery() -> void:
+	var dialogue := _game_scene.get_node("UILayer/DialoguePanel") as Control
+	var queue := _configure_owned_queue(dialogue)
+	var results: Array[bool] = []
+	_record_queue_wait(
+		dialogue,
+		81,
+		VoicePlaybackCompletion.new(),
+		queue["dialogue_gen"],
+		queue["queue_gen"],
+		results,
+	)
+	assert_eq(dialogue._voice_event_waiters.size(), 1)
+
+	SignalBus.emit_voice_playback_event(VoicePlaybackEvent.finished(80))
+
+	assert_eq(results, [])
+	assert_eq(dialogue._voice_event_waiters.size(), 1,
+		"the invalid event wakes the old wait, whose re-wait survives the outer snapshot")
+	SignalBus.emit_voice_playback_event(VoicePlaybackEvent.finished(81))
+	assert_eq(results, [true])
+	assert_true(dialogue._voice_event_waiters.is_empty())
+
+
+func test_replaced_queue_cannot_complete_its_successor() -> void:
+	var dialogue := _game_scene.get_node("UILayer/DialoguePanel") as Control
+	var old_queue := _configure_owned_queue(dialogue)
+	var old_results: Array[bool] = []
+	_record_queue_wait(
+		dialogue,
+		91,
+		VoicePlaybackCompletion.new(),
+		old_queue["dialogue_gen"],
+		old_queue["queue_gen"],
+		old_results,
+	)
+	var new_queue_gen: int = dialogue._publish_next_voice_queue_generation()
+	assert_eq(old_results, [false])
+	assert_true(dialogue._voice_event_waiters.is_empty())
+	dialogue._playback_owner_dialogue_gen = old_queue["dialogue_gen"]
+	dialogue._playback_queue_active = true
+	dialogue._playback_aborted = false
+	var new_results: Array[bool] = []
+	_record_queue_wait(
+		dialogue,
+		92,
+		VoicePlaybackCompletion.new(),
+		old_queue["dialogue_gen"],
+		new_queue_gen,
+		new_results,
+	)
+
+	SignalBus.emit_voice_playback_event(VoicePlaybackEvent.finished(91))
+	assert_eq(new_results, [])
+	assert_eq(dialogue._voice_event_waiters.size(), 1)
+	SignalBus.emit_voice_playback_event(VoicePlaybackEvent.finished(92))
+	assert_eq(new_results, [true])
+	assert_true(dialogue._voice_event_waiters.is_empty())
 
 
 func test_voice_handler_enters_the_typed_request_path() -> void:
@@ -64,6 +261,8 @@ func test_logical_voice_finishes_once_on_advance_show_and_hide() -> void:
 	assert_eq(finished[0], 3, "hard hide closes the current logical voice")
 	SignalBus.hide_dialogue.emit()
 	assert_eq(finished[0], 3, "repeated hide cannot emit duplicate FINISH")
+	assert_true(dialogue._next_frame_waiters.is_empty(),
+		"hard hide synchronously retires the replacement SHOW frame authority")
 	SignalBus.dialogue_voice_finished.disconnect(on_finished)
 
 
@@ -439,6 +638,7 @@ func test_backlog_replay_does_not_change_named_stage_layers():
 		"action": "show",
 		"id": "sakura",
 		"properties": {"asset": "character:sakura/happy"},
+		"transition_params": {},
 		"transition": "cut",
 		"duration": 0.0,
 	}], true)

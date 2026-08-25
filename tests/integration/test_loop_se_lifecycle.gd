@@ -3,9 +3,12 @@ extends GutTest
 
 const RuntimeTestSupport = preload("res://tests/helpers/runtime_test_support.gd")
 const SOURCE_PATH := "res://synthetic/loop_se_lifecycle.stla"
+const STAGE_ASSET_ROOT := "res://tests/fixtures/stage/"
 
 var _runtime: Node
 var _audio: AudioPresenter
+var _stage_presenter: StagePresenter
+var _original_stage_assets_path := ""
 var _receipts: Array[Dictionary] = []
 var _terminals: Array[Dictionary] = []
 var _loop_state_apply_count := 0
@@ -14,6 +17,12 @@ var _loop_state_apply_count := 0
 func before_each() -> void:
 	_runtime = get_tree().root.get_node("StellaRuntime")
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
+	_original_stage_assets_path = _runtime.stage_assets_path
+	_runtime.stage_assets_path = STAGE_ASSET_ROOT
+	_stage_presenter = StagePresenter.new()
+	_stage_presenter.name = "LoopSeLifecycleStagePresenter"
+	add_child_autoqfree(_stage_presenter)
+	await get_tree().process_frame
 	_audio = _runtime.get_node("AudioPresenter") as AudioPresenter
 	_receipts.clear()
 	_terminals.clear()
@@ -32,6 +41,7 @@ func after_each() -> void:
 		SignalBus.loop_se_state_apply_requested.disconnect(_on_loop_state_apply)
 	_runtime.skip_controller.is_active = false
 	_runtime.auto_play.is_active = false
+	_runtime.stage_assets_path = _original_stage_assets_path
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
 
 
@@ -151,7 +161,8 @@ func test_missing_second_resource_rejects_mixed_batch_before_any_mutation() -> v
 	var operations: Array[PresentationOperation] = [
 		StagePresentationOperation.new({
 			"action": "show", "id": "atomic",
-			"properties": {"asset": "stage:any"},
+			"properties": {"asset": "stage:redraw_source"},
+			"transition_params": {},
 			"transition": "cut", "duration": 0.0,
 		}, {"source_path": SOURCE_PATH, "line": 9}),
 		_operation("ambience", "play", "definitely_missing", 1.0, 0.0, 10),

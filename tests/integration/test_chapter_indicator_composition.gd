@@ -2,6 +2,11 @@ extends GutTest
 ## Synthetic composed acceptance gate for issue #170.
 
 const SOURCE_PATH := "res://tests/fixtures/scenarios/chapter_indicator/composition.stla"
+const STAGE_ASSET_ROOT := "res://tests/fixtures/stage/"
+
+var _stage_runtime: Node
+var _stage_presenter: StagePresenter
+var _original_stage_assets_path := ""
 
 
 func _parse(source: String) -> ScenarioData:
@@ -15,6 +20,17 @@ func _runtime() -> Node:
 
 func before_each() -> void:
 	SignalBus.reset_chapter_indicator_presentation()
+	_stage_runtime = get_tree().root.get_node("StellaRuntime")
+	_original_stage_assets_path = _stage_runtime.stage_assets_path
+	_stage_runtime.stage_assets_path = STAGE_ASSET_ROOT
+	_stage_presenter = StagePresenter.new()
+	_stage_presenter.name = "ChapterCompositionStagePresenter"
+	add_child_autoqfree(_stage_presenter)
+	await get_tree().process_frame
+
+
+func after_each() -> void:
+	_stage_runtime.stage_assets_path = _original_stage_assets_path
 
 
 func _make_presenter(valid_binding: bool = true) -> Control:
@@ -35,6 +51,7 @@ func _stage_show(layer_id: String) -> StagePresentationOperation:
 	return StagePresentationOperation.new({
 		"action": "show", "id": layer_id,
 		"properties": {"asset": "stage:redraw_source"},
+		"transition_params": {},
 		"transition": "cut", "duration": 0.0,
 	}, {"source_path": SOURCE_PATH, "line": 40})
 
@@ -191,6 +208,7 @@ func test_preapply_chapter_rejection_does_not_project_or_retire_prior_owners() -
 		StagePresentationOperation.new({
 			"action": "show", "id": "preflight_prior_stage",
 			"properties": {"asset": "stage:redraw_source"},
+			"transition_params": {},
 			"transition": "fade", "duration": 30.0,
 		}, {"source_path": SOURCE_PATH, "line": 82}),
 		DialogueVisibilityPresentationOperation.new({
@@ -665,12 +683,29 @@ func test_composed_join_seals_and_acknowledges_three_channels() -> void:
 	var director := PresentationDirector.new(state, func() -> bool: return false)
 	var context := ScenarioContext.new(ScenarioData.new())
 	var started: Array[Dictionary] = []
+	var stage_exact: Dictionary = {}
+	var stage_raw_notifications := [0]
 	var on_stage := func(_operations: Array, _force_cut: bool) -> void:
-		var request_id := SignalBus.current_stage_operation_request_id()
-		var record := {"request_id": request_id, "token": 11, "generation": 21}
-		started.append(record)
-		SignalBus.stage_transition_receipt_started.emit(
-			970171, "hero", 11, request_id, 21)
+		stage_raw_notifications[0] += 1
+	var on_stage_receipt := func(
+		presenter_instance_id: int,
+		layer_id: String,
+		token: int,
+		operation_request_id: int,
+		generation: int,
+	) -> void:
+		if (
+			presenter_instance_id != _stage_presenter.get_instance_id()
+			or layer_id != "hero"
+		):
+			return
+		stage_exact.assign({
+			"presenter_instance_id": presenter_instance_id,
+			"layer_id": layer_id,
+			"token": token,
+			"operation_request_id": operation_request_id,
+			"generation": generation,
+		})
 	var on_dialogue := func(_operations: Array, _force_cut: bool) -> void:
 		var request_id := SignalBus.current_dialogue_visibility_request_id()
 		var record := {"request_id": request_id, "token": 12, "generation": 22}
@@ -678,11 +713,13 @@ func test_composed_join_seals_and_acknowledges_three_channels() -> void:
 		SignalBus.dialogue_visibility_transition_receipt_started.emit(
 			970172, "surface", 12, request_id, 22)
 	SignalBus.stage_operations_requested.connect(on_stage)
+	SignalBus.stage_transition_receipt_started.connect(on_stage_receipt)
 	SignalBus.dialogue_visibility_operations_requested.connect(on_dialogue)
 	var operations: Array[PresentationOperation] = [
 		StagePresentationOperation.new({
 			"action": "show", "id": "hero",
 			"properties": {"asset": "stage:redraw_source"},
+			"transition_params": {},
 			"transition": "fade", "duration": 10.0,
 		}),
 		ChapterIndicatorPresentationOperation.new({
@@ -697,6 +734,7 @@ func test_composed_join_seals_and_acknowledges_three_channels() -> void:
 		operations, PresentationBatchRequest.Policy.JOIN, context,
 		{"source_path": SOURCE_PATH, "line": 20})
 	SignalBus.stage_operations_requested.disconnect(on_stage)
+	SignalBus.stage_transition_receipt_started.disconnect(on_stage_receipt)
 	SignalBus.dialogue_visibility_operations_requested.disconnect(on_dialogue)
 	assert_false(request.is_settled())
 	var channels: Array[String] = []
@@ -714,10 +752,13 @@ func test_composed_join_seals_and_acknowledges_three_channels() -> void:
 	assert_eq(channels.count("dialogue:surface"), 1)
 	assert_true(chapter_presenter_receipt_found,
 		"the composed receipt union includes the exact synthetic participant")
-	SignalBus.stage_transition_terminal.emit(
-		970171, "hero", 11, started[0]["request_id"], 21, &"completed")
+	assert_eq(stage_raw_notifications[0], 1)
+	assert_eq(stage_exact.size(), 5)
+	if stage_exact.size() == 5:
+		SignalBus.stage_transition_receipts_finish_requested.emit(
+			[stage_exact.duplicate(true)])
 	SignalBus.dialogue_visibility_transition_terminal.emit(
-		970172, "surface", 12, started[1]["request_id"], 22, &"completed")
+		970172, "surface", 12, started[0]["request_id"], 22, &"completed")
 	SignalBus.chapter_indicator_finish_requested.emit(request.get_batch_id())
 	assert_true(request.is_settled())
 	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)

@@ -457,6 +457,9 @@ func test_apply_stage_operations_deep_copies_caller_batch():
 				{"type": "blur", "radius": [2, 0]},
 			],
 		},
+		"transition": "cut",
+		"transition_params": {},
+		"duration": 0.0,
 	}]
 	runtime.apply_stage_operations(operations, true)
 	operations[0]["properties"]["asset"] = "changed-after-emit"
@@ -471,6 +474,52 @@ func test_apply_stage_operations_deep_copies_caller_batch():
 	assert_eq(received[0][0]["properties"]["redraw"][2]["radius"], [2, 0])
 	SignalBus.stage_operations_requested.disconnect(callback)
 	runtime.clear_stage_layers()
+
+
+func test_apply_stage_operations_rejects_noncanonical_raw_stage_payloads():
+	var runtime = get_tree().root.get_node("StellaRuntime")
+	var received: Array = []
+	var finished: Array = []
+	var on_operations := func(operations: Array, _force_cut: bool) -> void:
+		received.append(operations.duplicate(true))
+	var on_finished := func(request_id: int, delivered: bool) -> void:
+		finished.append({"request_id": request_id, "delivered": delivered})
+	SignalBus.stage_operations_requested.connect(on_operations)
+	SignalBus.stage_operation_request_finished.connect(on_finished)
+	var canonical := {
+		"action": "show",
+		"id": "raw_contract",
+		"properties": {"asset": "stage:flash"},
+		"transition": "cut",
+		"transition_params": {},
+		"duration": 0.0,
+	}
+	var invalid_payloads: Array[Dictionary] = []
+	var missing_params: Dictionary = canonical.duplicate(true)
+	missing_params.erase("transition_params")
+	invalid_payloads.append(missing_params)
+	var wrong_params: Dictionary = canonical.duplicate(true)
+	wrong_params["transition_params"] = "not-a-dictionary"
+	invalid_payloads.append(wrong_params)
+	var noncanonical_transition: Dictionary = canonical.duplicate(true)
+	noncanonical_transition["transition"] = "none"
+	invalid_payloads.append(noncanonical_transition)
+	var before: Dictionary = runtime.presentation_state.stage_layers.duplicate(true)
+	for payload: Dictionary in invalid_payloads:
+		runtime.apply_stage_operations([payload], true)
+	assert_eq(received.size(), 0)
+	assert_eq(finished.size(), 3)
+	for result: Dictionary in finished:
+		assert_gt(int(result.get("request_id", 0)), 0)
+		assert_false(bool(result.get("delivered", true)))
+	assert_eq(runtime.presentation_state.stage_layers, before)
+	assert_push_warning("operation is missing transition_params")
+	assert_push_warning("transition_params must be a Dictionary")
+	assert_push_warning("transition is not canonical")
+	for _index in range(3):
+		assert_push_warning("rejected invalid stage operation batch")
+	SignalBus.stage_operation_request_finished.disconnect(on_finished)
+	SignalBus.stage_operations_requested.disconnect(on_operations)
 
 
 func test_named_stage_facade_canonicalizes_layer_id_whitespace():
@@ -504,6 +553,7 @@ func test_show_save_load_transitions_state():
 	runtime.show_save_load()
 	assert_eq(runtime.game_state.current_state, GameStateMachine.State.SAVE_LOAD)
 	runtime.close_overlay()
+	await get_tree().process_frame
 
 
 func test_show_settings_transitions_state():
@@ -609,6 +659,16 @@ func test_continue_game_falls_back_to_config_scenario_path():
 	runtime._cancel_active_gameplay()
 	runtime._prepare_scenario(runtime.config.scenario_path)
 	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	# This test deliberately exercises continue from the in-game branch. Model
+	# that state honestly: a playing Stella scene owns a normally registered
+	# StagePresenter before the resumed scenario reaches its first @stage cue.
+	var live_stage_presenter := StagePresenter.new()
+	add_child(live_stage_presenter)
+	var live_presenter_id := live_stage_presenter.get_instance_id()
+	assert_true(SignalBus._stage_participant_snapshot().any(
+		func(participant: Dictionary) -> bool:
+			return (participant.get("presenter") as Object) == live_stage_presenter
+	))
 	runtime.quick_save()
 	assert_true(runtime.has_continue_save(), "continue_game setup must create a continue save")
 	assert_eq(runtime.save_manager.get_latest_continue_type(), "quick",
@@ -646,6 +706,16 @@ func test_continue_game_falls_back_to_config_scenario_path():
 	assert_ne(runtime._last_scenario_path, "", "continue_game should resolve scenario path from config")
 	runtime._cancel_active_gameplay()
 	await get_tree().process_frame
+	live_stage_presenter.free()
+	await get_tree().process_frame
+	assert_false(SignalBus._stage_participant_snapshot().any(
+		func(participant: Dictionary) -> bool:
+			var presenter: Object = participant.get("presenter")
+			return (
+				presenter != null
+				and presenter.get_instance_id() == live_presenter_id
+			)
+	), "fixture StagePresenter must unregister before the next facade test")
 	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
 
 	# Clean up
@@ -776,6 +846,7 @@ func test_show_save_load_from_title():
 	runtime.show_save_load("load")
 	assert_eq(runtime.game_state.current_state, GameStateMachine.State.SAVE_LOAD)
 	runtime.close_overlay()
+	await get_tree().process_frame
 
 
 ## --- Load from title: overlay must not interfere with scene change ---
@@ -786,6 +857,7 @@ func test_continue_from_save_overlay_not_closed_before_scene_change():
 	# Verify: calling continue_from_save does NOT synchronously close the overlay.
 	# The overlay must survive until after the first await (scene change).
 	var runtime = get_tree().root.get_node("StellaRuntime")
+	var stage_participant_baseline := _stage_participant_ids()
 	var orig_path = runtime._last_scenario_path
 	runtime._last_scenario_path = runtime.config.scenario_path
 
@@ -886,6 +958,19 @@ func test_continue_from_save_overlay_not_closed_before_scene_change():
 		"test cleanup must not report an aborted scenario as completed")
 	assert_eq(runtime.game_state.current_state, GameStateMachine.State.PLAYING,
 		"test cleanup must not leak a return_to_title transition")
+	runtime.return_to_title()
+	var returned_to_title: bool = await wait_until(
+		func() -> bool: return not runtime._return_to_title_pending,
+		2.0,
+		"continue_from_save cleanup confirms the title scene",
+	)
+	assert_true(returned_to_title)
+	assert_not_null(get_tree().current_scene,
+		"continue_from_save cleanup must retain a concrete title scene")
+	assert_eq(runtime.game_state.current_state, GameStateMachine.State.TITLE)
+	assert_true(runtime._is_on_title_screen())
+	assert_eq(_stage_participant_ids(), stage_participant_baseline,
+		"the loaded game StagePresenter must unregister on scene exit")
 	if runtime.engine.scenario_ended.is_connected(scenario_ended):
 		runtime.engine.scenario_ended.disconnect(scenario_ended)
 	if SignalBus.show_dialogue.is_connected(dialogue_started):
@@ -895,10 +980,19 @@ func test_continue_from_save_overlay_not_closed_before_scene_change():
 	SignalBus.hide_dialogue.emit()
 	runtime._close_current_overlay()
 	runtime.presentation_state.clear()
-	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
 	runtime._last_scenario_path = orig_path
 	runtime.delete_save(60)
 	_disconnect_game_presenters()
+
+
+func _stage_participant_ids() -> Array[int]:
+	var result: Array[int] = []
+	for participant: Dictionary in SignalBus._stage_participant_snapshot():
+		var presenter: Object = participant.get("presenter")
+		if presenter != null:
+			result.append(presenter.get_instance_id())
+	result.sort()
+	return result
 
 
 ## Helper: disconnect game scene presenters from SignalBus to prevent test contamination.

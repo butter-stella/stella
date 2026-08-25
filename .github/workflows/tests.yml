@@ -306,7 +306,9 @@ jobs:
       - name: Run tests
         env:
           STELLA_DISABLE_LOCAL_CONFIG: "1"
-        run: godot -s addons/gut/gut_cmdln.gd --headless 2>&1
+        run: >-
+          godot --audio-driver Dummy
+          -s addons/gut/gut_cmdln.gd --headless 2>&1
         timeout-minutes: 5
 
   rendering:
@@ -360,6 +362,7 @@ jobs:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
         run: >-
           xvfb-run -a godot --path . --rendering-method mobile
+          --audio-driver Dummy
           -s addons/gut/gut_cmdln.gd -gconfig=
           -gdir=res://tests/rendering -gexit 2>&1
         timeout-minutes: 5

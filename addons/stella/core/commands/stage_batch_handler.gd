@@ -3,7 +3,7 @@ class_name StageBatchHandler extends CommandHandler
 
 const EXACT_PARAM_KEYS := ["operation_lines", "operations", "policy"]
 const EXACT_OPERATION_KEYS := [
-	"action", "duration", "id", "properties", "transition",
+	"action", "duration", "id", "properties", "transition", "transition_params",
 ]
 
 var _director: PresentationDirector
@@ -43,16 +43,20 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 			int(validation.get("line", data.declared_line if data != null else 0)),
 		)
 		return
-	if bool(validation.get("no_work", false)):
-		return
 	if _director == null:
 		_fail_context(data, context, "PresentationDirector is unavailable")
 		return
 
 	var typed_operations: Array[PresentationOperation] = []
-	for operation_value: Variant in validation["operations"]:
+	for operation_index in range((validation["operations"] as Array).size()):
+		var operation_value: Variant = validation["operations"][operation_index]
+		var operation_source := _source(data, context)
+		operation_source["line"] = int(
+			(data.params["operation_lines"] as Array)[operation_index])
 		typed_operations.append(StagePresentationOperation.new(
-			(operation_value as Dictionary).duplicate(true)))
+			(operation_value as Dictionary).duplicate(true),
+			operation_source,
+		))
 	var policy := (
 		PresentationBatchRequest.Policy.JOIN
 		if String(validation["policy"]) == "join"
@@ -174,7 +178,7 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 		if operation_keys != EXACT_OPERATION_KEYS:
 			return {
 				"valid": false,
-				"error": "operation must use the canonical five-field schema",
+				"error": "operation must use the canonical six-field schema",
 				"line": line,
 			}
 		if (
@@ -182,6 +186,7 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 			or not operation["id"] is String
 			or not operation["properties"] is Dictionary
 			or not operation["transition"] is String
+			or not operation["transition_params"] is Dictionary
 			or not (
 				operation["duration"] is float
 				or operation["duration"] is int
@@ -211,12 +216,6 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 			return {
 				"valid": false,
 				"error": "operation action is not canonical",
-				"line": line,
-			}
-		if String(operation["transition"]) not in StageLayerState.VALID_TRANSITIONS:
-			return {
-				"valid": false,
-				"error": "operation transition is not canonical",
 				"line": line,
 			}
 		if not StageLayerState.validate_operation(operation, false):
@@ -274,7 +273,9 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 		"operations": operations.duplicate(true),
 		"before_state": before_state,
 		"target_state": simulated,
-		"no_work": simulated == before_state and not saw_clear,
+		# Every authored Stage run reaches the participant gate, including a
+		# same-target update, so resource/provider bindings cannot be skipped.
+		"no_work": false,
 	}
 
 

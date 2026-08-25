@@ -6,7 +6,7 @@
 class_name PresentationDirector extends RefCounted
 
 const EXACT_STAGE_OPERATION_KEYS := [
-	"action", "duration", "id", "properties", "transition",
+	"action", "duration", "id", "properties", "transition", "transition_params",
 ]
 const EXACT_DIALOGUE_VISIBILITY_KEYS := [
 	"action", "duration", "target", "transition",
@@ -24,9 +24,11 @@ const EXACT_BGM_KEYS := [
 ]
 
 var _authority := RefCounted.new()
+var _reservation_authority := RefCounted.new()
 var _presentation_state: PresentationState
 var _skip_active: Callable
 var _entries: Dictionary = {}
+var _pending_request_reservations: Dictionary = {}
 var _external_blockers: Dictionary = {}
 var _generation: int = 1
 var _dialogue_visibility_reset_allows_next_apply: bool = false
@@ -100,12 +102,25 @@ func submit(
 	policy: PresentationBatchRequest.Policy,
 	context: ScenarioContext,
 	source: Dictionary,
+	explicit_force_cut: bool = false,
+	reservation: PresentationRequestReservation = null,
+	on_dispatch_started: Callable = Callable(),
 ) -> PresentationBatchRequest:
 	var authored: Array = []
 	for operation: PresentationOperation in operations:
 		authored.append(operation)
 	var request := PresentationBatchRequest.new(policy, authored)
 	request._bind_authority(_authority)
+	var request_id := 0
+	if reservation != null:
+		request_id = _consume_request_reservation(reservation)
+		if request_id <= 0:
+			_report_submit_error(
+				_diagnostic_source(source),
+				"presentation request reservation is not active and owned by this Director",
+			)
+			request._settle(PresentationBatchRequest.Outcome.FAILED, _authority)
+			return request
 	if not _context_accepts_submission(context):
 		_report_submit_error(
 			_diagnostic_source(source),
@@ -133,7 +148,8 @@ func submit(
 			request._settle(PresentationBatchRequest.Outcome.COMPLETED, _authority)
 			return request
 
-	var request_id := SignalBus.reserve_stage_operation_request_id()
+	if request_id <= 0:
+		request_id = SignalBus.reserve_stage_operation_request_id()
 	var entry := {
 		"request_id": request_id,
 		"request": request,
@@ -205,33 +221,87 @@ func submit(
 		entry["context_cancel"] = on_context_cancel
 		context.cancellation_requested.connect(on_context_cancel, CONNECT_ONE_SHOT)
 
-	var force_cut := _is_skip_active()
-	var stage_only := true
-	var stage_payloads: Array = []
-	var stage_channels: Array[StringName] = []
-	for operation: PresentationOperation in operations:
-		if operation is StagePresentationOperation:
-			stage_payloads.append(operation.get_payload())
-			stage_channels.append(operation.get_channel())
-		else:
-			stage_only = false
-			break
-	if stage_only:
-		var on_stage_apply_started := func() -> void:
-			_on_presentation_operation_apply_started(
-				request_id, stage_channels)
-		SignalBus.emit_stage_operations(
-			stage_payloads,
-			force_cut,
-			request_id,
-			on_stage_apply_started,
-		)
-	else:
-		var on_apply_started := func(channels: Array) -> void:
-			_on_presentation_operation_apply_started(request_id, channels)
-		SignalBus.emit_presentation_operations(
-			operations, force_cut, request_id, on_apply_started)
+	var force_cut := explicit_force_cut or _is_skip_active()
+	var on_apply_started := func(channels: Array) -> void:
+		_on_presentation_operation_apply_started(request_id, channels)
+	SignalBus.emit_presentation_operations(
+		operations,
+		force_cut,
+		request_id,
+		on_apply_started,
+		on_dispatch_started,
+	)
 	return request
+
+
+## Reserve a globally monotonic id without exposing admission as a bare int.
+## The returned capability must be consumed exactly once by submit or explicitly
+## abandoned by its owner before local validation returns.
+func reserve_request() -> PresentationRequestReservation:
+	var reservation := PresentationRequestReservation.new()
+	var request_id := SignalBus.reserve_stage_operation_request_id()
+	if not reservation._bind(request_id, _reservation_authority):
+		return null
+	_pending_request_reservations[reservation.get_instance_id()] = {
+		"reservation": reservation,
+		"request_id": request_id,
+	}
+	return reservation
+
+
+func abandon_request_reservation(
+	reservation: PresentationRequestReservation,
+) -> bool:
+	if not _reservation_is_pending(reservation):
+		return false
+	var reservation_key := reservation.get_instance_id()
+	if not reservation._retire(_reservation_authority, false):
+		return false
+	_pending_request_reservations.erase(reservation_key)
+	return true
+
+
+func _consume_request_reservation(
+	reservation: PresentationRequestReservation,
+) -> int:
+	if not _reservation_is_pending(reservation):
+		return 0
+	var reservation_key := reservation.get_instance_id()
+	var request_id := reservation.get_request_id()
+	if _entries.has(request_id) or SignalBus.is_stage_operation_request_active(request_id):
+		reservation._retire(_reservation_authority, true)
+		_pending_request_reservations.erase(reservation_key)
+		return 0
+	if not reservation._consume(_reservation_authority):
+		return 0
+	_pending_request_reservations.erase(reservation_key)
+	return request_id
+
+
+func _reservation_is_pending(
+	reservation: PresentationRequestReservation,
+) -> bool:
+	if reservation == null or not reservation.is_active():
+		return false
+	var record: Dictionary = _pending_request_reservations.get(
+		reservation.get_instance_id(), {})
+	return (
+		not record.is_empty()
+		and record.get("reservation") == reservation
+		and int(record.get("request_id", 0)) == reservation.get_request_id()
+	)
+
+
+func _cancel_pending_request_reservations() -> void:
+	var reservations := _pending_request_reservations.values()
+	_pending_request_reservations.clear()
+	for record_value: Variant in reservations:
+		if not record_value is Dictionary:
+			continue
+		var reservation: PresentationRequestReservation = (
+			(record_value as Dictionary).get("reservation"))
+		if reservation != null:
+			reservation._retire(_reservation_authority, true)
 
 
 func has_blocking_waiter(context: ScenarioContext = null) -> bool:
@@ -422,6 +492,7 @@ func cancel_all() -> void:
 	var entry_snapshot := _entries.duplicate()
 	var blocker_snapshot := _external_blockers.duplicate(true)
 	_generation += 1
+	_cancel_pending_request_reservations()
 	_entries.clear()
 	_external_blockers.clear()
 	for entry_value: Variant in entry_snapshot.values():
@@ -517,6 +588,7 @@ func _preflight_operations(
 	var chapter_indicator_source: Dictionary = {}
 	var loop_se_sources: Dictionary = {}
 	var bgm_source: Dictionary = {}
+	var stage_run_open := false
 	var target_chapter_indicator_visible := context.chapter_indicator_visible
 	var before_loop_se_channels := LoopSeChannelState.with_positions(
 		_presentation_state.loop_se_channels,
@@ -532,9 +604,12 @@ func _preflight_operations(
 		var payload_keys := payload.keys()
 		payload_keys.sort()
 		if operation is StagePresentationOperation:
+			if not stage_run_open:
+				seen_layers.clear()
+			stage_run_open = true
 			if payload_keys != EXACT_STAGE_OPERATION_KEYS:
 				return _preflight_failure(
-					"stage payload must use the canonical five-field schema",
+					"stage payload must use the canonical six-field schema",
 					operation,
 				)
 			if (
@@ -542,6 +617,7 @@ func _preflight_operations(
 				or not payload["id"] is String
 				or not payload["properties"] is Dictionary
 				or not payload["transition"] is String
+				or not payload["transition_params"] is Dictionary
 				or not (
 					payload["duration"] is int
 					or payload["duration"] is float
@@ -564,8 +640,6 @@ func _preflight_operations(
 					"invalid typed Stage ownership", operation)
 			if (
 				action not in StageLayerState.VALID_ACTIONS
-				or String(payload["transition"])
-				not in StageLayerState.VALID_TRANSITIONS
 				or not StageLayerState.validate_operation(payload, false)
 			):
 				return _preflight_failure(
@@ -585,6 +659,7 @@ func _preflight_operations(
 			stage_payloads.append(payload.duplicate(true))
 			stage_typed_operations.append(operation)
 		elif operation is DialogueVisibilityPresentationOperation:
+			stage_run_open = false
 			if payload_keys != EXACT_DIALOGUE_VISIBILITY_KEYS:
 				return _preflight_failure(
 					"dialogue visibility payload must use the canonical four-field schema",
@@ -607,6 +682,7 @@ func _preflight_operations(
 			visibility_canonical_payloads.append(payload.duplicate(true))
 			visibility_payloads.append(operation)
 		elif operation is DialogueClearPresentationOperation:
+			stage_run_open = false
 			if (
 				saw_dialogue_clear
 				or payload_keys != EXACT_DIALOGUE_CLEAR_KEYS
@@ -632,6 +708,7 @@ func _preflight_operations(
 			saw_dialogue_clear = true
 			dialogue_clear_source = operation.get_source()
 		elif operation is ChapterIndicatorPresentationOperation:
+			stage_run_open = false
 			if payload_keys != EXACT_CHAPTER_INDICATOR_KEYS:
 				return _preflight_failure(
 					"chapter indicator payload must use the canonical three-field schema",
@@ -657,6 +734,7 @@ func _preflight_operations(
 			target_chapter_indicator_visible = (
 				String(payload.get("action", "")) == "show")
 		elif operation is LoopSePresentationOperation:
+			stage_run_open = false
 			if payload_keys != EXACT_LOOP_SE_KEYS:
 				return _preflight_failure(
 					"loop-SE payload must use the canonical six-field schema",
@@ -678,6 +756,7 @@ func _preflight_operations(
 				loop_se_simulated, [payload], false)
 			loop_se_payloads.append(payload.duplicate(true))
 		elif operation is BgmPresentationOperation:
+			stage_run_open = false
 			if payload_keys != EXACT_BGM_KEYS:
 				return _preflight_failure(
 					"BGM payload must use the canonical seven-field schema",
@@ -697,6 +776,7 @@ func _preflight_operations(
 			bgm_source = operation.get_source()
 			bgm_payloads.append(payload.duplicate(true))
 		else:
+			stage_run_open = false
 			return _preflight_failure(
 				"unsupported presentation operation kind", operation)
 
@@ -751,7 +831,8 @@ func _preflight_operations(
 		"dialogue_targets": seen_targets.keys(),
 		"loop_se_channels": seen_loop_se_channels.keys(),
 		"no_work": (
-			simulated == before_state
+			stage_payloads.is_empty()
+			and simulated == before_state
 			and target_visibility == before_visibility
 			and loop_se_payloads.is_empty()
 			and bgm_payloads.is_empty()

@@ -1,0 +1,18 @@
+@chapter stage_transitions "Stage Transition Providers"
+
+@scene start
+@stage event show kind=event asset=background:bg_school_gate fit=cover z=-100
+「Rule-mask 与 mosaic 使用同一条 named-stage typed lifecycle。」
+
+@stage_batch policy=join
+  @stage event update asset=background:bg_hallway transition=rule(mask=stage:masks/diagonal,softness=0.08) duration=0.8
+@end
+「点击或 Skip 只会完成当前 sealed JOIN。」
+
+@stage_batch policy=join
+  @stage event update asset=background:bg_cafe transition=mosaic duration=0.6
+@end
+「Mosaic 使用默认 cell=32；普通作者不需要多余参数。」
+
+@stage event remove transition=rule(mask=stage:masks/diagonal,invert=true) duration=0.5
+「Standalone Stage 是 fire-and-forget，不领取下一句的点击。」

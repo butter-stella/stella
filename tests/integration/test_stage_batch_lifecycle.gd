@@ -399,11 +399,13 @@ func _submit_active_pair(
 			StagePresentationOperation.new({
 				"action": "show", "id": layer_a,
 				"properties": {"asset": "stage:redraw_blur_source"},
+				"transition_params": {},
 				"transition": "fade", "duration": 10.0,
 			}),
 			StagePresentationOperation.new({
 				"action": "show", "id": layer_b,
 				"properties": {"asset": "stage:redraw_source"},
+				"transition_params": {},
 				"transition": "move", "duration": 10.0,
 			}),
 		]),
@@ -655,6 +657,7 @@ func test_a1_first_legacy_start_reset_then_t3_batch_wins_atomically() -> void:
 		SignalBus.reset_stage_visuals()
 		SignalBus.emit_stage_operations([{
 			"action": "clear", "id": "", "properties": {},
+			"transition_params": {},
 			"transition": "cut", "duration": 0.0,
 		}], true)
 		t3_request[0] = director.submit(_typed_operations([
@@ -662,6 +665,7 @@ func test_a1_first_legacy_start_reset_then_t3_batch_wins_atomically() -> void:
 				"action": "show",
 				"id": "winner_a",
 				"properties": {"asset": "stage:redraw_source"},
+				"transition_params": {},
 				"transition": "fade",
 				"duration": 10.0,
 			}),
@@ -669,6 +673,7 @@ func test_a1_first_legacy_start_reset_then_t3_batch_wins_atomically() -> void:
 				"action": "show",
 				"id": "winner_b",
 				"properties": {"asset": "stage:redraw_blur_source"},
+				"transition_params": {},
 				"transition": "move",
 				"duration": 10.0,
 			}),
@@ -962,6 +967,7 @@ func test_a2_nested_join_starts_before_its_tail_from_outer_event_flush() -> void
 			"action": "show",
 			"id": "outer_%s" % outer_event,
 			"properties": {"asset": "stage:redraw_source"},
+			"transition_params": {},
 			"transition": "fade",
 			"duration": 10.0,
 		}], false)
@@ -979,6 +985,7 @@ func test_a2_nested_join_starts_before_its_tail_from_outer_event_flush() -> void
 						"action": "show",
 						"id": "nested_%s" % outer_event,
 						"properties": {"asset": "stage:redraw_blur_source"},
+						"transition_params": {},
 						"transition": "fade",
 						"duration": 10.0,
 					})]),
@@ -1052,11 +1059,13 @@ func test_a2_state_apply_and_viewport_terminal_reentry_keep_t3_owner() -> void:
 			{
 				"action": "show", "id": "%s_a" % boundary,
 				"properties": {"asset": "stage:redraw_source"},
+				"transition_params": {},
 				"transition": "fade", "duration": 10.0,
 			},
 			{
 				"action": "show", "id": "%s_b" % boundary,
 				"properties": {"asset": "stage:redraw_blur_source"},
+				"transition_params": {},
 				"transition": "move", "duration": 10.0,
 			},
 		], false)
@@ -1076,12 +1085,14 @@ func test_a2_state_apply_and_viewport_terminal_reentry_keep_t3_owner() -> void:
 			SignalBus.reset_stage_visuals()
 			SignalBus.emit_stage_operations([{
 				"action": "clear", "id": "", "properties": {},
+				"transition_params": {},
 				"transition": "cut", "duration": 0.0,
 			}], true)
 			SignalBus.emit_stage_operations([{
 				"action": "show",
 				"id": "%s_winner" % boundary,
 				"properties": {"asset": "stage:redraw_source"},
+				"transition_params": {},
 				"transition": "fade",
 				"duration": 10.0,
 			}], false)
@@ -1122,11 +1133,13 @@ func test_a2_completion_snapshot_cannot_alias_reset_same_layer_join() -> void:
 				StagePresentationOperation.new({
 					"action": "show", "id": "completion_alias_a",
 					"properties": {"asset": "stage:redraw_source"},
+					"transition_params": {},
 					"transition": "fade", "duration": 10.0,
 				}),
 				StagePresentationOperation.new({
 					"action": "show", "id": "completion_alias_b",
 					"properties": {"asset": "stage:redraw_blur_source"},
+					"transition_params": {},
 					"transition": "move", "duration": 10.0,
 				}),
 			]),
@@ -1204,31 +1217,37 @@ func test_a2_absent_remove_completion_cannot_alias_after_reset() -> void:
 			{
 				"action": "show", "id": "remove_alias_a",
 				"properties": {"asset": "stage:redraw_source"},
+				"transition_params": {},
 				"transition": "cut", "duration": 0.0,
 			},
 			{
 				"action": "show", "id": "remove_alias_b",
 				"properties": {"asset": "stage:redraw_blur_source"},
+				"transition_params": {},
 				"transition": "cut", "duration": 0.0,
 			},
 			{
 				"action": "remove", "id": "remove_alias_a",
-				"properties": {}, "transition": "cut", "duration": 0.0,
+				"properties": {}, "transition_params": {},
+				"transition": "cut", "duration": 0.0,
 			},
 			{
 				"action": "remove", "id": "remove_alias_b",
-				"properties": {}, "transition": "cut", "duration": 0.0,
+				"properties": {}, "transition_params": {},
+				"transition": "cut", "duration": 0.0,
 			},
 		], false)
 	_presenter.layer_transition_finished.connect(on_completion)
 	SignalBus.emit_stage_operations([
 		{
 			"action": "remove", "id": "remove_alias_a",
-			"properties": {}, "transition": "cut", "duration": 0.0,
+			"properties": {}, "transition_params": {},
+			"transition": "cut", "duration": 0.0,
 		},
 		{
 			"action": "remove", "id": "remove_alias_b",
-			"properties": {}, "transition": "cut", "duration": 0.0,
+			"properties": {}, "transition_params": {},
+			"transition": "cut", "duration": 0.0,
 		},
 	], false)
 	_presenter.layer_transition_finished.disconnect(on_completion)
@@ -1260,11 +1279,13 @@ func test_a2_abort_terminal_reentry_preserves_only_winning_new_batch() -> void:
 		{
 			"action": "show", "id": "abort_old_a",
 			"properties": {"asset": "stage:redraw_source"},
+			"transition_params": {},
 			"transition": "fade", "duration": 10.0,
 		},
 		{
 			"action": "show", "id": "abort_old_b",
 			"properties": {"asset": "stage:redraw_blur_source"},
+			"transition_params": {},
 			"transition": "move", "duration": 10.0,
 		},
 	], false)
@@ -1287,11 +1308,13 @@ func test_a2_abort_terminal_reentry_preserves_only_winning_new_batch() -> void:
 		SignalBus.reset_stage_visuals()
 		SignalBus.emit_stage_operations([{
 			"action": "clear", "id": "", "properties": {},
+			"transition_params": {},
 			"transition": "cut", "duration": 0.0,
 		}], true)
 		SignalBus.emit_stage_operations([{
 			"action": "show", "id": "abort_winner",
 			"properties": {"asset": "stage:redraw_source"},
+			"transition_params": {},
 			"transition": "fade", "duration": 10.0,
 		}], false)
 	SignalBus.stage_transition_terminal.connect(on_terminal)
@@ -1491,6 +1514,7 @@ func test_a3_clear_owns_pending_remove_and_true_empty_dispatches() -> void:
 		"action": "show",
 		"id": "ghost",
 		"properties": {"asset": "stage:redraw_source"},
+		"transition_params": {},
 		"transition": "cut",
 		"duration": 0.0,
 	}], true)
@@ -1670,6 +1694,7 @@ func test_a3_clear_owns_pending_remove_and_true_empty_dispatches() -> void:
 	var empty_clear := director.submit(_typed_operations([
 		StagePresentationOperation.new({
 			"action": "clear", "id": "", "properties": {},
+			"transition_params": {},
 			"transition": "fade", "duration": 10.0,
 		}),
 	]), PresentationBatchRequest.Policy.JOIN,
@@ -2115,6 +2140,7 @@ func test_a5_only_indicator_blocker_preserves_existing_stage_on_rejection() -> v
 			"asset": "stage:redraw_source",
 			"position": [24.0, 12.0],
 		},
+		"transition_params": {},
 		"transition": "cut",
 		"duration": 0.0,
 	}], true)
@@ -2187,6 +2213,7 @@ func test_a5_reentrant_external_cancel_stops_all_outer_reset_boundaries() -> voi
 		"action": "show",
 		"id": "cas_retained",
 		"properties": {"asset": "stage:redraw_source"},
+		"transition_params": {},
 		"transition": "cut",
 		"duration": 0.0,
 	}], true)
@@ -2301,6 +2328,7 @@ func test_a5_director_cutover_preserves_reentrant_entry_and_blocker() -> void:
 					"asset": "stage:redraw_blur_source",
 					"position": [88.0, 44.0],
 				},
+				"transition_params": {},
 				"transition": "move",
 				"duration": 10.0,
 			}),
@@ -2355,6 +2383,7 @@ func test_a5_stage_reset_barrier_preserves_reentrant_new_generation() -> void:
 				"action": "show",
 				"id": "reset_owner",
 				"properties": {"asset": "stage:redraw_source"},
+				"transition_params": {},
 				"transition": "fade",
 				"duration": 10.0,
 			}),
@@ -2389,6 +2418,7 @@ func test_a5_stage_reset_barrier_preserves_reentrant_new_generation() -> void:
 						"asset": "stage:redraw_blur_source",
 						"position": [91.0, 47.0],
 					},
+					"transition_params": {},
 					"transition": "move",
 					"duration": 10.0,
 				}),
@@ -2553,6 +2583,7 @@ func test_a5_stale_outer_reset_cannot_cancel_late_director_winner() -> void:
 					"action": "show",
 					"id": "late_director_winner",
 					"properties": {"asset": "stage:redraw_source"},
+					"transition_params": {},
 					"transition": "fade",
 					"duration": 10.0,
 				})]),
@@ -2618,6 +2649,7 @@ func test_a5_cancel_callback_nested_boundary_skips_old_reset_signal() -> void:
 					"action": "show",
 					"id": "must_never_dispatch",
 					"properties": {"asset": "stage:redraw_source"},
+					"transition_params": {},
 					"transition": "fade",
 					"duration": 10.0,
 				})]),
@@ -2653,6 +2685,7 @@ func test_a5_cancel_callback_nested_boundary_skips_old_reset_signal() -> void:
 							"asset": "stage:redraw_source",
 							"position": [113.0, 59.0],
 						},
+						"transition_params": {},
 						"transition": "fade",
 						"duration": 10.0,
 					})]),
@@ -2698,6 +2731,7 @@ func test_a5_cancel_callback_nested_boundary_skips_old_reset_signal() -> void:
 		"action": "show",
 		"id": "outer_dispatch",
 		"properties": {"asset": "stage:redraw_source"},
+		"transition_params": {},
 		"transition": "cut",
 		"duration": 0.0,
 	}], true, 0, on_outer_dispatch)
@@ -2763,6 +2797,167 @@ func test_a5_cancel_callback_nested_boundary_skips_old_reset_signal() -> void:
 	assert_true(SignalBus._stage_projection_epoch_stack.is_empty())
 
 
+func test_a5_stage_reset_partitions_unified_requests_by_stage_domain_atomically() -> void:
+	if not _require_contract():
+		return
+	assert_true(SignalBus._presentation_operation_queue.is_empty())
+	var finish_events: Array[Dictionary] = []
+	var stage_dispatches := [0]
+	var visibility_dispatches := [0]
+	var on_finish := func(request_id: int, delivered: bool) -> void:
+		finish_events.append({"request_id": request_id, "delivered": delivered})
+	var on_stage := func(_operations: Array, _force_cut: bool) -> void:
+		stage_dispatches[0] += 1
+	var on_visibility := func(_operations: Array, _force_cut: bool) -> void:
+		visibility_dispatches[0] += 1
+	SignalBus.presentation_operation_request_finished.connect(on_finish)
+	SignalBus.stage_operations_requested.connect(on_stage)
+	SignalBus.dialogue_visibility_operations_requested.connect(on_visibility)
+
+	var stage_free_id := [0]
+	var mixed_id := [0]
+	var nonretained_observation: Array[Dictionary] = [{}]
+	var keep_not_stage_free := func(request: Dictionary) -> bool:
+		return int(request.get("request_id", 0)) != stage_free_id[0]
+	SignalBus.run_presentation_projection(func() -> void:
+		stage_free_id[0] = SignalBus.emit_presentation_operations([
+			DialogueVisibilityPresentationOperation.new({
+				"target": "surface", "action": "hide",
+				"transition": "cut", "duration": 0.0,
+			}),
+		])
+		mixed_id[0] = SignalBus.emit_presentation_operations([
+			StagePresentationOperation.new({
+				"action": "show", "id": "mixed_reset_cancel",
+				"properties": {"asset": "stage:redraw_source"},
+				"transition_params": {},
+				"transition": "cut", "duration": 0.0,
+			}),
+			DialogueVisibilityPresentationOperation.new({
+				"target": "quick_menu", "action": "hide",
+				"transition": "cut", "duration": 0.0,
+			}),
+		])
+		var stage_free_epoch_before := -1
+		for request: Dictionary in SignalBus._presentation_operation_queue:
+			if int(request.get("request_id", 0)) == stage_free_id[0]:
+				stage_free_epoch_before = int(request.get("stage_epoch", -1))
+		SignalBus.reset_stage_visuals()
+		var queued_ids: Array[int] = []
+		var stage_free_epoch_after := -1
+		for request: Dictionary in SignalBus._presentation_operation_queue:
+			var request_id := int(request.get("request_id", 0))
+			queued_ids.append(request_id)
+			if request_id == stage_free_id[0]:
+				stage_free_epoch_after = int(request.get("stage_epoch", -1))
+		nonretained_observation[0] = {
+			"queued_ids": queued_ids,
+			"stage_free_epoch_before": stage_free_epoch_before,
+			"stage_free_epoch_after": stage_free_epoch_after,
+		}
+		SignalBus._presentation_operation_queue = (
+			SignalBus._presentation_operation_queue.filter(
+				keep_not_stage_free
+			)
+		)
+	)
+	assert_eq(finish_events, [{"request_id": mixed_id[0], "delivered": false}],
+		"a non-retained mixed request is cancelled exactly once as one atomic owner")
+	assert_true(stage_free_id[0] in nonretained_observation[0]["queued_ids"],
+		"a Stage-free unified neighbor remains queued across the Stage reset")
+	assert_false(mixed_id[0] in nonretained_observation[0]["queued_ids"],
+		"the mixed request is removed as a whole before any reset consumer")
+	assert_eq(
+		nonretained_observation[0]["stage_free_epoch_after"],
+		nonretained_observation[0]["stage_free_epoch_before"],
+		"Stage-free neighbors do not claim or migrate Stage epoch ownership",
+	)
+	assert_eq(stage_dispatches[0], 0)
+	assert_eq(visibility_dispatches[0], 0,
+		"the cancelled mixed request cannot partially apply its non-Stage child")
+
+	var retained_id := [0]
+	var retained_observation: Array[Dictionary] = [{}]
+	var finishes_before_retained := finish_events.size()
+	var keep_not_retained := func(request: Dictionary) -> bool:
+		return int(request.get("request_id", 0)) != retained_id[0]
+	SignalBus.run_presentation_projection(func() -> void:
+		SignalBus.reset_stage_visuals()
+		retained_id[0] = SignalBus.emit_presentation_operations([
+			StagePresentationOperation.new({
+				"action": "show", "id": "retained_mixed_reset",
+				"properties": {"asset": "stage:redraw_blur_source"},
+				"transition_params": {},
+				"transition": "cut", "duration": 0.0,
+			}),
+			DialogueVisibilityPresentationOperation.new({
+				"target": "surface", "action": "show",
+				"transition": "cut", "duration": 0.0,
+			}),
+		])
+		var stage_epoch_before := -1
+		var visibility_epoch_before := -1
+		for request: Dictionary in SignalBus._presentation_operation_queue:
+			if int(request.get("request_id", 0)) == retained_id[0]:
+				stage_epoch_before = int(request.get("stage_epoch", -1))
+				visibility_epoch_before = int(request.get("visibility_epoch", -1))
+		SignalBus.reset_stage_visuals()
+		for request: Dictionary in SignalBus._presentation_operation_queue:
+			if int(request.get("request_id", 0)) != retained_id[0]:
+				continue
+			var retained_operations: Array = request.get("operations", [])
+			retained_observation[0] = {
+				"stage_epoch_before": stage_epoch_before,
+				"stage_epoch_after": int(request.get("stage_epoch", -1)),
+				"visibility_epoch_before": visibility_epoch_before,
+				"visibility_epoch_after": int(request.get("visibility_epoch", -1)),
+				"operation_count": retained_operations.size(),
+				"has_stage": (
+					retained_operations.size() == 2
+					and retained_operations[0] is StagePresentationOperation
+				),
+				"has_visibility": (
+					retained_operations.size() == 2
+					and retained_operations[1]
+						is DialogueVisibilityPresentationOperation
+				),
+				"current_stage_epoch": SignalBus.current_stage_operation_epoch(),
+			}
+		SignalBus._presentation_operation_queue = (
+			SignalBus._presentation_operation_queue.filter(
+				keep_not_retained
+			)
+		)
+	)
+	assert_eq(finish_events.size(), finishes_before_retained,
+		"a retained mixed owner is not cancelled by its own projection reset")
+	assert_false(retained_observation[0].is_empty())
+	assert_ne(
+		retained_observation[0]["stage_epoch_after"],
+		retained_observation[0]["stage_epoch_before"],
+	)
+	assert_eq(
+		retained_observation[0]["stage_epoch_after"],
+		retained_observation[0]["current_stage_epoch"],
+		"retained mixed ownership migrates to the exact current Stage epoch",
+	)
+	assert_eq(
+		retained_observation[0]["visibility_epoch_after"],
+		retained_observation[0]["visibility_epoch_before"],
+		"a Stage-only reset cannot rewrite another domain's epoch",
+	)
+	assert_eq(retained_observation[0]["operation_count"], 2)
+	assert_true(retained_observation[0]["has_stage"])
+	assert_true(retained_observation[0]["has_visibility"],
+		"retention preserves the complete mixed request without child splitting")
+	assert_eq(stage_dispatches[0], 0)
+	assert_eq(visibility_dispatches[0], 0)
+	SignalBus.presentation_operation_request_finished.disconnect(on_finish)
+	SignalBus.stage_operations_requested.disconnect(on_stage)
+	SignalBus.dialogue_visibility_operations_requested.disconnect(on_visibility)
+	assert_true(SignalBus._presentation_operation_queue.is_empty())
+
+
 func test_a5_nested_projection_signal_tail_is_epoch_guarded() -> void:
 	if not _require_contract():
 		return
@@ -2823,6 +3018,7 @@ func test_a5_nested_projection_cuts_before_reentrant_winner_start() -> void:
 						"asset": "stage:redraw_source",
 						"position": [109.0, 61.0],
 					},
+					"transition_params": {},
 					"transition": "move",
 					"duration": 10.0,
 				}),
@@ -2938,8 +3134,16 @@ func test_a5_rollback_cancels_old_generation_and_same_cursor_is_no_work() -> voi
 			)))
 	assert_eq(_started_transitions, [],
 		"rollback cut-projects then dry-runs the retained batch cursor")
-	assert_eq(_batch_observations, [],
-		"rollback no_work precedes every request-id/SignalBus boundary")
+	assert_eq(_batch_observations.size(), 1,
+		"rollback revalidates the same-target Stage run through one public boundary")
+	if _batch_observations.size() == 1:
+		var rollback_observation: Dictionary = _batch_observations[0]
+		var rollback_operations: Array = rollback_observation["operations"]
+		assert_eq(rollback_operations.size(), 1)
+		if rollback_operations.size() == 1:
+			assert_eq(rollback_operations[0]["action"], "show")
+			assert_eq(rollback_operations[0]["id"], "lifecycle")
+		assert_false(bool(rollback_observation["force_cut"]))
 	assert_false(_presenter._layer_tweens.has("lifecycle"))
 	_assert_lifecycle_final()
 	_finish_records([old_record])
@@ -2991,6 +3195,7 @@ func test_a5_title_atomic_clear_yields_to_reentrant_new_owner() -> void:
 					"action": "show",
 					"id": "title_winner",
 					"properties": {"asset": "stage:redraw_source"},
+					"transition_params": {},
 					"transition": "fade",
 					"duration": 10.0,
 				})]),
@@ -3153,6 +3358,7 @@ func test_a6_same_layer_supersession_never_success_unblocks_old_join() -> void:
 		"action": "update",
 		"id": "lifecycle",
 		"properties": {"position": [320.0, 180.0]},
+		"transition_params": {},
 		"transition": "move",
 		"duration": 10.0,
 	}], false)
@@ -3197,6 +3403,7 @@ func test_a7_programmatic_wrong_shapes_fail_before_any_mutation() -> void:
 			"policy": "join",
 			"operations": [{
 				"action": "show", "id": "bad", "properties": {},
+				"transition_params": {},
 				"transition": "cut", "duration": 0.0,
 			}],
 			"operation_lines": [],
@@ -3205,6 +3412,7 @@ func test_a7_programmatic_wrong_shapes_fail_before_any_mutation() -> void:
 			"policy": "join",
 			"operations": [{
 				"action": "update", "id": "unknown", "properties": {},
+				"transition_params": {},
 				"transition": "cut", "duration": 0.0,
 			}],
 			"operation_lines": [44],
@@ -3213,6 +3421,7 @@ func test_a7_programmatic_wrong_shapes_fail_before_any_mutation() -> void:
 			"policy": "join",
 			"operations": [{
 				"action": "hide", "id": "unknown", "properties": {},
+				"transition_params": {},
 				"transition": "cut", "duration": 0.0,
 			}],
 			"operation_lines": [45],
@@ -3221,6 +3430,7 @@ func test_a7_programmatic_wrong_shapes_fail_before_any_mutation() -> void:
 			"policy": "join",
 			"operations": [{
 				"action": "show", "id": " raw ", "properties": {},
+				"transition_params": {},
 				"transition": "cut", "duration": 0.0,
 			}],
 			"operation_lines": [46],
@@ -3264,6 +3474,7 @@ func test_a7_handler_rejects_missing_cancelled_and_deauthorized_contexts() -> vo
 		"operations": [{
 			"action": "show", "id": "context_probe",
 			"properties": {"asset": "stage:redraw_source"},
+			"transition_params": {},
 			"transition": "fade", "duration": 10.0,
 		}],
 		"operation_lines": [44],
@@ -3323,6 +3534,7 @@ func test_a7_direct_submit_preflights_context_invalid_no_work_before_id() -> voi
 		"action": "show",
 		"id": "shape",
 		"properties": {"asset": "stage:redraw_source"},
+		"transition_params": {},
 		"transition": "fade",
 		"duration": 1.0,
 	}
@@ -3338,6 +3550,7 @@ func test_a7_direct_submit_preflights_context_invalid_no_work_before_id() -> voi
 			"action": "update",
 			"id": "unknown",
 			"properties": {"x": 12.0},
+			"transition_params": {},
 			"transition": "move",
 			"duration": 1.0,
 		})],
@@ -3351,6 +3564,7 @@ func test_a7_direct_submit_preflights_context_invalid_no_work_before_id() -> voi
 		[
 			StagePresentationOperation.new({
 				"action": "clear", "id": "", "properties": {},
+				"transition_params": {},
 				"transition": "cut", "duration": 0.0,
 			}),
 			StagePresentationOperation.new(canonical_show),
@@ -3379,6 +3593,7 @@ func test_a7_direct_submit_preflights_context_invalid_no_work_before_id() -> voi
 			"action": "remove",
 			"id": "absent",
 			"properties": {},
+			"transition_params": {},
 			"transition": "fade",
 			"duration": 5.0,
 		}),
@@ -3386,12 +3601,15 @@ func test_a7_direct_submit_preflights_context_invalid_no_work_before_id() -> voi
 	assert_true(no_work_request.is_settled())
 	assert_eq(no_work_request.get_outcome(),
 		PresentationBatchRequest.Outcome.COMPLETED)
-	assert_eq(no_work_request.get_batch_id(), 0)
+	assert_eq(no_work_request.get_batch_id(), before_id,
+		"even a same-state Stage run validates the live Presenter/provider binding")
+	assert_eq(no_work_request.get_receipts(), [])
 
 	var valid_payload := {
 		"action": "show",
 		"id": "direct",
 		"properties": {"asset": "stage:redraw_source"},
+		"transition_params": {},
 		"transition": "fade",
 		"duration": 10.0,
 	}
@@ -3410,17 +3628,16 @@ func test_a7_direct_submit_preflights_context_invalid_no_work_before_id() -> voi
 	assert_eq(stale_request.get_batch_id(), 0)
 	assert_eq(stale_request.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
 
-	assert_eq(int(SignalBus._next_stage_operation_request_id), before_id,
-		"invalid, no_work, null, and stale submissions allocate no request id")
+	assert_eq(int(SignalBus._next_stage_operation_request_id), before_id + 1,
+		"only the validated Stage no-visual-work run consumes a request id")
 	assert_eq(_runtime.presentation_state.stage_layers, before_state)
-	assert_eq(_batch_observations.size(), before_batches)
+	assert_eq(_batch_observations.size(), before_batches + 1)
 	var valid_request := director.submit(_typed_operations([
 		StagePresentationOperation.new(valid_payload),
 	]), PresentationBatchRequest.Policy.JOIN, context, source)
-	assert_eq(valid_request.get_batch_id(), before_id,
-		"the first valid work retains the unconsumed request id")
-	assert_eq(int(SignalBus._next_stage_operation_request_id), before_id + 1)
-	assert_eq(_batch_observations.size(), before_batches + 1)
+	assert_eq(valid_request.get_batch_id(), before_id + 1)
+	assert_eq(int(SignalBus._next_stage_operation_request_id), before_id + 2)
+	assert_eq(_batch_observations.size(), before_batches + 2)
 	assert_false(valid_request.is_settled())
 	var exact := _records_for_request(valid_request.get_batch_id())
 	assert_eq(exact.size(), 1)
@@ -3441,6 +3658,7 @@ func test_a7_director_replay_ignores_caller_forged_previous_state() -> void:
 			"asset": "stage:redraw_source",
 			"position": [17.0, 9.0],
 		},
+		"transition_params": {},
 		"transition": "cut",
 		"duration": 0.0,
 	}], true)
@@ -3452,6 +3670,7 @@ func test_a7_director_replay_ignores_caller_forged_previous_state() -> void:
 			"action": "show",
 			"id": "transient_target",
 			"properties": {"asset": "stage:redraw_blur_source"},
+			"transition_params": {},
 			"transition": "fade",
 			"duration": 10.0,
 		}),
@@ -3604,8 +3823,16 @@ func test_a8_load_cancels_old_generation_then_dry_runs_without_tokens() -> void:
 	assert_ne(_runtime.engine.context, old_context)
 	assert_eq(_started_transitions, [],
 		"restored same-cursor dry-run allocates zero tokens")
-	assert_eq(_batch_observations, [],
-		"no_work is decided before Stage SignalBus/request-id dispatch")
+	assert_eq(_batch_observations.size(), 1,
+		"load revalidates the same-target Stage run through one public boundary")
+	if _batch_observations.size() == 1:
+		var load_observation: Dictionary = _batch_observations[0]
+		var load_operations: Array = load_observation["operations"]
+		assert_eq(load_operations.size(), 1)
+		if load_operations.size() == 1:
+			assert_eq(load_operations[0]["action"], "show")
+			assert_eq(load_operations[0]["id"], "saved")
+		assert_false(bool(load_observation["force_cut"]))
 	assert_false(_presenter._layer_tweens.has("saved"))
 	assert_not_null(_presenter.get_layer_node("saved"))
 	assert_eq(_runtime.presentation_state.stage_layers["saved"]["asset"],
@@ -3617,7 +3844,7 @@ func test_a8_load_cancels_old_generation_then_dry_runs_without_tokens() -> void:
 		"old generation cannot replay or advance the restored owner")
 
 
-func test_a8_idempotent_update_hide_and_remove_absent_are_no_work() -> void:
+func test_a8_idempotent_stage_runs_revalidate_without_visual_work() -> void:
 	if not _require_contract():
 		return
 	var operations := [
@@ -3625,7 +3852,8 @@ func test_a8_idempotent_update_hide_and_remove_absent_are_no_work() -> void:
 			"setup": {
 				"action": "show", "id": "same", "properties": {
 					"asset": "stage:redraw_source", "position": [12.0, 34.0],
-				}, "transition": "cut", "duration": 0.0,
+				}, "transition_params": {},
+				"transition": "cut", "duration": 0.0,
 			},
 			"authored": "@stage same update position=12,34 transition=move duration=10",
 		},
@@ -3633,7 +3861,8 @@ func test_a8_idempotent_update_hide_and_remove_absent_are_no_work() -> void:
 			"setup": {
 				"action": "show", "id": "hidden", "properties": {
 					"asset": "stage:redraw_source",
-				}, "transition": "cut", "duration": 0.0,
+				}, "transition_params": {},
+				"transition": "cut", "duration": 0.0,
 			},
 			"prepare_hidden": true,
 			"authored": "@stage hidden hide transition=fade duration=10",
@@ -3651,6 +3880,7 @@ func test_a8_idempotent_update_hide_and_remove_absent_are_no_work() -> void:
 		if bool(case.get("prepare_hidden", false)):
 			SignalBus.emit_stage_operations([{
 				"action": "hide", "id": "hidden", "properties": {},
+				"transition_params": {},
 				"transition": "cut", "duration": 0.0,
 			}], true)
 		_batch_observations.clear()
@@ -3665,23 +3895,23 @@ func test_a8_idempotent_update_hide_and_remove_absent_are_no_work() -> void:
 		assert_true(await _wait_until(
 			func() -> bool: return _dialogue_requests.size() == 1),
 			String(case["authored"]))
-		assert_eq(_batch_observations, [], String(case["authored"]))
+		assert_eq(_batch_observations.size(), 1, String(case["authored"]))
 		assert_eq(_started_transitions, [], String(case["authored"]))
 		assert_true(_presenter._layer_tweens.is_empty(),
 			String(case["authored"]))
 
 
-func test_compat_legacy_stage_and_raw_facade_stay_nonblocking_void() -> void:
+func test_standalone_stage_and_public_raw_facade_stay_nonblocking_void() -> void:
 	if not _require_contract():
 		return
-	_start_inline("""@chapter legacy
+	_start_inline("""@chapter standalone
 @scene start
-@stage legacy show asset=stage:redraw_source transition=fade duration=10
-「legacy tail」""", "legacy_stage_nonblocking")
+@stage standalone show asset=stage:redraw_source transition=fade duration=10
+「standalone tail」""", "standalone_stage_nonblocking")
 	assert_true(await _wait_until(
 		func() -> bool: return _dialogue_requests.size() == 1))
-	assert_true(_presenter._layer_tweens.has("legacy"),
-		"legacy @stage remains nonblocking")
+	assert_true(_presenter._layer_tweens.has("standalone"),
+		"standalone @stage remains nonblocking")
 	assert_true(_dialogue_requests[0].get_activation().is_pending())
 
 	var result: Variant = _runtime.apply_stage_operations([{
@@ -3689,7 +3919,8 @@ func test_compat_legacy_stage_and_raw_facade_stay_nonblocking_void() -> void:
 		"id": "raw",
 		"properties": {"asset": "stage:redraw_blur_source"},
 		"transition": "fade",
+		"transition_params": {},
 		"duration": 10.0,
 	}], false)
-	assert_eq(result, null, "raw Dictionary facade retains void semantics")
+	assert_eq(result, null, "public raw Dictionary facade retains void semantics")
 	assert_true(_presenter._layer_tweens.has("raw"))

@@ -62,6 +62,8 @@ func after_each() -> void:
 		DirAccess.remove_absolute(
 			ProjectSettings.globalize_path(LOAD_SETTINGS_PATH))
 	await get_tree().process_frame
+	_viewports.clear()
+	_signal_callbacks.clear()
 
 
 func test_four_inputs_consume_real_typing_owner_when_live_setting_is_false() -> void:
