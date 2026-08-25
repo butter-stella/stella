@@ -69,6 +69,7 @@ func _operation(
 	volume: float = 1.0,
 	fade: float = 0.0,
 	line: int = 3,
+	stem_mix: Dictionary = {},
 ) -> BgmPresentationOperation:
 	return BgmPresentationOperation.new({
 		"action": action,
@@ -76,6 +77,7 @@ func _operation(
 		"cue": cue if action == "play" else "",
 		"fade_duration": fade,
 		"resume_position": 0.0,
+		"stem_mix": stem_mix if action in ["play", "mix"] else {},
 		"volume": volume if action == "play" else 1.0,
 	}, {"source_path": SOURCE_PATH, "line": line})
 
@@ -107,6 +109,20 @@ func _expected_bgm_db(level: float) -> float:
 		float(_runtime.get_setting("master_volume"))
 		* float(_runtime.get_setting("bgm_volume"))
 		* level)
+
+
+func _synchronized_stream() -> AudioStreamSynchronized:
+	return _player().stream as AudioStreamSynchronized
+
+
+func _stem_db(stem_name: String) -> float:
+	var voice: Dictionary = _audio._bgm_channel.get("current", {})
+	var stem_names: Array = voice.get("stem_names", [])
+	var stem_index := stem_names.find(stem_name)
+	if stem_index < 0:
+		return NAN
+	var synchronized := _synchronized_stream()
+	return synchronized.get_sync_stream_volume(stem_index) if synchronized != null else NAN
 
 
 func _finish_receipt(receipt: Dictionary) -> void:
@@ -179,6 +195,8 @@ func test_missing_or_invalid_resource_rejects_mixed_batch_atomically() -> void:
 		{"asset": "missing", "line": 10},
 		{"asset": "invalid_track", "line": 11},
 		{"asset": "synthetic_track", "cue": "missing_cue", "line": 12},
+		{"asset": "invalid_stem_metadata", "line": 13},
+		{"asset": "invalid_stem_format", "line": 14},
 	]:
 		var stage_emissions := [0]
 		var on_stage := func(_operations: Array, _force_cut: bool) -> void:
@@ -240,7 +258,8 @@ func test_marker_metadata_raw_default_and_nonloop_cue_are_physical() -> void:
 	assert_eq(raw.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
 	assert_eq(_runtime.presentation_state.current_bgm, {
 		"asset": "synthetic_raw", "cue": "", "loop": true,
-		"position": 0.0, "status": "playing", "volume": 1.0,
+		"position": 0.0, "status": "playing", "stem_mix": {},
+		"volume": 1.0,
 	})
 	var raw_stream := _player().stream as AudioStreamWAV
 	assert_eq(raw_stream.loop_mode, AudioStreamWAV.LOOP_FORWARD)
@@ -255,6 +274,274 @@ func test_marker_metadata_raw_default_and_nonloop_cue_are_physical() -> void:
 		float(_runtime.presentation_state.current_bgm["position"]), 0.02, 0.001)
 	assert_eq((_player().stream as AudioStreamWAV).loop_mode,
 		AudioStreamWAV.LOOP_DISABLED)
+
+
+func test_synchronized_stems_play_on_one_player_with_one_canonical_state() -> void:
+	var request := _submit([_operation(
+		"play", "synthetic_stems", "intro", 0.8, 0.0, 20,
+		{"harmony": 0.25, "rhythm": 1.0},
+	)])
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	var player := _player()
+	var synchronized := _synchronized_stream()
+	assert_not_null(player)
+	assert_not_null(synchronized)
+	if synchronized == null:
+		return
+	assert_eq(synchronized.stream_count, 2)
+	assert_eq(_runtime.presentation_state.current_bgm, {
+		"asset": "synthetic_stems", "cue": "intro", "loop": true,
+		"position": 0.02, "status": "playing",
+		"stem_mix": {"harmony": 0.25, "rhythm": 1.0},
+		"volume": 0.8,
+	})
+	assert_almost_eq(_stem_db("rhythm"), 0.0, 0.01)
+	assert_almost_eq(_stem_db("harmony"), linear_to_db(0.25), 0.01)
+	var synchronized_players := 0
+	for child: Node in _audio.get_children():
+		if child is AudioStreamPlayer and (child as AudioStreamPlayer).stream is AudioStreamSynchronized:
+			synchronized_players += 1
+	assert_eq(synchronized_players, 1,
+		"all stems share the one physical bgm:main player")
+
+
+func test_stem_resource_preflight_enforces_audible_mix_and_32_stream_limit() -> void:
+	var source := ResourceLoader.load(
+		FIXTURE_PATH + "synthetic_raw.tres") as AudioStream
+	var maximum := BgmTrackDefinition.new()
+	maximum.loop = true
+	maximum.start_position = 0.0
+	maximum.loop_position = 0.0
+	for index in range(AudioStreamSynchronized.MAX_STREAMS):
+		var stem := BgmStemDefinition.new()
+		stem.stem_name = "stem_%02d" % index
+		stem.stream = source
+		stem.default_gain = 1.0 if index == 0 else 0.0
+		maximum.stems.append(stem)
+	var prepared: Dictionary = _audio._prepare_bgm_definition(maximum, "")
+	assert_false(prepared.is_empty())
+	assert_eq((prepared["stream"] as AudioStreamSynchronized).stream_count, 32)
+
+	var overflow := maximum.duplicate(true) as BgmTrackDefinition
+	var extra := BgmStemDefinition.new()
+	extra.stem_name = "stem_32"
+	extra.stream = source
+	overflow.stems.append(extra)
+	assert_eq(_audio._prepare_bgm_definition(overflow, ""), {})
+	var duplicate := maximum.duplicate(true) as BgmTrackDefinition
+	duplicate.stems[1].stem_name = duplicate.stems[0].stem_name
+	assert_eq(_audio._prepare_bgm_definition(duplicate, ""), {},
+		"duplicate authored stem names fail before stream construction")
+
+	var silent := BgmTrackDefinition.new()
+	silent.loop = true
+	for stem_name: String in ["rhythm", "harmony"]:
+		var stem := BgmStemDefinition.new()
+		stem.stem_name = stem_name
+		stem.stream = source
+		stem.default_gain = 0.0
+		silent.stems.append(stem)
+	assert_eq(_audio._prepare_bgm_definition(silent, ""), {},
+		"an all-zero default resource cannot become a silent live channel")
+	assert_eq(_runtime.presentation_state.current_bgm, {},
+		"private resource preflight never mutates canonical state")
+	assert_eq(_audio._bgm_channel, {})
+
+
+func test_mix_fade_preserves_player_stream_and_cursor() -> void:
+	_submit([_operation("play", "synthetic_stems")])
+	var player := _player()
+	var synchronized := _synchronized_stream()
+	player.seek(0.04)
+	var before_position := player.get_playback_position()
+	var mix_join := _submit([
+		_operation("mix", "", "", 1.0, 2.0, 21,
+			{"harmony": 1.0, "rhythm": 0.25}),
+	], PresentationBatchRequest.Policy.JOIN)
+	assert_false(mix_join.is_settled())
+	assert_same(_player(), player)
+	assert_same(_synchronized_stream(), synchronized)
+	assert_almost_eq(player.get_playback_position(), before_position, 0.015)
+	var tween: Tween = _audio._bgm_channel.get("tween")
+	assert_true(tween.custom_step(1.0))
+	assert_almost_eq(_stem_db("harmony"), linear_to_db(0.5), 0.01)
+	assert_almost_eq(_stem_db("rhythm"), linear_to_db(0.625), 0.01)
+	assert_same(_player(), player)
+	assert_same(_synchronized_stream(), synchronized)
+	assert_true(tween.custom_step(1.0))
+	tween.custom_step(0.000001)
+	assert_eq(mix_join.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_almost_eq(_stem_db("harmony"), 0.0, 0.01)
+	assert_almost_eq(_stem_db("rhythm"), linear_to_db(0.25), 0.01)
+	assert_eq(_runtime.presentation_state.current_bgm["stem_mix"], {
+		"harmony": 1.0, "rhythm": 0.25,
+	})
+
+
+func test_aligned_mix_hands_fnf_to_join_without_a_second_tween() -> void:
+	_submit([_operation("play", "synthetic_stems")])
+	var target := {"harmony": 1.0, "rhythm": 0.25}
+	var receipt_count := _receipts.size()
+	var terminal_count := _terminals.size()
+	var fnf := _submit([
+		_operation("mix", "", "", 1.0, 8.0, 22, target),
+	])
+	assert_eq(fnf.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(_receipts.size(), receipt_count + 1)
+	var stale_receipt: Dictionary = (
+		_audio._bgm_channel["receipt"] as Dictionary).duplicate(true)
+	var stale_tween: Tween = _audio._bgm_channel["tween"]
+
+	var aligned := _submit([
+		_operation("mix", "", "", 1.0, 3.0, 23, target),
+	], PresentationBatchRequest.Policy.JOIN)
+	assert_eq(aligned.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(_receipts.size(), receipt_count + 1)
+	assert_eq(_terminals.size(), terminal_count + 1)
+	assert_eq(_terminals.back()["token"], stale_receipt["token"])
+	assert_eq(_terminals.back()["outcome"], &"completed")
+	assert_false(stale_tween.is_valid())
+	assert_eq(_audio._bgm_channel.get("receipt", {}), {})
+	assert_null(_audio._bgm_channel.get("tween"))
+	assert_almost_eq(_stem_db("harmony"), 0.0, 0.01)
+	assert_almost_eq(_stem_db("rhythm"), linear_to_db(0.25), 0.01)
+
+	var stable_channel: Dictionary = _audio._bgm_channel.duplicate(true)
+	_audio.call("_complete_bgm_receipt", stale_receipt)
+	assert_eq(_audio._bgm_channel, stable_channel)
+	assert_eq(_terminals.size(), terminal_count + 1)
+
+
+func test_mix_supersession_and_abort_reject_stale_callbacks_exactly() -> void:
+	_submit([_operation("play", "synthetic_stems")])
+	var first := _submit([
+		_operation("mix", "", "", 1.0, 10.0, 24,
+			{"harmony": 1.0, "rhythm": 0.0}),
+	], PresentationBatchRequest.Policy.JOIN)
+	var stale_receipt: Dictionary = _receipts.back().duplicate(true)
+	var stale_tween: Tween = _audio._bgm_channel["tween"]
+	assert_true(stale_tween.custom_step(2.0))
+	var second_context := _context()
+	var second := _submit([
+		_operation("mix", "", "", 1.0, 10.0, 25,
+			{"harmony": 0.4, "rhythm": 0.8}),
+	], PresentationBatchRequest.Policy.JOIN, second_context)
+	assert_eq(first.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	assert_push_error(SOURCE_PATH + ":24")
+	assert_eq(_terminals.back()["outcome"], &"superseded")
+	assert_false(stale_tween.is_valid())
+	var current_receipt: Dictionary = (
+		_audio._bgm_channel["receipt"] as Dictionary).duplicate(true)
+	var current_tween: Tween = _audio._bgm_channel["tween"]
+	_audio.call("_complete_bgm_receipt", stale_receipt)
+	assert_eq(_audio._bgm_channel["receipt"], current_receipt)
+	assert_same(_audio._bgm_channel["tween"], current_tween)
+
+	second_context.request_cancellation()
+	assert_eq(second.get_outcome(), PresentationBatchRequest.Outcome.CANCELLED)
+	assert_eq(_audio._bgm_channel.get("receipt", {}), {})
+	assert_null(_audio._bgm_channel.get("tween"))
+	assert_eq(_runtime.presentation_state.current_bgm["stem_mix"], {
+		"harmony": 0.4, "rhythm": 0.8,
+	})
+	assert_almost_eq(_stem_db("harmony"), linear_to_db(0.4), 0.01)
+	assert_almost_eq(_stem_db("rhythm"), linear_to_db(0.8), 0.01)
+	_audio.call("_complete_bgm_receipt", current_receipt)
+	assert_eq(_audio._bgm_channel.get("receipt", {}), {})
+
+
+func test_stem_mix_survives_pause_skip_save_restore_and_settings() -> void:
+	_submit([_operation(
+		"play", "synthetic_stems", "", 0.7, 0.0, 26,
+		{"harmony": 0.4, "rhythm": 0.8},
+	)])
+	var player := _player()
+	player.seek(0.04)
+	var pause := _submit([
+		_operation("pause", "", "", 1.0, 10.0, 27),
+	], PresentationBatchRequest.Policy.JOIN)
+	_runtime.skip_controller.is_active = true
+	await get_tree().process_frame
+	_runtime.skip_controller.is_active = false
+	assert_eq(pause.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_true(player.stream_paused)
+	assert_eq(_runtime.presentation_state.current_bgm["stem_mix"], {
+		"harmony": 0.4, "rhythm": 0.8,
+	})
+
+	var snapshot: Dictionary = _runtime.presentation_state.capture_snapshot()
+	_runtime.presentation_state.restore_snapshot(snapshot)
+	_runtime.presentation_state.apply_to_presenters()
+	var restored_player := _player()
+	assert_not_same(restored_player, player)
+	assert_true(restored_player.stream_paused)
+	assert_eq(_runtime.presentation_state.current_bgm["stem_mix"],
+		snapshot["bgm"]["stem_mix"])
+	assert_almost_eq(_stem_db("harmony"), linear_to_db(0.4), 0.01)
+	assert_almost_eq(_stem_db("rhythm"), linear_to_db(0.8), 0.01)
+
+	_submit([_operation("resume")])
+	_runtime.set_setting("master_volume", 0.5)
+	_runtime.set_setting("bgm_volume", 0.25)
+	assert_almost_eq(_player().volume_db, linear_to_db(0.5 * 0.25 * 0.7), 0.01)
+	assert_almost_eq(_stem_db("harmony"), linear_to_db(0.4), 0.01,
+		"settings scale the player, not the synchronized stem balance")
+	assert_almost_eq(_stem_db("rhythm"), linear_to_db(0.8), 0.01)
+
+
+func test_invalid_hot_reloaded_stem_and_replacement_stale_token_do_not_pollute() -> void:
+	_submit([_operation("play", "synthetic_stems")])
+	var player := _player()
+	var synchronized := _synchronized_stream()
+	var definition := ResourceLoader.load(
+		FIXTURE_PATH + "synthetic_stems.tres") as BgmTrackDefinition
+	var original_name := definition.stems[0].stem_name
+	definition.stems[0].stem_name = "bad:id"
+	var before_state: Dictionary = (
+		_runtime.presentation_state.current_bgm.duplicate(true))
+	var rejected := _submit([
+		_operation("mix", "", "", 1.0, 0.0, 28,
+			{"harmony": 1.0, "rhythm": 0.25}),
+	])
+	assert_eq(rejected.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	assert_push_error(SOURCE_PATH + ":28")
+	assert_eq(_runtime.presentation_state.current_bgm, before_state)
+	assert_same(_player(), player)
+	assert_same(_synchronized_stream(), synchronized)
+	definition.stems[0].stem_name = original_name
+
+	var active := _submit([
+		_operation("mix", "", "", 1.0, 10.0, 29,
+			{"harmony": 1.0, "rhythm": 0.25}),
+	], PresentationBatchRequest.Policy.JOIN)
+	assert_false(active.is_settled())
+	var stale_receipt: Dictionary = _receipts.back().duplicate(true)
+	var committed_mix: Dictionary = (
+		_runtime.presentation_state.current_bgm["stem_mix"] as Dictionary).duplicate(true)
+	var old_audio := _audio
+	old_audio.queue_free()
+	await get_tree().process_frame
+	assert_eq(active.get_outcome(), PresentationBatchRequest.Outcome.CANCELLED)
+	var replacement := AudioPresenter.new()
+	replacement.name = "AudioPresenter"
+	_runtime.add_child(replacement)
+	_audio = replacement
+	var replacement_player := _player()
+	assert_not_null(replacement_player)
+	assert_not_same(replacement_player, player)
+	assert_true(replacement_player.stream is AudioStreamSynchronized)
+	assert_eq(_runtime.presentation_state.current_bgm["stem_mix"], committed_mix)
+	assert_eq((_audio._bgm_channel["current"] as Dictionary)["stem_mix"],
+		committed_mix)
+	assert_eq(_audio._bgm_channel.get("receipt", {}), {})
+
+	SignalBus.bgm_transition_terminal.emit(
+		stale_receipt["presenter_instance_id"], stale_receipt["token"],
+		stale_receipt["operation_request_id"], stale_receipt["generation"],
+		&"completed")
+	assert_same(_player(), replacement_player)
+	assert_eq(_runtime.presentation_state.current_bgm["stem_mix"], committed_mix)
+	assert_eq(_audio._bgm_channel.get("receipt", {}), {})
 
 
 func test_same_target_positive_preflight_and_volume_reuses_exact_cursor() -> void:
@@ -1053,7 +1340,8 @@ func test_runtime_audio_shutdown_quiesces_every_exact_owner_idempotently() -> vo
 	assert_eq(SignalBus.apply_title_bgm_cut("synthetic_raw"), 0)
 	assert_eq(SignalBus.reset_and_apply_bgm_state({
 		"asset": "synthetic_raw", "cue": "", "loop": true,
-		"position": 0.0, "status": "playing", "volume": 0.7,
+		"position": 0.0, "status": "playing", "stem_mix": {},
+		"volume": 0.7,
 	}), 0)
 	assert_eq(SignalBus.reset_and_apply_loop_se_state({
 		"ambient": {

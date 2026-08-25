@@ -19,7 +19,8 @@ const EXACT_LOOP_SE_KEYS := [
 	"action", "asset", "channel", "fade_duration", "resume_position", "volume",
 ]
 const EXACT_BGM_KEYS := [
-	"action", "asset", "cue", "fade_duration", "resume_position", "volume",
+	"action", "asset", "cue", "fade_duration", "resume_position", "stem_mix",
+	"volume",
 ]
 
 var _authority := RefCounted.new()
@@ -679,7 +680,7 @@ func _preflight_operations(
 		elif operation is BgmPresentationOperation:
 			if payload_keys != EXACT_BGM_KEYS:
 				return _preflight_failure(
-					"BGM payload must use the canonical six-field schema",
+					"BGM payload must use the canonical seven-field schema",
 					operation,
 				)
 			if (

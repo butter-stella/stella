@@ -13,7 +13,7 @@ const _DIALOGUE_VISIBILITY_TARGETS := ["surface", "quick_menu"]
 const _DIALOGUE_VISIBILITY_ACTIONS := ["show", "hide"]
 const _DIALOGUE_VISIBILITY_TRANSITIONS := ["cut", "fade"]
 const _LOOP_SE_ACTIONS := ["play", "stop"]
-const _BGM_ACTIONS := ["play", "pause", "resume", "stop"]
+const _BGM_ACTIONS := ["play", "mix", "pause", "resume", "stop"]
 const _STAGE_TRANSITIONS := [
 	"cut", "none", "fade", "move",
 	"slide_left", "slide_right", "slide_up", "slide_down",
@@ -2045,7 +2045,7 @@ static func _parse_bgm_command(
 		_record_diagnostic(
 			data,
 			"error",
-			"DslParser: @bgm requires play, pause, resume, or stop at %s"
+			"DslParser: @bgm requires play, mix, pause, resume, or stop at %s"
 			% location,
 			line,
 		)
@@ -2053,7 +2053,7 @@ static func _parse_bgm_command(
 	var action := String(parts[0])
 	if action not in _BGM_ACTIONS:
 		var message := (
-			"DslParser: invalid @bgm action '%s' at %s; expected play, pause, resume, or stop"
+			"DslParser: invalid @bgm action '%s' at %s; expected play, mix, pause, resume, or stop"
 			% [action, location]
 		)
 		if action == "off" or action == action.to_lower():
@@ -2066,6 +2066,7 @@ static func _parse_bgm_command(
 
 	var option_start := 1
 	var asset := ""
+	var stem_mix: Dictionary = {}
 	if action == "play":
 		if parts.size() < 2 or String(parts[1]).contains("="):
 			_record_diagnostic(
@@ -2076,6 +2077,27 @@ static func _parse_bgm_command(
 			)
 			return null
 		asset = String(parts[1])
+		option_start = 2
+	elif action == "mix":
+		if parts.size() < 2 or String(parts[1]).contains("="):
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: @bgm mix requires a stem mix at %s" % location,
+				line,
+			)
+			return null
+		var mix_result := _parse_bgm_stem_mix(String(parts[1]))
+		if not bool(mix_result.get("valid", false)):
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: invalid @bgm stem mix at %s: %s"
+				% [location, String(mix_result.get("error", "invalid stem mix"))],
+				line,
+			)
+			return null
+		stem_mix = (mix_result["value"] as Dictionary).duplicate(true)
 		option_start = 2
 
 	var cue := ""
@@ -2179,6 +2201,30 @@ static func _parse_bgm_command(
 					invalid = true
 				else:
 					cue = raw_value
+			"mix":
+				if action != "play":
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @bgm %s does not accept mix at %s"
+						% [action, location],
+						line,
+					)
+					invalid = true
+				else:
+					var mix_result := _parse_bgm_stem_mix(raw_value)
+					if not bool(mix_result.get("valid", false)):
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: invalid @bgm stem mix at %s: %s"
+							% [location, String(mix_result.get(
+								"error", "invalid stem mix"))],
+							line,
+						)
+						invalid = true
+					else:
+						stem_mix = (mix_result["value"] as Dictionary).duplicate(true)
 			_:
 				_record_diagnostic(
 					data,
@@ -2195,6 +2241,7 @@ static func _parse_bgm_command(
 		"cue": cue,
 		"fade_duration": fade_duration,
 		"resume_position": 0.0,
+		"stem_mix": stem_mix,
 		"volume": volume,
 	}
 	if not BgmChannelState.validate_operation(payload, false):
@@ -2206,6 +2253,53 @@ static func _parse_bgm_command(
 		)
 		return null
 	return _make_cmd("bgm", payload)
+
+
+static func _parse_bgm_stem_mix(encoded: String) -> Dictionary:
+	if encoded.is_empty():
+		return {"valid": false, "error": "stem mix must not be empty"}
+	var parsed: Dictionary = {}
+	var has_audible_stem := false
+	for raw_entry: String in encoded.split(",", true):
+		if raw_entry.is_empty():
+			return {"valid": false, "error": "stem mix contains an empty stem"}
+		var pieces := raw_entry.split(":", true)
+		if pieces.size() > 2:
+			return {"valid": false, "error": "stem entry must be name[:gain]"}
+		var stem_name := String(pieces[0])
+		if not BgmChannelState.is_valid_stem_name(stem_name):
+			return {"valid": false, "error": "stem '%s' is invalid" % stem_name}
+		if parsed.has(stem_name):
+			return {"valid": false, "error": "duplicate stem '%s'" % stem_name}
+		var gain := 1.0
+		if pieces.size() == 2:
+			var gain_result := _parse_non_negative_duration(String(pieces[1]))
+			if not bool(gain_result.get("valid", false)):
+				var requirement := String(gain_result.get("requirement", "finite"))
+				return {
+					"valid": false,
+					"error": (
+						"stem gain must be between 0 and 1"
+						if requirement == "non-negative"
+						else "stem gain must be finite"
+					),
+				}
+			gain = float(gain_result.get("value", -1.0))
+			if gain > 1.0:
+				return {
+					"valid": false,
+					"error": "stem gain must be between 0 and 1",
+				}
+		parsed[stem_name] = gain
+		has_audible_stem = has_audible_stem or gain > 0.0
+	if not has_audible_stem:
+		return {"valid": false, "error": "stem mix must not be all zero"}
+	var names := parsed.keys()
+	names.sort()
+	var canonical: Dictionary = {}
+	for stem_name: Variant in names:
+		canonical[String(stem_name)] = float(parsed[stem_name])
+	return {"valid": true, "value": canonical}
 
 
 static func _parse_non_negative_duration(encoded: String) -> Dictionary:

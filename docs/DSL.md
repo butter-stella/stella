@@ -362,6 +362,8 @@ Director 在任何 child apply 之前完成整批 typed schema/context preflight
 // BGM — lifecycle 动画必须由作者显式声明
 @bgm play bgm_spring
 @bgm play bgm_cafe volume=0.7 fade=1.5
+@bgm play bgm_battle_stems mix=rhythm,bass:0.7
+@bgm mix rhythm:0.4,bass,melody fade=0.8
 @bgm pause fade=0.2
 @bgm resume fade=0.2
 @bgm stop fade=1.0
@@ -384,13 +386,14 @@ Director 在任何 child apply 之前完成整批 typed schema/context preflight
 BGM 是单一固定 channel，唯一 public grammar 是：
 
 ```stla
-@bgm play <asset> [cue=<name>] [volume=0..1] [fade=<seconds>]
+@bgm play <asset> [cue=<name>] [mix=<stem>[,<stem>[:<gain>]...]] [volume=0..1] [fade=<seconds>]
+@bgm mix <stem>[,<stem>[:<gain>]...] [fade=<seconds>]
 @bgm pause [fade=<seconds>]
 @bgm resume [fade=<seconds>]
 @bgm stop [fade=<seconds>]
 ```
 
-`volume` 默认 `1`，所有 action 的 `fade` 都默认 `0`；最短命令因此是立即操作，淡变必须显式书写。`fade` 是整个 replacement crossfade 的总时长，不是先淡出再淡入的两段时长。standalone BGM 默认 fire-and-forget；需要等待淡变或与 Stage 等 child 共用原子边界时，只使用现有 `@presentation_batch`：
+`volume` 默认 `1`，所有 action 的 `fade` 都默认 `0`；最短 `@bgm play asset` 没有增加任何参数负担。`mix=` 只用于 play 时设定 multi-stem 初始配比，`@bgm mix` 只改变当前 multi-stem 配比。mix spec 以逗号分隔 stem；裸 stem 的 gain 为 `1`，显式 gain 必须是有限的 `0..1`，资源中存在但未列出的 stem 规范化为 `0`。重复/未知 stem、空项、全零 mix 和非法 gain 都 fail-close。`fade` 是整个 replacement crossfade 或 stem mix 的总时长，不是先淡出再淡入的两段时长。standalone BGM 默认 fire-and-forget；需要等待淡变或与 Stage 等 child 共用原子边界时，只使用现有 `@presentation_batch`：
 
 ```stla
 @presentation_batch policy=join
@@ -399,20 +402,23 @@ BGM 是单一固定 channel，唯一 public grammar 是：
 @end
 ```
 
-同一 playing asset+cue 且 volume 相同仍会通过 AudioPresenter/resource positive preflight，物理投影稳定时不重播、不 seek、也不创建 receipt；只改 volume 会复用同一个 player/cursor 并淡变 authored gain。若相同 play/pause/resume/stop target 仍由上一条 fire-and-forget fade 持有，新的同 action 会先把旧 exact receipt 完成到唯一 authored endpoint，再以零新 Tween 同步确认；旧 token 的迟到 callback 无效。paused 状态下 `play` 从 cue 的 authored start marker 重播，只有 `resume` 从保留 cursor 继续；显式重启写成 `stop` 后再 `play`，不存在 `restart` option。对空 channel 执行 `pause`/`resume` 会在该行 fail-close；`stop` 为空时同步 no-op。
+同一 playing asset+cue 且 volume/stem mix 相同仍会通过 AudioPresenter/resource positive preflight，物理投影稳定时不重播、不 seek、也不创建 receipt；只改 volume 或 stem mix 会复用同一个 player/stream/cursor。`@bgm mix` 直接淡变同一 `AudioStreamSynchronized` 的子流 gain，不创建 stem player、第二 scheduler 或 guessed wait。若相同 play/mix/pause/resume/stop target 仍由上一条 fire-and-forget fade 持有，新的同 action 会先把旧 exact receipt 完成到唯一 authored endpoint，再以零新 Tween 同步确认；旧 token 的迟到 callback 无效。paused 状态下 `play` 从 cue 的 authored start marker 重播，只有 `resume` 从保留 cursor 继续；显式重启写成 `stop` 后再 `play`，不存在 `restart` option。对空 channel 执行 `mix`/`pause`/`resume` 会在该行 fail-close；single-stream BGM 也拒绝 `mix`；`stop` 为空时同步 no-op。
 
 原始 OGG/MP3/WAV 默认 `loop=true`、start=0，并保留格式自身合法的 loop marker。需要 authored start/loop marker 或 named cue 时，asset 指向 `BgmTrackDefinition` `.tres`；default 与每个 `BgmCueDefinition` 都是完整定义，cue 不继承 track 字段：
 
 ```gdscript
 # BgmTrackDefinition
 stream = <AudioStream>
+stems = []
 loop = true
 start_position = 0.0
 loop_position = 4.2
 cues = [<BgmCueDefinition cue_name="evening" ...>]
 ```
 
-每个 default/cue 的 `start_position` 与 `loop_position` 必须有限、非负且满足 `start_position <= loop_position < stream length`；即使 `loop=false` 也保留同一完整 marker schema，只是不启用循环。循环区间从 `loop_position` 到 stream 末尾；这一版没有 `loop_end`。stream 无法报告有限正长度、cue 重名/非法/缺失、marker 越界、资源缺失/歧义或格式不支持时，Director 会在 mixed batch 的任何 child mutation 前按 BGM child 的 `source_path:line` 拒绝整批。
+`BgmTrackDefinition` 是严格 sum schema：`stream` 与 `stems` 必须且只能设置一个。single-stream 继续使用上面的 `stream`。multi-stem 则把 `stream` 留空，并提供 2..32 个 `BgmStemDefinition {stem_name, stream, default_gain}`；名称必须唯一，`default_gain` 为有限 `0..1`，且默认 mix 至少一个 gain 大于 0。所有 stem 必须同为 OGG、MP3 或 WAV，报告相同有限正长度；WAV 还必须具有相同 `mix_rate`、`stereo` 和 sample `format`。Presenter 预检成功后把它们装入一个 `AudioStreamSynchronized`，因此相位对齐并只占一个 `bgm:main` player。
+
+每个 default/cue 的 `start_position` 与 `loop_position` 必须有限、非负且对每个 stem 都满足 `start_position <= loop_position < stream length`；即使 `loop=false` 也保留同一完整 marker schema，只是不启用循环。循环区间从 `loop_position` 到 stream 末尾；这一版没有 `loop_end`。stream 无法报告有限正长度、stem metadata 不一致、cue/stem 重名/非法/缺失、marker 越界、资源缺失/歧义或格式不支持时，Director 会在 mixed batch 的任何 child mutation 前按 BGM child 的 `source_path:line` 拒绝整批。
 
 旧 `@bgm asset [fade]` / `@bgm off [fade]` grammar 已删除，不作为 alias 接受；迁移为 `@bgm play asset fade=...` / `@bgm stop fade=...`。
 
@@ -756,6 +762,7 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | 清空舞台层 | `@stage clear` | `@stage clear` |
 | 句内头像表情 | `[expr:expression]` | — |
 | BGM 播放 | `@bgm play asset cue=... volume=... fade=...` | `@bgm play asset` |
+| BGM stem mix | `@bgm play asset mix=rhythm,bass:0.7` / `@bgm mix rhythm:0.4,bass fade=...` | 仅 multi-stem resource |
 | BGM 暂停/继续/停止 | `@bgm pause\|resume\|stop fade=...` | `@bgm pause` / `@bgm resume` / `@bgm stop` |
 | 音效 | `@se asset` | `@se asset` |
 | 循环音效播放 | `@loop_se channel play asset volume=... fade=...` | `@loop_se channel play asset` |

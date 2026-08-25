@@ -14,6 +14,8 @@ const DIALOGUE_CLEAR_REFERENCE_PATH = \
 const LOOP_SE_REFERENCE_PATH = "res://examples/demo/scenarios/loop_se.stla"
 const BGM_REFERENCE_PATH = "res://examples/demo/scenarios/bgm_lifecycle.stla"
 const BGM_RESOURCE_PATH = "res://examples/demo/audio/bgm/synthetic_bgm.tres"
+const BGM_STEM_RESOURCE_PATH = \
+	"res://examples/demo/audio/bgm/synthetic_bgm_stems.tres"
 
 
 func _parse_demo() -> ScenarioData:
@@ -315,6 +317,7 @@ func test_bgm_public_reference_uses_canonical_lifecycle_and_cues() -> void:
 	assert_true(FileAccess.file_exists(BGM_REFERENCE_PATH),
 		"issue #168 publishes one redistributable reference scenario")
 	assert_true(ResourceLoader.exists(BGM_RESOURCE_PATH))
+	assert_true(ResourceLoader.exists(BGM_STEM_RESOURCE_PATH))
 	if not FileAccess.file_exists(BGM_REFERENCE_PATH):
 		return
 	var file := FileAccess.open(BGM_REFERENCE_PATH, FileAccess.READ)
@@ -335,18 +338,20 @@ func test_bgm_public_reference_uses_canonical_lifecycle_and_cues() -> void:
 		var command: CommandData = command_value
 		if command.type == "presentation_batch":
 			batches.append(command)
-	assert_eq(batches.size(), 5)
-	if batches.size() != 5:
+	assert_eq(batches.size(), 7)
+	if batches.size() != 7:
 		return
 	assert_eq(batches.map(func(batch: CommandData) -> String:
 		return batch.get_string("policy")), [
-		"fire_and_forget", "join", "fire_and_forget", "join", "join",
+		"fire_and_forget", "join", "fire_and_forget", "join",
+		"fire_and_forget", "join", "join",
 	])
 	assert_eq(batches.map(func(batch: CommandData) -> Array:
 		return (batch.params.get("operations", []) as Array).map(
 			func(operation: Dictionary) -> String:
 				return String(operation.get("kind", "")))), [
-		["bgm"], ["bgm"], ["bgm"], ["bgm", "stage"], ["bgm", "stage"],
+		["bgm"], ["bgm"], ["bgm"], ["bgm", "stage"], ["bgm"],
+		["bgm"], ["bgm", "stage"],
 	])
 	var first: Dictionary = batches[0].params["operations"][0]["payload"]
 	assert_eq(first.get("action"), "play")
@@ -359,3 +364,11 @@ func test_bgm_public_reference_uses_canonical_lifecycle_and_cues() -> void:
 		assert_gt(track.stream.get_length(), 0.0)
 		assert_eq(track.cues.map(func(cue: BgmCueDefinition) -> String:
 			return cue.cue_name), ["opening", "bridge", "finale"])
+	var stems := ResourceLoader.load(
+		BGM_STEM_RESOURCE_PATH) as BgmTrackDefinition
+	assert_not_null(stems)
+	if stems != null:
+		assert_null(stems.stream)
+		assert_eq(stems.stems.map(func(stem: BgmStemDefinition) -> String:
+			return stem.stem_name), ["rhythm", "harmony"])
+		assert_eq(batches[5].params["operations"][0]["payload"]["action"], "mix")

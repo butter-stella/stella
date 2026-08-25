@@ -1,0 +1,33 @@
+[gd_resource type="Resource" script_class="BgmTrackDefinition" load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://addons/stella/core/data/bgm_track_definition.gd" id="1_track"]
+[ext_resource type="Script" path="res://addons/stella/core/data/bgm_stem_definition.gd" id="2_stem"]
+
+[sub_resource type="AudioStreamWAV" id="AudioStreamWAV_u8"]
+format = 0
+mix_rate = 100
+stereo = false
+data = PackedByteArray(128, 165, 198, 222, 234, 233, 218, 192, 158, 121)
+
+[sub_resource type="AudioStreamWAV" id="AudioStreamWAV_s16"]
+format = 1
+mix_rate = 100
+stereo = false
+data = PackedByteArray(0, 0, 32, 18, 45, 34, 55, 42, 18, 46, 55, 42, 45, 34, 32, 18, 0, 0, 224, 237)
+
+[sub_resource type="Resource" id="Resource_rhythm"]
+script = ExtResource("2_stem")
+stem_name = "rhythm"
+stream = SubResource("AudioStreamWAV_u8")
+
+[sub_resource type="Resource" id="Resource_harmony"]
+script = ExtResource("2_stem")
+stem_name = "harmony"
+stream = SubResource("AudioStreamWAV_s16")
+
+[resource]
+script = ExtResource("1_track")
+stems = Array[ExtResource("2_stem")]([SubResource("Resource_rhythm"), SubResource("Resource_harmony")])
+loop = true
+start_position = 0.0
+loop_position = 0.0
