@@ -23,10 +23,12 @@ var _request_id: int = 0
 var _presenters: Dictionary = {}
 var _validated_presenters: Dictionary = {}
 var _accepted_presenters: Dictionary = {}
+var _applied_presenters: Dictionary = {}
 var _errors: Array[String] = []
 var _success: bool = false
 var _authority: Object
 var _participant_validator: Callable
+var _force_cut: bool = false
 
 
 func _init(
@@ -59,6 +61,10 @@ func get_source() -> Dictionary:
 
 func get_request_id() -> int:
 	return _request_id
+
+
+func get_force_cut() -> bool:
+	return _force_cut
 
 
 func is_finished() -> bool:
@@ -155,6 +161,18 @@ func _accept(presenter: Object, authority: Object) -> bool:
 	return true
 
 
+func _apply(presenter: Object, authority: Object) -> bool:
+	if (
+		authority != _authority
+		or _phase != Phase.APPLYING
+		or not is_target(presenter)
+		or not _accepted_presenters.has(presenter.get_instance_id())
+	):
+		return false
+	_applied_presenters[presenter.get_instance_id()] = true
+	return true
+
+
 func _has_accepted_identity(
 	presenter: Object,
 	capability: Object,
@@ -187,6 +205,15 @@ func all_presenters_accepted() -> bool:
 	return true
 
 
+func all_presenters_applied() -> bool:
+	if _phase != Phase.APPLYING:
+		return false
+	for presenter_id: int in _presenters:
+		if not _applied_presenters.has(presenter_id):
+			return false
+	return true
+
+
 func presenters_are_live() -> bool:
 	for entry_value: Variant in _presenters.values():
 		var entry: Dictionary = entry_value
@@ -212,6 +239,13 @@ func _seal_validation(request_id: int, authority: Object) -> bool:
 		return false
 	_request_id = request_id
 	_phase = Phase.APPLYING
+	return true
+
+
+func _set_force_cut(force_cut: bool, authority: Object) -> bool:
+	if authority != _authority or _phase != Phase.APPLYING:
+		return false
+	_force_cut = force_cut
 	return true
 
 

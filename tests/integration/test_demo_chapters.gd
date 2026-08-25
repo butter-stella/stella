@@ -154,10 +154,10 @@ func test_dialogue_visibility_public_reference_parses_without_private_content() 
 	if batches.size() != 6:
 		return
 	assert_eq(batches.map(func(batch: CommandData) -> int:
-		return batch.declared_line), [14, 21, 26, 27, 30, 34])
+		return batch.declared_line), [14, 22, 27, 28, 31, 35])
 	assert_eq(batches.map(func(batch: CommandData) -> Array:
 		return batch.params.get("operation_lines", [])), [
-		[15, 16, 17], [22, 23], [26], [27], [31], [35, 36],
+		[15, 16, 17, 18], [23, 24], [27], [28], [32], [36, 37],
 	])
 	assert_eq(batches.map(func(batch: CommandData) -> String:
 		return batch.get_string("policy")), [
@@ -168,13 +168,18 @@ func test_dialogue_visibility_public_reference_parses_without_private_content() 
 			func(operation: Dictionary) -> String:
 				return String(operation.get("kind", ""))
 		)), [
-		["dialogue_visibility", "dialogue_visibility", "stage"],
+		["dialogue_visibility", "chapter_indicator",
+			"dialogue_visibility", "stage"],
 		["dialogue_visibility", "dialogue_visibility"],
 		["dialogue_visibility"],
 		["dialogue_visibility"],
 		["dialogue_visibility"],
 		["dialogue_visibility", "stage"],
 	])
+	var first_chapter: Dictionary = batches[0].params["operations"][1]["payload"]
+	assert_eq(first_chapter, {
+		"action": "show", "transition": "fade", "duration": 0.3,
+	})
 	var expected_visibility := [
 		["surface", "hide", "fade", 0.3],
 		["quick_menu", "hide", "fade", 0.3],
@@ -197,7 +202,7 @@ func test_dialogue_visibility_public_reference_parses_without_private_content() 
 				payload.get("transition"), payload.get("duration"),
 			])
 	assert_eq(actual_visibility, expected_visibility)
-	var first_stage: Dictionary = batches[0].params["operations"][2]["payload"]
+	var first_stage: Dictionary = batches[0].params["operations"][3]["payload"]
 	assert_eq(first_stage.get("action"), "update")
 	assert_eq(first_stage.get("transition"), "move")
 	assert_eq(first_stage.get("duration"), 0.3)

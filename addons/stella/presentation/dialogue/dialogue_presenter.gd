@@ -203,6 +203,8 @@ func _ready():
 		(SignalBus.get(&"dialogue_visibility_state_apply_requested") as Signal).connect(
 			_on_dialogue_visibility_state_apply_requested
 		)
+	SignalBus.dialogue_visibility_targets_state_apply_requested.connect(
+		_on_dialogue_visibility_targets_state_apply_requested)
 	if SignalBus.has_signal(&"dialogue_visibility_visuals_reset_requested"):
 		(SignalBus.get(&"dialogue_visibility_visuals_reset_requested") as Signal).connect(
 			_on_dialogue_visibility_visuals_reset_requested
@@ -3335,6 +3337,19 @@ func _on_dialogue_visibility_state_apply_requested(
 	_dialogue_visibility_runtime_binding = runtime_binding.duplicate(true)
 	_apply_visual_only_dialogue_restore(content, runtime_binding)
 	_apply_canonical_dialogue_visibility()
+
+
+func _on_dialogue_visibility_targets_state_apply_requested(
+	visibility: Dictionary,
+	targets: Array,
+) -> void:
+	for target_value: Variant in targets:
+		var target := String(target_value).strip_edges()
+		if target not in ["surface", "quick_menu"]:
+			continue
+		_retire_dialogue_visibility_target(target, &"cancelled")
+		_canonical_dialogue_visibility[target] = bool(visibility.get(target, true))
+		_apply_canonical_dialogue_visibility(target)
 
 
 func _on_dialogue_visibility_visuals_reset_requested() -> void:

@@ -27,6 +27,7 @@ const REQUIRED_VISIBILITY_SIGNALS := [
 	"dialogue_visibility_transition_receipts_finish_requested",
 	"dialogue_visibility_visuals_reset_requested",
 	"dialogue_visibility_state_apply_requested",
+	"dialogue_visibility_targets_state_apply_requested",
 ]
 
 var _runtime: Node
@@ -442,6 +443,16 @@ func _visibility_visual_snapshot() -> Array:
 				node.get_instance_id(), node.visible,
 				node.modulate.a, node.self_modulate.a,
 			])
+	return result
+
+
+func _target_visibility_visual_snapshot(group_name: StringName) -> Array:
+	var result: Array = []
+	for node: CanvasItem in _owned_group_nodes(group_name):
+		result.append([
+			node.get_instance_id(), node.visible,
+			node.modulate.a, node.self_modulate.a,
+		])
 	return result
 
 
@@ -1111,6 +1122,132 @@ func test_c_direct_state_apply_cancels_live_fnf_visual_owner_before_restore() ->
 	assert_eq(_visibility_visual_snapshot(), winning_visual)
 	assert_true(_all_owned_hidden(&"quick_menu"))
 	assert_eq(_presentation_tails.size(), tail_count)
+
+
+func test_c_target_scoped_cut_restore_preserves_sibling_tween_identity() -> void:
+	if not _require_contract() or not _start_scene("standalone_join"):
+		return
+	assert_true(await _wait_for_dialogues(1))
+	var surface_baseline := _target_visibility_visual_snapshot(
+		&"dialogue_surface")
+	var quick_hide := _visibility_operation(
+		"quick_menu", "hide", "cut", 0.0)
+	assert_not_null(quick_hide)
+	if quick_hide == null:
+		return
+	var quick_hide_request := _director().submit(
+		_typed_operations([quick_hide]),
+		PresentationBatchRequest.Policy.JOIN,
+		_runtime.engine.context,
+		{"source_path": "res://synthetic/target_restore.stla", "line": 1},
+	)
+	assert_eq(quick_hide_request.get_outcome(),
+		PresentationBatchRequest.Outcome.COMPLETED)
+	var surface_request := _submit_visibility(
+		"surface", "hide", PresentationBatchRequest.Policy.FIRE_AND_FORGET)
+	var quick_request := _submit_visibility(
+		"quick_menu", "show", PresentationBatchRequest.Policy.FIRE_AND_FORGET)
+	assert_not_null(surface_request)
+	assert_not_null(quick_request)
+	if (
+		surface_request == null or surface_request.get_receipts().is_empty()
+		or quick_request == null or quick_request.get_receipts().is_empty()
+	):
+		return
+	var surface_receipt: PresentationOperationReceipt = (
+		surface_request.get_receipts()[0])
+	var quick_receipt: PresentationOperationReceipt = quick_request.get_receipts()[0]
+	var active_before: Dictionary = _dialogue_presenter.get(
+		"_dialogue_visibility_active")
+	var surface_before: Dictionary = (active_before.get(
+		"surface", {}) as Dictionary).duplicate()
+	var quick_before: Dictionary = (active_before.get(
+		"quick_menu", {}) as Dictionary).duplicate()
+	var surface_tween := surface_before.get("tween") as Tween
+	var quick_tween := quick_before.get("tween") as Tween
+	assert_not_null(surface_tween)
+	assert_not_null(quick_tween)
+	if surface_tween == null or quick_tween == null:
+		return
+	assert_eq(_visibility_snapshot(), {
+		"surface": false, "quick_menu": true,
+	}, "the two live targets have deliberately distinct canonical states")
+	var quick_visual_before := _target_visibility_visual_snapshot(&"quick_menu")
+	var quick_terminal_count := _visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return (
+				record.get("operation_request_id")
+				== quick_request.get_batch_id()
+			)
+	).size()
+	_runtime.presentation_state.dialogue_visibility["surface"] = true
+	SignalBus.apply_dialogue_visibility_targets_state({
+		"surface": true,
+		"quick_menu": false,
+	}, ["surface"])
+	assert_false(surface_tween.is_valid(),
+		"the selected surface Tween is synchronously retired")
+	var active_after: Dictionary = _dialogue_presenter.get(
+		"_dialogue_visibility_active")
+	assert_false(active_after.has("surface"))
+	var quick_after: Dictionary = active_after.get("quick_menu", {})
+	assert_eq(quick_after.get("token"), quick_before.get("token"))
+	assert_eq(quick_after.get("generation"), quick_before.get("generation"))
+	assert_eq(quick_after.get("operation_request_id"),
+		quick_before.get("operation_request_id"))
+	assert_same(quick_after.get("tween"), quick_tween)
+	assert_true(quick_tween.is_valid())
+	assert_true(quick_tween.is_running())
+	assert_eq(_target_visibility_visual_snapshot(&"dialogue_surface"),
+		surface_baseline,
+		"the selected surface is cut-restored to its captured baseline")
+	assert_eq(_target_visibility_visual_snapshot(&"quick_menu"),
+		quick_visual_before,
+		"target-scoped projection cannot touch sibling visibility or alpha")
+	assert_eq(_visibility_snapshot(), {
+		"surface": true, "quick_menu": true,
+	})
+	assert_eq((_dialogue_presenter.get(
+		"_canonical_dialogue_visibility") as Dictionary), {
+		"surface": true, "quick_menu": true,
+	}, "the unselected quick-menu ignores its contrary projection payload")
+	assert_eq(_visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return (
+				record.get("operation_request_id")
+					== surface_request.get_batch_id()
+				and record.get("outcome") == &"cancelled"
+			)
+	).size(), 1)
+	var quick_identity_after := quick_after.duplicate()
+	var quick_visual_after := _target_visibility_visual_snapshot(&"quick_menu")
+	_dialogue_presenter.call(
+		"_complete_dialogue_visibility_target", "surface", surface_before)
+	_emit_visibility_terminal(surface_receipt, &"completed")
+	var active_after_stale: Dictionary = _dialogue_presenter.get(
+		"_dialogue_visibility_active")
+	var quick_after_stale: Dictionary = active_after_stale.get(
+		"quick_menu", {})
+	assert_eq(quick_after_stale.get("token"),
+		quick_identity_after.get("token"))
+	assert_eq(quick_after_stale.get("generation"),
+		quick_identity_after.get("generation"))
+	assert_eq(quick_after_stale.get("operation_request_id"),
+		quick_identity_after.get("operation_request_id"))
+	assert_same(quick_after_stale.get("tween"), quick_tween)
+	assert_true(quick_tween.is_valid())
+	assert_eq(_target_visibility_visual_snapshot(&"quick_menu"),
+		quick_visual_after,
+		"a stale surface callback/terminal cannot damage the sibling owner")
+	assert_eq(_visibility_terminals.filter(
+		func(record: Dictionary) -> bool:
+			return (
+				record.get("operation_request_id")
+				== quick_request.get_batch_id()
+			)
+	).size(), quick_terminal_count)
+	_emit_visibility_finish(quick_receipt)
+	assert_false(quick_tween.is_valid())
 
 
 func test_c_settled_fnf_is_retired_once_by_incompatible_profile_signature() -> void:

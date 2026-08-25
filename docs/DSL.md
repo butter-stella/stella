@@ -83,7 +83,7 @@ sakura「真巧，我们又见面了。」
 - 默认转场是 `cut`、时长是 `0.0`；`fade` 省略 `duration` 时默认 `0.25` 秒。
 - `none` 只是 `cut` 的 authoring alias，编译后同样保存为 `transition="cut", duration=0.0`，因此两种写法具有相同的内容 identity。
 - `duration` 必须是有限、非负的浮点秒数；`cut` / `none` 只接受 `0`。未知、重复、缺少等号或额外参数会让整条指令原子失败，并以 `.stla` 的 `source_path:line` 报错。
-- 指令必须写在当前 chapter 的有效 `@scene` 中；可以位于实际执行的 `@if` / `@else` 分支，但不能写在 chapter 与首个 scene 之间，也不能放入 `@parallel` 或 `@combine`。它是独立的 blocking command：所有本次验证通过的 Presenter 都完成后，剧本才继续；没有 Presenter 的 headless runner 会同步成功。当前不能用 wall-clock 等待或把它塞进 `@parallel` 来模拟尚未提供的跨演出 composition/join。
+- 指令必须写在当前 chapter 的有效 `@scene` 中；可以位于实际执行的 `@if` / `@else` 分支，但不能写在 chapter 与首个 scene 之间，也不能放入 `@parallel` 或 `@combine`。standalone 写法是 blocking JOIN：parser 把它 lowering 为一个单 child `presentation_batch`，和高级组合共用唯一的 typed Director 路径。所有本次验证通过的 Presenter 都完成后剧本才继续；没有 Presenter 的 headless runner 会同步成功。不要用 wall-clock 等待或 `@parallel` 模拟跨演出 composition/join。
 
 可见性不会在 `@jump`、`@call`、顺序换 scene 或换 chapter 时隐式改变。运行时章节 ID/标题来自实际执行 cursor；标题交给 `TranslationServer` 解析。裸 `@chapter id` 以 ID 作为标题，显式空标题不会渲染 UI，但 authored 可见目标仍按命令与存档保留。
 
@@ -249,18 +249,21 @@ Advance indicator 是可选的、按 Profile 独立配置的表现节点。`adva
 
 #### 高级：mixed presentation batch
 
-只有需要把 dialogue visibility 与 Stage 操作组成同一 JOIN/FNF 边界时，才使用
+只有需要把 chapter indicator、dialogue visibility 与 Stage 操作组成同一 JOIN/FNF 边界时，才使用
 `@presentation_batch`：
 
 ```stla
 @presentation_batch policy=join
-  @stage sakura update asset=character:sakura/happy transition=move duration=0.3
   @dialogue_visibility hide transition=fade duration=0.3
+  @chapter_indicator show transition=fade duration=0.3
+  @stage sakura update asset=character:sakura/happy transition=move duration=0.3
   @dialogue_visibility quick_menu hide transition=fade duration=0.3
 @end
 ```
 
-`@presentation_batch` header 只接受一个严格小写的 `policy=join|fire_and_forget`。block 不能为空，合法 child 只有 canonical `@stage` 与 canonical `@dialogue_visibility`；child 与 standalone 共用上面的唯一 parser/canonicalization。解析器保留 authored child 顺序和 `operation_lines`，并对 duplicate Stage layer、duplicate visibility target（省略 target 的 surface 与显式 surface 也视为重复）、nested batch/if/parallel/combine、scene gap、非法 child 与缺失 `@end` 做整块 fail-close。既有 `@stage_batch` 继续保持 Stage-only public contract，不会静默扩成 mixed alias。
+`@presentation_batch` header 只接受一个严格小写的 `policy=join|fire_and_forget`。block 不能为空，合法 child 只有 canonical `@stage`、canonical `@dialogue_visibility` 与 canonical `@chapter_indicator`；child 与 standalone 共用各自唯一的 parser/canonicalization。每批最多一个 chapter-indicator child，因为它们共享固定 `chapter:indicator` channel。解析器保留跨 kind 的 authored child 顺序，且 `operation_lines` 与 child 一一对应；duplicate Stage layer、duplicate visibility target（省略 target 的 surface 与显式 surface 也视为重复）、duplicate chapter target、nested batch/if/parallel/combine、scene gap、非法 child 与缺失 `@end` 都会令整块 fail-close。既有 `@stage_batch` 继续保持 Stage-only public contract，不会静默扩成 mixed alias。
+
+Director 在任何 child apply 之前完成整批 typed schema/context preflight，并把 chapter Presenter binding registry 完整 validate、seal 与 accept；任何 child 的 preflight 在其 source line 失败时都不会留下 Stage、dialogue 或 chapter 的部分 mutation。apply 按 authored child 顺序跨 kind 派发，JOIN 等待 seal 后的 exact receipt union，FNF 则在 seal 后继续。普通 `@chapter_indicator` 和 `@dialogue_visibility` 仍应使用简短 standalone 写法；只有真正需要这个原子边界时才使用 batch。
 
 ```
 @stage <layer-id> show key=value ...

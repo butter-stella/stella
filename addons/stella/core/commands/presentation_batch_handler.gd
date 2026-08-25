@@ -1,4 +1,4 @@
-## Validates and submits one authored mixed Stage/dialogue visibility batch.
+## Validates and submits one authored mixed Stage/dialogue/chapter batch.
 class_name PresentationBatchHandler extends CommandHandler
 
 const EXACT_PARAM_KEYS := ["operation_lines", "operations", "policy"]
@@ -8,6 +8,9 @@ const EXACT_STAGE_PAYLOAD_KEYS := [
 ]
 const EXACT_VISIBILITY_PAYLOAD_KEYS := [
 	"action", "duration", "target", "transition",
+]
+const EXACT_CHAPTER_INDICATOR_PAYLOAD_KEYS := [
+	"action", "duration", "transition",
 ]
 
 var _director: PresentationDirector
@@ -58,19 +61,30 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 		context
 	)
 	for operation_value: Variant in validation["operations"]:
+		var operation_index := typed_operations.size()
 		var operation: Dictionary = operation_value
 		var kind := String(operation.get("kind", ""))
 		var payload: Dictionary = (operation.get("payload", {}) as Dictionary).duplicate(true)
+		var operation_source := _source(data, context)
+		operation_source["line"] = int(
+			(data.params.get("operation_lines", []) as Array)[operation_index]
+		)
 		match kind:
 			"stage":
-				typed_operations.append(StagePresentationOperation.new(payload))
+				typed_operations.append(StagePresentationOperation.new(
+					payload, operation_source))
 			"dialogue_visibility":
 				typed_operations.append(
 					DialogueVisibilityPresentationOperation.new(
 						payload,
 						runtime_binding,
+						operation_source,
 					)
 				)
+			"chapter_indicator":
+				typed_operations.append(
+					ChapterIndicatorPresentationOperation.new(
+						payload, operation_source))
 	var policy := (
 		PresentationBatchRequest.Policy.JOIN
 		if String(validation["policy"]) == "join"
@@ -143,6 +157,7 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 	var canonical_operations: Array = []
 	var stage_operations: Array = []
 	var visibility_operations: Array = []
+	var saw_chapter_indicator := false
 	for index in range(operations.size()):
 		if not operation_lines[index] is int or int(operation_lines[index]) <= 0:
 			return {"valid": false, "error": "operation line must be a positive integer", "line": data.declared_line}
@@ -193,6 +208,26 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 					return {"valid": false, "error": "duplicate dialogue visibility target '%s'" % target, "line": int(operation_lines[index])}
 				seen_targets[target] = true
 				visibility_operations.append(payload.duplicate(true))
+			"chapter_indicator":
+				var chapter_keys := payload.keys()
+				chapter_keys.sort()
+				if chapter_keys != EXACT_CHAPTER_INDICATOR_PAYLOAD_KEYS:
+					return {"valid": false, "error": "chapter indicator payload must use the canonical three-field schema", "line": int(operation_lines[index])}
+				if saw_chapter_indicator:
+					return {"valid": false, "error": "duplicate chapter indicator channel", "line": int(operation_lines[index])}
+				var action := String(payload.get("action", ""))
+				var transition := String(payload.get("transition", ""))
+				var duration_value: Variant = payload.get("duration", null)
+				if (
+					action not in ["show", "hide"]
+					or transition not in ["cut", "fade"]
+					or not duration_value is float
+					or not is_finite(float(duration_value))
+					or float(duration_value) < 0.0
+					or (transition == "cut" and float(duration_value) != 0.0)
+				):
+					return {"valid": false, "error": "chapter indicator payload failed canonical validation", "line": int(operation_lines[index])}
+				saw_chapter_indicator = true
 			_:
 				return {"valid": false, "error": "unsupported presentation operation kind '%s'" % kind, "line": int(operation_lines[index])}
 		canonical_operations.append({
@@ -224,6 +259,7 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 			stage_target == stage_before
 			and visibility_target == visibility_before
 			and visibility_operations.is_empty()
+			and not saw_chapter_indicator
 		),
 	}
 

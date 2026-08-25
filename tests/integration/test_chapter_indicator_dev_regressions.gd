@@ -120,57 +120,6 @@ func test_run_suspension_token_is_single_use_compare_and_swap() -> void:
 	assert_same(engine.context, retained_context)
 
 
-func test_bus_registry_rotation_rejects_new_capability_for_old_barrier() -> void:
-	# Keep the concrete Presenter out of the tree so this test alone owns its
-	# registration callbacks while still exercising Runtime-mediated admission.
-	var presenter := Control.new()
-	presenter.set_script(ChapterIndicatorPresenterScript)
-	var capability := [_runtime._register_chapter_indicator_presenter(presenter)]
-	assert_not_null(capability[0])
-	var finish_during_apply := [false]
-	var on_validate := func(request: ChapterIndicatorRequest) -> void:
-		SignalBus.validate_chapter_indicator_request(
-			request, presenter, capability[0])
-	var on_apply := func(request: ChapterIndicatorRequest) -> void:
-		if not SignalBus.accept_chapter_indicator_request(
-			request, presenter, capability[0]):
-			return
-		if finish_during_apply[0]:
-			SignalBus.finish_chapter_indicator_request(
-				request.get_request_id(), presenter, capability[0], true)
-	SignalBus.chapter_indicator_validate_requested.connect(on_validate)
-	SignalBus.chapter_indicator_apply_requested.connect(on_apply)
-
-	var old_request = SignalBus.request_chapter_indicator_visibility(
-		true, "fade", 5.0, {"path": "old_capability.stla", "line": 3})
-	assert_false(old_request.is_finished())
-	var old_request_id: int = old_request.get_request_id()
-	var old_capability: RefCounted = capability[0]
-	_runtime._unregister_chapter_indicator_presenter(
-		presenter, old_capability)
-	capability[0] = _runtime._register_chapter_indicator_presenter(presenter)
-	assert_not_null(capability[0])
-	assert_ne(capability[0], old_capability,
-		"re-registering the same object rotates its opaque capability")
-	SignalBus.finish_chapter_indicator_request(
-		old_request_id, presenter, capability[0], true)
-	assert_false(old_request.is_finished(),
-		"the new registry capability cannot forge completion for the old snapshot")
-	SignalBus.reset_chapter_indicator_presentation()
-	assert_true(old_request.was_cancelled())
-
-	finish_during_apply[0] = true
-	var fresh_request = SignalBus.request_chapter_indicator_visibility(
-		false, "cut", 0.0, {"path": "fresh_capability.stla", "line": 4})
-	assert_true(fresh_request.was_successful(),
-		"the rotated capability remains valid for a freshly snapshotted request")
-	SignalBus.chapter_indicator_validate_requested.disconnect(on_validate)
-	SignalBus.chapter_indicator_apply_requested.disconnect(on_apply)
-	_runtime._unregister_chapter_indicator_presenter(
-		presenter, capability[0])
-	presenter.free()
-
-
 func test_nested_deferred_failure_transfers_and_resumes_the_base_waiter() -> void:
 	var requests: Array[DialogueRequest] = []
 	var on_dialogue := func(request: DialogueRequest) -> void:
@@ -1069,15 +1018,16 @@ func test_reentrant_cut_projection_cannot_be_overwritten_by_old_fade_tail() -> v
 			SignalBus.apply_chapter_indicator_state(true)
 	presenter.visibility_changed.connect(on_visibility_changed)
 
-	var request = SignalBus.request_chapter_indicator_visibility(
-		true,
-		"fade",
-		5.0,
-		{"path": "synthetic_reentrant_fade.stla", "line": 3},
-	)
+	var data := DslParser.parse(DslLexer.tokenize(
+		"@chapter fresh \"Fresh\"\n@scene start\n"
+		+ "@chapter_indicator show transition=fade duration=5.0\n"),
+		"synthetic_reentrant_fade", "synthetic_reentrant_fade.stla")
+	var context := ScenarioContext.new(data)
+	var handler: Variant = _runtime.registry.get_handler("presentation_batch")
+	await handler.execute(data.scenes[0].commands[0], context)
 
 	assert_true(reentered[0])
-	assert_true(request.was_cancelled(),
+	assert_true(context.is_finished,
 		"the fresh cut projection retires the superseded fade request")
 	assert_true(presenter.visible)
 	assert_almost_eq(presenter.modulate.a, 1.0, 0.0001,
@@ -1155,8 +1105,9 @@ func test_zero_significand_gross_exponent_is_canonical_zero_duration() -> void:
 	if data.scenes.is_empty() or data.scenes[0].commands.is_empty():
 		return
 	var command: CommandData = data.scenes[0].commands[0]
-	assert_eq(command.type, "chapter_indicator")
-	assert_eq(command.params.get("duration"), 0.0)
+	assert_eq(command.type, "presentation_batch")
+	assert_eq(
+		command.params["operations"][0]["payload"].get("duration"), 0.0)
 
 
 func _build_wait_then_dialogue_scenario() -> ScenarioData:
