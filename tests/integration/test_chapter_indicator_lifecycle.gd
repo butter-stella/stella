@@ -120,6 +120,14 @@ func _require_contract(requires_presenter: bool = false) -> bool:
 			var command: CommandData = command_value
 			if command.type == "chapter_indicator":
 				compiled = true
+			elif command.type == "presentation_batch":
+				for operation_value: Variant in command.params.get("operations", []):
+					if (
+						operation_value is Dictionary
+						and String((operation_value as Dictionary).get("kind", ""))
+						== "chapter_indicator"
+					):
+						compiled = true
 	var errors := data.diagnostics.filter(
 		func(diagnostic: Dictionary) -> bool:
 			return String(diagnostic.get("level", "")) == "error"

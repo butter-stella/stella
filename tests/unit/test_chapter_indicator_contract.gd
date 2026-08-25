@@ -25,6 +25,18 @@ func _chapter_indicator_commands(data: ScenarioData) -> Array:
 			var command: CommandData = command_value
 			if command.type == "chapter_indicator":
 				result.append(command)
+			elif command.type == "presentation_batch":
+				var operations: Array = command.params.get("operations", [])
+				var lines: Array = command.params.get("operation_lines", [])
+				for index in range(operations.size()):
+					var operation: Dictionary = operations[index]
+					if String(operation.get("kind", "")) != "chapter_indicator":
+						continue
+					var lowered := CommandData.new()
+					lowered.type = "chapter_indicator"
+					lowered.params = (operation.get("payload", {}) as Dictionary).duplicate(true)
+					lowered.declared_line = int(lines[index])
+					result.append(lowered)
 	return result
 
 
@@ -455,8 +467,8 @@ func test_initial_hidden_same_target_is_sync_for_headless_and_valid_presenter() 
 	await handler.execute(commands[0], headless_context)
 	assert_false(headless_context.is_finished)
 	assert_false(headless_context.chapter_indicator_visible)
-	assert_false(SignalBus.has_in_flight_chapter_indicator_request(),
-		"a headless same-target operation cannot leave a barrier")
+	assert_false(runtime.get("presentation_director").has_blocking_waiter(
+		headless_context), "a headless same-target operation cannot leave a barrier")
 	assert_eq(validation_count[0], 1)
 	assert_eq(apply_count[0], 1,
 		"headless same-target still completes the typed dispatch synchronously")
@@ -482,7 +494,7 @@ func test_initial_hidden_same_target_is_sync_for_headless_and_valid_presenter() 
 	assert_eq(presenter.modulate, initial_modulate)
 	assert_null(presenter.get("_active_tween"),
 		"a valid same-target Presenter cannot create a no-work Tween")
-	assert_false(SignalBus.has_in_flight_chapter_indicator_request(),
+	assert_false(runtime.get("presentation_director").has_blocking_waiter(context),
 		"a valid no-work Presenter must acknowledge synchronously")
 	assert_eq(validation_count[0], 2)
 	assert_eq(apply_count[0], 2,
@@ -555,11 +567,8 @@ func test_malformed_runtime_operation_stops_before_the_next_command() -> void:
 	assert_eq(commands.size(), 1)
 	if commands.size() != 1:
 		return
-	commands[0].params = {
-		"action": "show",
-		"transition": "cut",
-		"duration": "0.0",
-	}
+	var parsed_batch: CommandData = data.scenes[0].commands[0]
+	parsed_batch.params["operations"][0]["payload"]["duration"] = "0.0"
 	var engine := ScenarioEngine.new()
 	engine.registry = registry
 	engine.load_scenario(data)

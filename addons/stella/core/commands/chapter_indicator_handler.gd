@@ -5,9 +5,6 @@
 ## complete synchronously.
 class_name ChapterIndicatorHandler extends CommandHandler
 
-const ChapterIndicatorRequest = preload(
-	"res://addons/stella/core/data/chapter_indicator_request.gd")
-
 var _presentation_director: PresentationDirector
 
 
@@ -31,63 +28,31 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 		_fail_context(data, context, String(validation.get("error", "invalid command")))
 		return
 
-	var target_visible := String(validation["action"]) == "show"
-	# Canonical equality is not a global visual no-op: a current participant may
-	# still need validation or projection. Always dispatch the typed operation;
-	# each Presenter decides whether its own accepted target has visual work.
-	var previous_visible := context.chapter_indicator_visible
 	var source := _source(data, context)
-	var request: ChapterIndicatorRequest = SignalBus.request_chapter_indicator_visibility(
-		target_visible,
-		String(validation["transition"]),
-		float(validation["duration"]),
+	if _presentation_director == null:
+		_fail_context(data, context, "PresentationDirector is unavailable")
+		return
+	var operation := ChapterIndicatorPresentationOperation.new({
+		"action": String(validation["action"]),
+		"transition": String(validation["transition"]),
+		"duration": float(validation["duration"]),
+	}, source)
+	var request := _presentation_director.submit(
+		[operation],
+		PresentationBatchRequest.Policy.JOIN,
+		context,
 		source,
-		func():
-			if context.is_runtime_owner_current():
-				context.chapter_indicator_visible = target_visible,
 	)
-	if request.was_cancelled():
-		return
-	if request.get_request_id() <= 0:
-		context.is_finished = true
-		return
-	if _presentation_director != null:
-		_presentation_director._register_blocking_waiter(
-			context,
-			request,
-			func() -> void:
-				SignalBus.cancel_chapter_indicator_request(
-					request.get_request_id()),
-		)
-
-	while not request.is_finished():
-		if not await CommandHandler.await_with_abort(
-			SignalBus.chapter_indicator_request_finished,
-			context,
-		):
-			if _presentation_director != null:
-				_presentation_director._unregister_blocking_waiter(
-					context, request)
-			SignalBus.cancel_chapter_indicator_request(request.get_request_id())
+	if not request.is_settled():
+		if not await CommandHandler.await_with_abort(request.settled, context):
 			return
-
-	if _presentation_director != null:
-		_presentation_director._unregister_blocking_waiter(context, request)
-	if request.was_cancelled():
-		return
-	if request.was_successful():
-		return
-	# Completion listeners are synchronously reentrant. A listener may replace
-	# the ScenarioContext and project a fresh owner before this coroutine resumes;
-	# the stale failure tail must not roll back or cut over that newer projection.
-	if not context.is_runtime_owner_current():
-		return
-	# A joined presenter disappeared or explicitly failed after acceptance.
-	# Revert the exact authored request, cut-project surviving presenters, and
-	# stop only the owning context.
-	context.chapter_indicator_visible = previous_visible
-	SignalBus.apply_chapter_indicator_state(previous_visible)
-	if context.is_runtime_owner_current():
+	if (
+		request.get_outcome() in [
+			PresentationBatchRequest.Outcome.FAILED,
+			PresentationBatchRequest.Outcome.CANCELLED,
+		]
+		and context.is_runtime_owner_current()
+	):
 		context.is_finished = true
 
 

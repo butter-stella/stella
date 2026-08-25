@@ -13,6 +13,7 @@ sakura「ADV content remains owned while its surface is hidden.」
 
 @presentation_batch policy=join
 @dialogue_visibility hide transition=fade duration=0.3
+@chapter_indicator show transition=fade duration=0.3
 @dialogue_visibility quick_menu hide transition=fade duration=0.3
 @stage sakura update asset=character:sakura/happy position=840,80 transition=move duration=0.3
 @end

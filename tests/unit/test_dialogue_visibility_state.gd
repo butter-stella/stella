@@ -340,9 +340,9 @@ func test_visibility_operation_runtime_binding_is_exact_deep_defensive_and_nonse
 	var getter := _script_method(operation_script, "get_runtime_binding")
 	assert_false(getter.is_empty(), "typed operation exposes runtime binding getter")
 	var init_method := _script_method(operation_script, "_init")
-	assert_eq(_argument_names(init_method), ["payload", "runtime_binding"])
+	assert_eq(_argument_names(init_method), ["payload", "runtime_binding", "source"])
 	if getter.is_empty() or _argument_names(init_method) != [
-		"payload", "runtime_binding",
+		"payload", "runtime_binding", "source",
 	]:
 		return
 	var profile := {
