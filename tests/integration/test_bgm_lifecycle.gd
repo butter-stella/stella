@@ -16,6 +16,8 @@ func before_each() -> void:
 	_runtime = get_tree().root.get_node("StellaRuntime")
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
 	_audio = _runtime.get_node("AudioPresenter") as AudioPresenter
+	_audio._shutdown_quiesced = false
+	SignalBus._runtime_audio_shutdown_started = false
 	_original_bgm_path = _runtime.bgm_path
 	_runtime.bgm_path = FIXTURE_PATH
 	_receipts.clear()
@@ -31,6 +33,8 @@ func after_each() -> void:
 		SignalBus.bgm_transition_terminal.disconnect(_on_terminal)
 	_runtime.bgm_path = _original_bgm_path
 	_runtime.skip_controller.is_active = false
+	_audio._shutdown_quiesced = false
+	SignalBus._runtime_audio_shutdown_started = false
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
 
 
@@ -88,6 +92,13 @@ func _player() -> AudioStreamPlayer:
 		"player") as AudioStreamPlayer
 
 
+func _expected_bgm_db(level: float) -> float:
+	return linear_to_db(
+		float(_runtime.get_setting("master_volume"))
+		* float(_runtime.get_setting("bgm_volume"))
+		* level)
+
+
 func _finish_receipt(receipt: Dictionary) -> void:
 	SignalBus.bgm_transition_receipts_finish_requested.emit([{
 		"presenter_instance_id": receipt["presenter_instance_id"],
@@ -109,6 +120,7 @@ func _signal_connection_counts() -> Dictionary:
 		&"bgm_projection_reset_requested",
 		&"bgm_state_apply_requested",
 		&"bgm_state_capture_requested",
+		&"runtime_audio_shutdown_requested",
 	]:
 		result[String(signal_name)] = (
 			(SignalBus.get(signal_name) as Signal).get_connections().size())
@@ -255,6 +267,48 @@ func test_same_target_positive_preflight_and_volume_reuses_exact_cursor() -> voi
 	assert_eq(_runtime.presentation_state.current_bgm["volume"], 0.35)
 
 
+func test_aligned_pause_resume_stop_handoff_finishes_fnf_once_before_join() -> void:
+	_submit([_operation("play", "synthetic_track", "", 0.75)])
+	for action: String in ["pause", "resume", "stop"]:
+		var receipt_count := _receipts.size()
+		var terminal_count := _terminals.size()
+		var fnf := _submit([_operation(action, "", "", 1.0, 10.0)])
+		assert_eq(fnf.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+		assert_eq(_receipts.size(), receipt_count + 1, action)
+		var stale_receipt: Dictionary = (
+			_audio._bgm_channel.get("receipt", {}) as Dictionary).duplicate(true)
+		var stale_tween: Tween = _audio._bgm_channel.get("tween")
+		assert_not_null(stale_tween, action)
+
+		var aligned_join := _submit(
+			[_operation(action, "", "", 1.0, 7.0)],
+			PresentationBatchRequest.Policy.JOIN)
+		assert_eq(
+			aligned_join.get_outcome(),
+			PresentationBatchRequest.Outcome.COMPLETED,
+			action + " JOIN must wait for and inherit the exact stable endpoint",
+		)
+		assert_eq(_receipts.size(), receipt_count + 1,
+			action + " aligned handoff must not allocate a replacement Tween")
+		assert_eq(_terminals.size(), terminal_count + 1, action)
+		assert_eq(_terminals.back()["outcome"], &"completed", action)
+		assert_false(stale_tween.is_valid(), action)
+		assert_eq(_audio._bgm_channel.get("receipt", {}), {}, action)
+		if action == "pause":
+			assert_true(_player().stream_paused)
+		elif action == "resume":
+			assert_false(_player().stream_paused)
+		else:
+			assert_eq(_audio._bgm_channel, {})
+
+		var stable_channel: Dictionary = _audio._bgm_channel.duplicate(true)
+		var terminals_after_handoff := _terminals.size()
+		_audio.call("_complete_bgm_receipt", stale_receipt)
+		assert_eq(_audio._bgm_channel, stable_channel,
+			action + " stale old-token callback must be inert")
+		assert_eq(_terminals.size(), terminals_after_handoff, action)
+
+
 func test_replacement_is_one_interval_crossfade_and_supersession_is_exact() -> void:
 	_submit([_operation("play", "synthetic_raw")])
 	var old_player := _player()
@@ -283,6 +337,97 @@ func test_replacement_is_one_interval_crossfade_and_supersession_is_exact() -> v
 	_finish_receipt(_receipts.back())
 	assert_eq(second.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
 	assert_eq((_audio._bgm_channel["outgoing"] as Dictionary), {})
+
+
+func test_real_tweens_have_deterministic_midpoints_and_one_authored_endpoint() -> void:
+	var terminal_count := _terminals.size()
+	var fade_in := _submit(
+		[_operation("play", "synthetic_track", "", 0.8, 2.0)],
+		PresentationBatchRequest.Policy.JOIN)
+	assert_false(fade_in.is_settled())
+	var fade_in_receipt: Dictionary = (
+		_audio._bgm_channel["receipt"] as Dictionary).duplicate(true)
+	var fade_in_tween: Tween = _audio._bgm_channel["tween"]
+	assert_true(fade_in_tween.custom_step(1.0))
+	assert_almost_eq(
+		float((_audio._bgm_channel["current"] as Dictionary)["level"]),
+		0.4, 0.001, "fade-in midpoint is half of its authored interval")
+	assert_almost_eq(_player().volume_db, _expected_bgm_db(0.4), 0.01,
+		"fade-in midpoint reaches the physical player")
+	assert_eq(_terminals.size(), terminal_count)
+	assert_true(fade_in_tween.custom_step(1.0))
+	assert_almost_eq(
+		float((_audio._bgm_channel["current"] as Dictionary)["level"]),
+		0.8, 0.001)
+	assert_almost_eq(_player().volume_db, _expected_bgm_db(0.8), 0.01)
+	fade_in_tween.custom_step(0.000001)
+	assert_eq(fade_in.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(_terminals.size(), terminal_count + 1)
+	_audio.call("_complete_bgm_receipt", fade_in_receipt)
+	assert_eq(_terminals.size(), terminal_count + 1,
+		"fade-in authored endpoint is terminal exactly once")
+
+	terminal_count = _terminals.size()
+	var old_player := _player()
+	var crossfade := _submit(
+		[_operation("play", "synthetic_raw", "", 0.6, 2.0)],
+		PresentationBatchRequest.Policy.JOIN)
+	assert_false(crossfade.is_settled())
+	var crossfade_receipt: Dictionary = (
+		_audio._bgm_channel["receipt"] as Dictionary).duplicate(true)
+	var crossfade_tween: Tween = _audio._bgm_channel["tween"]
+	assert_true(crossfade_tween.custom_step(1.0))
+	assert_almost_eq(
+		float((_audio._bgm_channel["current"] as Dictionary)["level"]),
+		0.3, 0.001, "incoming reaches its crossfade midpoint")
+	assert_almost_eq(
+		float((_audio._bgm_channel["outgoing"] as Dictionary)["level"]),
+		0.4, 0.001, "outgoing reaches the same interval midpoint")
+	assert_almost_eq(_player().volume_db, _expected_bgm_db(0.3), 0.01,
+		"incoming crossfade midpoint reaches the physical player")
+	assert_almost_eq(old_player.volume_db, _expected_bgm_db(0.4), 0.01,
+		"outgoing crossfade midpoint reaches the physical player")
+	assert_eq(_terminals.size(), terminal_count)
+	assert_true(crossfade_tween.custom_step(1.0))
+	assert_almost_eq(
+		float((_audio._bgm_channel["current"] as Dictionary)["level"]),
+		0.6, 0.001)
+	assert_almost_eq(_player().volume_db, _expected_bgm_db(0.6), 0.01)
+	assert_almost_eq(old_player.volume_db, -80.0, 0.01)
+	crossfade_tween.custom_step(0.000001)
+	assert_eq(crossfade.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(_audio._bgm_channel["outgoing"], {})
+	assert_false(old_player.playing)
+	assert_eq(_terminals.size(), terminal_count + 1)
+	_audio.call("_complete_bgm_receipt", crossfade_receipt)
+	assert_eq(_terminals.size(), terminal_count + 1,
+		"crossfade authored endpoint is terminal exactly once")
+
+	terminal_count = _terminals.size()
+	var fade_out := _submit(
+		[_operation("stop", "", "", 1.0, 2.0)],
+		PresentationBatchRequest.Policy.JOIN)
+	assert_false(fade_out.is_settled())
+	var fade_out_receipt: Dictionary = (
+		_audio._bgm_channel["receipt"] as Dictionary).duplicate(true)
+	var fade_out_tween: Tween = _audio._bgm_channel["tween"]
+	var fade_out_player := _player()
+	assert_true(fade_out_tween.custom_step(1.0))
+	assert_almost_eq(
+		float((_audio._bgm_channel["current"] as Dictionary)["level"]),
+		0.3, 0.001, "fade-out midpoint retains half the authored gain")
+	assert_almost_eq(fade_out_player.volume_db, _expected_bgm_db(0.3), 0.01,
+		"fade-out midpoint reaches the physical player")
+	assert_eq(_terminals.size(), terminal_count)
+	assert_true(fade_out_tween.custom_step(1.0))
+	assert_almost_eq(fade_out_player.volume_db, -80.0, 0.01)
+	fade_out_tween.custom_step(0.000001)
+	assert_eq(fade_out.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(_audio._bgm_channel, {})
+	assert_eq(_terminals.size(), terminal_count + 1)
+	_audio.call("_complete_bgm_receipt", fade_out_receipt)
+	assert_eq(_terminals.size(), terminal_count + 1,
+		"fade-out authored endpoint is terminal exactly once")
 
 
 func test_pause_resume_restart_and_save_restore_separate_stable_state_from_tween() -> void:
@@ -557,9 +702,181 @@ func test_same_process_reset_preserves_signal_topology_and_input_is_inert_after_
 		"ordinary input after cleanup cannot revive a retired BGM owner")
 
 
-func test_nonloop_natural_finish_commits_stopped_state_once() -> void:
-	_submit([_operation("play", "synthetic_track", "intro")])
-	assert_false(_runtime.presentation_state.current_bgm.is_empty())
-	await _player().finished
-	assert_eq(_runtime.presentation_state.current_bgm, {})
+func test_first_quiesce_invalidates_queued_preseal_mixed_audio_without_late_apply() -> void:
+	var stage_emissions := [0]
+	var on_stage := func(_operations: Array, _force_cut: bool) -> void:
+		stage_emissions[0] += 1
+	SignalBus.stage_operations_requested.connect(on_stage)
+	var entered := [false]
+	var first_ack := [true]
+	var queued_requests: Array[PresentationBatchRequest] = []
+	var bgm_epoch_before := SignalBus.current_bgm_epoch()
+	var loop_epoch_before := SignalBus.current_loop_se_epoch()
+	var on_validate := func(_request: BgmOperationRequest) -> void:
+		if entered[0]:
+			return
+		entered[0] = true
+		queued_requests.append(_submit([
+			StagePresentationOperation.new({
+				"action": "show", "id": "queued_after_quit",
+				"properties": {"asset": "stage:synthetic"},
+				"transition": "cut", "duration": 0.0,
+			}, {"source_path": SOURCE_PATH, "line": 92}),
+			_operation("play", "synthetic_raw", "", 0.6, 0.0, 93),
+		], PresentationBatchRequest.Policy.JOIN))
+		first_ack[0] = SignalBus.quiesce_runtime_audio_for_shutdown()
+	SignalBus.bgm_validate_requested.connect(on_validate)
+	var outer := _submit([
+		StagePresentationOperation.new({
+			"action": "show", "id": "preseal_before_quit",
+			"properties": {"asset": "stage:synthetic"},
+			"transition": "cut", "duration": 0.0,
+		}, {"source_path": SOURCE_PATH, "line": 90}),
+		_operation("play", "synthetic_track", "", 0.7, 0.0, 91),
+	], PresentationBatchRequest.Policy.JOIN)
+	SignalBus.bgm_validate_requested.disconnect(on_validate)
+
+	assert_true(entered[0])
+	assert_push_error(SOURCE_PATH + ":91")
+	assert_false(first_ack[0],
+		"nested first quiesce cannot acknowledge an active preflight stack")
+	assert_true(outer.is_settled())
+	assert_eq(queued_requests.size(), 1)
+	assert_true(queued_requests[0].is_settled())
+	assert_eq(stage_emissions[0], 0,
+		"neither current nor queued mixed Stage child may apply after quit latch")
+	assert_eq(SignalBus.current_bgm_epoch(), bgm_epoch_before + 1)
+	assert_eq(SignalBus.current_loop_se_epoch(), loop_epoch_before + 1,
+		"first quiesce invalidates both audio epochs even with empty local maps")
+	assert_eq(_runtime.presentation_director._entries, {})
+	assert_eq(SignalBus._presentation_operation_queue, [])
+	assert_null(SignalBus._dispatching_bgm_request)
+	assert_null(SignalBus._applying_bgm_request)
+	assert_null(SignalBus._dispatching_loop_se_request)
+	assert_null(SignalBus._applying_loop_se_request)
+	assert_eq(SignalBus._bgm_epoch_stack, [])
+	assert_eq(SignalBus._loop_se_epoch_stack, [])
+	assert_eq(_audio._bgm_validation_cache, {})
+	assert_eq(_audio._loop_se_validation_cache, {})
 	assert_eq(_audio._bgm_channel, {})
+	assert_eq(_audio._loop_se_channels, {})
+	assert_true(SignalBus._runtime_audio_shutdown_bus_is_idle())
+	assert_true(SignalBus.quiesce_runtime_audio_for_shutdown(),
+		"repeat quiesce acknowledges only after the outer dispatch unwinds")
+	assert_eq(SignalBus.current_bgm_epoch(), bgm_epoch_before + 1)
+	assert_eq(SignalBus.current_loop_se_epoch(), loop_epoch_before + 1,
+		"already-quiesced acknowledgement must not advance epochs again")
+	await get_tree().process_frame
+	assert_eq(stage_emissions[0], 0)
+	assert_eq(_audio._bgm_channel, {})
+	SignalBus.stage_operations_requested.disconnect(on_stage)
+
+
+func test_runtime_audio_shutdown_quiesces_every_exact_owner_idempotently() -> void:
+	var stream := load(FIXTURE_PATH + "synthetic_raw.tres") as AudioStreamWAV
+	var fnf := _submit([
+		_operation("play", "synthetic_track", "", 0.7, 10.0),
+	])
+	assert_eq(fnf.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_false(_runtime.presentation_director._entries.is_empty())
+	var bgm_player := _player()
+
+	var loop_voice: Dictionary = _audio._create_loop_se_voice(
+		stream, "synthetic_loop", 0.0, 0.5)
+	var loop_player := loop_voice["player"] as AudioStreamPlayer
+	var loop_channel: Dictionary = _audio._new_loop_se_channel()
+	loop_channel["current"] = loop_voice
+	loop_channel["target_active"] = true
+	loop_channel["target_asset"] = "synthetic_loop"
+	loop_channel["target_volume"] = 0.5
+	_audio._loop_se_channels["ambient"] = loop_channel
+
+	_audio._voice_player.stream = stream
+	_audio._voice_playback_token = 801
+	_audio._voice_playback_revision = _audio._voice_lifecycle_revision
+	_audio._voice_player.play()
+	var se_player := _audio._se_players[0] as AudioStreamPlayer
+	se_player.stream = stream
+	se_player.play()
+	_audio._system_se_player.stream = stream
+	_audio._system_se_player.play()
+
+	assert_true(SignalBus.quiesce_runtime_audio_for_shutdown())
+	assert_true(_audio._shutdown_quiesced)
+	assert_eq(_audio._bgm_channel, {})
+	assert_eq(_audio._loop_se_channels, {})
+	assert_eq(_runtime.presentation_director._entries, {})
+	assert_eq(SignalBus._presentation_operation_queue, [])
+	assert_false(bgm_player.playing)
+	assert_null(bgm_player.stream)
+	assert_false(loop_player.playing)
+	assert_null(loop_player.stream)
+	assert_false(_audio._voice_player.playing)
+	assert_null(_audio._voice_player.stream)
+	assert_false(se_player.playing)
+	assert_null(se_player.stream)
+	assert_false(_audio._system_se_player.playing)
+	assert_null(_audio._system_se_player.stream)
+	assert_true(SignalBus.quiesce_runtime_audio_for_shutdown(),
+		"a concurrent/repeated quit request reuses the empty projection")
+	assert_eq(SignalBus._dispatching_runtime_audio_shutdown_serial, 0)
+	assert_false(SignalBus._runtime_audio_shutdown_acknowledged)
+	await get_tree().process_frame
+	assert_false(is_instance_valid(bgm_player))
+	assert_false(is_instance_valid(loop_player))
+
+
+func test_graceful_quit_latch_and_mix_boundary_fail_close_are_bounded() -> void:
+	var old_requested: bool = _runtime._quit_requested
+	var old_code: int = _runtime._quit_exit_code
+	assert_true(_runtime._begin_quit_request(7))
+	assert_false(_runtime._begin_quit_request(9),
+		"OS close and an explicit quit can only schedule one completion")
+	assert_eq(_runtime._quit_exit_code, 7)
+	_runtime._quit_requested = old_requested
+	_runtime._quit_exit_code = old_code
+
+	assert_false(await _runtime._await_audio_mix_boundary(
+		1, func() -> float: return 0.0, ""),
+		"an unavailable driver fails closed without waiting forever")
+	assert_false(await _runtime._await_audio_mix_boundary(
+		1, func() -> float: return NAN, "SyntheticDriver"),
+		"non-finite AudioServer timing fails closed")
+	assert_false(await _runtime._await_audio_mix_boundary(
+		2, func() -> float: return 0.5, "SyntheticDriver"),
+		"a driver that never reaches another mix is bounded by process frames")
+	assert_true(await _runtime._await_audio_mix_boundary(),
+		"the real Godot audio driver exposes a mix rollover and cleanup frame")
+
+	assert_false(get_tree().auto_accept_quit,
+		"OS close must route through StellaRuntime instead of auto-quit")
+	var runtime_source := FileAccess.get_file_as_string(
+		"res://addons/stella/autoload/stella_runtime.gd")
+	assert_true(runtime_source.contains(
+		"auto_save()\n\t\trequest_quit()"),
+		"OS close preserves autosave then reuses the public graceful boundary")
+	for path: String in [
+		"res://addons/stella/presentation/ui/title_screen.gd",
+		"res://addons/stella/presentation/ui/stella_action.gd",
+		"res://examples/demo/scripts/demo_title.gd",
+	]:
+		var source := FileAccess.get_file_as_string(path)
+		assert_true(source.contains("StellaRuntime.request_quit()"), path)
+		assert_false(source.contains("get_tree().quit("), path)
+
+
+func test_repeated_nonloop_natural_finish_retires_the_exact_player_once() -> void:
+	var baseline_children := _audio.get_child_count()
+	for iteration in range(3):
+		_submit([_operation("play", "synthetic_track", "intro")])
+		assert_false(_runtime.presentation_state.current_bgm.is_empty())
+		assert_eq(_audio.get_child_count(), baseline_children + 1, str(iteration))
+		var finished_player := _player()
+		await finished_player.finished
+		await get_tree().process_frame
+		assert_eq(_runtime.presentation_state.current_bgm, {}, str(iteration))
+		assert_eq(_audio._bgm_channel, {}, str(iteration))
+		assert_false(is_instance_valid(finished_player),
+			"the exact naturally finished player must be freed")
+		assert_eq(_audio.get_child_count(), baseline_children,
+			"repeated natural endings cannot accumulate dead children or streams")

@@ -378,7 +378,7 @@ BGM 是单一固定 channel，唯一 public grammar 是：
 @end
 ```
 
-同一 playing asset+cue 且 volume 相同仍会通过 AudioPresenter/resource positive preflight，物理投影稳定时不重播、不 seek、也不创建 receipt；只改 volume 会复用同一个 player/cursor 并淡变 authored gain。paused 状态下 `play` 从 cue 的 authored start marker 重播，只有 `resume` 从保留 cursor 继续；显式重启写成 `stop` 后再 `play`，不存在 `restart` option。对空 channel 执行 `pause`/`resume` 会在该行 fail-close；`stop` 为空时同步 no-op。
+同一 playing asset+cue 且 volume 相同仍会通过 AudioPresenter/resource positive preflight，物理投影稳定时不重播、不 seek、也不创建 receipt；只改 volume 会复用同一个 player/cursor 并淡变 authored gain。若相同 play/pause/resume/stop target 仍由上一条 fire-and-forget fade 持有，新的同 action 会先把旧 exact receipt 完成到唯一 authored endpoint，再以零新 Tween 同步确认；旧 token 的迟到 callback 无效。paused 状态下 `play` 从 cue 的 authored start marker 重播，只有 `resume` 从保留 cursor 继续；显式重启写成 `stop` 后再 `play`，不存在 `restart` option。对空 channel 执行 `pause`/`resume` 会在该行 fail-close；`stop` 为空时同步 no-op。
 
 原始 OGG/MP3/WAV 默认 `loop=true`、start=0，并保留格式自身合法的 loop marker。需要 authored start/loop marker 或 named cue 时，asset 指向 `BgmTrackDefinition` `.tres`；default 与每个 `BgmCueDefinition` 都是完整定义，cue 不继承 track 字段：
 

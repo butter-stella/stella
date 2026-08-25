@@ -289,7 +289,10 @@ registry.register(DialogueHandler.new(read_flags))
 StellaRuntime.start_game()           # 开始新游戏
 StellaRuntime.load_game(slot_id)     # 读档并进入游戏
 StellaRuntime.return_to_title()      # 返回标题
+StellaRuntime.request_quit()         # 安全退休音频后退出
 ```
+
+自定义标题、性能模式或其他宿主退出入口必须调用 `request_quit(exit_code=0)`，不要直接 `get_tree().quit()`。该 API 与内置标题、`StellaAction.QUIT` 和 OS close 共用同一个幂等边界：OS close 先自动存档，唯一 AudioPresenter 再退休 BGM/loop-SE/Voice/SE，Runtime 观察真实 AudioServer mix 回绕并给主线程一次 cleanup boundary 后退出。ack、driver 或 timing 非法及有界等待耗尽会以非零状态 fail-close。Godot 4.6.1 的 raw `--quit-after` 存在上游 audio-driver teardown 顺序限制（godotengine/godot#76745 / #122742），不能用于验证 active-audio 的产品 clean shutdown。
 
 ### 当前章节标题与可见目标
 
@@ -437,7 +440,7 @@ replacement 的 `fade` 是 outgoing 淡出与 incoming 淡入重叠的整个总�
 @end
 ```
 
-same playing asset+cue+volume 会重新完成 resource/Presenter positive preflight，但稳定时不 seek、不重启 player；只改 volume 保留 cursor。paused 下 `play` 从 cue start 重播，`resume` 才继续保存的 cursor。pause/resume/play/stop fade 都由同一 Director receipt 驱动，普通 advance 与 Skip 只 exact-finish 当前 JOIN；Auto 本身不制造 ack。context/global abort 会 cut 当前 Tween 到已提交 stable target；reset/load/rollback/restart/title 与 stale callback 使用同一 generation/ownership 边界。
+same playing asset+cue+volume 会重新完成 resource/Presenter positive preflight，但稳定时不 seek、不重启 player；只改 volume 保留 cursor。若同 action 的上一条 FNF fade 尚未结束，新 aligned JOIN 会先 exact-finish 旧 receipt 到唯一 authored endpoint，再以零新 Tween 同步完成，旧 token 之后保持 inert。paused 下 `play` 从 cue start 重播，`resume` 才继续保存的 cursor。pause/resume/play/stop fade 都由同一 Director receipt 驱动，普通 advance 与 Skip 只 exact-finish 当前 JOIN；Auto 本身不制造 ack。context/global abort 会 cut 当前 Tween 到已提交 stable target；reset/load/rollback/restart/title 与 stale callback 使用同一 generation/ownership边界。
 
 原始 OGG/MP3/WAV 默认从 0 开始、循环到 stream end，并保留格式中合法的 loop marker。需要 authored start/loop marker 或 named cue 时，创建 `BgmTrackDefinition` Resource，设置 `stream`、`loop`、`start_position`、`loop_position`，并可添加完整的 `BgmCueDefinition`。named cue 不继承 track default；每个定义都必须满足有限正 stream length 以及 `0 <= start_position <= loop_position < length`，`loop=false` 时 marker 仍存在但不会启用循环。这一版不支持 `loop_end`。资源/cue/marker 缺失、歧义或非法会在 mixed child 的任何 mutation 前按 BGM authored line fail-close。公开 synthetic reference 见 [`examples/demo/scenarios/bgm_lifecycle.stla`](../examples/demo/scenarios/bgm_lifecycle.stla) 与对应 redistributable `.tres`。
 

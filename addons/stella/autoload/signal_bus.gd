@@ -731,6 +731,12 @@ signal bgm_position_committed(position: float)
 signal bgm_natural_stop_committed()
 signal bgm_presenter_registered()
 
+# Runtime-owned graceful shutdown is a synchronous capability handshake with
+# the same unique AudioPresenter that owns BGM and loop-SE projection. The
+# Runtime observes the later AudioServer mix boundary; the Bus only proves that
+# all Stella audio was retired before that observation begins.
+signal runtime_audio_shutdown_requested(request_serial: int)
+
 var _stage_operation_queue: Array[Dictionary] = []
 var _stage_operation_dispatching := false
 var _stage_operation_dispatch_stack: Array[int] = []
@@ -763,6 +769,10 @@ var _bgm_participant_authority := RefCounted.new()
 var _bgm_registrar_authority: Object
 var _bgm_presenter: WeakRef
 var _bgm_capability: RefCounted
+var _next_runtime_audio_shutdown_serial := 1
+var _dispatching_runtime_audio_shutdown_serial := 0
+var _runtime_audio_shutdown_acknowledged := false
+var _runtime_audio_shutdown_started := false
 var _presentation_operation_queue: Array[Dictionary] = []
 var _presentation_enqueue_serial := 1
 var _presentation_projection_depth := 0
@@ -1056,6 +1066,93 @@ func announce_bgm_presenter_registered(
 	return true
 
 
+## Retire the complete Runtime-owned audio projection through its unique typed
+## presenter. The presenter latches against reentrant playback, resets BGM and
+## loop-SE through their canonical lifecycle paths, retires one-shots/voice, and
+## acknowledges only after every local owner has been cleared.
+func quiesce_runtime_audio_for_shutdown() -> bool:
+	if _dispatching_runtime_audio_shutdown_serial != 0:
+		return false
+	_runtime_audio_shutdown_started = true
+	var bgm_presenter := _current_bgm_presenter()
+	var loop_se_presenter := _current_loop_se_presenter()
+	if bgm_presenter == null and loop_se_presenter == null:
+		return true
+	if bgm_presenter == null or loop_se_presenter != bgm_presenter:
+		return false
+	var request_serial := _next_runtime_audio_shutdown_serial
+	_next_runtime_audio_shutdown_serial += 1
+	_dispatching_runtime_audio_shutdown_serial = request_serial
+	_runtime_audio_shutdown_acknowledged = false
+	runtime_audio_shutdown_requested.emit(request_serial)
+	_cancel_queued_presentation_for_runtime_shutdown()
+	_dispatching_runtime_audio_shutdown_serial = 0
+	var acknowledged := _runtime_audio_shutdown_acknowledged
+	_runtime_audio_shutdown_acknowledged = false
+	return acknowledged
+
+
+func _cancel_queued_presentation_for_runtime_shutdown() -> void:
+	var mixed_requests := _presentation_operation_queue.duplicate()
+	var stage_requests := _stage_operation_queue.duplicate()
+	var visibility_requests := _dialogue_visibility_queue.duplicate()
+	_presentation_operation_queue.clear()
+	_stage_operation_queue.clear()
+	_dialogue_visibility_queue.clear()
+	for request: Dictionary in mixed_requests:
+		presentation_operation_request_finished.emit(
+			int(request.get("request_id", 0)), false)
+	for request: Dictionary in stage_requests:
+		stage_operation_request_finished.emit(
+			int(request.get("request_id", 0)), false)
+	for request: Dictionary in visibility_requests:
+		presentation_operation_request_finished.emit(
+			int(request.get("request_id", 0)), false)
+
+
+func acknowledge_runtime_audio_shutdown(
+	presenter: Object,
+	capability: RefCounted,
+	request_serial: int,
+) -> bool:
+	if (
+		request_serial <= 0
+		or request_serial != _dispatching_runtime_audio_shutdown_serial
+		or not _bgm_participant_identity_matches(presenter, capability)
+		or _current_loop_se_presenter() != presenter
+		or not _runtime_audio_shutdown_bus_is_idle()
+	):
+		return false
+	_runtime_audio_shutdown_acknowledged = true
+	return true
+
+
+func _runtime_audio_shutdown_bus_is_idle() -> bool:
+	return (
+		_presentation_operation_queue.is_empty()
+		and _stage_operation_queue.is_empty()
+		and _dialogue_visibility_queue.is_empty()
+		and not _presentation_unified_draining
+		and _presentation_projection_depth == 0
+		and not _stage_operation_dispatching
+		and not _dialogue_visibility_dispatching
+		and _stage_operation_dispatch_stack.is_empty()
+		and _stage_operation_epoch_stack.is_empty()
+		and _dialogue_visibility_dispatch_stack.is_empty()
+		and _dialogue_visibility_epoch_stack.is_empty()
+		and _loop_se_epoch_stack.is_empty()
+		and _bgm_epoch_stack.is_empty()
+		and _dispatching_loop_se_request == null
+		and _applying_loop_se_request == null
+		and _capturing_loop_se_request == null
+		and _dispatching_bgm_request == null
+		and _applying_bgm_request == null
+		and _capturing_bgm_request == null
+		and _dispatching_chapter_indicator_request == null
+		and _applying_chapter_indicator_request == null
+	)
+
+
 func unregister_bgm_presenter(
 	presenter: Object,
 	capability: RefCounted,
@@ -1315,6 +1412,9 @@ func emit_dialogue_visibility_operations(
 ) -> int:
 	if request_id <= 0:
 		request_id = reserve_stage_operation_request_id()
+	if _runtime_audio_shutdown_started:
+		presentation_operation_request_finished.emit(request_id, false)
+		return request_id
 	for operation_value: Variant in operations:
 		if not DialogueVisibilityState.validate_operation(operation_value, true):
 			presentation_operation_request_finished.emit(request_id, false)
@@ -1351,6 +1451,9 @@ func emit_presentation_operations(
 ) -> int:
 	if request_id <= 0:
 		request_id = reserve_stage_operation_request_id()
+	if _runtime_audio_shutdown_started:
+		presentation_operation_request_finished.emit(request_id, false)
+		return request_id
 	for operation_value: Variant in operations:
 		if not operation_value is PresentationOperation:
 			presentation_operation_request_finished.emit(request_id, false)
@@ -2030,6 +2133,9 @@ func emit_stage_operations(
 ) -> int:
 	if request_id <= 0:
 		request_id = reserve_stage_operation_request_id()
+	if _runtime_audio_shutdown_started:
+		stage_operation_request_finished.emit(request_id, false)
+		return request_id
 	for operation in operations:
 		if not StageLayerState.validate_operation(operation, true):
 			push_warning(

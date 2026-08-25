@@ -61,6 +61,8 @@ Presenter 同时观察 `AutoPlayController` / `SkipController` 的状态变化�
 
 `_input` 处理 ESC/右键关闭。Overlay 打开时 `game_state` 不是 `PLAYING`，InputHandler 的 `is_playing()` 守卫阻断键盘推进。鼠标推进被 `gui_get_hovered_control()` 检测到 overlay 上的控件而跳过。
 
+`StellaAction.QUIT` 不进入 advance dispatch；它与标题按钮、宿主显式退出和 OS close 一样调用 `StellaRuntime.request_quit()`。OS close 先 autosave，随后 Runtime 通过唯一 AudioPresenter 退休所有音频 owner，并等待真实 AudioServer mix + 主线程 cleanup boundary；重复 UI/OS 请求不会创建第二个退出或等待 owner。
+
 ## 打字完成 vs 推进
 
 AVG 标准行为：打字未完成时点击 = 完成打字（不推进），打字完成后点击 = 推进。

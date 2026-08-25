@@ -469,6 +469,8 @@ Core → Presentation 的 canonical 对话与语音链均使用只读 typed DTO�
 - **Voice**：对话同步，角色独立音量控制；语音未播完可阻止自动推进
 - 提供 `voice_progress` 信号供 UI 实现进度条
 
+退出也是 Runtime-owned 音频生命周期边界。标题按钮、`StellaAction.QUIT`、宿主性能模式和 OS close 都调用唯一的 `StellaRuntime.request_quit()`；OS close 先 autosave。首次 quiesce 先锁住新的 presentation admission，并无条件推进 BGM 与 loop-SE 两个 epoch；即使 Presenter 还没有 player map，queued/validation/pre-apply owner 也会被取消且不能在 ack 后迟到 apply。Runtime 只接受唯一 AudioPresenter 在 player/map/cache 与 Director entries 清空、Bus queue/dispatch/apply/epoch stack 全部 idle 后完成 capability handshake，随后观察 `AudioServer.get_time_since_last_mix()` 的真实回绕，并再跨一个主线程 process boundary 后才调用 `SceneTree.quit()`。该请求幂等，driver/timing/ack 缺失或在有界 process-frame 内没有新 mix 时 fail-close；没有 timer、固定 wall-clock sleep、第二 scheduler 或 CI-only 分支。Godot 4.6.1 的 raw `--quit-after` 会先停止 audio driver，使 `AudioStreamPlayer.stop()` 标记的 playback 来不及在下一次 mix 删除（godotengine/godot#76745 / #122742），因此不能代替产品 graceful boundary 做 active-audio clean-shutdown 验证。
+
 #### 当前章节标题 Presenter
 
 `ChapterIndicatorPresenter` 是可复用的 skinnable `Control` binding。项目提供根 Control 的几何、Theme/装饰和一个 exported `title_label_path`；框架只写 Label 文本、目标可见性和 alpha tween。当前 chapter ID/title 来自 Runtime 执行 cursor，标题在发布前由 `TranslationServer` 解析；显式空标题会令视觉保持隐藏，但不改变 Context 中的 authored target。

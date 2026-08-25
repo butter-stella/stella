@@ -32,7 +32,12 @@ jobs:
         run: |
           log_file="$RUNNER_TEMP/stella-clean-exit.log"
           godot_status=0
-          godot --headless --path . --quit-after 5 >"$log_file" 2>&1 || godot_status=$?
+          # Godot 4.6.1 raw --quit-after stops its audio driver before stopped
+          # playbacks receive another mix (godotengine/godot#76745, #122742).
+          # Exercise Stella's real public graceful boundary with active title BGM.
+          STELLA_DISABLE_LOCAL_CONFIG=1 godot --headless --path . \
+            res://tests/fixtures/startup/graceful_shutdown_probe.tscn \
+            >"$log_file" 2>&1 || godot_status=$?
           cat "$log_file"
 
           if (( godot_status != 0 )); then

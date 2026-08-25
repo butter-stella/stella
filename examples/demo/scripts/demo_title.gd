@@ -17,7 +17,7 @@ func _ready():
 
 	_add_button("读档", func(): StellaRuntime.show_save_load("load"))
 	_add_button("设置", func(): StellaRuntime.show_settings())
-	_add_button("退出", func(): get_tree().quit())
+	_add_button("退出", func(): StellaRuntime.request_quit())
 
 
 func _add_button(text: String, callback: Callable):
