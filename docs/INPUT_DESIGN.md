@@ -18,7 +18,7 @@ _input:
   1. 鼠标下有交互控件（Button/Slider）？→ return，让 GUI 处理
   2. 打字中？→ 完成打字 + set_input_as_handled（消费事件）
   3. UI 隐藏？→ 恢复 UI + set_input_as_handled
-  4. 否则 → 当前 pending `DialogueRequest.advance()`；若没有 Dialogue owner，广播语义 advance，依次交给当前 Stage JOIN、chapter indicator 或 `@wait click` fallback
+  4. 否则 → 当前 pending `DialogueRequest.advance()`；若没有 Dialogue owner，广播语义 advance，依次交给当前 presentation JOIN（Stage / dialogue visibility / chapter indicator / loop-SE）或 `@wait click` fallback
 
 _unhandled_input:
   键盘（空格/回车/Ctrl）→ UI 隐藏时先恢复并消费，否则正常处理
@@ -73,14 +73,14 @@ AVG 标准行为：打字未完成时点击 = 完成打字（不推进），打�
 
 每个 Presenter 在接受 request 时记录 `SignalBus` 的 advance dispatch serial。若第一位 Presenter 的 acknowledgement 同步推进引擎并创建下一条 indicator，后一位 Presenter 收到的仍是旧 signal tail；新 request 的接受 serial 与当前 dispatch 相同，因此它必须拒绝这次旧 tail。结果是一次 physical/semantic advance 最多完成一个 blocking command，不会把 chained fade 一起跳过。
 
-## Stage JOIN 与一次推进边界
+## Presentation JOIN 与一次推进边界
 
-当没有 pending Dialogue owner，且当前 blocking presentation 是 `@stage_batch policy=join` 时，左键、Space 和 Enter 进入同一个 `SignalBus` semantic advance boundary。`PresentationDirector` 只向最新 current 且已 sealed JOIN 的五元 exact receipts 发送 finish，`StagePresenter` 将每个仍属于该 owner 的转场 snap 到 authored endpoint，再只 acknowledgement 一次。同一 advance serial 的旧 signal tail 不得完成同栈新建的下一 batch 或 Dialogue；late timer、input 或 terminal 也不得推进已替换的 tail。
+当没有 pending Dialogue owner，且当前 blocking presentation 使用 `policy=join` 时，左键、Space 和 Enter 进入同一个 `SignalBus` semantic advance boundary。`PresentationDirector` 只向最新 current 且已 sealed JOIN 的五元 exact receipts 发送 finish；对应 Stage/dialogue/chapter/Audio Presenter 将每个仍属于该 owner 的转场 snap 到 authored endpoint，再只 acknowledgement 一次。同一 advance serial 的旧 signal tail 不得完成同栈新建的下一 batch 或 Dialogue；late timer、input 或 terminal 也不得推进已替换的 tail。
 
 `FIRE_AND_FORGET` 从不 claim advance，Auto 状态本身也不结束 JOIN。Skip 从 false 激活为 true 时，只 exact-finish 当前 owner 一次；Skip 已 active 时新 batch 按持续模式 policy 直接 force-cut。普通输入的“一次只结束一个 owner”与持续 Skip policy 是两个不同的边界。
 
-Stage、chapter indicator 和 dialogue visibility 共享 Director-owned generic blocking presentation waiter。reset、load、rollback、restart、return-to-title、context 或 SceneTree replacement 先退休旧 owner/generation，再重置或 cut canonical 投影；不存在 indicator/stage 并列的私有 scheduler/flag，旧 callback 也不能回来领取新 input。
+Stage、chapter indicator、dialogue visibility 和 loop-SE 共享 Director-owned generic blocking presentation waiter。reset、load、rollback、restart、return-to-title 或 context replacement 先退休旧 owner/generation，再重置或 cut canonical 投影；不存在 audio/indicator/stage 并列的私有 scheduler/flag，旧 callback 也不能回来领取新 input。单纯 AudioPresenter replacement 只退休旧音频投影并从 canonical channel+position 唯一重投影，不把 persistent channel 当成 session state 清空。
 
-`surface`、`quick_menu` 与 `chapter:indicator` 在同一个 Director queue 上分配 request/receipt/generation，并和 Stage mixed batch 共用 exact finish、persistent Skip force-cut、save/load visual-only restore 与 stale callback 拒绝规则。mixed batch 先全量 preflight/seal，后按 authored child order apply；dispatch tail 的 Skip 也只能结束这一个 sealed owner。Profile baseline、mode binding 与 canonical gate 是声明式合成关系；backlog overlay 与 soft UI hide 不会修改这些 canonical bool。
+`surface`、`quick_menu`、`chapter:indicator` 与 `loop_se:<channel>` 在同一个 Director queue 上分配 request/receipt/generation，并和 Stage mixed batch 共用 exact finish、persistent Skip force-cut、save/load projection restore 与 stale callback 拒绝规则。mixed batch 先全量 preflight/seal（包括 loop-SE resource validation），后按 authored child order apply；dispatch tail 的 Skip 也只能结束这一个 sealed owner。Profile baseline、mode binding 与 canonical gate 是声明式合成关系；backlog overlay 与 soft UI hide 不会修改这些 canonical bool 或 loop-SE channels。
 
 既有输入优先级保持不变：soft-hidden UI 先恢复，Button/Slider 左键交给 GUI，非 PLAYING 不处理；Skip/Auto 的既有左键 policy 先于普通推进。成功进入 normal path 后，无论是 typed dialogue advance 还是 Stage JOIN / chapter indicator / wait fallback 都会 `set_input_as_handled()`。手柄输入 parity 与 #133 的可重绑输入系统仍是 non-goal，不属于本卡。

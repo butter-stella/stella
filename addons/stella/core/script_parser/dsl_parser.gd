@@ -12,6 +12,7 @@ const _CHAPTER_INDICATOR_TRANSITIONS := ["cut", "none", "fade"]
 const _DIALOGUE_VISIBILITY_TARGETS := ["surface", "quick_menu"]
 const _DIALOGUE_VISIBILITY_ACTIONS := ["show", "hide"]
 const _DIALOGUE_VISIBILITY_TRANSITIONS := ["cut", "fade"]
+const _LOOP_SE_ACTIONS := ["play", "stop"]
 const _STAGE_TRANSITIONS := [
 	"cut", "none", "fade", "move",
 	"slide_left", "slide_right", "slide_up", "slide_down",
@@ -95,6 +96,7 @@ static func parse(
 	var presentation_batch_operation_lines: Array = []
 	var presentation_batch_stage_layer_ids: Dictionary = {}
 	var presentation_batch_visibility_targets: Dictionary = {}
+	var presentation_batch_loop_se_channels: Dictionary = {}
 	var presentation_batch_has_chapter_indicator: bool = false
 	var presentation_batch_start_line: int = 0
 	var presentation_batch_invalid: bool = false
@@ -125,6 +127,7 @@ static func parse(
 				presentation_batch_operation_lines.clear()
 				presentation_batch_stage_layer_ids.clear()
 				presentation_batch_visibility_targets.clear()
+				presentation_batch_loop_se_channels.clear()
 				presentation_batch_has_chapter_indicator = false
 				presentation_batch_start_line = 0
 				presentation_batch_invalid = false
@@ -236,6 +239,29 @@ static func parse(
 							"payload": chapter_child.params.duplicate(true),
 						})
 						presentation_batch_operation_lines.append(token.line)
+				elif child_name == "loop_se":
+					var loop_se_child := _parse_at_command(token, data)
+					if loop_se_child == null or loop_se_child.type != "loop_se":
+						presentation_batch_invalid = true
+					else:
+						var payload: Dictionary = loop_se_child.params.duplicate(true)
+						var channel_id := String(payload.get("channel", ""))
+						if presentation_batch_loop_se_channels.has(channel_id):
+							_record_diagnostic(
+								data,
+								"error",
+								"DslParser: duplicate loop-SE channel '%s' at %s"
+								% [channel_id, _source_location(data, token.line)],
+								token.line,
+							)
+							presentation_batch_invalid = true
+						else:
+							presentation_batch_loop_se_channels[channel_id] = true
+						presentation_batch_operations.append({
+							"kind": "loop_se",
+							"payload": payload,
+						})
+						presentation_batch_operation_lines.append(token.line)
 				elif child_name == "end":
 					if (
 						presentation_batch_operations.is_empty()
@@ -267,6 +293,7 @@ static func parse(
 					presentation_batch_operation_lines.clear()
 					presentation_batch_stage_layer_ids.clear()
 					presentation_batch_visibility_targets.clear()
+					presentation_batch_loop_se_channels.clear()
 					presentation_batch_has_chapter_indicator = false
 					presentation_batch_start_line = 0
 					presentation_batch_invalid = false
@@ -285,7 +312,7 @@ static func parse(
 					_record_diagnostic(
 						data,
 						"error",
-						"DslParser: only canonical @stage, @dialogue_visibility, and @chapter_indicator children are allowed inside @presentation_batch; found @%s at %s"
+						"DslParser: only canonical @stage, @dialogue_visibility, @chapter_indicator, and @loop_se children are allowed inside @presentation_batch; found @%s at %s"
 						% [child_name, _source_location(data, token.line)],
 						token.line,
 					)
@@ -296,7 +323,7 @@ static func parse(
 				_record_diagnostic(
 					data,
 					"error",
-					"DslParser: only canonical @stage, @dialogue_visibility, and @chapter_indicator children are allowed inside @presentation_batch at %s"
+					"DslParser: only canonical @stage, @dialogue_visibility, @chapter_indicator, and @loop_se children are allowed inside @presentation_batch at %s"
 					% _source_location(data, token.line),
 					token.line,
 				)
@@ -580,6 +607,7 @@ static func parse(
 					presentation_batch_operation_lines.clear()
 					presentation_batch_stage_layer_ids.clear()
 					presentation_batch_visibility_targets.clear()
+					presentation_batch_loop_se_channels.clear()
 					presentation_batch_has_chapter_indicator = false
 					presentation_batch_nested_depth = 0
 					presentation_batch_invalid = false
@@ -644,14 +672,18 @@ static func parse(
 						"DslParser: only @stage is allowed inside @combine block; @%s was ignored (line %d)"
 						% [cmd_name, token.line]
 					)
-					if cmd_name == "chapter_indicator":
+					if cmd_name in ["chapter_indicator", "loop_se"]:
 						combine_message = (
-							"DslParser: @chapter_indicator is not allowed inside @combine at %s"
-							% _source_location(data, token.line)
+							"DslParser: @%s is not allowed inside @combine at %s"
+							% [cmd_name, _source_location(data, token.line)]
 						)
 					_record_diagnostic(
 						data,
-						"error" if cmd_name == "chapter_indicator" else "warning",
+						(
+							"error"
+							if cmd_name in ["chapter_indicator", "loop_se"]
+							else "warning"
+						),
 						combine_message,
 						token.line,
 					)
@@ -829,6 +861,19 @@ static func parse(
 							data,
 							"error",
 							"DslParser: @chapter_indicator requires an active @scene at %s"
+							% _source_location(data, token.line),
+							token.line,
+						)
+						cmd = null
+					if (
+						cmd != null
+						and _command_contains_operation_kind(cmd, "loop_se")
+						and (current_scene == null or chapter_needs_scene)
+					):
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @loop_se requires an active @scene at %s"
 							% _source_location(data, token.line),
 							token.line,
 						)
@@ -1181,6 +1226,21 @@ static func _command_contains_chapter_indicator(command: CommandData) -> bool:
 	return false
 
 
+static func _command_contains_operation_kind(
+	command: CommandData,
+	kind: String,
+) -> bool:
+	if command == null or command.type != "presentation_batch":
+		return false
+	for operation_value: Variant in command.params.get("operations", []):
+		if (
+			operation_value is Dictionary
+			and String((operation_value as Dictionary).get("kind", "")) == kind
+		):
+			return true
+	return false
+
+
 static func _add_command(cmd: CommandData, scene: SceneData, if_stack: Array) -> void:
 	if if_stack.size() > 0:
 		var ctx = if_stack[-1]
@@ -1380,12 +1440,31 @@ static func _parse_at_command(
 				"fade_duration": float(parts[1]) if parts.size() > 1 else 1.0,
 			})
 		"se":
-			if parts.size() > 1 and parts[1] == "off":
-				return _make_cmd("se", {"asset": parts[0], "off": true})
-			return _make_cmd("se", {
-				"asset": parts[0] if parts.size() > 0 else "",
-				"loop": parts[1] == "loop" if parts.size() > 1 else false,
+			if parts.size() != 1 or String(parts[0]).strip_edges().is_empty():
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: @se accepts exactly one one-shot asset at %s; use @loop_se <channel> play|stop for persistent audio"
+					% _source_location(data, token.line),
+					token.line,
+				)
+				return null
+			return _make_cmd("se", {"asset": String(parts[0])})
+		"loop_se":
+			var loop_se_command := _parse_loop_se_command(
+				parts, token.line, data)
+			if loop_se_command == null or not lower_standalone_presentation:
+				return loop_se_command
+			var batch_command := _make_cmd("presentation_batch", {
+				"policy": "fire_and_forget",
+				"operations": [{
+					"kind": "loop_se",
+					"payload": loop_se_command.params.duplicate(true),
+				}],
+				"operation_lines": [token.line],
 			})
+			batch_command.declared_line = token.line
+			return batch_command
 		"voice":
 			return _make_cmd("voice", {
 				"asset": parts[0] if parts.size() > 0 else "",
@@ -1641,6 +1720,160 @@ static func _parse_chapter_indicator_command(
 		"transition": transition,
 		"duration": duration,
 	})
+
+
+static func _parse_loop_se_command(
+	parts: Array,
+	line: int,
+	data: ScenarioData,
+) -> CommandData:
+	var location := _source_location(data, line)
+	if parts.size() < 2:
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @loop_se requires <channel> play|stop at %s" % location,
+			line,
+		)
+		return null
+	var channel_id := String(parts[0])
+	if not LoopSeChannelState.is_valid_channel_id(channel_id):
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: invalid @loop_se channel '%s' at %s; use an ASCII identifier beginning with a letter or underscore"
+			% [channel_id, location],
+			line,
+		)
+		return null
+	var action := String(parts[1])
+	if action not in _LOOP_SE_ACTIONS:
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: invalid @loop_se action '%s' at %s; expected play or stop"
+			% [action, location],
+			line,
+		)
+		return null
+
+	var option_start := 2
+	var asset := ""
+	if action == "play":
+		if parts.size() < 3 or String(parts[2]).contains("="):
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: @loop_se play requires an asset at %s" % location,
+				line,
+			)
+			return null
+		asset = String(parts[2])
+		option_start = 3
+
+	var volume := 1.0
+	var fade_duration := 0.0
+	var seen: Dictionary = {}
+	var invalid := false
+	for index in range(option_start, parts.size()):
+		var encoded := String(parts[index])
+		var equals_at := encoded.find("=")
+		if equals_at < 1:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: invalid @loop_se argument '%s' at %s; use key=value"
+				% [encoded, location],
+				line,
+			)
+			invalid = true
+			continue
+		var key := encoded.substr(0, equals_at).strip_edges()
+		var raw_value := encoded.substr(equals_at + 1).strip_edges()
+		if key != key.to_lower():
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: @loop_se option names are lowercase; found '%s' at %s"
+				% [key, location],
+				line,
+			)
+			invalid = true
+			continue
+		if seen.has(key):
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: duplicate @loop_se option '%s' at %s" % [key, location],
+				line,
+			)
+			invalid = true
+			continue
+		seen[key] = true
+		var number_result := _parse_chapter_indicator_duration(raw_value)
+		match key:
+			"fade":
+				if not bool(number_result.get("valid", false)):
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @loop_se fade must be finite and non-negative at %s"
+						% location,
+						line,
+					)
+					invalid = true
+				else:
+					fade_duration = float(number_result.get("value", 0.0))
+			"volume":
+				if action != "play":
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @loop_se stop does not accept volume at %s" % location,
+						line,
+					)
+					invalid = true
+				elif (
+					not bool(number_result.get("valid", false))
+					or float(number_result.get("value", -1.0)) > 1.0
+				):
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @loop_se volume must be finite and between 0 and 1 at %s"
+						% location,
+						line,
+					)
+					invalid = true
+				else:
+					volume = float(number_result.get("value", 1.0))
+			_:
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: unknown @loop_se option '%s' at %s" % [key, location],
+					line,
+				)
+				invalid = true
+	if invalid:
+		return null
+	var payload := {
+		"action": action,
+		"asset": asset,
+		"channel": channel_id,
+		"fade_duration": fade_duration,
+		"resume_position": 0.0,
+		"volume": volume,
+	}
+	if not LoopSeChannelState.validate_operation(payload, false):
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: invalid canonical @loop_se operation at %s" % location,
+			line,
+		)
+		return null
+	return _make_cmd("loop_se", payload)
 
 
 static func _parse_chapter_indicator_duration(encoded: String) -> Dictionary:

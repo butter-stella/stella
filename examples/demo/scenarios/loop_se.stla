@@ -1,0 +1,20 @@
+// Public persistent loop-SE example. Uses only redistributable demo assets.
+
+@chapter loop_se_demo "Persistent loop-SE demo"
+@scene loop_se_start "Persistent loop-SE demo"
+
+@loop_se ambience play se_select volume=0.15 fade=0.2
+@loop_se detail play se_cancel volume=0.1
+
+「Each stable channel loops independently while the scenario continues.」
+
+@loop_se ambience play se_select volume=0.08 fade=0.2
+
+「Changing only volume preserves this channel's player and position.」
+
+@presentation_batch policy=join
+  @loop_se ambience stop fade=0.2
+  @loop_se detail stop fade=0.2
+@end
+
+「JOIN waits for both named channels to finish fading out.」

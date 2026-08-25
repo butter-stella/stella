@@ -4,6 +4,7 @@ class_name PresentationState extends RefCounted
 var current_bg: String = ""
 var stage_layers: Dictionary = {}
 var current_bgm: String = ""
+var loop_se_channels: Dictionary = {}
 var dialogue_visibility: Dictionary = DialogueVisibilityState.default_state()
 var dialogue_content: Dictionary = _inactive_dialogue_content()
 
@@ -21,6 +22,9 @@ func connect_signals() -> void:
 	SignalBus.stage_operations_requested.connect(_on_stage_operations)
 	SignalBus.bgm_play.connect(_on_bgm_play)
 	SignalBus.bgm_stop.connect(_on_bgm_stop)
+	SignalBus.loop_se_operation_committed.connect(_on_loop_se_operation_committed)
+	SignalBus.loop_se_positions_committed.connect(_on_loop_se_positions_committed)
+	SignalBus.loop_se_presenter_registered.connect(_on_loop_se_presenter_registered)
 	if SignalBus.has_signal(&"dialogue_visibility_operations_requested"):
 		(SignalBus.get(&"dialogue_visibility_operations_requested") as Signal).connect(
 			_on_dialogue_visibility_operations
@@ -35,6 +39,9 @@ func disconnect_signals() -> void:
 	SignalBus.stage_operations_requested.disconnect(_on_stage_operations)
 	SignalBus.bgm_play.disconnect(_on_bgm_play)
 	SignalBus.bgm_stop.disconnect(_on_bgm_stop)
+	SignalBus.loop_se_operation_committed.disconnect(_on_loop_se_operation_committed)
+	SignalBus.loop_se_positions_committed.disconnect(_on_loop_se_positions_committed)
+	SignalBus.loop_se_presenter_registered.disconnect(_on_loop_se_presenter_registered)
 	if SignalBus.has_signal(&"dialogue_visibility_operations_requested"):
 		var visibility_signal: Signal = SignalBus.get(&"dialogue_visibility_operations_requested")
 		if visibility_signal.is_connected(_on_dialogue_visibility_operations):
@@ -46,15 +53,21 @@ func clear() -> void:
 	current_bg = ""
 	stage_layers.clear()
 	current_bgm = ""
+	loop_se_channels.clear()
 	dialogue_visibility = DialogueVisibilityState.default_state()
 	dialogue_content = _inactive_dialogue_content()
 
 
 func capture_snapshot() -> Dictionary:
+	var captured_loop_se := LoopSeChannelState.with_positions(
+		loop_se_channels,
+		SignalBus.capture_loop_se_positions(),
+	)
 	return {
 		"bg": current_bg,
 		"stage_layers": stage_layers.duplicate(true),
 		"bgm": current_bgm,
+		"loop_se_channels": captured_loop_se,
 		"dialogue_visibility": dialogue_visibility.duplicate(true),
 		"dialogue_content": dialogue_content.duplicate(true),
 	}
@@ -63,6 +76,14 @@ func capture_snapshot() -> Dictionary:
 func restore_snapshot(snapshot: Dictionary) -> void:
 	current_bg = String(snapshot.get("bg", ""))
 	current_bgm = String(snapshot.get("bgm", ""))
+	loop_se_channels.clear()
+	var restored_loop_se: Variant = snapshot.get("loop_se_channels", {})
+	if LoopSeChannelState.validate_channels(restored_loop_se, false):
+		loop_se_channels = (restored_loop_se as Dictionary).duplicate(true)
+	else:
+		push_warning(
+			"PresentationState: invalid loop_se_channels snapshot; using empty state"
+		)
 	stage_layers.clear()
 	var restored_layers = snapshot.get("stage_layers", {})
 	if restored_layers is Dictionary:
@@ -162,6 +183,7 @@ func apply_to_presenters(runtime_binding: Dictionary = {}) -> void:
 				runtime_binding.duplicate(true),
 			)
 		SignalBus.reset_and_apply_stage_state(stage_layers)
+		SignalBus.reset_and_apply_loop_se_state(loop_se_channels)
 		SignalBus.bg_changed.emit(current_bg, "none", 0.0)
 		if current_bgm != "":
 			SignalBus.bgm_play.emit(current_bgm, 0.0)
@@ -186,6 +208,38 @@ func _on_bgm_play(asset: String, _fade_duration: float) -> void:
 
 func _on_bgm_stop(_fade_duration: float) -> void:
 	current_bgm = ""
+
+
+func _on_loop_se_operation_committed(operation: LoopSePresentationOperation) -> void:
+	if operation == null or not SignalBus.is_current_loop_se_operation_valid():
+		return
+	var payload := operation.get_payload()
+	if not LoopSeChannelState.operation_has_work(loop_se_channels, payload):
+		return
+	# Commit from the physical incoming cursor after Presenter apply. The reducer
+	# then preserves that cursor for same-asset volume changes while asset
+	# replacements use their authored resume_position.
+	var positions := SignalBus.capture_loop_se_positions()
+	if not SignalBus.is_current_loop_se_operation_valid():
+		return
+	loop_se_channels = LoopSeChannelState.with_positions(
+		loop_se_channels, positions)
+	loop_se_channels = LoopSeChannelState.reduce(
+		loop_se_channels,
+		[payload],
+		false,
+	)
+
+
+func _on_loop_se_positions_committed(positions: Dictionary) -> void:
+	loop_se_channels = LoopSeChannelState.with_positions(
+		loop_se_channels, positions)
+
+
+func _on_loop_se_presenter_registered() -> void:
+	# A replacement Runtime-owned presenter inherits the canonical persistent
+	# channels. This is a projection boundary, not a session reset.
+	SignalBus.reset_and_apply_loop_se_state(loop_se_channels)
 
 
 func _on_dialogue_visibility_operations(

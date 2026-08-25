@@ -261,9 +261,9 @@ Advance indicator 是可选的、按 Profile 独立配置的表现节点。`adva
 @end
 ```
 
-`@presentation_batch` header 只接受一个严格小写的 `policy=join|fire_and_forget`。block 不能为空，合法 child 只有 canonical `@stage`、canonical `@dialogue_visibility` 与 canonical `@chapter_indicator`；child 与 standalone 共用各自唯一的 parser/canonicalization。每批最多一个 chapter-indicator child，因为它们共享固定 `chapter:indicator` channel。解析器保留跨 kind 的 authored child 顺序，且 `operation_lines` 与 child 一一对应；duplicate Stage layer、duplicate visibility target（省略 target 的 surface 与显式 surface 也视为重复）、duplicate chapter target、nested batch/if/parallel/combine、scene gap、非法 child 与缺失 `@end` 都会令整块 fail-close。既有 `@stage_batch` 继续保持 Stage-only public contract，不会静默扩成 mixed alias。
+`@presentation_batch` header 只接受一个严格小写的 `policy=join|fire_and_forget`。block 不能为空，合法 child 只有 canonical `@stage`、canonical `@dialogue_visibility`、canonical `@chapter_indicator` 与 canonical `@loop_se`；child 与 standalone 共用各自唯一的 parser/canonicalization。每批最多一个 chapter-indicator child，因为它们共享固定 `chapter:indicator` channel；每个 loop-SE channel 也最多出现一次。解析器保留跨 kind 的 authored child 顺序，且 `operation_lines` 与 child 一一对应；duplicate Stage layer、duplicate visibility target（省略 target 的 surface 与显式 surface 也视为重复）、duplicate chapter/loop-SE target、nested batch/if/parallel/combine、scene gap、非法 child 与缺失 `@end` 都会令整块 fail-close。既有 `@stage_batch` 继续保持 Stage-only public contract，不会静默扩成 mixed alias。
 
-Director 在任何 child apply 之前完成整批 typed schema/context preflight，并把 chapter Presenter binding registry 完整 validate、seal 与 accept；任何 child 的 preflight 在其 source line 失败时都不会留下 Stage、dialogue 或 chapter 的部分 mutation。apply 按 authored child 顺序跨 kind 派发，JOIN 等待 seal 后的 exact receipt union，FNF 则在 seal 后继续。普通 `@chapter_indicator` 和 `@dialogue_visibility` 仍应使用简短 standalone 写法；只有真正需要这个原子边界时才使用 batch。
+Director 在任何 child apply 之前完成整批 typed schema/context preflight，并把 chapter Presenter binding registry 与唯一 AudioPresenter 完整 validate、seal 与 accept；任何 child 的 preflight 在其 source line 失败时都不会留下 Stage、dialogue、chapter 或 audio 的部分 mutation。apply 按 authored child 顺序跨 kind 派发，JOIN 等待 seal 后的 exact receipt union，FNF 则在 seal 后继续。普通 `@chapter_indicator` 和 `@dialogue_visibility` 仍应使用简短 standalone 写法；只有真正需要这个原子边界时才使用 batch。
 
 ```
 @stage <layer-id> show key=value ...
@@ -344,14 +344,42 @@ Director 在任何 child apply 之前完成整批 typed schema/context preflight
 @bgm off                    // 淡出停止
 @bgm off 2.0               // 指定淡出时间
 
-// 音效
+// 一次性音效
 @se se_door_open
-@se se_rain loop             // 循环音效
-@se se_rain off              // 停止指定音效
+
+// 持续循环音效：以稳定 channel 寻址
+@loop_se ambience play se_rain
+@loop_se ambience play se_storm volume=0.7 fade=1.0
+@loop_se ambience stop
+@loop_se ambience stop fade=1.0
 
 // 语音（通常不需要手写，跟在对话后面用 #voice: 即可）
 @voice sakura_001
 ```
+
+`@se <asset>` 只播放一次，不可寻址；它没有 `loop` / `off` 参数，也没有按素材名停止的 API。持续环境声使用唯一 canonical grammar：
+
+```stla
+@loop_se <channel> play <asset> [volume=0..1] [fade=<seconds>]
+@loop_se <channel> stop [fade=<seconds>]
+```
+
+channel 是区分大小写的稳定业务 ID，必须匹配 `[A-Za-z_][A-Za-z0-9_-]*`，最长 64 字符；寻址永远不依赖素材文件名。`volume` 默认 `1`，`fade` 默认 `0`，都必须是有限非负数（volume 还必须不超过 1）。stop 一个不存在的 channel 是同步 no-op。同 channel 的 asset 与 volume 都相同时不会 seek、重播或建立新 receipt；只改 volume 会保留同一个 player 和播放位置，并在需要时淡变音量；asset 改变才会用最多两个 player 交叉淡变。新的 generation 抢占未完成 crossfade 时会立即切掉更老的 outgoing，只保留 canonical incoming 作为下一次 outgoing。
+
+loop-SE 只接受 OGG / WAV。Presenter 会 duplicate stream 后开启真正的格式循环，因此不会修改同一资源作为普通 `@se` 播放时的 metadata；OGG `loop_offset` 与 WAV `loop_begin` / `loop_end` 等已有 marker 会保留。本语法不暴露 start/loop marker 参数；缺失或不支持的资源会在任何 mixed batch child apply 前以该 child 的 `source_path:line` fail-close，绝不会降级成 one-shot。
+
+standalone `@loop_se` 默认 fire-and-forget。需要等待淡变，或与 Stage、对话显隐、章节指示器在同一原子 authored boundary 组合时，把同一 canonical child 放入唯一的 `@presentation_batch`：
+
+```stla
+@presentation_batch policy=join
+  @loop_se ambience play se_rain fade=0.5
+  @stage rain_overlay show asset=stage:rain transition=fade duration=0.5
+@end
+```
+
+完整的可运行公开示例见 `examples/demo/scenarios/loop_se.stla`。
+
+JOIN 只等待该 batch 的 exact receipts；点击或持续 Skip 会 exact-finish 当前 JOIN，Skip 已开启时新操作直接 cut，Auto 本身不结束音频 JOIN。FNF 在 dispatch seal 后继续剧情，但 receipt 会保留到自己的 terminal 后清理。
 
 ### 3.7 转场与特效
 
@@ -491,7 +519,7 @@ child 只能是经现有 `@stage` parser 完整规范化的 canonical Stage 操�
 
 header、空 block、scene 边界或缺失 `@end` 的错误定位 opening line；duplicate/clear-conflicting canonical `@stage`、其他非法 child 或 nested block 定位 offending child line。canonical child 原本产生 warning 并拒绝命令时，batch 边界会把同一 message/source path/line 升级为 fatal error。缺失 `@end` 在 opening line 报错，且不会吞掉后续 `@scene` 或 `@chapter`。任意错误都使整块 fail-close：不生成 `stage_batch` command，child 不泄漏为 standalone command，runtime 也不发生部分 mutation。
 
-`join` 在本批 dispatch tail 封存 exact receipt set 后，等待全部 receipt 成功 terminal；零 token 同步完成，semantic no-work 更会在任何 request/batch ID、Bus、receipt、token 或 Tween 分配前同步完成。当前 owner 的任一 superseded 或 cancelled receipt 都使 JOIN fail-close。普通左键、Space 或 Enter 只 finish 当前 sealed JOIN，不会跨越到下一命令。`fire_and_forget` 在 dispatch seal 后立即继续，不占用输入，此时 Tween 可仍在运行。连续 batch 按 SignalBus 顺序派发；后来的同层 generation 拥有最终状态，旧 terminal 不能完成新 batch。不得使用计时等待或 `@parallel` 伪造 JOIN。
+`join` 在本批 dispatch tail 封存 exact receipt set 后，等待全部 receipt 成功 terminal；零 token 同步完成。不含 live projection exception 的 semantic no-work 会在任何 request/batch ID、Bus、receipt、token 或 Tween 分配前同步完成。每条 loop-SE 即使 canonical state 相等也必须取得 positive batch，经 AudioPresenter 重新验证资源与真实 player；完全稳定对齐时才在 Presenter 内以零 receipt 同步完成，仍在 fade 的同 target 则先 exact-complete 旧 owner。当前 owner 的任一 superseded 或 cancelled receipt 都使 JOIN fail-close。普通左键、Space 或 Enter 只 finish 当前 sealed JOIN，不会跨越到下一命令。`fire_and_forget` 在 dispatch seal 后立即继续，不占用输入，此时 Tween 可仍在运行。连续 batch 按 SignalBus 顺序派发；后来的同层 generation 拥有最终状态，旧 terminal 不能完成新 batch。不得使用计时等待或 `@parallel` 伪造 JOIN。
 
 兼容面保持不变：standalone `@stage` 仍是 nonblocking；`@parallel` 仍只是同栈启动 child，不 join；`@combine` 仍是 dialogue segment cue，不是 batch barrier。公开 reference scenario 见 [`examples/demo/scenarios/stage_batch.stla`](../examples/demo/scenarios/stage_batch.stla)；它用于文档链接，不是默认 Start Game 入口。
 
@@ -653,6 +681,8 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | 句内头像表情 | `[expr:expression]` | — |
 | BGM | `@bgm asset fadein` | `@bgm asset` |
 | 音效 | `@se asset` | `@se asset` |
+| 循环音效播放 | `@loop_se channel play asset volume=... fade=...` | `@loop_se channel play asset` |
+| 循环音效停止 | `@loop_se channel stop fade=...` | `@loop_se channel stop` |
 | 对话 Profile | `@dialogue_profile name key=value...` | — |
 | ADV 对话 | `@adv profile=name` | `@adv` |
 | 全屏对话 | `@nvl profile=name ... @nvl off` | `@nvl` |
@@ -679,6 +709,7 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | 章节标题指示器 | `cut 0s`；`fade` 为 `0.25s` | `none` 规范化为 `cut 0s` |
 | BGM 淡入 | `1.0s` | — |
 | BGM 淡出 | `1.0s` | — |
+| loop-SE 音量 / 淡变 | `1` / `0s` | standalone 默认 fire-and-forget；JOIN 只通过 `@presentation_batch` 选择 |
 | 对话推进 | 等待点击 | 有语音时可配置等语音播完 |
 
 ## 7. 解析器架构

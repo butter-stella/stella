@@ -4,6 +4,10 @@ extends Node
 
 const ChapterIndicatorRequest = preload(
 	"res://addons/stella/core/data/chapter_indicator_request.gd")
+const LoopSeOperationRequestType = preload(
+	"res://addons/stella/core/data/loop_se_operation_request.gd")
+const LoopSeStateCaptureRequestType = preload(
+	"res://addons/stella/core/data/loop_se_state_capture_request.gd")
 
 # Dialogue
 ## Canonical internal request. Core and built-in presenters consume this typed,
@@ -658,6 +662,41 @@ signal dialogue_visibility_transition_terminal(
 )
 signal dialogue_visibility_transition_receipts_finish_requested(transitions: Array)
 
+# Persistent named loop-SE channels
+## A loop operation is validated and accepted by the single Runtime-owned
+## AudioPresenter before any child of a mixed presentation batch is applied.
+signal loop_se_validate_requested(request: LoopSeOperationRequest)
+signal loop_se_accept_requested(request: LoopSeOperationRequest)
+signal loop_se_apply_requested(request: LoopSeOperationRequest)
+## Canonical state consumes only operations the sealed presenter applied.
+signal loop_se_operation_committed(operation: LoopSePresentationOperation)
+signal loop_se_transition_receipt_started(
+	presenter_instance_id: int,
+	channel_id: String,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+)
+signal loop_se_transition_terminal(
+	presenter_instance_id: int,
+	channel_id: String,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+	outcome: StringName,
+)
+signal loop_se_transition_receipts_finish_requested(transitions: Array)
+signal loop_se_projection_reset_requested(epoch: int)
+signal loop_se_state_apply_requested(channels: Dictionary, generation: int)
+signal loop_se_targets_state_apply_requested(
+	channels: Dictionary,
+	targets: Array,
+	generation: int,
+)
+signal loop_se_state_capture_requested(request: LoopSeStateCaptureRequest)
+signal loop_se_positions_committed(positions: Dictionary)
+signal loop_se_presenter_registered()
+
 var _stage_operation_queue: Array[Dictionary] = []
 var _stage_operation_dispatching := false
 var _stage_operation_dispatch_stack: Array[int] = []
@@ -672,6 +711,15 @@ var _dialogue_visibility_dispatching := false
 var _dialogue_visibility_epoch := 1
 var _dialogue_visibility_dispatch_stack: Array[int] = []
 var _dialogue_visibility_epoch_stack: Array[int] = []
+var _loop_se_epoch := 1
+var _loop_se_epoch_stack: Array[int] = []
+var _dispatching_loop_se_request: LoopSeOperationRequest
+var _applying_loop_se_request: LoopSeOperationRequest
+var _capturing_loop_se_request: LoopSeStateCaptureRequest
+var _loop_se_participant_authority := RefCounted.new()
+var _loop_se_registrar_authority: Object
+var _loop_se_presenter: WeakRef
+var _loop_se_capability: RefCounted
 var _presentation_operation_queue: Array[Dictionary] = []
 var _presentation_enqueue_serial := 1
 var _presentation_projection_depth := 0
@@ -679,6 +727,252 @@ var _presentation_unified_draining := false
 var _next_presentation_projection_lifecycle_id := 1
 var _active_presentation_projection_lifecycle_id := 0
 var _presentation_projection_retirement_started := false
+
+
+## StellaRuntime is the only composition root allowed to admit the concrete
+## AudioPresenter. SignalBus retains weak identity plus an opaque capability;
+## Core never constructs or searches the scene tree for an audio node.
+func configure_loop_se_registrar(authority: Object) -> bool:
+	if authority == null:
+		return false
+	if _loop_se_registrar_authority == null:
+		_loop_se_registrar_authority = authority
+	return _loop_se_registrar_authority == authority
+
+
+func register_loop_se_presenter(
+	presenter: Object,
+	registrar_authority: Object,
+) -> RefCounted:
+	if (
+		registrar_authority != _loop_se_registrar_authority
+		or presenter == null
+		or not is_instance_valid(presenter)
+		or not presenter is Node
+		or (presenter as Node).is_queued_for_deletion()
+	):
+		return null
+	var registered := _current_loop_se_presenter()
+	if registered != null:
+		if registered == presenter:
+			return _loop_se_capability
+		return null
+	_loop_se_presenter = weakref(presenter)
+	_loop_se_capability = RefCounted.new()
+	return _loop_se_capability
+
+
+func announce_loop_se_presenter_registered(
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _loop_se_participant_identity_matches(presenter, capability):
+		return false
+	loop_se_presenter_registered.emit()
+	return true
+
+
+func unregister_loop_se_presenter(
+	presenter: Object,
+	capability: RefCounted,
+	registrar_authority: Object,
+) -> void:
+	if (
+		registrar_authority == _loop_se_registrar_authority
+		and _loop_se_participant_identity_matches(presenter, capability)
+	):
+		_loop_se_presenter = null
+		_loop_se_capability = null
+
+
+func reject_loop_se_request(
+	request: LoopSeOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	error: String,
+) -> bool:
+	if not _loop_se_request_target_is_current(request, presenter, capability, false):
+		return false
+	return request._reject(error, _loop_se_participant_authority)
+
+
+func validate_loop_se_request(
+	request: LoopSeOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _loop_se_request_target_is_current(request, presenter, capability, false):
+		return false
+	return request._validate(presenter, _loop_se_participant_authority)
+
+
+func accept_loop_se_request(
+	request: LoopSeOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _loop_se_request_target_is_current(request, presenter, capability, false):
+		return false
+	return request._accept(presenter, _loop_se_participant_authority)
+
+
+func acknowledge_loop_se_apply(
+	request: LoopSeOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _loop_se_request_target_is_current(request, presenter, capability, true):
+		return false
+	return request._apply(presenter, _loop_se_participant_authority)
+
+
+func capture_loop_se_positions() -> Dictionary:
+	var presenter := _current_loop_se_presenter()
+	if presenter == null:
+		return {}
+	var request := LoopSeStateCaptureRequestType.new()
+	request._bind_authority(_loop_se_participant_authority)
+	_capturing_loop_se_request = request
+	loop_se_state_capture_requested.emit(request)
+	_capturing_loop_se_request = null
+	return request.get_positions() if request.is_resolved() else {}
+
+
+func resolve_loop_se_state_capture(
+	request: LoopSeStateCaptureRequest,
+	presenter: Object,
+	capability: RefCounted,
+	positions: Dictionary,
+) -> bool:
+	if (
+		request == null
+		or request != _capturing_loop_se_request
+		or not _loop_se_participant_identity_matches(presenter, capability)
+	):
+		return false
+	return request._resolve(positions, _loop_se_participant_authority)
+
+
+## Presenter teardown commits only physical playback positions. Canonical
+## asset/volume ownership stays in PresentationState and is reprojected exactly
+## once when the replacement presenter registers.
+func commit_loop_se_positions(
+	presenter: Object,
+	capability: RefCounted,
+	positions: Dictionary,
+) -> bool:
+	if not _loop_se_participant_identity_matches(presenter, capability):
+		return false
+	for raw_channel_id: Variant in positions:
+		var value: Variant = positions[raw_channel_id]
+		if (
+			not raw_channel_id is String
+			or not LoopSeChannelState.is_valid_channel_id(String(raw_channel_id))
+			or not (value is int or value is float)
+			or not is_finite(float(value))
+			or float(value) < 0.0
+		):
+			return false
+	loop_se_positions_committed.emit(positions.duplicate(true))
+	return true
+
+
+func current_loop_se_epoch() -> int:
+	return _loop_se_epoch
+
+
+func is_current_loop_se_operation_valid() -> bool:
+	if _loop_se_epoch_stack.is_empty():
+		return true
+	return _loop_se_epoch_stack.back() == _loop_se_epoch
+
+
+func reset_loop_se_presentation() -> int:
+	return _reset_loop_se_projection({})
+
+
+func reset_and_apply_loop_se_state(channels: Dictionary) -> int:
+	if not LoopSeChannelState.validate_channels(channels, true):
+		return 0
+	return _reset_loop_se_projection(channels)
+
+
+func apply_loop_se_targets_state(
+	channels: Dictionary,
+	targets: Array,
+) -> bool:
+	if not LoopSeChannelState.validate_channels(channels, true):
+		return false
+	var normalized_targets: Array[String] = []
+	for target_value: Variant in targets:
+		var target := String(target_value)
+		if (
+			LoopSeChannelState.is_valid_channel_id(target)
+			and target not in normalized_targets
+		):
+			normalized_targets.append(target)
+	if normalized_targets.is_empty():
+		return false
+	loop_se_targets_state_apply_requested.emit(
+		channels.duplicate(true), normalized_targets, _loop_se_epoch)
+	return true
+
+
+func _reset_loop_se_projection(channels: Dictionary) -> int:
+	_mark_presentation_projection_retirement_started()
+	_loop_se_epoch += 1
+	var reset_epoch := _loop_se_epoch
+	for request: Dictionary in _presentation_operation_queue:
+		if _request_belongs_to_retained_projection(request):
+			request["loop_se_epoch"] = reset_epoch
+	_dispatching_loop_se_request = null
+	_applying_loop_se_request = null
+	loop_se_projection_reset_requested.emit(reset_epoch)
+	if reset_epoch == _loop_se_epoch and not channels.is_empty():
+		loop_se_state_apply_requested.emit(channels.duplicate(true), reset_epoch)
+	return reset_epoch
+
+
+func _loop_se_request_target_is_current(
+	request: LoopSeOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	applying: bool,
+) -> bool:
+	return (
+		request != null
+		and request == (
+			_applying_loop_se_request if applying else _dispatching_loop_se_request)
+		and _loop_se_participant_identity_matches(presenter, capability)
+		and request.is_target(presenter)
+	)
+
+
+func _current_loop_se_presenter() -> Object:
+	if _loop_se_presenter == null:
+		return null
+	var presenter: Object = _loop_se_presenter.get_ref()
+	if not _loop_se_participant_identity_matches(presenter, _loop_se_capability):
+		_loop_se_presenter = null
+		_loop_se_capability = null
+		return null
+	return presenter
+
+
+func _loop_se_participant_identity_matches(
+	presenter: Object,
+	capability: Object,
+) -> bool:
+	return (
+		presenter != null
+		and capability != null
+		and capability == _loop_se_capability
+		and _loop_se_presenter != null
+		and is_instance_valid(presenter)
+		and presenter is Node
+		and not (presenter as Node).is_queued_for_deletion()
+		and _loop_se_presenter.get_ref() == presenter
+	)
 
 
 ## Allocate an identity before submission when a caller needs to own the exact
@@ -784,9 +1078,12 @@ func emit_presentation_operations(
 				and not StageLayerState.validate_operation(payload, true))
 			or (operation is DialogueVisibilityPresentationOperation
 				and not DialogueVisibilityState.validate_operation(payload, true))
+			or (operation is LoopSePresentationOperation
+				and not LoopSeChannelState.validate_operation(payload, true))
 			or not operation is StagePresentationOperation
 				and not operation is DialogueVisibilityPresentationOperation
 				and not operation is ChapterIndicatorPresentationOperation
+				and not operation is LoopSePresentationOperation
 		):
 			presentation_operation_request_finished.emit(request_id, false)
 			return request_id
@@ -798,6 +1095,7 @@ func emit_presentation_operations(
 		"stage_epoch": _stage_operation_epoch,
 		"visibility_epoch": _dialogue_visibility_epoch,
 		"chapter_epoch": _chapter_indicator_epoch,
+		"loop_se_epoch": _loop_se_epoch,
 		"enqueue_serial": _presentation_enqueue_serial,
 		"projection_lifecycle_id": _active_presentation_projection_lifecycle_id,
 		"born_after_retirement": _presentation_projection_retirement_started,
@@ -1004,6 +1302,7 @@ func _drain_presentation_operation_queue_once() -> void:
 	var stage_epoch := int(request.get("stage_epoch", 0))
 	var visibility_epoch := int(request.get("visibility_epoch", 0))
 	var chapter_epoch := int(request.get("chapter_epoch", 0))
+	var loop_se_epoch := int(request.get("loop_se_epoch", 0))
 	var operations: Array = request.get("operations", [])
 	var force_cut := bool(request.get("force_cut", false))
 	var apply_started_callback: Callable = request.get(
@@ -1011,6 +1310,7 @@ func _drain_presentation_operation_queue_once() -> void:
 	var uses_stage := false
 	var uses_dialogue_visibility := false
 	var uses_chapter_indicator := false
+	var uses_loop_se := false
 	for operation_value: Variant in operations:
 		if operation_value is StagePresentationOperation:
 			uses_stage = true
@@ -1018,73 +1318,117 @@ func _drain_presentation_operation_queue_once() -> void:
 			uses_dialogue_visibility = true
 		elif operation_value is ChapterIndicatorPresentationOperation:
 			uses_chapter_indicator = true
+		elif operation_value is LoopSePresentationOperation:
+			uses_loop_se = true
 	_stage_operation_dispatch_stack.append(request_id)
 	_stage_operation_epoch_stack.append(stage_epoch)
 	_dialogue_visibility_dispatch_stack.append(request_id)
 	_dialogue_visibility_epoch_stack.append(visibility_epoch)
+	_loop_se_epoch_stack.append(loop_se_epoch)
 	var chapter_requests: Dictionary = {}
+	var loop_se_requests: Dictionary = {}
 	var preflight_valid := true
 	for operation_value: Variant in operations:
-		if not operation_value is ChapterIndicatorPresentationOperation:
-			continue
-		var operation: ChapterIndicatorPresentationOperation = operation_value
-		var payload := operation.get_payload()
-		var chapter_request := ChapterIndicatorRequest.new(
-			String(payload.get("action", "")) == "show",
-			String(payload.get("transition", "")),
-			float(payload.get("duration", 0.0)),
-			operation.get_source(),
-		)
-		chapter_request._bind_authority(
-			_chapter_indicator_participant_authority,
-			_chapter_indicator_participant_is_current,
-		)
-		for participant: Dictionary in _chapter_indicator_participant_snapshot():
-			chapter_request._snapshot_presenter(
-				participant.get("presenter"),
-				participant.get("capability"),
+		if operation_value is ChapterIndicatorPresentationOperation:
+			var operation: ChapterIndicatorPresentationOperation = operation_value
+			var payload := operation.get_payload()
+			var chapter_request := ChapterIndicatorRequest.new(
+				String(payload.get("action", "")) == "show",
+				String(payload.get("transition", "")),
+				float(payload.get("duration", 0.0)),
+				operation.get_source(),
+			)
+			chapter_request._bind_authority(
 				_chapter_indicator_participant_authority,
+				_chapter_indicator_participant_is_current,
 			)
-		_dispatching_chapter_indicator_request = chapter_request
-		chapter_indicator_validate_requested.emit(chapter_request)
-		if (
-			chapter_epoch != _chapter_indicator_epoch
-			or not chapter_request._seal_validation(
-				request_id, _chapter_indicator_participant_authority)
-		):
-			_report_chapter_indicator_rejection(
-				chapter_request.get_source(),
-				chapter_request.get_validation_errors(),
+			for participant: Dictionary in _chapter_indicator_participant_snapshot():
+				chapter_request._snapshot_presenter(
+					participant.get("presenter"),
+					participant.get("capability"),
+					_chapter_indicator_participant_authority,
+				)
+			_dispatching_chapter_indicator_request = chapter_request
+			chapter_indicator_validate_requested.emit(chapter_request)
+			if (
+				chapter_epoch != _chapter_indicator_epoch
+				or not chapter_request._seal_validation(
+					request_id, _chapter_indicator_participant_authority)
+			):
+				_report_chapter_indicator_rejection(
+					chapter_request.get_source(),
+					chapter_request.get_validation_errors(),
+				)
+				preflight_valid = false
+				break
+			chapter_request._set_force_cut(
+				force_cut, _chapter_indicator_participant_authority)
+			chapter_indicator_accept_requested.emit(chapter_request)
+			if (
+				not chapter_request.all_presenters_accepted()
+				or not chapter_request.presenters_are_live()
+			):
+				_report_chapter_indicator_rejection(
+					chapter_request.get_source(),
+					["a sealed presenter did not accept the captured binding"],
+				)
+				preflight_valid = false
+				break
+			chapter_requests[operation.get_instance_id()] = chapter_request
+		elif operation_value is LoopSePresentationOperation:
+			var operation: LoopSePresentationOperation = operation_value
+			var loop_request := LoopSeOperationRequestType.new(
+				operation.get_payload(), operation.get_source())
+			loop_request._bind_authority(
+				_loop_se_participant_authority,
+				_loop_se_participant_identity_matches,
 			)
-			preflight_valid = false
-			break
-		chapter_request._set_force_cut(
-			force_cut, _chapter_indicator_participant_authority)
-		chapter_indicator_accept_requested.emit(chapter_request)
-		if (
-			not chapter_request.all_presenters_accepted()
-			or not chapter_request.presenters_are_live()
-		):
-			_report_chapter_indicator_rejection(
-				chapter_request.get_source(),
-				["a sealed presenter did not accept the captured binding"],
+			loop_request._snapshot_presenter(
+				_current_loop_se_presenter(),
+				_loop_se_capability,
+				_loop_se_participant_authority,
 			)
-			preflight_valid = false
-			break
-		chapter_requests[operation.get_instance_id()] = chapter_request
+			_dispatching_loop_se_request = loop_request
+			loop_se_validate_requested.emit(loop_request)
+			if (
+				loop_se_epoch != _loop_se_epoch
+				or not loop_request._seal_validation(
+					request_id, _loop_se_participant_authority)
+			):
+				_report_loop_se_rejection(
+					loop_request.get_source(), loop_request.get_validation_errors())
+				preflight_valid = false
+				break
+			loop_request._set_force_cut(force_cut, _loop_se_participant_authority)
+			loop_se_accept_requested.emit(loop_request)
+			if not loop_request.was_accepted() or not loop_request.presenter_is_live():
+				_report_loop_se_rejection(
+					loop_request.get_source(),
+					["the sealed AudioPresenter did not accept the captured binding"],
+				)
+				preflight_valid = false
+				break
+			loop_se_requests[operation.get_instance_id()] = loop_request
 	_dispatching_chapter_indicator_request = null
+	_dispatching_loop_se_request = null
 	var epochs_valid := _presentation_operation_epochs_are_current(
 		stage_epoch,
 		visibility_epoch,
 		chapter_epoch,
+		loop_se_epoch,
 		uses_stage,
 		uses_dialogue_visibility,
 		uses_chapter_indicator,
+		uses_loop_se,
 	)
 	if not preflight_valid or not epochs_valid:
 		for chapter_request_value: Variant in chapter_requests.values():
 			(chapter_request_value as ChapterIndicatorRequest)._finish(
 				false, false, _chapter_indicator_participant_authority)
+		for loop_request_value: Variant in loop_se_requests.values():
+			(loop_request_value as LoopSeOperationRequest)._finish(
+				false, false, _loop_se_participant_authority)
+		_loop_se_epoch_stack.pop_back()
 		_dialogue_visibility_epoch_stack.pop_back()
 		_dialogue_visibility_dispatch_stack.pop_back()
 		_stage_operation_epoch_stack.pop_back()
@@ -1144,19 +1488,43 @@ func _drain_presentation_operation_queue_once() -> void:
 				break
 			delivered = delivered and chapter_request != null
 			operation_index += 1
+		elif operation is LoopSePresentationOperation:
+			var loop_request: LoopSeOperationRequest = loop_se_requests.get(
+				operation.get_instance_id())
+			if apply_started_callback.is_valid():
+				apply_started_callback.call([operation.get_channel()])
+			_applying_loop_se_request = loop_request
+			loop_se_apply_requested.emit(loop_request)
+			_applying_loop_se_request = null
+			if (
+				loop_request == null
+				or not loop_request.was_applied()
+				or not loop_request.presenter_is_live()
+				or loop_se_epoch != _loop_se_epoch
+			):
+				delivered = false
+				break
+			loop_se_operation_committed.emit(operation)
+			operation_index += 1
 		if not _presentation_operation_epochs_are_current(
 			stage_epoch,
 			visibility_epoch,
 			chapter_epoch,
+			loop_se_epoch,
 			uses_stage,
 			uses_dialogue_visibility,
 			uses_chapter_indicator,
+			uses_loop_se,
 		):
 			delivered = false
 			break
 	for chapter_request_value: Variant in chapter_requests.values():
 		(chapter_request_value as ChapterIndicatorRequest)._finish(
 			delivered, false, _chapter_indicator_participant_authority)
+	for loop_request_value: Variant in loop_se_requests.values():
+		(loop_request_value as LoopSeOperationRequest)._finish(
+			delivered, false, _loop_se_participant_authority)
+	_loop_se_epoch_stack.pop_back()
 	_dialogue_visibility_epoch_stack.pop_back()
 	_dialogue_visibility_dispatch_stack.pop_back()
 	_stage_operation_epoch_stack.pop_back()
@@ -1168,9 +1536,11 @@ func _drain_presentation_operation_queue_once() -> void:
 			stage_epoch,
 			visibility_epoch,
 			chapter_epoch,
+			loop_se_epoch,
 			uses_stage,
 			uses_dialogue_visibility,
 			uses_chapter_indicator,
+			uses_loop_se,
 		),
 	)
 
@@ -1179,9 +1549,11 @@ func _presentation_operation_epochs_are_current(
 	stage_epoch: int,
 	visibility_epoch: int,
 	chapter_epoch: int,
+	loop_se_epoch: int,
 	uses_stage: bool,
 	uses_dialogue_visibility: bool,
 	uses_chapter_indicator: bool,
+	uses_loop_se: bool,
 ) -> bool:
 	return (
 		(not uses_stage or stage_epoch == _stage_operation_epoch)
@@ -1193,6 +1565,7 @@ func _presentation_operation_epochs_are_current(
 			not uses_chapter_indicator
 			or chapter_epoch == _chapter_indicator_epoch
 		)
+		and (not uses_loop_se or loop_se_epoch == _loop_se_epoch)
 	)
 
 
@@ -1416,8 +1789,7 @@ func _next_presentation_queue_name() -> String:
 # Audio
 signal bgm_play(asset: String, fade_duration: float)
 signal bgm_stop(fade_duration: float)
-signal se_play(asset: String, loop: bool)
-signal se_stop(asset: String)
+signal se_play(asset: String)
 signal voice_play(asset: String, character: String)
 signal voice_playback_requested(request: VoicePlaybackRequest)
 signal voice_playback_event(event: VoicePlaybackEvent)
@@ -1800,6 +2172,17 @@ func _report_chapter_indicator_rejection(
 		messages.append("request invalidated during preflight")
 	push_error(
 		"%s chapter indicator request rejected: %s"
+		% [_chapter_indicator_source_label(source), "; ".join(messages)])
+
+
+func _report_loop_se_rejection(source: Dictionary, errors: Array) -> void:
+	var messages: Array[String] = []
+	for error_value: Variant in errors:
+		messages.append(String(error_value))
+	if messages.is_empty():
+		messages.append("request invalidated during preflight")
+	push_error(
+		"%s loop-SE request rejected: %s"
 		% [_chapter_indicator_source_label(source), "; ".join(messages)])
 
 

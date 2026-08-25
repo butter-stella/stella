@@ -266,6 +266,7 @@ func test_prepare_scenario_clears_flowchart_state():
 			"bg": "",
 			"stage_layers": {},
 			"bgm": "",
+			"loop_se_channels": {},
 			"dialogue_visibility": {
 				"surface": true,
 				"quick_menu": true,
