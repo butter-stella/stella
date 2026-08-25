@@ -54,6 +54,9 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 	var old_flowchart_visited: FlowchartVisitedState = _runtime.flowchart_visited
 	var audio_presenter: Node = _runtime.get_node("AudioPresenter")
 	var bgm_player := _install_synthetic_bgm(audio_presenter)
+	assert_not_null(bgm_player, "synthetic BGM setup must produce a player")
+	if bgm_player == null:
+		return
 	var se_player: AudioStreamPlayer = audio_presenter._se_players[0]
 	var voice_player: AudioStreamPlayer = audio_presenter._voice_player
 	var system_se_player: AudioStreamPlayer = audio_presenter._system_se_player
@@ -208,6 +211,9 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 func test_runtime_reset_immediately_reapplies_audio_defaults() -> void:
 	var audio_presenter: Node = _runtime.get_node("AudioPresenter")
 	var bgm_player := _install_synthetic_bgm(audio_presenter)
+	assert_not_null(bgm_player, "synthetic BGM setup must produce a player")
+	if bgm_player == null:
+		return
 	var se_players: Array = audio_presenter._se_players
 	var voice_player: AudioStreamPlayer = audio_presenter._voice_player
 	var system_se_player: AudioStreamPlayer = audio_presenter._system_se_player
@@ -671,7 +677,7 @@ func _assert_blocking_load_boundary(
 func _install_synthetic_bgm(audio_presenter: Node) -> AudioStreamPlayer:
 	var stream := AudioStreamGenerator.new()
 	var voice: Dictionary = audio_presenter._create_bgm_voice(
-		stream, "synthetic", "", true, 0.0, 0.0, 1.0, {}, [], {})
+		stream, "synthetic", "", true, 0.0, 0.0, -1.0, 1.0, {}, [], {})
 	audio_presenter._bgm_channel = audio_presenter._new_bgm_channel()
 	audio_presenter._bgm_channel["current"] = voice
 	audio_presenter._bgm_channel["target_state"] = {
