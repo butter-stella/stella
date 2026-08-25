@@ -180,8 +180,11 @@ func request_voice_playback(
 	character: String,
 	owner_validator: Callable = Callable(),
 	emit_compatibility_signal: bool = true,
+	dsp_preset: String = "",
+	source: Dictionary = {},
 ) -> VoicePlaybackResponse:
-	var request := VoicePlaybackRequest.new(asset, character, owner_validator)
+	var request := VoicePlaybackRequest.new(
+		asset, character, owner_validator, dsp_preset, source)
 	var response := VoicePlaybackResponse.new()
 	if _runtime_audio_shutdown_started:
 		response._resolve(false)
@@ -3023,6 +3026,8 @@ signal dialogue_voice_finished()
 ##   - advancing to the next in-game dialogue cleanly cancels any in-flight
 ##     replay via the same _dialogue_gen mechanism
 signal dialogue_voice_replay_requested(voices: Array, character: String)
+## Canonical backlog replay keeps each voice's per-segment DSP selection.
+signal dialogue_voice_segment_replay_requested(segments: Array, character: String)
 
 # Current chapter presentation
 ## Stable public identity/title event. The title is already resolved for the

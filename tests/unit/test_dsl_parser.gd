@@ -76,6 +76,32 @@ sakura「你好。」 #voice:sakura_001""")
 	assert_eq(cmd.get_string("voice"), "sakura_001")
 
 
+func test_dialogue_voice_dsp_selection_is_canonical_and_source_located():
+	var data = _parse("""@chapter test
+@scene start
+sakura「你好。」 #voice:sakura_001 #voice_dsp:remote""")
+	var cmd = data.scenes[0].commands[0]
+	assert_eq(data.diagnostics, [])
+	assert_eq(cmd.get_string("voice"), "sakura_001")
+	assert_eq(cmd.get_string("voice_dsp"), "remote")
+	assert_eq(cmd.get_int("voice_dsp_line"), 3)
+
+
+func test_dialogue_voice_dsp_metadata_fails_closed():
+	var cases := [
+		["sakura「一。」 #voice:v #voice_dsp:a #voice_dsp:b", "duplicate #voice_dsp"],
+		["sakura「二。」 #voice_dsp:a", "requires #voice"],
+		["sakura「三。」 #voice:v #unknown:a", "unknown dialogue metadata"],
+		["sakura「四。」 #voice:v #voice_dsp:../a", "logical preset id"],
+	]
+	for case_value in cases:
+		var case: Array = case_value
+		var data = _parse("@scene start\n%s" % String(case[0]))
+		assert_true(_has_diagnostic(data, "error", String(case[1])))
+		assert_eq(data.scenes[0].commands.size(), 0,
+			"invalid voice DSP metadata cannot lower a dry dialogue")
+
+
 func test_narration():
 	var data = _parse("""@scene start
 「窗外下起了雨。」 #voice:narration_001""")
@@ -677,6 +703,25 @@ sakura「第三句。」 #voice:v3
 	assert_eq(segments[0]["stage_operation_lines"], [3])
 	assert_eq(segments[1]["stage_operation_lines"], [5])
 	assert_eq(segments[2]["stage_operation_lines"], [7])
+
+
+func test_combine_segments_select_voice_dsp_independently():
+	var data = _parse("""@chapter test
+@scene start
+@combine
+sakura「第一句。」 #voice:v1 #voice_dsp:remote
+sakura「第二句。」 #voice:v2 #voice_dsp:memory
+sakura「第三句。」 #voice:v3
+@end""")
+	var segments: Array = data.scenes[0].commands[0].params.get("segments", [])
+	assert_eq(data.diagnostics, [])
+	assert_eq(segments.size(), 3)
+	assert_eq(segments[0].get("voice_dsp"), "remote")
+	assert_eq(segments[0].get("voice_dsp_line"), 4)
+	assert_eq(segments[1].get("voice_dsp"), "memory")
+	assert_eq(segments[1].get("voice_dsp_line"), 5)
+	assert_eq(segments[2].get("voice_dsp"), "")
+	assert_eq(segments[2].get("voice_dsp_line"), 0)
 
 
 func test_combine_concatenated_text_for_backlog():
