@@ -1,0 +1,4 @@
+The synthetic_loop_region WAV, Ogg Vorbis, and MP3 files are generated sine
+tones created for Stella's public regression tests. They contain no third-party
+recording or composition and are dedicated to the public domain under CC0 1.0:
+https://creativecommons.org/publicdomain/zero/1.0/

@@ -23,6 +23,7 @@ cue_name = "opening"
 loop = true
 start_position = 0.01
 loop_position = 0.05
+loop_end_position = 0.2
 
 [resource]
 script = ExtResource("1_track")
@@ -30,4 +31,5 @@ stems = Array[ExtResource("2_stem")]([SubResource("Resource_rhythm"), SubResourc
 loop = true
 start_position = 0.0
 loop_position = 0.05
+loop_end_position = 0.25
 cues = Array[ExtResource("3_cue")]([SubResource("Resource_opening")])

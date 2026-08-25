@@ -16,6 +16,7 @@ cue_name = "opening"
 loop = true
 start_position = 0.01
 loop_position = 0.05
+loop_end_position = 0.18
 
 [sub_resource type="Resource" id="Resource_bridge"]
 script = ExtResource("2_cue")
@@ -23,6 +24,7 @@ cue_name = "bridge"
 loop = true
 start_position = 0.08
 loop_position = 0.1
+loop_end_position = 0.22
 
 [sub_resource type="Resource" id="Resource_finale"]
 script = ExtResource("2_cue")
@@ -30,6 +32,7 @@ cue_name = "finale"
 loop = true
 start_position = 0.14
 loop_position = 0.16
+loop_end_position = 0.25
 
 [resource]
 script = ExtResource("1_track")
@@ -37,4 +40,5 @@ stream = SubResource("AudioStreamWAV_synthetic")
 loop = true
 start_position = 0.0
 loop_position = 0.0
+loop_end_position = 0.28
 cues = Array[ExtResource("2_cue")]([SubResource("Resource_opening"), SubResource("Resource_bridge"), SubResource("Resource_finale")])

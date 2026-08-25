@@ -4,6 +4,14 @@ extends GutTest
 const SOURCE_PATH := "res://synthetic/bgm_contract.stla"
 
 
+func _exported_property_names(resource: Resource) -> Array[StringName]:
+	var result: Array[StringName] = []
+	for property: Dictionary in resource.get_property_list():
+		if int(property.get("usage", 0)) & PROPERTY_USAGE_SCRIPT_VARIABLE:
+			result.append(property.get("name", &"") as StringName)
+	return result
+
+
 func _parse(source: String) -> ScenarioData:
 	return DslParser.parse(
 		DslLexer.tokenize(source),
@@ -24,6 +32,20 @@ func _errors(data: ScenarioData) -> Array:
 	return data.diagnostics.filter(func(diagnostic: Dictionary) -> bool:
 		return String(diagnostic.get("level", "")) == "error"
 	)
+
+
+func test_bgm_definition_contract_has_one_physical_end_sentinel() -> void:
+	for resource: Resource in [BgmTrackDefinition.new(), BgmCueDefinition.new()]:
+		var property_names := _exported_property_names(resource)
+		assert_has(property_names, &"loop_end_position")
+		assert_false(property_names.has(&"loop_end"))
+		assert_false(property_names.has(&"end_position"))
+		if not property_names.has(&"loop_end_position"):
+			continue
+		assert_eq(resource.get("loop_end_position"), -1.0,
+			"-1.0 is the only canonical physical-stream-end sentinel")
+		resource.set("loop_end_position", 0.55)
+		assert_eq(resource.get("loop_end_position"), 0.55)
 
 
 func test_standalone_actions_lower_to_canonical_fire_and_forget_children() -> void:

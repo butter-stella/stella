@@ -413,12 +413,15 @@ stems = []
 loop = true
 start_position = 0.0
 loop_position = 4.2
+loop_end_position = 12.8 # -1.0 (default) means physical stream end
 cues = [<BgmCueDefinition cue_name="evening" ...>]
 ```
 
 `BgmTrackDefinition` 是严格 sum schema：`stream` 与 `stems` 必须且只能设置一个。single-stream 继续使用上面的 `stream`。multi-stem 则把 `stream` 留空，并提供 2..32 个 `BgmStemDefinition {stem_name, stream, default_gain}`；名称必须唯一，`default_gain` 为有限 `0..1`，且默认 mix 至少一个 gain 大于 0。所有 stem 必须同为 OGG、MP3 或 WAV，报告相同有限正长度；WAV 还必须具有相同 `mix_rate`、`stereo` 和 sample `format`。Presenter 预检成功后把它们装入一个 `AudioStreamSynchronized`，因此相位对齐并只占一个 `bgm:main` player。正在播放的 same asset+cue 只有在 ordered stem names、default gains、源流内容/格式与选中 marker 组成的 resource signature 完全一致时才允许原地 play/mix；合法 hot reload 若改变该 signature，会在 mixed batch 的任何 child mutation 前 fail-close。
 
-每个 default/cue 的 `start_position` 与 `loop_position` 必须有限、非负且对每个 stem 都满足 `start_position <= loop_position < stream length`；即使 `loop=false` 也保留同一完整 marker schema，只是不启用循环。循环区间从 `loop_position` 到 stream 末尾；这一版没有 `loop_end`。stream 无法报告有限正长度、stem metadata 不一致、cue/stem 重名/非法/缺失、marker 越界、资源缺失/歧义或格式不支持时，Director 会在 mixed batch 的任何 child mutation 前按 BGM child 的 `source_path:line` 拒绝整批。
+每个 default/cue 都完整声明 `loop`、`start_position`、`loop_position` 与 `loop_end_position`；cue 不继承 track。`loop_end_position=-1.0` 是唯一 sentinel，解析为 physical stream end，其他负数非法。resolved region 必须对每个 stem 满足有限的 `0 <= start_position <= loop_position < loop_end_position <= stream length`；即使 `loop=false` 也验证同一完整 region，但 duplicate stream 会禁用循环并继续播放 physical tail，不会被 end marker 截断。
+
+显式 end 只写入 definition duplicate 的 Godot 4.6 native mixer primitive：WAV 使用 sample `loop_begin` / `loop_end`，OGG/MP3 使用 `loop_offset` 与单 beat boundary（`beat_count=1`、`bpm=60/loop_end_position`）。压缩格式设置后必须读回 boundary，并证明误差小于一个 source sample，否则 fail-close；没有 importer trim/transcode、时长猜测、polling、timer 或 frame wait。natural sentinel 会清除 definition duplicate 上的 beat end marker，使其在 physical end 循环；直接引用的 raw stream 则保留自己的合法 native marker。multi-stem 的同一 resolved end 应用于每个 synchronized child，mix 仍只改 gain，不 seek 或替换 stream。这个 resource 字段不会增加 DSL option 或 save 字段。stream 无法报告有限正长度、stem metadata 不一致、cue/stem 重名/非法/缺失、region 越界、boundary 不可精确表示、资源缺失/歧义或格式不支持时，Director 会在 mixed batch 的任何 child mutation 前按 BGM child 的 `source_path:line` 拒绝整批。
 
 旧 `@bgm asset [fade]` / `@bgm off [fade]` grammar 已删除，不作为 alias 接受；迁移为 `@bgm play asset fade=...` / `@bgm stop fade=...`。
 

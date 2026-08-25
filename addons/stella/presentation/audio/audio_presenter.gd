@@ -1,6 +1,8 @@
 ## Audio presenter — manages BGM, SE, Voice, and System SE playback.
 class_name AudioPresenter extends Node
 
+const BGM_NATURAL_LOOP_END := -1.0
+
 var _se_players: Array = []
 var _max_se_channels: int = 4
 var _voice_player: AudioStreamPlayer
@@ -456,7 +458,7 @@ func _play_bgm(
 	var start_position := float(prepared.get("start_position", 0.0))
 	var new_voice := _create_bgm_voice(
 		stream, asset, cue, bool(prepared["loop"]), start_position,
-		float(prepared["loop_position"]),
+		float(prepared["loop_position"]), float(prepared["loop_end_position"]),
 		0.0 if fade_duration > 0.0 else volume,
 		stem_mix,
 		prepared.get("stem_names", []) as Array,
@@ -802,7 +804,10 @@ func _on_bgm_state_apply_requested(state: Dictionary, generation: int) -> void:
 		)
 		or bool(resolved["loop"]) != bool(state["loop"])
 		or not is_finite(restored_length)
-		or restored_position >= restored_length
+		or restored_position >= (
+			float(resolved["loop_end_position"])
+			if bool(resolved["loop"])
+			else restored_length)
 	):
 		push_error("AudioPresenter: cannot project saved BGM state: resource metadata changed")
 		return
@@ -810,7 +815,8 @@ func _on_bgm_state_apply_requested(state: Dictionary, generation: int) -> void:
 	var voice := _create_bgm_voice(
 		resolved.get("stream") as AudioStream,
 		String(state["asset"]), String(state["cue"]), bool(state["loop"]),
-		restored_position, float(resolved["loop_position"]), level,
+		restored_position, float(resolved["loop_position"]),
+		float(resolved["loop_end_position"]), level,
 		resolved.get("stem_mix", {}) as Dictionary,
 		resolved.get("stem_names", []) as Array,
 		resolved.get("resource_signature", {}) as Dictionary,
@@ -838,7 +844,7 @@ func _on_bgm_title_cut_requested(asset: String, generation: int) -> void:
 	var voice := _create_bgm_voice(
 		resolved.get("stream") as AudioStream,
 		asset, "", bool(resolved["loop"]), float(resolved["start_position"]),
-		float(resolved["loop_position"]), 1.0,
+		float(resolved["loop_position"]), float(resolved["loop_end_position"]), 1.0,
 		resolved.get("stem_mix", {}) as Dictionary,
 		resolved.get("stem_names", []) as Array,
 		resolved.get("resource_signature", {}) as Dictionary,
@@ -878,6 +884,7 @@ func _create_bgm_voice(
 	loop: bool,
 	position: float,
 	loop_position: float,
+	loop_end_position: float,
 	level: float,
 	stem_mix: Dictionary,
 	stem_names: Array,
@@ -891,7 +898,8 @@ func _create_bgm_voice(
 	add_child(player)
 	var voice := {
 		"asset": asset, "cue": cue, "level": level, "loop": loop,
-		"loop_position": loop_position, "player": player,
+		"loop_position": loop_position, "loop_end_position": loop_end_position,
+		"player": player,
 		"stem_mix": stem_mix.duplicate(true),
 		"stem_names": stem_names.duplicate(),
 		"resource_signature": resource_signature.duplicate(true),
@@ -1091,24 +1099,33 @@ func _prepare_bgm_definition(
 	var length := sources[0].get_length()
 	if not is_finite(length) or length <= 0.0:
 		return {}
+	var definition_loop_end := _resolve_bgm_loop_end(
+		definition.loop_end_position, length)
 	if not _bgm_marker_is_valid(
-		definition.loop, definition.start_position,
-		definition.loop_position, length):
+		definition.start_position, definition.loop_position,
+		definition_loop_end, length):
 		return {}
 	var selected := {
 		"loop": definition.loop,
 		"start_position": definition.start_position,
 		"loop_position": definition.loop_position,
+		"loop_end_position": definition_loop_end,
+		"uses_natural_loop_end": (
+			definition.loop_end_position == BGM_NATURAL_LOOP_END),
 	}
 	var names: Dictionary = {}
 	for cue_definition: BgmCueDefinition in definition.cues:
+		var cue_loop_end := _resolve_bgm_loop_end(
+			cue_definition.loop_end_position if cue_definition != null else NAN,
+			length,
+		)
 		if (
 			cue_definition == null
 			or not BgmChannelState.is_valid_cue_name(cue_definition.cue_name, false)
 			or names.has(cue_definition.cue_name)
 			or not _bgm_marker_is_valid(
-				cue_definition.loop, cue_definition.start_position,
-				cue_definition.loop_position, length)
+				cue_definition.start_position, cue_definition.loop_position,
+				cue_loop_end, length)
 		):
 			return {}
 		names[cue_definition.cue_name] = true
@@ -1117,18 +1134,21 @@ func _prepare_bgm_definition(
 				"loop": cue_definition.loop,
 				"start_position": cue_definition.start_position,
 				"loop_position": cue_definition.loop_position,
+				"loop_end_position": cue_loop_end,
+				"uses_natural_loop_end": (
+					cue_definition.loop_end_position == BGM_NATURAL_LOOP_END),
 			}
 	if not cue.is_empty() and not names.has(cue):
 		return {}
 	if not _bgm_marker_is_valid(
-		bool(selected["loop"]), float(selected["start_position"]),
-		float(selected["loop_position"]), length):
+		float(selected["start_position"]), float(selected["loop_position"]),
+		float(selected["loop_end_position"]), length):
 		return {}
 	for source: AudioStream in sources:
 		if not _bgm_marker_is_valid(
-			bool(selected["loop"]),
 			float(selected["start_position"]),
 			float(selected["loop_position"]),
+			float(selected["loop_end_position"]),
 			source.get_length(),
 		):
 			return {}
@@ -1136,23 +1156,24 @@ func _prepare_bgm_definition(
 		stem_names, default_stem_mix, requested_stem_mix)
 	if uses_stems and stem_mix.is_empty():
 		return {}
-	if uses_single_stream:
+	var prepared_streams: Array[AudioStream] = []
+	for source: AudioStream in sources:
 		var stream := _duplicate_bgm_stream(
-			sources[0], bool(selected["loop"]),
-			float(selected["loop_position"]))
+			source, bool(selected["loop"]),
+			float(selected["loop_position"]),
+			float(selected["loop_end_position"]),
+			bool(selected["uses_natural_loop_end"]),
+		)
 		if stream == null:
 			return {}
-		selected["stream"] = stream
+		prepared_streams.append(stream)
+	if uses_single_stream:
+		selected["stream"] = prepared_streams[0]
 	else:
 		var synchronized := AudioStreamSynchronized.new()
-		synchronized.stream_count = sources.size()
-		for index in range(sources.size()):
-			var stream := _duplicate_bgm_stream(
-				sources[index], bool(selected["loop"]),
-				float(selected["loop_position"]))
-			if stream == null:
-				return {}
-			synchronized.set_sync_stream(index, stream)
+		synchronized.stream_count = prepared_streams.size()
+		for index in range(prepared_streams.size()):
+			synchronized.set_sync_stream(index, prepared_streams[index])
 			synchronized.set_sync_stream_volume(
 				index, _to_bgm_stem_db(float(stem_mix[stem_names[index]])))
 		selected["stream"] = synchronized
@@ -1252,6 +1273,7 @@ func _bgm_resource_signature(
 		stream_signatures.append(stream_signature)
 	return {
 		"loop": bool(selected["loop"]),
+		"loop_end_position": float(selected["loop_end_position"]),
 		"loop_position": float(selected["loop_position"]),
 		"start_position": float(selected["start_position"]),
 		"stem_default_mix": default_stem_mix.duplicate(true),
@@ -1305,83 +1327,245 @@ func _prepare_raw_bgm_stream(source: AudioStream) -> Dictionary:
 	var length := source.get_length()
 	if not is_finite(length) or length <= 0.0:
 		return {}
-	var loop_position := _native_bgm_loop_position(source, length)
-	if not is_finite(loop_position):
+	var native_region := _native_bgm_loop_region(source, length)
+	if native_region.is_empty():
 		return {}
-	var stream := _duplicate_bgm_stream(source, true, loop_position)
+	var loop_position := float(native_region["loop_position"])
+	var loop_end_position := float(native_region["loop_end_position"])
+	var stream := _duplicate_raw_bgm_stream(source, loop_end_position)
 	if stream == null:
 		return {}
 	return {
 		"stream": stream, "loop": true,
 		"start_position": 0.0, "loop_position": loop_position,
+		"loop_end_position": loop_end_position,
 		"stem_mix": {}, "stem_names": [],
 		"resource_signature": _bgm_resource_signature(
 			[source], [], {}, {
 				"loop": true,
 				"start_position": 0.0,
 				"loop_position": loop_position,
+				"loop_end_position": loop_end_position,
 			}),
 	}
 
 
 func _bgm_marker_is_valid(
-	loop: bool,
 	start_position: float,
 	loop_position: float,
+	loop_end_position: float,
 	length: float,
 ) -> bool:
 	if (
-		not is_finite(start_position) or not is_finite(loop_position)
-		or start_position < 0.0 or start_position >= length
+		not is_finite(start_position)
+		or not is_finite(loop_position)
+		or not is_finite(loop_end_position)
+		or not is_finite(length)
+		or start_position < 0.0
 	):
 		return false
-	# A disabled loop still carries a complete authored marker. Keeping one
-	# invariant for default and named cues avoids a second sentinel schema; the
-	# marker is simply ignored when `loop` is false.
-	return loop_position >= start_position and loop_position < length
+	# A disabled loop still carries a complete authored region. It is validated
+	# identically but ignored by the duplicate stream so natural playback keeps
+	# the entire physical tail.
+	return (
+		loop_position >= start_position
+		and loop_position < loop_end_position
+		and loop_end_position <= length
+	)
 
 
-func _native_bgm_loop_position(source: AudioStream, length: float) -> float:
+func _resolve_bgm_loop_end(authored_end: float, length: float) -> float:
+	if authored_end == BGM_NATURAL_LOOP_END:
+		return length
+	return authored_end if is_finite(authored_end) and authored_end >= 0.0 else NAN
+
+
+func _native_bgm_loop_region(source: AudioStream, length: float) -> Dictionary:
 	if source is AudioStreamOggVorbis:
-		var value := float((source as AudioStreamOggVorbis).loop_offset)
-		return value if is_finite(value) and value >= 0.0 and value < length else NAN
+		var ogg := source as AudioStreamOggVorbis
+		return _native_compressed_bgm_loop_region(
+			ogg.loop_offset, ogg.bpm, ogg.beat_count, length)
 	if source is AudioStreamMP3:
-		var value := float((source as AudioStreamMP3).loop_offset)
-		return value if is_finite(value) and value >= 0.0 and value < length else NAN
+		var mp3 := source as AudioStreamMP3
+		return _native_compressed_bgm_loop_region(
+			mp3.loop_offset, mp3.bpm, mp3.beat_count, length)
 	if source is AudioStreamWAV:
 		var wav := source as AudioStreamWAV
 		if wav.loop_mode != AudioStreamWAV.LOOP_DISABLED:
 			if wav.mix_rate <= 0:
-				return NAN
-			var value := float(wav.loop_begin) / float(wav.mix_rate)
-			return value if is_finite(value) and value >= 0.0 and value < length else NAN
-	return 0.0
+				return {}
+			var loop_position := float(wav.loop_begin) / float(wav.mix_rate)
+			var loop_end_position := float(wav.loop_end) / float(wav.mix_rate)
+			return {
+				"loop_position": loop_position,
+				"loop_end_position": loop_end_position,
+			} if _bgm_marker_is_valid(
+				0.0, loop_position, loop_end_position, length) else {}
+		return {"loop_position": 0.0, "loop_end_position": length}
+	return {}
+
+
+func _native_compressed_bgm_loop_region(
+	loop_position: float,
+	bpm: float,
+	beat_count: int,
+	length: float,
+) -> Dictionary:
+	if not is_finite(loop_position) or loop_position < 0.0:
+		return {}
+	var loop_end_position := length
+	if beat_count != 0 or bpm != 0.0:
+		if beat_count <= 0 or not is_finite(bpm) or bpm <= 0.0:
+			return {}
+		loop_end_position = float(beat_count) * 60.0 / bpm
+	return {
+		"loop_position": loop_position,
+		"loop_end_position": loop_end_position,
+	} if _bgm_marker_is_valid(
+		0.0, loop_position, loop_end_position, length) else {}
 
 
 func _duplicate_bgm_stream(
 	source: AudioStream,
 	loop: bool,
 	loop_position: float,
+	loop_end_position: float,
+	uses_natural_loop_end: bool,
 ) -> AudioStream:
 	if source is AudioStreamOggVorbis:
 		var stream := (source as AudioStreamOggVorbis).duplicate(true) as AudioStreamOggVorbis
 		stream.loop = loop
 		stream.loop_offset = loop_position if loop else 0.0
+		stream.beat_count = 0
+		stream.bpm = 0.0
+		if (
+			loop and not uses_natural_loop_end
+			and not _configure_bgm_beat_loop_end(
+				stream, loop_end_position, _bgm_stream_sample_rate(stream))
+		):
+			return null
 		return stream
 	if source is AudioStreamMP3:
 		var stream := (source as AudioStreamMP3).duplicate(true) as AudioStreamMP3
 		stream.loop = loop
 		stream.loop_offset = loop_position if loop else 0.0
+		stream.beat_count = 0
+		stream.bpm = 0.0
+		if (
+			loop and not uses_natural_loop_end
+			and not _configure_bgm_beat_loop_end(
+				stream, loop_end_position, _bgm_stream_sample_rate(stream))
+		):
+			return null
 		return stream
 	if source is AudioStreamWAV:
 		var stream := (source as AudioStreamWAV).duplicate(true) as AudioStreamWAV
+		if stream.mix_rate <= 0:
+			return null
 		stream.loop_mode = (
 			AudioStreamWAV.LOOP_FORWARD if loop else AudioStreamWAV.LOOP_DISABLED)
 		stream.loop_begin = int(round(loop_position * float(stream.mix_rate))) if loop else 0
-		stream.loop_end = maxi(
-			int(round(stream.get_length() * float(stream.mix_rate))), 1) if loop else 0
+		stream.loop_end = int(round(loop_end_position * float(stream.mix_rate))) if loop else 0
+		if loop and (
+			absf(float(stream.loop_begin) - loop_position * float(stream.mix_rate)) >= 1.0
+			or absf(float(stream.loop_end) - loop_end_position * float(stream.mix_rate)) >= 1.0
+		):
+			return null
 		return stream
 	return null
+
+
+func _duplicate_raw_bgm_stream(
+	source: AudioStream,
+	loop_end_position: float,
+) -> AudioStream:
+	if source is AudioStreamOggVorbis:
+		var stream := (source as AudioStreamOggVorbis).duplicate(true) as AudioStreamOggVorbis
+		stream.loop = true
+		return stream
+	if source is AudioStreamMP3:
+		var stream := (source as AudioStreamMP3).duplicate(true) as AudioStreamMP3
+		stream.loop = true
+		return stream
+	if source is AudioStreamWAV:
+		var stream := (source as AudioStreamWAV).duplicate(true) as AudioStreamWAV
+		if stream.mix_rate <= 0:
+			return null
+		if stream.loop_mode == AudioStreamWAV.LOOP_DISABLED:
+			stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+			stream.loop_begin = 0
+			stream.loop_end = int(round(loop_end_position * float(stream.mix_rate)))
+		return stream
+	return null
+
+
+func _configure_bgm_beat_loop_end(
+	stream: AudioStream,
+	loop_end_position: float,
+	sample_rate: int,
+) -> bool:
+	if (
+		stream == null
+		or not (stream is AudioStreamOggVorbis or stream is AudioStreamMP3)
+		or not is_finite(loop_end_position)
+		or loop_end_position <= 0.0
+		or sample_rate <= 0
+	):
+		return false
+	stream.set("beat_count", 1)
+	stream.set("bpm", 60.0 / loop_end_position)
+	var stored_beat_count := int(stream.get("beat_count"))
+	var stored_bpm := float(stream.get("bpm"))
+	if stored_beat_count != 1 or not is_finite(stored_bpm) or stored_bpm <= 0.0:
+		return false
+	var represented_frames := int(
+		float(stored_beat_count) * float(sample_rate) * 60.0 / stored_bpm)
+	return absf(
+		float(represented_frames) - loop_end_position * float(sample_rate)) < 1.0
+
+
+func _bgm_stream_sample_rate(stream: AudioStream) -> int:
+	if stream is AudioStreamWAV:
+		return (stream as AudioStreamWAV).mix_rate
+	if stream is AudioStreamOggVorbis:
+		var packet_sequence := (stream as AudioStreamOggVorbis).packet_sequence
+		return packet_sequence.sampling_rate if packet_sequence != null else 0
+	if stream is AudioStreamMP3:
+		return _mp3_sample_rate((stream as AudioStreamMP3).data)
+	return 0
+
+
+func _mp3_sample_rate(data: PackedByteArray) -> int:
+	var offset := 0
+	if data.size() >= 10 and data.slice(0, 3).get_string_from_ascii() == "ID3":
+		offset = 10
+		for index in range(6, 10):
+			if data[index] & 0x80:
+				return 0
+			offset += int(data[index]) << (7 * (9 - index))
+	while offset + 4 <= data.size():
+		var first := int(data[offset])
+		var second := int(data[offset + 1])
+		var third := int(data[offset + 2])
+		if first == 0xff and (second & 0xe0) == 0xe0:
+			var version_bits := (second >> 3) & 0x03
+			var layer_bits := (second >> 1) & 0x03
+			var bitrate_index := (third >> 4) & 0x0f
+			var sample_rate_index := (third >> 2) & 0x03
+			if (
+				version_bits != 1
+				and layer_bits == 1
+				and bitrate_index > 0 and bitrate_index < 15
+				and sample_rate_index < 3
+			):
+				var rates := {
+					3: [44100, 48000, 32000],
+					2: [22050, 24000, 16000],
+					0: [11025, 12000, 8000],
+				}
+				return int((rates[version_bits] as Array)[sample_rate_index])
+		offset += 1
+	return 0
 
 
 # ─── SE ───
