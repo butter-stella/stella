@@ -902,7 +902,7 @@ func _disconnect_game_presenters():
 			"dialogue_visibility_transition_receipts_finish_requested",
 			"dialogue_visibility_visuals_reset_requested",
 			"dialogue_visibility_state_apply_requested",
-			"bgm_play", "bgm_stop", "se_play", "se_stop",
+			"bgm_play", "bgm_stop", "se_play",
 			"dialogue_requested", "dialogue_backlog_effects_resolved",
 			"voice_play", "voice_playback_requested", "voice_playback_event",
 			"dialogue_voice_replay_requested",

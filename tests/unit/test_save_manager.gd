@@ -459,6 +459,47 @@ func test_save_without_dialogue_projection_remains_a_valid_old_save() -> void:
 		"missing issue #166 fields use read-time defaults without rewriting disk")
 
 
+func test_loop_se_snapshot_schema_is_exact_and_old_saves_default_empty() -> void:
+	var scenario := _make_validation_scenario()
+	var valid := _make_valid_save_snapshot()
+	valid["presentation_state"]["loop_se_channels"] = {
+		"ambience": {
+			"asset": "se_select",
+			"loop": true,
+			"position": 0.02,
+			"volume": 0.6,
+		},
+	}
+	assert_true(_manager.validate_data_for_scenario(valid, scenario))
+	var round_tripped: Variant = JSON.parse_string(JSON.stringify(valid))
+	assert_true(round_tripped is Dictionary)
+	if round_tripped is Dictionary:
+		assert_true(_manager.validate_data_for_scenario(round_tripped, scenario))
+
+	var invalid_channels: Array[Variant] = [
+		[],
+		{"bad:id": valid["presentation_state"]["loop_se_channels"]["ambience"]},
+		{"ambience": {"asset": "se_select", "loop": false,
+			"position": 0.02, "volume": 0.6}},
+		{"ambience": {"asset": "se_select", "loop": true,
+			"position": -0.01, "volume": 0.6}},
+		{"ambience": {"asset": "se_select", "loop": true,
+			"position": 0.02, "volume": 1.1}},
+		{"ambience": {"asset": "se_select", "loop": true,
+			"position": 0.02, "volume": 0.6, "receipt": 7}},
+	]
+	for invalid_value: Variant in invalid_channels:
+		var invalid := _make_valid_save_snapshot()
+		invalid["presentation_state"]["loop_se_channels"] = invalid_value
+		assert_false(_manager.validate_data_for_scenario(invalid, scenario),
+			"transient or malformed loop-SE state is rejected: %s" % str(invalid_value))
+
+	var old_save := _make_valid_save_snapshot()
+	assert_false(old_save["presentation_state"].has("loop_se_channels"))
+	assert_true(_manager.validate_data_for_scenario(old_save, scenario),
+		"pre-#167 saves default to no persistent channels")
+
+
 func test_dialogue_visibility_schema_is_exact_and_never_truthy_coerced() -> void:
 	var scenario := _make_validation_scenario()
 	var invalid_values: Array[Variant] = [

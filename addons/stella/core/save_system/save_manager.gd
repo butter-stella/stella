@@ -453,6 +453,12 @@ func _presentation_snapshot_is_valid(
 				)
 			):
 				return false
+	if (
+		snapshot.has("loop_se_channels")
+		and not LoopSeChannelState.validate_channels(
+			snapshot["loop_se_channels"], false)
+	):
+		return false
 	var has_dialogue_visibility := snapshot.has("dialogue_visibility")
 	var has_dialogue_content := snapshot.has("dialogue_content")
 	if has_dialogue_visibility != has_dialogue_content:

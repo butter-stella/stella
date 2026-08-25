@@ -90,6 +90,7 @@ func _snapshot_with_dialogue(
 		"bg": "",
 		"stage_layers": {},
 		"bgm": "",
+		"loop_se_channels": {},
 		"dialogue_visibility": visibility.duplicate(true),
 		"dialogue_content": content.duplicate(true),
 	}
@@ -389,7 +390,8 @@ func test_presentation_state_default_snapshot_has_exact_dialogue_projection() ->
 	var state := PresentationState.new()
 	var snapshot := state.capture_snapshot()
 	assert_eq(_sorted_keys(snapshot), [
-		"bg", "bgm", "dialogue_content", "dialogue_visibility", "stage_layers",
+		"bg", "bgm", "dialogue_content", "dialogue_visibility",
+		"loop_se_channels", "stage_layers",
 	])
 	_assert_dialogue_defaults(snapshot)
 

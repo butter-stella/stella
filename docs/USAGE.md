@@ -393,6 +393,29 @@ Godot 4.6 的 redraw 像素管线使用 Forward+ 或 Mobile renderer。macOS 上
 显式 `surface` 仍属于同一套可选 target grammar，并与省略形式生成相同的
 canonical payload。精确语法和 fail-close 规则见 [DSL 文档](DSL.md#35a-dialogue-visibility)。
 
+### 持续命名 loop-SE
+
+普通一次性音效仍只写 `@se asset`。需要跨对话、普通 scenario scene 变化或 AudioPresenter 重建持续播放的环境声时，以稳定 channel（而不是素材名）寻址：
+
+```stla
+@loop_se ambience play rain
+@loop_se ambience play storm volume=0.7 fade=1.0
+@loop_se ambience stop fade=1.0
+```
+
+standalone 默认 fire-and-forget，不需要 policy、transition、duration 或 position 参数。只在确实要等待淡变或与其他 presentation child 原子组合时，使用唯一 `@presentation_batch policy=join|fire_and_forget`：
+
+```stla
+@presentation_batch policy=join
+  @loop_se ambience play rain fade=0.5
+  @stage rain show asset=stage:rain transition=fade duration=0.5
+@end
+```
+
+仓库中的 `examples/demo/scenarios/loop_se.stla` 使用 redistributable demo WAV，展示两个独立 channel、同素材音量过渡与 JOIN stop。
+
+资源从 `[paths] se` 解析，只接受 OGG/WAV；格式 stream 会先 duplicate 再启用 loop，所以普通 one-shot 不受影响，并保留已有 OGG/WAV loop marker。same channel 的 asset+volume 相同是 no-op；只改 volume 保留 player/position；换 asset 才 crossfade，任意时刻最多一个 incoming 与一个 outgoing。缺失资源会在 mixed batch 的任何 child mutation 前按 authored line 拒绝整批。session/new-game/title reset 会清 channels；普通场景和 UI replacement 不会。
+
 ### 声明式 Stage 批次：JOIN 与 fire-and-forget
 
 当多个命名 Stage 层必须在同一 authored boundary 提交，且后续对话或音频必须等待全部转场到达终态时，使用 `policy=join`：
@@ -419,7 +442,7 @@ canonical payload。精确语法和 fail-close 规则见 [DSL 文档](DSL.md#35a
 
 普通左键、Space 或 Enter 只会把当前 sealed JOIN 的 exact receipts snap 到 authored endpoint；`FIRE_AND_FORGET` 不 claim input。Skip 从 false 切换为 true 时 exact-finish 当前 JOIN 一次；Skip 是持续模式，新 batch 提交时已 active 则直接 force-cut。Auto 状态本身不结束 Stage JOIN。完整语法、ordering 与 fail-close 规则见 [DSL 文档](DSL.md#312-舞台批次组合stage_batch)；公开的 reference scenario 见 [`examples/demo/scenarios/stage_batch.stla`](../examples/demo/scenarios/stage_batch.stla)，它不是默认 Start Game 入口。
 
-高级 typed surface 由 `PresentationOperation`、`StagePresentationOperation`、`DialogueVisibilityPresentationOperation`、`ChapterIndicatorPresentationOperation`、`PresentationOperationReceipt`、`PresentationBatchRequest` 和 `PresentationDirector` 组成。唯一 owner 是 `StellaRuntime.presentation_director`；项目不应自行 `new()` 第二个 Director，也不应调用 `_bind_authority()`、`_seal()` 或 `_settle()` 等下划线内部方法。同一个 Director 支持 Stage、`@dialogue_visibility` 与 `@chapter_indicator` 的 mixed `@presentation_batch`，在任何 apply 前完成全批 preflight/seal，再按 authored child order dispatch。它只用于需要跨 channel 共享 JOIN/FNF boundary 的高级 composition；普通 chapter/dialogue 显隐保持上面的 standalone 写法，并由 parser lowering 到同一条单 child JOIN 路径。
+高级 typed surface 由 `PresentationOperation`、`StagePresentationOperation`、`DialogueVisibilityPresentationOperation`、`ChapterIndicatorPresentationOperation`、`LoopSePresentationOperation`、`PresentationOperationReceipt`、`PresentationBatchRequest` 和 `PresentationDirector` 组成。唯一 owner 是 `StellaRuntime.presentation_director`；项目不应自行 `new()` 第二个 Director，也不应调用 `_bind_authority()`、`_seal()` 或 `_settle()` 等下划线内部方法。同一个 Director 支持 Stage、`@dialogue_visibility`、`@chapter_indicator` 与 `@loop_se` 的 mixed `@presentation_batch`，在任何 apply 前完成全批 preflight/seal，再按 authored child order dispatch。它只用于需要跨 channel 共享 JOIN/FNF boundary 的高级 composition；普通 chapter/dialogue 显隐与 loop-SE 保持各自 standalone 写法，并由 parser lowering 到同一条 canonical child 路径。
 
 既有 `StellaRuntime.apply_stage_operations(operations, force_cut) -> void` 仍是 raw 兼容 Facade：它不返回 receipt、不等待 Tween，也不等价于 authored `@stage_batch`。standalone `@stage`、`@parallel` 和 `@combine` 的既有语义同样保持不变。
 
@@ -467,7 +490,7 @@ legacy_snapshot["scenario_context"]["scenario_source_identity"] = (
 
 在游戏内读档、快读或从 Backlog/选项/流程图回退时，Runtime 会先把 engine context 所有权转交给恢复后的 context，再清理旧画面和阻塞命令。旧对话的取消不会触发自然 `scenario_ended`，恢复后的 context 始终是最终执行 owner；自定义 Presenter 仍只需遵守上文的 request `advance()` / `abort()` 契约。
 
-JOIN 动画进行中可以存档。存档只记录已原子提交的 final canonical Stage target 和 scenario cursor；operation、policy、request/batch、receipt、token、generation、Tween、barrier 与 progress 都不入档。恢复时先 cancel old generation，再 reset + atomic cut canonical target，最后在 same cursor 重新派发。若非 clear target 已满足，该 batch 以 no-work 同步完成，不分配新 batch/receipt/token/Tween，也不重放已满足的动画。canonical clear 例外：它必须经过 typed dispatch，以接管 canonical state 已为空但仍在 remove transition 中的 live projection；Presenter 真正为空时仍取得 positive batch ID，并以零 receipt 同步完成。
+JOIN 动画进行中可以存档。存档记录已原子提交的 final canonical Stage target、loop-SE 的 `{asset, loop, volume, position}` 与 scenario cursor；operation、policy、request/batch、receipt、token、generation、Tween、barrier、fade progress 与 outgoing player 都不入档。恢复时先 cancel old generation，再 reset + atomic cut canonical target，最后在 same cursor 重新派发。loop-SE 从保存 position 以单 player 恢复；same asset+volume 仍须通过 AudioPresenter/resource preflight，player 完全稳定对齐时不 seek、不 duplicate、不创建 receipt。Stage 的非 clear target 已满足时以 no-work 同步完成；canonical clear 仍须经过 typed dispatch，以接管 canonical state 已为空但仍在 remove transition 中的 live projection。
 
 ### 播放控制
 

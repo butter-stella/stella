@@ -12,6 +12,9 @@ const EXACT_VISIBILITY_PAYLOAD_KEYS := [
 const EXACT_CHAPTER_INDICATOR_PAYLOAD_KEYS := [
 	"action", "duration", "transition",
 ]
+const EXACT_LOOP_SE_PAYLOAD_KEYS := [
+	"action", "asset", "channel", "fade_duration", "resume_position", "volume",
+]
 
 var _director: PresentationDirector
 var _presentation_state: PresentationState
@@ -85,6 +88,9 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 				typed_operations.append(
 					ChapterIndicatorPresentationOperation.new(
 						payload, operation_source))
+			"loop_se":
+				typed_operations.append(
+					LoopSePresentationOperation.new(payload, operation_source))
 	var policy := (
 		PresentationBatchRequest.Policy.JOIN
 		if String(validation["policy"]) == "join"
@@ -158,6 +164,8 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 	var stage_operations: Array = []
 	var visibility_operations: Array = []
 	var saw_chapter_indicator := false
+	var seen_loop_se_channels: Dictionary = {}
+	var loop_se_operations: Array = []
 	for index in range(operations.size()):
 		if not operation_lines[index] is int or int(operation_lines[index]) <= 0:
 			return {"valid": false, "error": "operation line must be a positive integer", "line": data.declared_line}
@@ -228,6 +236,18 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 				):
 					return {"valid": false, "error": "chapter indicator payload failed canonical validation", "line": int(operation_lines[index])}
 				saw_chapter_indicator = true
+			"loop_se":
+				var loop_se_keys := payload.keys()
+				loop_se_keys.sort()
+				if loop_se_keys != EXACT_LOOP_SE_PAYLOAD_KEYS:
+					return {"valid": false, "error": "loop-SE payload must use the canonical six-field schema", "line": int(operation_lines[index])}
+				if not LoopSeChannelState.validate_operation(payload, false):
+					return {"valid": false, "error": "loop-SE payload failed canonical validation", "line": int(operation_lines[index])}
+				var channel_id := String(payload.get("channel", ""))
+				if seen_loop_se_channels.has(channel_id):
+					return {"valid": false, "error": "duplicate loop-SE channel '%s'" % channel_id, "line": int(operation_lines[index])}
+				seen_loop_se_channels[channel_id] = true
+				loop_se_operations.append(payload.duplicate(true))
 			_:
 				return {"valid": false, "error": "unsupported presentation operation kind '%s'" % kind, "line": int(operation_lines[index])}
 		canonical_operations.append({
@@ -247,6 +267,13 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 	)
 	var stage_target := StageLayerState.reduce(stage_before, stage_operations, false)
 	var visibility_target := DialogueVisibilityState.reduce(visibility_before, visibility_operations, false)
+	var loop_se_before := (
+		_presentation_state.loop_se_channels.duplicate(true)
+		if _presentation_state != null
+		else {}
+	)
+	var loop_se_target := LoopSeChannelState.reduce(
+		loop_se_before, loop_se_operations, false)
 	return {
 		"valid": true,
 		"policy": policy,
@@ -255,9 +282,12 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 		"before_visibility": visibility_before,
 		"target_stage": stage_target,
 		"target_visibility": visibility_target,
+		"before_loop_se": loop_se_before,
+		"target_loop_se": loop_se_target,
 		"no_work": (
 			stage_target == stage_before
 			and visibility_target == visibility_before
+			and loop_se_operations.is_empty()
 			and visibility_operations.is_empty()
 			and not saw_chapter_indicator
 		),

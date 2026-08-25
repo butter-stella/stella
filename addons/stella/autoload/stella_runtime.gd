@@ -93,6 +93,7 @@ var _chapter_republish_pending := false
 var _emitting_chapter_id := ""
 var _emitting_chapter_title := ""
 var _chapter_indicator_registrar_authority := RefCounted.new()
+var _loop_se_registrar_authority := RefCounted.new()
 
 
 func _init() -> void:
@@ -108,6 +109,8 @@ func _init() -> void:
 	if not SignalBus.configure_chapter_indicator_registrar(
 		_chapter_indicator_registrar_authority):
 		push_error("StellaRuntime: chapter indicator registrar authority conflict")
+	if not SignalBus.configure_loop_se_registrar(_loop_se_registrar_authority):
+		push_error("StellaRuntime: loop-SE registrar authority conflict")
 
 
 ## Composition-owned admission keeps the cross-layer Bus free of concrete
@@ -129,6 +132,21 @@ func _unregister_chapter_indicator_presenter(
 		capability,
 		_chapter_indicator_registrar_authority,
 	)
+
+
+func _register_loop_se_presenter(presenter: Object) -> RefCounted:
+	if not presenter is AudioPresenter:
+		return null
+	return SignalBus.register_loop_se_presenter(
+		presenter, _loop_se_registrar_authority)
+
+
+func _unregister_loop_se_presenter(
+	presenter: Object,
+	capability: RefCounted,
+) -> void:
+	SignalBus.unregister_loop_se_presenter(
+		presenter, capability, _loop_se_registrar_authority)
 
 
 func _notification(what: int) -> void:
@@ -186,12 +204,9 @@ func _ready():
 	save_manager.register_provider(flowchart_visited)
 
 	# Audio presenter — global, available in all scenes (title, game, overlays)
-	var audio_script = load("res://addons/stella/presentation/audio/audio_presenter.gd")
-	if audio_script:
-		var audio_node = Node.new()
-		audio_node.name = "AudioPresenter"
-		audio_node.set_script(audio_script)
-		add_child(audio_node)
+	var audio_node := AudioPresenter.new()
+	audio_node.name = "AudioPresenter"
+	add_child(audio_node)
 
 	registry = CommandRegistry.new()
 	engine = ScenarioEngine.new()
@@ -628,6 +643,17 @@ func _acquire_navigation_runtime_ownership(
 	if not _navigation_reset_owner_survived(navigation, expected_context):
 		return false
 	SignalBus.reset_chapter_indicator_presentation()
+	if not _navigation_reset_owner_survived(navigation, expected_context):
+		return false
+	# Navigation may still be rejected after this provisional reset. Preserve the
+	# physical cursors so the retained canonical projection can be restored, then
+	# retire every old AudioPresenter tween/receipt under the same lifecycle.
+	if presentation_state != null:
+		presentation_state.loop_se_channels = LoopSeChannelState.with_positions(
+			presentation_state.loop_se_channels,
+			SignalBus.capture_loop_se_positions(),
+		)
+	SignalBus.reset_loop_se_presentation()
 	if not _navigation_reset_owner_survived(navigation, expected_context):
 		return false
 	return true
@@ -1093,6 +1119,11 @@ func _finish_navigation(generation: int) -> void:
 	# Successful flows already projected before engine.run(); reapplying here
 	# could cancel the first command's in-flight fade.
 	if restore_retained_projection and presentation_was_reset:
+		SignalBus.reset_and_apply_loop_se_state(
+			presentation_state.loop_se_channels
+			if presentation_state != null
+			else {}
+		)
 		_apply_chapter_presentation(engine.context if engine != null else null)
 
 
@@ -1816,6 +1847,9 @@ func _return_to_title_transaction(navigation: int) -> void:
 	if not _cancel_active_gameplay(navigation):
 		return
 	var expected_context := engine.context if engine != null else null
+	SignalBus.reset_loop_se_presentation()
+	if not _navigation_reset_owner_survived(navigation, expected_context):
+		return
 	presentation_state.clear()
 	SignalBus.reset_and_apply_stage_state({})
 	if not _navigation_reset_owner_survived(navigation, expected_context):
@@ -1919,6 +1953,9 @@ func _start_preparsed_scenario(
 	SignalBus.reset_chapter_indicator_presentation()
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
+	SignalBus.reset_loop_se_presentation()
+	if not _owns_navigation_context(navigation, expected_context):
+		return false
 	presentation_state.clear()
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
@@ -1997,6 +2034,7 @@ func _install_scenario(data: ScenarioData, scenario_path: String) -> void:
 		"bg": "",
 		"stage_layers": {},
 		"bgm": "",
+		"loop_se_channels": {},
 		"dialogue_visibility": {
 			"surface": true,
 			"quick_menu": true,
@@ -2501,8 +2539,12 @@ func _capture_effective_presentation_snapshot() -> Dictionary:
 			DialogueVisibilityState.default_state(),
 		) as Dictionary
 	).duplicate(true)
+	var loop_se_channels := (
+		snapshot.get("loop_se_channels", {}) as Dictionary
+	).duplicate(true)
 	var stage_payloads: Array = []
 	var visibility_payloads: Array = []
+	var loop_se_payloads: Array = []
 	for operation_value: Variant in operations:
 		if not operation_value is Dictionary:
 			continue
@@ -2515,6 +2557,8 @@ func _capture_effective_presentation_snapshot() -> Dictionary:
 			stage_payloads.append((payload as Dictionary).duplicate(true))
 		elif kind == "dialogue_visibility":
 			visibility_payloads.append((payload as Dictionary).duplicate(true))
+		elif kind == "loop_se":
+			loop_se_payloads.append((payload as Dictionary).duplicate(true))
 	if not stage_payloads.is_empty():
 		snapshot["stage_layers"] = StageLayerState.reduce(
 			stage_layers,
@@ -2525,6 +2569,12 @@ func _capture_effective_presentation_snapshot() -> Dictionary:
 		snapshot["dialogue_visibility"] = DialogueVisibilityState.reduce(
 			visibility,
 			visibility_payloads,
+			false,
+		)
+	if not loop_se_payloads.is_empty():
+		snapshot["loop_se_channels"] = LoopSeChannelState.reduce(
+			loop_se_channels,
+			loop_se_payloads,
 			false,
 		)
 	return snapshot

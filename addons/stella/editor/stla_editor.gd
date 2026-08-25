@@ -64,6 +64,7 @@ func _build_ui() -> void:
 	_highlighter.add_keyword_color("@bg", Color(0.4, 0.7, 1.0))
 	_highlighter.add_keyword_color("@bgm", Color(0.4, 0.7, 1.0))
 	_highlighter.add_keyword_color("@se", Color(0.4, 0.7, 1.0))
+	_highlighter.add_keyword_color("@loop_se", Color(0.4, 0.7, 1.0))
 	_highlighter.add_keyword_color("@voice", Color(0.4, 0.7, 1.0))
 	_highlighter.add_keyword_color("@fade", Color(0.4, 0.7, 1.0))
 	_highlighter.add_keyword_color("@scene", Color(0.9, 0.4, 0.4))
