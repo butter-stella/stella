@@ -2,6 +2,8 @@ extends GutTest
 ## Synthetic end-to-end lifecycle contract for issue #168.
 
 const RuntimeTestSupport = preload("res://tests/helpers/runtime_test_support.gd")
+const FailingBootstrap = preload(
+	"res://tests/fixtures/startup/failing_bootstrap.gd")
 const SOURCE_PATH := "res://synthetic/bgm_lifecycle.stla"
 const FIXTURE_PATH := "res://tests/fixtures/audio/bgm/"
 
@@ -321,6 +323,112 @@ func test_aligned_pause_resume_stop_handoff_finishes_fnf_once_before_join() -> v
 		assert_eq(_audio._bgm_channel, stable_channel,
 			action + " stale old-token callback must be inert")
 		assert_eq(_terminals.size(), terminals_after_handoff, action)
+
+
+func test_resume_fnf_same_target_play_cut_stabilizes_one_exact_owner() -> void:
+	_submit([_operation("play", "synthetic_track", "", 0.75)])
+	_submit([_operation("pause")])
+	var terminal_count := _terminals.size()
+	var resume_fnf := _submit([_operation("resume", "", "", 1.0, 8.0)])
+	var resume_batch_id := resume_fnf.get_batch_id()
+	var stale_receipt: Dictionary = (
+		_audio._bgm_channel["receipt"] as Dictionary).duplicate(true)
+	var stale_tween: Tween = _audio._bgm_channel["tween"]
+	assert_true(stale_tween.custom_step(2.0))
+	assert_true(_runtime.presentation_director._entries.has(resume_batch_id))
+
+	var play_fnf := _submit([
+		_operation("play", "synthetic_track", "", 0.4),
+	])
+	assert_eq(resume_fnf.get_outcome(),
+		PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(play_fnf.get_outcome(),
+		PresentationBatchRequest.Outcome.COMPLETED)
+	assert_false(stale_tween.is_valid(),
+		"aligned play kills the exact old resume Tween at its endpoint")
+	assert_eq(_terminals.size(), terminal_count + 1)
+	assert_eq(_terminals.back()["token"], stale_receipt["token"])
+	assert_eq(_terminals.back()["outcome"], &"completed")
+	assert_eq(_runtime.presentation_director._entries, {},
+		"the resume and cut play Director entries both drain")
+	assert_eq(_audio._bgm_channel.get("receipt", {}), {})
+	assert_null(_audio._bgm_channel.get("tween"))
+	assert_eq(_runtime.presentation_state.current_bgm["status"], "playing")
+	assert_eq(_runtime.presentation_state.current_bgm["volume"], 0.4)
+	assert_almost_eq(
+		float((_audio._bgm_channel["current"] as Dictionary)["level"]),
+		0.4, 0.001)
+	assert_almost_eq(_player().volume_db, _expected_bgm_db(0.4), 0.01)
+
+	var stable_channel: Dictionary = _audio._bgm_channel.duplicate(true)
+	_audio.call("_complete_bgm_receipt", stale_receipt)
+	assert_eq(_audio._bgm_channel, stable_channel,
+		"the old resume callback is inert after the cut play")
+	assert_eq(_terminals.size(), terminal_count + 1,
+		"the old resume terminal is emitted exactly once")
+
+
+func test_resume_fnf_same_target_play_fade_transfers_to_one_new_tween() -> void:
+	_submit([_operation("play", "synthetic_track", "", 0.75)])
+	_submit([_operation("pause")])
+	var terminal_count := _terminals.size()
+	var resume_fnf := _submit([_operation("resume", "", "", 1.0, 8.0)])
+	var resume_batch_id := resume_fnf.get_batch_id()
+	var stale_receipt: Dictionary = (
+		_audio._bgm_channel["receipt"] as Dictionary).duplicate(true)
+	var stale_tween: Tween = _audio._bgm_channel["tween"]
+	assert_true(stale_tween.custom_step(2.0))
+
+	var play_fnf := _submit([
+		_operation("play", "synthetic_track", "", 0.4, 8.0),
+	])
+	var play_batch_id := play_fnf.get_batch_id()
+	var play_receipt: Dictionary = (
+		_audio._bgm_channel["receipt"] as Dictionary).duplicate(true)
+	var play_tween: Tween = _audio._bgm_channel["tween"]
+	assert_false(stale_tween.is_valid())
+	assert_not_same(play_tween, stale_tween)
+	assert_same(_audio._bgm_channel["tween"], play_tween,
+		"the aligned play owns the only live Tween")
+	assert_eq(_terminals.size(), terminal_count + 1)
+	assert_eq(_terminals.back()["token"], stale_receipt["token"])
+	assert_eq(_terminals.back()["outcome"], &"completed")
+	assert_false(_runtime.presentation_director._entries.has(resume_batch_id))
+	assert_true(_runtime.presentation_director._entries.has(play_batch_id))
+	assert_eq(_runtime.presentation_director._entries.size(), 1)
+	assert_eq(_runtime.presentation_state.current_bgm["volume"], 0.4)
+	assert_almost_eq(
+		float((_audio._bgm_channel["current"] as Dictionary)["level"]),
+		0.75, 0.001, "the resume reaches its stable endpoint before play fades")
+	assert_almost_eq(_player().volume_db, _expected_bgm_db(0.75), 0.01)
+
+	_audio.call("_complete_bgm_receipt", stale_receipt)
+	assert_same(_audio._bgm_channel["tween"], play_tween,
+		"a stale resume callback cannot reclaim the new Tween")
+	assert_eq(_audio._bgm_channel["receipt"], play_receipt)
+	assert_eq(_terminals.size(), terminal_count + 1)
+
+	assert_true(play_tween.custom_step(4.0))
+	assert_almost_eq(
+		float((_audio._bgm_channel["current"] as Dictionary)["level"]),
+		0.575, 0.001)
+	assert_almost_eq(_player().volume_db, _expected_bgm_db(0.575), 0.01,
+		"the new authored play owns the physical midpoint")
+	assert_true(play_tween.custom_step(4.0))
+	play_tween.custom_step(0.000001)
+	assert_eq(_terminals.size(), terminal_count + 2)
+	assert_eq(_terminals.back()["token"], play_receipt["token"])
+	assert_eq(_terminals.back()["outcome"], &"completed")
+	assert_eq(_runtime.presentation_director._entries, {},
+		"the resume and faded play Director entries both drain")
+	assert_eq(_audio._bgm_channel.get("receipt", {}), {})
+	assert_null(_audio._bgm_channel.get("tween"))
+	assert_eq(_runtime.presentation_state.current_bgm["status"], "playing")
+	assert_eq(_runtime.presentation_state.current_bgm["volume"], 0.4)
+	assert_almost_eq(
+		float((_audio._bgm_channel["current"] as Dictionary)["level"]),
+		0.4, 0.001)
+	assert_almost_eq(_player().volume_db, _expected_bgm_db(0.4), 0.01)
 
 
 func test_replacement_is_one_interval_crossfade_and_supersession_is_exact() -> void:
@@ -1057,6 +1165,43 @@ func test_graceful_quit_latch_and_mix_boundary_fail_close_are_bounded() -> void:
 		var source := FileAccess.get_file_as_string(path)
 		assert_true(source.contains("StellaRuntime.request_quit()"), path)
 		assert_false(source.contains("get_tree().quit("), path)
+
+
+func test_bootstrap_double_scene_failure_requests_one_public_graceful_quit() -> void:
+	var bootstrap := FailingBootstrap.new()
+	add_child_autofree(bootstrap)
+	var original_requested: bool = _runtime._quit_requested
+	var original_code: int = _runtime._quit_exit_code
+	var original_completion_started: bool = _runtime._quit_completion_started
+	_runtime._quit_requested = false
+	_runtime._quit_exit_code = 0
+	# Keep the real public request observable without allowing its deferred
+	# completion to terminate the GUT process.
+	_runtime._quit_completion_started = true
+
+	bootstrap._enter_title_scene(PackedScene.new())
+	assert_push_error("StellaBootstrap: failed to enter the resolved title scene")
+	var change_attempt_count: int = bootstrap.change_attempts.size()
+	var quit_was_requested: bool = _runtime._quit_requested
+	var requested_exit_code: int = _runtime._quit_exit_code
+
+	# Flush the deferred completion while its guard is still raised, then restore
+	# the shared autoload before making assertions about the captured result.
+	await get_tree().process_frame
+	_runtime._quit_requested = original_requested
+	_runtime._quit_exit_code = original_code
+	_runtime._quit_completion_started = original_completion_started
+
+	assert_eq(change_attempt_count, 2,
+		"the resolved title and default fallback both fail before shutdown")
+	assert_true(quit_was_requested,
+		"terminal bootstrap failure crosses StellaRuntime.request_quit")
+	assert_eq(requested_exit_code, 1)
+	var bootstrap_source := FileAccess.get_file_as_string(
+		"res://addons/stella/scenes/bootstrap.gd")
+	assert_eq(bootstrap_source.count("StellaRuntime.request_quit(1)"), 1,
+		"both failures schedule the public graceful boundary exactly once")
+	assert_false(bootstrap_source.contains("get_tree().quit("))
 
 
 func test_repeated_nonloop_natural_finish_retires_the_exact_player_once() -> void:

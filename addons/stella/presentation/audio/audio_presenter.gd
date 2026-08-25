@@ -365,7 +365,10 @@ func _play_bgm(
 		and String(current_state.get("cue", "")) == cue
 	)
 	if exact_playing_target:
-		_complete_matching_bgm_receipt(&"play")
+		# A canonical playing target may still be owned by either a play fade or
+		# a resume fade. Stabilize that exact owner before applying the aligned
+		# play so two Tweens can never compete for the same physical voice.
+		_complete_active_bgm_receipt()
 		current = _bgm_channel.get("current", {})
 		if _bgm_voice_is_live(current, asset, cue):
 			var state := current_state.duplicate(true)
@@ -549,6 +552,12 @@ func _start_bgm_receipt(request_id: int, action: StringName) -> Dictionary:
 func _complete_matching_bgm_receipt(action: StringName) -> void:
 	var receipt: Dictionary = _bgm_channel.get("receipt", {})
 	if StringName(receipt.get("action", &"")) == action:
+		_complete_bgm_receipt(receipt)
+
+
+func _complete_active_bgm_receipt() -> void:
+	var receipt: Dictionary = _bgm_channel.get("receipt", {})
+	if not receipt.is_empty():
 		_complete_bgm_receipt(receipt)
 
 
