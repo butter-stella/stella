@@ -5,7 +5,7 @@ class_name DslParser extends RefCounted
 const INTERNAL_DIALOGUE_MODE_EVENT := "__dialogue_mode_event"
 const INTERNAL_IF_NODE := "__if_node"
 const _PARALLEL_BLOCKING_COMMANDS := [
-	"dialogue", "choice", "wait", "chapter_indicator",
+	"dialogue", "choice", "wait", "chapter_indicator", "presentation_batch",
 ]
 const _CHAPTER_INDICATOR_ACTIONS := ["show", "hide"]
 const _CHAPTER_INDICATOR_TRANSITIONS := ["cut", "none", "fade"]
@@ -95,6 +95,7 @@ static func parse(
 	var presentation_batch_operation_lines: Array = []
 	var presentation_batch_stage_layer_ids: Dictionary = {}
 	var presentation_batch_visibility_targets: Dictionary = {}
+	var presentation_batch_has_chapter_indicator: bool = false
 	var presentation_batch_start_line: int = 0
 	var presentation_batch_invalid: bool = false
 	var presentation_batch_nested_depth: int = 0
@@ -124,6 +125,7 @@ static func parse(
 				presentation_batch_operation_lines.clear()
 				presentation_batch_stage_layer_ids.clear()
 				presentation_batch_visibility_targets.clear()
+				presentation_batch_has_chapter_indicator = false
 				presentation_batch_start_line = 0
 				presentation_batch_invalid = false
 				presentation_batch_nested_depth = 0
@@ -214,6 +216,26 @@ static func parse(
 							"payload": payload,
 						})
 						presentation_batch_operation_lines.append(token.line)
+				elif child_name == "chapter_indicator":
+					var chapter_child := _parse_at_command(token, data)
+					if chapter_child == null or chapter_child.type != "chapter_indicator":
+						presentation_batch_invalid = true
+					elif presentation_batch_has_chapter_indicator:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: duplicate chapter indicator channel at %s"
+							% _source_location(data, token.line),
+							token.line,
+						)
+						presentation_batch_invalid = true
+					else:
+						presentation_batch_has_chapter_indicator = true
+						presentation_batch_operations.append({
+							"kind": "chapter_indicator",
+							"payload": chapter_child.params.duplicate(true),
+						})
+						presentation_batch_operation_lines.append(token.line)
 				elif child_name == "end":
 					if (
 						presentation_batch_operations.is_empty()
@@ -245,6 +267,7 @@ static func parse(
 					presentation_batch_operation_lines.clear()
 					presentation_batch_stage_layer_ids.clear()
 					presentation_batch_visibility_targets.clear()
+					presentation_batch_has_chapter_indicator = false
 					presentation_batch_start_line = 0
 					presentation_batch_invalid = false
 					presentation_batch_nested_depth = 0
@@ -262,7 +285,7 @@ static func parse(
 					_record_diagnostic(
 						data,
 						"error",
-						"DslParser: only canonical @stage and @dialogue_visibility children are allowed inside @presentation_batch; found @%s at %s"
+						"DslParser: only canonical @stage, @dialogue_visibility, and @chapter_indicator children are allowed inside @presentation_batch; found @%s at %s"
 						% [child_name, _source_location(data, token.line)],
 						token.line,
 					)
@@ -273,7 +296,7 @@ static func parse(
 				_record_diagnostic(
 					data,
 					"error",
-					"DslParser: only canonical @stage and @dialogue_visibility children are allowed inside @presentation_batch at %s"
+					"DslParser: only canonical @stage, @dialogue_visibility, and @chapter_indicator children are allowed inside @presentation_batch at %s"
 					% _source_location(data, token.line),
 					token.line,
 				)
@@ -557,6 +580,7 @@ static func parse(
 					presentation_batch_operation_lines.clear()
 					presentation_batch_stage_layer_ids.clear()
 					presentation_batch_visibility_targets.clear()
+					presentation_batch_has_chapter_indicator = false
 					presentation_batch_nested_depth = 0
 					presentation_batch_invalid = false
 					var name_position := token.raw_text.find(cmd_name, 1)
@@ -798,7 +822,7 @@ static func parse(
 						cmd.declared_line = token.line
 					if (
 						cmd != null
-						and cmd.type == "chapter_indicator"
+						and _command_contains_chapter_indicator(cmd)
 						and (current_scene == null or chapter_needs_scene)
 					):
 						_record_diagnostic(
@@ -818,8 +842,13 @@ static func parse(
 							)
 						elif in_parallel:
 							if cmd.type in _PARALLEL_BLOCKING_COMMANDS:
+								var blocking_type: String = (
+									"chapter_indicator"
+									if _command_contains_chapter_indicator(cmd)
+									else cmd.type
+								)
 								_record_parallel_blocking_diagnostic(
-									data, cmd.type, token.line)
+									data, blocking_type, token.line)
 								parallel_invalid = true
 							else:
 								parallel_commands.append(cmd)
@@ -1135,6 +1164,23 @@ static func _record_parallel_blocking_diagnostic(
 	)
 
 
+static func _command_contains_chapter_indicator(command: CommandData) -> bool:
+	if command == null:
+		return false
+	if command.type == "chapter_indicator":
+		return true
+	if command.type != "presentation_batch":
+		return false
+	for operation_value: Variant in command.params.get("operations", []):
+		if (
+			operation_value is Dictionary
+			and String((operation_value as Dictionary).get("kind", ""))
+			== "chapter_indicator"
+		):
+			return true
+	return false
+
+
 static func _add_command(cmd: CommandData, scene: SceneData, if_stack: Array) -> void:
 	if if_stack.size() > 0:
 		var ctx = if_stack[-1]
@@ -1272,7 +1318,7 @@ static func _get_at_command_name(raw: String) -> String:
 static func _parse_at_command(
 	token: DslToken,
 	data: ScenarioData,
-	lower_standalone_dialogue_visibility: bool = false,
+	lower_standalone_presentation: bool = false,
 ) -> CommandData:
 	var raw = token.raw_text
 	var name = _get_at_command_name(raw)
@@ -1284,13 +1330,26 @@ static func _parse_at_command(
 
 	match name:
 		"chapter_indicator":
-			return _parse_chapter_indicator_command(parts, token.line, data)
+			var chapter_command := _parse_chapter_indicator_command(
+				parts, token.line, data)
+			if chapter_command == null or not lower_standalone_presentation:
+				return chapter_command
+			var batch_command := _make_cmd("presentation_batch", {
+				"policy": "join",
+				"operations": [{
+					"kind": "chapter_indicator",
+					"payload": chapter_command.params.duplicate(true),
+				}],
+				"operation_lines": [token.line],
+			})
+			batch_command.declared_line = token.line
+			return batch_command
 		"dialogue_visibility":
 			return _parse_dialogue_visibility_command(
 				parts,
 				token.line,
 				data,
-				lower_standalone_dialogue_visibility,
+				lower_standalone_presentation,
 			)
 		"stage":
 			return _parse_stage_command(parts, token.line, data)

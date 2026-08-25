@@ -47,11 +47,6 @@ static func reset_for_test(runtime: Node, tree: SceneTree) -> void:
 	# make clear()/restore_snapshot({}) insufficient for complete isolation.
 	runtime.auto_play = AutoPlayController.new()
 	runtime.skip_controller = SkipController.new()
-	if not runtime.skip_controller.active_changed.is_connected(
-		runtime._on_skip_active_changed_for_chapter_indicator
-	):
-		runtime.skip_controller.active_changed.connect(
-			runtime._on_skip_active_changed_for_chapter_indicator)
 	if (
 		runtime.presentation_director != null
 		and not runtime.skip_controller.active_changed.is_connected(

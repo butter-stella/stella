@@ -214,8 +214,11 @@ signal advance_requested()
 # 当前章节；public metadata 与内部 typed barrier 分离
 signal current_chapter_changed(chapter_id: String, title: String)
 signal chapter_indicator_validate_requested(request: ChapterIndicatorRequest)
+signal chapter_indicator_accept_requested(request: ChapterIndicatorRequest)
 signal chapter_indicator_apply_requested(request: ChapterIndicatorRequest)
 signal chapter_indicator_request_finished(request_id: int, success: bool)
+signal chapter_indicator_transition_started(request_id: int, presenter_instance_id: int, channel: String, token: int, generation: int)
+signal chapter_indicator_transition_terminal(request_id: int, presenter_instance_id: int, channel: String, token: int, generation: int, status: int)
 
 # 动态命名舞台层
 signal stage_operations_requested(operations: Array, force_cut: bool)
@@ -259,25 +262,25 @@ signal settings_changed(key: String, value: Variant)
 
 舞台写操作统一通过 `SignalBus.emit_stage_operations()` 提交；该入口会深拷贝并串行派发同步重入的批次。每批有唯一 request ID，转场开始回执携带同一 ID，因此对话补全只会终止自己发出的 Tween。`stage_operations_requested` 是内部投递信号，状态跟踪器和 Presenter 因而始终按相同顺序观察操作，不会因监听器连接顺序产生存档与画面分叉。`reset_and_apply_stage_state()` 把旧舞台 generation 的 reset 与 canonical state cut 投影放在同一原子边界；恢复会同时取消队列并使正在投递的旧批次对后续消费者失效。旧四参 `stage_transition_started` 与旧三字段 `stage_transitions_finish_requested` 仍是扩展兼容面；`PresentationDirector` 只使用携带 Presenter generation 的 exact companion 信号建立和完成 receipt。
 
-#### PresentationDirector 与 exact Stage composition
+#### PresentationDirector 与 exact typed composition
 
-`StellaRuntime` 作为唯一 composition root，只构造并持有一个 `PresentationDirector`。该 Director 提供未来可增加 typed adapter 的通用 owner/lifecycle 边界；本期只注册 Stage adapter：
+`StellaRuntime` 作为唯一 composition root，只构造并持有一个 `PresentationDirector`。Stage、dialogue visibility 与 chapter indicator 都通过这个 owner/lifecycle 边界：
 
-- `PresentationOperation` 是只读 typed operation，暴露 kind、channel 和 deep-copy payload。`StagePresentationOperation` 是当前唯一 concrete kind（`stage`），非 clear channel 为 `stage:<layer_id>`，clear 为 `stage:*`。
+- `PresentationOperation` 是只读 typed operation，暴露 kind、channel、deep-copy payload 和 source location。concrete kind 为 `StagePresentationOperation`（`stage:<layer_id>` / `stage:*`）、`DialogueVisibilityPresentationOperation`（`dialogue:surface` / `dialogue:quick_menu`）与固定 channel `chapter:indicator` 的 `ChapterIndicatorPresentationOperation`。
 - `PresentationOperationReceipt` 用 `batch_id / presenter_instance_id / channel / token / generation` 五元组唯一标识 Presenter 真正拥有的转场；单独 layer ID 不能完成批次。
 - `PresentationBatchRequest` 的 policy 为 `JOIN` / `FIRE_AND_FORGET`，outcome 为 `COMPLETED` / `CANCELLED` / `FAILED`。operation/receipt getter 返回 defensive container，`settled(batch_id, outcome)` 只发送一次。`_bind_authority()`、`_seal()` 和 `_settle()` 是 Director 内部 authority 方法，不是 caller API。
 
 Parser 把整个 `@stage_batch` 编译为一个 addressable `CommandData(type="stage_batch")`，`declared_line` 是 block opening line，params 精确为 `policy / operations / operation_lines`。`operations` 中每项都是 `action / id / properties / transition / duration` canonical five-field；`operation_lines` 与 child 一一对应，保留在可执行 params 中供程序化调用在 runtime fail-close 时定位原始 child source line，但它只是诊断元数据，会从 `stage_batch` semantic content fingerprint 排除；`policy` 与 `operations` 仍参与 identity。
 
-`submit()` 在分配 request ID 之前完成 authoritative preflight：检查 typed operation、Stage canonical five-field schema、重复 layer / clear 冲突，并以 `PresentationState.stage_layers` 做 semantic reduce。invalid 和非 clear 的真实 no-work 路径都不进入 Bus，也不分配 receipt、token 或 Tween；真实 no-work 会以 `batch_id=0`、`receipts=[]` 同步 `COMPLETED`。canonical clear 是 live projection ownership exception：它不能仅凭 canonical Dictionary 相等而短路，因为仍须接管已经离开 canonical state、但尚在 remove transition 中的视觉 owner；Presenter 真正为空时，clear 仍取得 positive batch ID，并以零 receipt 在 dispatch tail 同步完成。
+`submit()` 在分配 request ID 之前完成 authoritative typed schema/context preflight：检查三个 kind 的 canonical payload、duplicate channel、Stage clear 冲突，并以 canonical state 做 semantic reduce。chapter 即使已经处于 authored target 也不会跳过 binding validation。invalid 和非 clear Stage 的真实 no-work 路径不进入 Bus，也不分配 receipt、token 或 Tween；真实 no-work 会以 `batch_id=0`、`receipts=[]` 同步 `COMPLETED`。canonical clear 是 live projection ownership exception：它不能仅凭 canonical Dictionary 相等而短路，因为仍须接管已经离开 canonical state、但尚在 remove transition 中的视觉 owner；Presenter 真正为空时，clear 仍取得 positive batch ID，并以零 receipt 在 dispatch tail 同步完成。
 
-有工作的操作在同一 `SignalBus` dispatch boundary 中向 canonical state tracker 和全部 Presenter 原子派发。`JOIN` 只等待 dispatch tail 封存的 exact receipt set；零 receipt 同步完成，current owner 的任一 superseded/cancelled receipt 都使该 JOIN fail-close。`FIRE_AND_FORGET` 在 dispatch seal 后释放剧情，但 Director 继续持有 receipts 直到 terminal cleanup。连续 batch 经 Bus 串行；同层重叠时由 `StagePresenter` generation 决定 winner，late、foreign 或 duplicate terminal 不能完成新 batch。
+有工作的操作在同一 `SignalBus` dispatch boundary 中原子派发。Bus 在任何 child apply 前收集并验证完整 chapter Presenter registry，seal 后要求所有 participant accept；随后按 authored child order 跨 kind 派发，operation source line、channel 与 receipt 一一保持。`JOIN` 只等待 dispatch tail 封存的 exact receipt union；零 receipt 同步完成，current owner 的任一 superseded/cancelled receipt 都使该 JOIN fail-close。`FIRE_AND_FORGET` 在 dispatch seal 后释放剧情，但 Director 继续持有 receipts 直到 terminal cleanup。连续 batch 经 Bus 串行；同 channel 重叠时由 Presenter generation 决定 winner，late、foreign 或 duplicate terminal 不能完成新 batch。
 
-Director 还统一拥有 blocking presentation waiter。Stage JOIN 与 chapter indicator 共享 Runtime 的 generic lifecycle 判断，不再各自维护 sibling flag。reset、load、rollback、restart、return-to-title、context 或 SceneTree replacement 都先退休旧 generation/owner，再 reset 并在需要时 cut canonical state；旧 callback 不能复活。可逆导航被拒绝时，Runtime 恢复该命令之前的 canonical state，然后在 retained cursor 重新派发，不会 resume 已取消的 coroutine。
+Director 还统一拥有 blocking presentation waiter。Stage、dialogue visibility 与 chapter indicator 共享 Runtime 的 generic lifecycle 判断，不再各自维护 sibling flag。reset、load、rollback、restart、return-to-title、context 或 SceneTree replacement 都先退休旧 generation/owner，再 reset 并在需要时 cut canonical state；旧 callback 不能复活。可逆导航被拒绝时，Runtime 恢复该命令之前的 canonical state，然后在 retained cursor 重新派发，不会 resume 已取消的 coroutine。
 
-章节标题指示器使用专用的 typed `ChapterIndicatorRequest`，而不是共享可变 `Dictionary` 收集 quorum。validation 阶段每个 Presenter 以自身对象注册或 reject；Bus seal 参与者集合后向同一 request 派发 apply，每个 sealed participant 必须显式 accept，且 apply-time binding 与实例仍有效。只有整个 apply signal tail 完成并全部 accept 后，Core 才提交 `ScenarioContext.chapter_indicator_visible`，随后等待各 Presenter 的 exact request ID acknowledgement。getter 返回 defensive copy，任意 listener 修改副本、释放别的 Presenter 或同步 reset 都只能使整次请求确定性成功/失败/取消，不会缩小 authoritative barrier 或永久悬挂。
+章节标题指示器在 typed operation 内使用短生命周期的 `ChapterIndicatorRequest`，而不是共享可变 `Dictionary` 收集 quorum，也不拥有另一条 scheduler。validation 阶段每个 Presenter 以自身对象注册或 reject；Bus seal 参与者集合后要求同一 request 的每个 sealed participant 显式 accept，且 apply-time binding 与实例仍有效。三类 child 全量 preflight+seal 后才允许第一个 child apply。完整 ordered apply tail 成功后，Director 才提交 `ScenarioContext.chapter_indicator_visible`；JOIN 随后等待各 Presenter 的 exact receipt terminal。getter 返回 defensive copy，任意 listener 修改副本、释放别的 Presenter 或同步 reset 都只能使整批确定性成功/失败/取消，不会缩小 authoritative barrier、留下 preflight partial mutation 或永久悬挂。
 
-request start、hard reset 与 cut state projection 共用 owner-checked generation；同步 listener 若在外层 signal 中替换 context、读档或发起新请求，后续 built-in consumer 会拒绝 stale outer tail。普通 advance 还记录 request 的接受 serial，因而一次 physical/semantic dispatch 最多结束一个 blocking command。issue #166 在同一条 Director queue 上增加了 `dialogue_visibility` typed adapter 与 mixed `presentation_batch`；Stage 与 dialogue visibility 共享 receipt、generation、cancel 与 settlement 规则。standalone 与 batch child 共用唯一的 visibility parser，省略 authored target 时在 Core 边界 canonicalize 为明确的 `target=surface`，因此 typed operation 和 runtime 从不推断默认 target。#170 仍然 OPEN，且继续 out of scope；当前不提供 chapter-indicator mixed child、第二个 scheduler 或第二个 composition root。
+request start、hard reset 与 cut state projection 共用 owner-checked generation；同步 listener 若在外层 signal 中替换 context、读档或发起新请求，后续 built-in consumer 会拒绝 stale outer tail。普通 advance 还记录 request 的接受 serial，因而一次 physical/semantic dispatch 最多结束一个 blocking command。三种 operation 共享 receipt、generation、cancel 与 settlement 规则。standalone chapter/dialogue 命令由 parser lowering 为单 child JOIN，程序化 `ChapterIndicatorHandler` 也委托同一 Director；不存在第二 scheduler、第二等待链或第二 composition root。visibility 省略 authored target 时在 Core 边界 canonicalize 为明确的 `target=surface`，typed operation 和 runtime 从不推断默认 target。
 
 SceneTree 导航交接另有一个只属于 `StellaRuntime` 的 per-serial broadcast receipt：open 时保留唯一 creator reservation，superseded navigation 与 recovery continuation 必须在任何 yield/公开重入边界前登记各自 waiter lease。中央 `scene_changed` observer 先封存不可变结果并清除 active slot，再广播唤醒；只有 receipt 已 settled、creator 已释放且 waiter 数归零时才删除记录。creator 可以消费一次 settle-before-await 的结果，其他未知、迟到或已过期 serial 都同步返回失败，不能复活历史或形成无 owner waiter。它只是 SceneTree 生命周期记账，不是 #166 的通用 extension receipt。
 
@@ -443,7 +446,7 @@ Core → Presentation 的 canonical 对话与语音链均使用只读 typed DTO�
 
 `ChapterIndicatorPresenter` 是可复用的 skinnable `Control` binding。项目提供根 Control 的几何、Theme/装饰和一个 exported `title_label_path`；框架只写 Label 文本、目标可见性和 alpha tween。当前 chapter ID/title 来自 Runtime 执行 cursor，标题在发布前由 `TranslationServer` 解析；显式空标题会令视觉保持隐藏，但不改变 Context 中的 authored target。
 
-一条 `@chapter_indicator` 是 standalone blocking command。validation seal 与完整 apply acceptance 之前不改变 Context；接受完成后先提交 bool，再等待 fade barrier。cut、零时长、无视觉工作和零 Presenter 同步完成。左键、Space、Enter、toolbar Skip 都只 finish 当前 exact request；accept advance serial 防止同一 input signal tail顺带 finish 下一条 indicator。手柄 parity 在叠加相应输入前置后验证。Presenter exit、binding mutation、context replacement、load/rollback/restart/title 和 scene exit 都通过统一 generation 取消旧 Tween/owner，迟到 callback 不得覆盖 fresh context。
+standalone `@chapter_indicator` 由 parser lowering 为单 child JOIN，和 mixed batch 共用 Director path。validation seal 与完整 apply acceptance 之前不改变 Context；ordered apply tail 成功后提交 bool，JOIN 再等待 fade receipt。cut、零时长、无视觉工作和零 Presenter 同步完成。左键、Space、Enter、toolbar Skip 都只 finish 当前 sealed Director owner；advance serial 防止同一 input signal tail 顺带 finish 下一条 operation。Presenter exit、binding mutation、context replacement、load/rollback/restart/title 和 scene exit 都通过统一 generation 取消旧 Tween/owner，迟到 callback 不得覆盖 fresh context。
 
 ### 3.5 游戏设置
 
@@ -619,6 +622,7 @@ stella/
 │       │   │   ├── stage_layer_state.gd
 │       │   │   ├── presentation_operation.gd
 │       │   │   ├── stage_presentation_operation.gd
+│       │   │   ├── chapter_indicator_presentation_operation.gd
 │       │   │   ├── dialogue_visibility_state.gd
 │       │   │   ├── dialogue_visibility_presentation_operation.gd
 │       │   │   ├── presentation_operation_receipt.gd

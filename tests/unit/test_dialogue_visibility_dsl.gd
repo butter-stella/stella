@@ -188,6 +188,41 @@ func test_mixed_join_preserves_exact_authored_order_and_source_lines() -> void:
 	assert_eq(operations[2]["payload"]["target"], "quick_menu")
 
 
+func test_chapter_stage_dialogue_composition_preserves_authored_order_and_lines() -> void:
+	var data := _parse("""@chapter synthetic "Synthetic chapter"
+@scene start
+@presentation_batch policy=join
+  @dialogue_visibility hide transition=fade duration=0.3
+  @chapter_indicator show transition=fade duration=0.3
+  @stage hero show asset=stage:redraw_source transition=fade duration=0.3
+  @dialogue_visibility quick_menu hide transition=fade duration=0.3
+@end""")
+	assert_eq(_error_diagnostics(data), [], str(data.diagnostics))
+	var batches := _presentation_batches(data)
+	assert_eq(batches.size(), 1,
+		"all three presentation kinds compile into one addressable batch")
+	if batches.size() != 1:
+		return
+	var batch: CommandData = batches[0]
+	assert_eq(batch.declared_line, 3)
+	assert_eq(batch.params["operation_lines"], [4, 5, 6, 7])
+	var operations: Array = batch.params["operations"]
+	assert_eq(operations.map(
+		func(operation: Dictionary) -> String:
+			return String(operation.get("kind", ""))
+	), [
+		"dialogue_visibility",
+		"chapter_indicator",
+		"stage",
+		"dialogue_visibility",
+	], "cross-kind operation order remains authored order")
+	assert_eq(operations[1]["payload"], {
+		"action": "show",
+		"transition": "fade",
+		"duration": 0.3,
+	})
+
+
 func test_fire_and_forget_allows_stage_clear_with_visibility_siblings() -> void:
 	var data := _parse("""@chapter synthetic
 @scene start
@@ -412,11 +447,6 @@ func test_duplicate_targets_stage_conflicts_and_illegal_children_fail_atomically
 			"children": "  @overlay",
 			"line": 4,
 		},
-		{
-			"label": "chapter indicator child",
-			"children": "  @chapter_indicator show",
-			"line": 4,
-		},
 	]
 	for case_value: Variant in cases:
 		var case: Dictionary = case_value
@@ -433,8 +463,6 @@ func test_duplicate_targets_stage_conflicts_and_illegal_children_fail_atomically
 		var purity_token := ""
 		if case["label"] == "combine child":
 			purity_token = "combine"
-		elif case["label"] == "chapter indicator child":
-			purity_token = "chapter_indicator"
 		if not purity_token.is_empty():
 			_assert_single_error_at(data, 4, purity_token,
 				"initial %s" % case["label"])

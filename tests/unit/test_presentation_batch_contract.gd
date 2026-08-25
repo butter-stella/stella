@@ -9,6 +9,7 @@ extends GutTest
 const REQUIRED_CLASSES := [
 	"PresentationOperation",
 	"StagePresentationOperation",
+	"ChapterIndicatorPresentationOperation",
 	"PresentationOperationReceipt",
 	"PresentationBatchRequest",
 	"PresentationDirector",
@@ -132,6 +133,11 @@ func test_generic_typed_surface_exists_without_stage_specific_aliases() -> void:
 	var stage_operation := _global_class_script("StagePresentationOperation")
 	assert_same(stage_operation.get_base_script(), base_operation,
 		"Stage is the first typed PresentationOperation adapter")
+	assert_same(
+		_global_class_script("ChapterIndicatorPresentationOperation").get_base_script(),
+		base_operation,
+		"Chapter indicator is a typed PresentationOperation adapter",
+	)
 	assert_ne(_global_class_script("PresentationOperationReceipt"), null)
 	assert_ne(_global_class_script("PresentationBatchRequest"), null)
 	assert_ne(_global_class_script("PresentationDirector"), null)
@@ -360,6 +366,23 @@ func test_dialogue_visibility_is_the_second_typed_operation_adapter() -> void:
 	assert_eq(operation.call("get_channel"), &"dialogue:quick_menu")
 
 
+func test_chapter_indicator_is_a_source_preserving_typed_adapter() -> void:
+	var source := {
+		"source_path": "res://synthetic/chapter_composition.stla",
+		"line": 17,
+	}
+	var operation := ChapterIndicatorPresentationOperation.new({
+		"action": "show", "transition": "fade", "duration": 0.25,
+	}, source)
+	assert_eq(operation.get_kind(), &"chapter_indicator")
+	assert_eq(operation.get_channel(), &"chapter:indicator")
+	assert_eq(operation.get_source(), source)
+	var defensive_source := operation.get_source()
+	defensive_source["line"] = 99
+	assert_eq(operation.get_source(), source,
+		"operation provenance remains defensive and immutable")
+
+
 func test_batch_request_defensively_preserves_mixed_authored_order() -> void:
 	var visibility_script := _global_class_script(
 		"DialogueVisibilityPresentationOperation")
@@ -387,6 +410,10 @@ func test_batch_request_defensively_preserves_mixed_authored_order() -> void:
 		"duration": 0.0,
 	}) as PresentationOperation
 	var authored: Array[PresentationOperation] = [stage, surface, quick_menu]
+	var chapter := ChapterIndicatorPresentationOperation.new({
+		"action": "show", "transition": "cut", "duration": 0.0,
+	})
+	authored.insert(1, chapter)
 	var request := PresentationBatchRequest.new(
 		PresentationBatchRequest.Policy.JOIN, authored)
 	authored.clear()
@@ -394,13 +421,15 @@ func test_batch_request_defensively_preserves_mixed_authored_order() -> void:
 	assert_eq(operations.map(
 		func(operation: PresentationOperation) -> StringName:
 			return operation.get_kind()
-	), [&"stage", &"dialogue_visibility", &"dialogue_visibility"])
+	), [&"stage", &"chapter_indicator",
+		&"dialogue_visibility", &"dialogue_visibility"])
 	assert_eq(operations.map(
 		func(operation: PresentationOperation) -> StringName:
 			return operation.get_channel()
-	), [&"stage:mixed", &"dialogue:surface", &"dialogue:quick_menu"])
+	), [&"stage:mixed", &"chapter:indicator",
+		&"dialogue:surface", &"dialogue:quick_menu"])
 	operations.clear()
-	assert_eq(request.get_operations().size(), 3,
+	assert_eq(request.get_operations().size(), 4,
 		"mixed operation container remains defensive")
 
 
@@ -908,36 +937,34 @@ func test_signal_bus_generic_projection_defers_and_serializes_cross_queue_dispat
 		(generic_tail_signal as Signal).connect(on_generic_tail)
 	SignalBus.run_presentation_projection(func() -> void:
 		stale_mixed_request_id[0] = SignalBus.emit_presentation_operations(
-			[{
+			[StagePresentationOperation.new({
 				"action": "show",
 				"id": "stale",
 				"properties": {"asset": "stage:redraw_source"},
 				"transition": "cut",
 				"duration": 0.0,
-			}],
-			[{
+			}), DialogueVisibilityPresentationOperation.new({
 				"target": "surface",
 				"action": "hide",
 				"transition": "cut",
 				"duration": 0.0,
-			}],
+			})],
 			false,
 		)
 		SignalBus.reset_dialogue_visibility_visuals()
 		mixed_request_id[0] = SignalBus.emit_presentation_operations(
-			[{
+			[StagePresentationOperation.new({
 				"action": "show",
 				"id": "mixed",
 				"properties": {"asset": "stage:redraw_source"},
 				"transition": "cut",
 				"duration": 0.0,
-			}],
-			[{
+			}), DialogueVisibilityPresentationOperation.new({
 				"target": "quick_menu",
 				"action": "hide",
 				"transition": "cut",
 				"duration": 0.0,
-			}],
+			})],
 			false,
 		)
 		stage_request_id[0] = SignalBus.emit_stage_operations([{
@@ -961,13 +988,12 @@ func test_signal_bus_generic_projection_defers_and_serializes_cross_queue_dispat
 			"mixed/dialogue request tails are deferred until the outermost projection exits")
 	)
 	assert_eq(dispatches, [
-		"stage:%s" % stale_mixed_request_id[0],
 		"stage:%s" % mixed_request_id[0],
 		"dialogue:%s" % mixed_request_id[0],
 		"stage:%s" % stage_request_id[0],
 		"dialogue:%s" % dialogue_request_id[0],
 		"dialogue:%s" % reentrant_dialogue_request_id[0],
-	], "outer unified drain preserves enqueue order, skips stale mixed dialogue halves, and appends reentrant work by serial")
+	], "outer unified drain preserves enqueue order, rejects stale mixed batches atomically, and appends reentrant work by serial")
 	assert_eq(stage_finishes, [
 		"%s:true" % stage_request_id[0],
 	], "stage-only queue keeps exact-once terminal delivery")

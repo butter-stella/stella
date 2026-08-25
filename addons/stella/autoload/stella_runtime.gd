@@ -156,8 +156,6 @@ func _ready():
 	choice_history_manager = ChoiceHistoryManager.new()
 	auto_play = AutoPlayController.new()
 	skip_controller = SkipController.new()
-	skip_controller.active_changed.connect(
-		_on_skip_active_changed_for_chapter_indicator)
 	read_flags = ReadFlagManager.new()
 	game_state = GameStateMachine.new()
 	game_state.state_changed.connect(_on_state_changed)
@@ -2335,11 +2333,6 @@ func _runtime_dialogue_visibility_binding(
 
 func _on_scene_changed_for_chapter_presentation(_scene_id: String) -> void:
 	_publish_current_chapter(engine.context if engine != null else null)
-
-
-func _on_skip_active_changed_for_chapter_indicator(active: bool) -> void:
-	if active:
-		SignalBus.finish_active_chapter_indicator_transition()
 
 
 func _on_state_changed(from_state: int, _to_state: int) -> void:

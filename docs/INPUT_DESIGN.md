@@ -69,7 +69,7 @@ AVG 标准行为：打字未完成时点击 = 完成打字（不推进），打�
 
 ## Chapter indicator fade 与一次输入边界
 
-当没有 pending dialogue owner、当前 blocking command 是 `@chapter_indicator ... transition=fade` 时，普通左键、Space 和 Enter 仍走同一 `advance_requested` 语义：只把**当前已接受**的 fade snap 到 authored final state，并消费该次输入。toolbar Skip 开启也只 finish 当前 exact request；Auto 状态本身不会自动结束 indicator。
+当没有 pending dialogue owner、当前 sealed Director JOIN 含有 `@chapter_indicator ... transition=fade` 时，普通左键、Space 和 Enter 仍走同一 `advance_requested` 语义：只把这个 owner 的 exact receipts snap 到 authored final state，并消费该次输入。toolbar Skip 开启也只 finish 当前 exact owner；Auto 状态本身不会自动结束 indicator。
 
 每个 Presenter 在接受 request 时记录 `SignalBus` 的 advance dispatch serial。若第一位 Presenter 的 acknowledgement 同步推进引擎并创建下一条 indicator，后一位 Presenter 收到的仍是旧 signal tail；新 request 的接受 serial 与当前 dispatch 相同，因此它必须拒绝这次旧 tail。结果是一次 physical/semantic advance 最多完成一个 blocking command，不会把 chained fade 一起跳过。
 
@@ -79,8 +79,8 @@ AVG 标准行为：打字未完成时点击 = 完成打字（不推进），打�
 
 `FIRE_AND_FORGET` 从不 claim advance，Auto 状态本身也不结束 JOIN。Skip 从 false 激活为 true 时，只 exact-finish 当前 owner 一次；Skip 已 active 时新 batch 按持续模式 policy 直接 force-cut。普通输入的“一次只结束一个 owner”与持续 Skip policy 是两个不同的边界。
 
-Stage JOIN 和 chapter indicator 共享 Director-owned generic blocking presentation waiter。reset、load、rollback、restart、return-to-title、context 或 SceneTree replacement 先退休旧 owner/generation，再重置或 cut canonical 投影；不使用 indicator/stage 并列的私有 flag，旧 callback 也不能回来领取新 input。
+Stage、chapter indicator 和 dialogue visibility 共享 Director-owned generic blocking presentation waiter。reset、load、rollback、restart、return-to-title、context 或 SceneTree replacement 先退休旧 owner/generation，再重置或 cut canonical 投影；不存在 indicator/stage 并列的私有 scheduler/flag，旧 callback 也不能回来领取新 input。
 
-Issue #166 的 `dialogue_visibility` JOIN/FNF 也进入同一 Runtime-owned generic presentation 边界：`surface` 与 `quick_menu` gate 在同一个 Director queue 上分配 request/receipt/generation，并和 Stage mixed batch 共用 exact finish、persistent Skip force-cut、save/load visual-only restore 与 stale callback 拒绝规则。Profile baseline、mode binding 与 canonical gate 是声明式合成关系；backlog overlay 与 soft UI hide 不会修改这两个 canonical bool。
+`surface`、`quick_menu` 与 `chapter:indicator` 在同一个 Director queue 上分配 request/receipt/generation，并和 Stage mixed batch 共用 exact finish、persistent Skip force-cut、save/load visual-only restore 与 stale callback 拒绝规则。mixed batch 先全量 preflight/seal，后按 authored child order apply；dispatch tail 的 Skip 也只能结束这一个 sealed owner。Profile baseline、mode binding 与 canonical gate 是声明式合成关系；backlog overlay 与 soft UI hide 不会修改这些 canonical bool。
 
 既有输入优先级保持不变：soft-hidden UI 先恢复，Button/Slider 左键交给 GUI，非 PLAYING 不处理；Skip/Auto 的既有左键 policy 先于普通推进。成功进入 normal path 后，无论是 typed dialogue advance 还是 Stage JOIN / chapter indicator / wait fallback 都会 `set_input_as_handled()`。手柄输入 parity 与 #133 的可重绑输入系统仍是 non-goal，不属于本卡。

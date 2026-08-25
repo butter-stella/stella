@@ -1084,19 +1084,24 @@ func test_chapter_indicator_parses_canonical_timeline_commands() -> void:
 	if data.scenes[0].commands.size() != 3:
 		return
 	var hidden: CommandData = data.scenes[0].commands[0]
-	assert_eq(hidden.type, "chapter_indicator")
-	assert_eq(hidden.params, {
+	assert_eq(hidden.type, "presentation_batch")
+	assert_eq(hidden.params.get("policy"), "join")
+	assert_eq(hidden.params.get("operation_lines"), [3])
+	assert_eq(hidden.params["operations"][0], {
+		"kind": "chapter_indicator",
+		"payload": {
 		"action": "hide",
 		"transition": "cut",
 		"duration": 0.0,
+		},
 	})
 	assert_eq(hidden.declared_line, 3)
-	assert_eq(data.scenes[0].commands[1].params, {
+	assert_eq(data.scenes[0].commands[1].params["operations"][0]["payload"], {
 		"action": "show",
 		"transition": "cut",
 		"duration": 0.0,
 	}, "none is accepted authoring syntax but canonicalizes to cut")
-	assert_eq(data.scenes[0].commands[2].params, {
+	assert_eq(data.scenes[0].commands[2].params["operations"][0]["payload"], {
 		"action": "show",
 		"transition": "fade",
 		"duration": 0.25,
