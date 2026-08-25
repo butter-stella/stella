@@ -180,6 +180,7 @@ func _assert_reduced_snapshot_families_validate(
 							"active",
 							"avatar_expression",
 							"character",
+							"cleared",
 							"declarative_presentation",
 							"mode",
 							"nvl_entries",
@@ -190,13 +191,15 @@ func _assert_reduced_snapshot_families_validate(
 						var version_value: Variant = content_dict.get("version", null)
 						assert_true(
 							version_value is int or version_value is float,
-							"%s presentation_state dialogue_content.version should be JSON-compatible numeric 1" % label
+							"%s presentation_state dialogue_content.version should be JSON-compatible numeric 2" % label
 						)
 						if version_value is int or version_value is float:
-							assert_eq(int(version_value), 1,
-								"%s presentation_state dialogue_content.version should equal numeric 1" % label)
+							assert_eq(int(version_value), 2,
+								"%s presentation_state dialogue_content.version should equal numeric 2" % label)
 						assert_true(content_dict.get("active", null) is bool,
 							"%s presentation_state dialogue_content.active should be a bool" % label)
+						assert_true(content_dict.get("cleared", null) is bool,
+							"%s presentation_state dialogue_content.cleared should be a bool" % label)
 						assert_true(content_dict.get("mode", null) is String,
 							"%s presentation_state dialogue_content.mode should be a String" % label)
 						assert_true(content_dict.get("profile_name", null) is String,
@@ -269,7 +272,10 @@ func _assert_reduced_snapshot_families_validate(
 											"%s presentation_state dialogue_content.nvl_entries segments text should be a String" % label)
 						if content_dict.get("active", null) is bool:
 							var is_active: bool = content_dict.get("active", false)
+							var is_cleared: bool = bool(content_dict.get("cleared", false))
 							if not is_active:
+								assert_false(is_cleared,
+									"%s presentation_state inactive dialogue_content cannot be cleared" % label)
 								assert_true(mode_value == "adv",
 									"%s presentation_state inactive dialogue_content.mode should stay canonical adv" % label)
 								assert_true(String(content_dict.get("profile_name", null)) == "",
@@ -286,6 +292,13 @@ func _assert_reduced_snapshot_families_validate(
 								if content_dict.get("nvl_entries", null) is Array:
 									assert_true((content_dict.get("nvl_entries", []) as Array).is_empty(),
 										"%s presentation_state inactive dialogue_content.nvl_entries should stay canonical empty" % label)
+							elif is_cleared:
+								assert_true(mode_value in ["adv", "nvl", "overlay"],
+									"%s presentation_state cleared dialogue_content keeps a persistent mode" % label)
+								assert_eq(content_dict.get("character"), "")
+								assert_eq(content_dict.get("avatar_expression"), "")
+								assert_eq(content_dict.get("segments"), [])
+								assert_eq(content_dict.get("nvl_entries"), [])
 							elif content_dict.get("segments", null) is Array:
 								var top_segments: Array = content_dict.get("segments", [])
 								assert_true(not top_segments.is_empty(),

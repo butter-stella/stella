@@ -17,6 +17,8 @@ const DEFAULT_SETTINGS_SCENE = "res://addons/stella/scenes/settings.tscn"
 const DEFAULT_SAVE_LOAD_SCENE = "res://addons/stella/scenes/save_load.tscn"
 const DEFAULT_BACKLOG_SCENE = "res://addons/stella/scenes/backlog.tscn"
 const DEFAULT_FLOWCHART_SCENE = "res://addons/stella/scenes/flowchart.tscn"
+const DIALOGUE_PRESENTER_SCRIPT: Script = preload(
+	"res://addons/stella/presentation/dialogue/dialogue_presenter.gd")
 const AUDIO_SHUTDOWN_MAX_PROCESS_FRAMES := 120
 const AUDIO_MIX_ROLLOVER_EPSILON := 0.000000001
 var engine: ScenarioEngine
@@ -94,6 +96,7 @@ var _publishing_current_chapter := false
 var _chapter_republish_pending := false
 var _emitting_chapter_id := ""
 var _emitting_chapter_title := ""
+var _dialogue_clear_registrar_authority := RefCounted.new()
 var _chapter_indicator_registrar_authority := RefCounted.new()
 var _loop_se_registrar_authority := RefCounted.new()
 var _bgm_registrar_authority := RefCounted.new()
@@ -112,6 +115,9 @@ func _init() -> void:
 		local_config_path = ""
 	config = _load_project_config(CONFIG_PATH, local_config_path)
 	_apply_config()
+	if not SignalBus.configure_dialogue_clear_registrar(
+		_dialogue_clear_registrar_authority):
+		push_error("StellaRuntime: dialogue clear registrar authority conflict")
 	if not SignalBus.configure_chapter_indicator_registrar(
 		_chapter_indicator_registrar_authority):
 		push_error("StellaRuntime: chapter indicator registrar authority conflict")
@@ -124,6 +130,28 @@ func _init() -> void:
 ## Composition-owned admission keeps the cross-layer Bus free of concrete
 ## Presentation dependencies while preventing arbitrary signal listeners from
 ## enlarging the chapter-indicator quorum.
+func _register_dialogue_clear_presenter(presenter: Object) -> RefCounted:
+	if (
+		presenter == null
+		or not presenter is Control
+		or presenter.get_script() != DIALOGUE_PRESENTER_SCRIPT
+	):
+		return null
+	return SignalBus.register_dialogue_clear_presenter(
+		presenter, _dialogue_clear_registrar_authority)
+
+
+func _unregister_dialogue_clear_presenter(
+	presenter: Object,
+	capability: RefCounted,
+) -> void:
+	SignalBus.unregister_dialogue_clear_presenter(
+		presenter,
+		capability,
+		_dialogue_clear_registrar_authority,
+	)
+
+
 func _register_chapter_indicator_presenter(presenter: Object) -> RefCounted:
 	if not presenter is ChapterIndicatorPresenter:
 		return null

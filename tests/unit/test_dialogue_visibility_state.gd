@@ -17,8 +17,9 @@ const DEFAULT_VISIBILITY := {
 }
 
 const INACTIVE_CONTENT := {
-	"version": 1,
+	"version": 2,
 	"active": false,
+	"cleared": false,
 	"mode": "adv",
 	"profile_name": "",
 	"declarative_presentation": false,
@@ -98,8 +99,9 @@ func _snapshot_with_dialogue(
 
 func _adv_content() -> Dictionary:
 	return {
-		"version": 1,
+		"version": 2,
 		"active": true,
+		"cleared": false,
 		"mode": "adv",
 		"profile_name": "message",
 		"declarative_presentation": true,
@@ -112,8 +114,9 @@ func _adv_content() -> Dictionary:
 
 func _nvl_content() -> Dictionary:
 	return {
-		"version": 1,
+		"version": 2,
 		"active": true,
+		"cleared": false,
 		"mode": "nvl",
 		"profile_name": "novel_second",
 		"declarative_presentation": true,
@@ -140,6 +143,7 @@ func _dialogue_keys() -> Array[String]:
 		"active",
 		"avatar_expression",
 		"character",
+		"cleared",
 		"declarative_presentation",
 		"mode",
 		"nvl_entries",
@@ -513,7 +517,7 @@ func test_invalid_direct_restore_zeros_the_whole_dialogue_projection() -> void:
 	extra_key["unknown"] = true
 	invalid_cases.append(extra_key)
 	var wrong_version := _adv_content()
-	wrong_version["version"] = 2
+	wrong_version["version"] = 3
 	invalid_cases.append(wrong_version)
 	var wrong_mode := _adv_content()
 	wrong_mode["mode"] = "future"

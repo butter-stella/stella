@@ -98,6 +98,7 @@ static func parse(
 	var presentation_batch_stage_layer_ids: Dictionary = {}
 	var presentation_batch_visibility_targets: Dictionary = {}
 	var presentation_batch_loop_se_channels: Dictionary = {}
+	var presentation_batch_has_dialogue_clear: bool = false
 	var presentation_batch_has_chapter_indicator: bool = false
 	var presentation_batch_has_bgm: bool = false
 	var presentation_batch_start_line: int = 0
@@ -130,6 +131,7 @@ static func parse(
 				presentation_batch_stage_layer_ids.clear()
 				presentation_batch_visibility_targets.clear()
 				presentation_batch_loop_se_channels.clear()
+				presentation_batch_has_dialogue_clear = false
 				presentation_batch_has_chapter_indicator = false
 				presentation_batch_has_bgm = false
 				presentation_batch_start_line = 0
@@ -220,6 +222,26 @@ static func parse(
 						presentation_batch_operations.append({
 							"kind": "dialogue_visibility",
 							"payload": payload,
+						})
+						presentation_batch_operation_lines.append(token.line)
+				elif child_name == "dialogue_clear":
+					var clear_child := _parse_at_command(token, data)
+					if clear_child == null or clear_child.type != "dialogue_clear":
+						presentation_batch_invalid = true
+					elif presentation_batch_has_dialogue_clear:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: duplicate dialogue clear channel at %s"
+							% _source_location(data, token.line),
+							token.line,
+						)
+						presentation_batch_invalid = true
+					else:
+						presentation_batch_has_dialogue_clear = true
+						presentation_batch_operations.append({
+							"kind": "dialogue_clear",
+							"payload": clear_child.params.duplicate(true),
 						})
 						presentation_batch_operation_lines.append(token.line)
 				elif child_name == "chapter_indicator":
@@ -317,6 +339,7 @@ static func parse(
 					presentation_batch_stage_layer_ids.clear()
 					presentation_batch_visibility_targets.clear()
 					presentation_batch_loop_se_channels.clear()
+					presentation_batch_has_dialogue_clear = false
 					presentation_batch_has_chapter_indicator = false
 					presentation_batch_has_bgm = false
 					presentation_batch_start_line = 0
@@ -336,7 +359,7 @@ static func parse(
 					_record_diagnostic(
 						data,
 						"error",
-						"DslParser: only canonical @stage, @dialogue_visibility, @chapter_indicator, @loop_se, and @bgm children are allowed inside @presentation_batch; found @%s at %s"
+						"DslParser: only canonical @stage, @dialogue_visibility, @dialogue_clear, @chapter_indicator, @loop_se, and @bgm children are allowed inside @presentation_batch; found @%s at %s"
 						% [child_name, _source_location(data, token.line)],
 						token.line,
 					)
@@ -347,7 +370,7 @@ static func parse(
 				_record_diagnostic(
 					data,
 					"error",
-					"DslParser: only canonical @stage, @dialogue_visibility, @chapter_indicator, @loop_se, and @bgm children are allowed inside @presentation_batch at %s"
+					"DslParser: only canonical @stage, @dialogue_visibility, @dialogue_clear, @chapter_indicator, @loop_se, and @bgm children are allowed inside @presentation_batch at %s"
 					% _source_location(data, token.line),
 					token.line,
 				)
@@ -632,6 +655,7 @@ static func parse(
 					presentation_batch_stage_layer_ids.clear()
 					presentation_batch_visibility_targets.clear()
 					presentation_batch_loop_se_channels.clear()
+					presentation_batch_has_dialogue_clear = false
 					presentation_batch_has_chapter_indicator = false
 					presentation_batch_has_bgm = false
 					presentation_batch_nested_depth = 0
@@ -1449,6 +1473,9 @@ static func _parse_at_command(
 				data,
 				lower_standalone_presentation,
 			)
+		"dialogue_clear":
+			return _parse_dialogue_clear_command(
+				parts, token.line, data, lower_standalone_presentation)
 		"stage":
 			return _parse_stage_command(parts, token.line, data)
 		"bg":
@@ -2860,6 +2887,36 @@ static func _parse_dialogue_visibility_command(
 		batch_command.declared_line = line
 		return batch_command
 	return _make_cmd("dialogue_visibility", payload)
+
+
+static func _parse_dialogue_clear_command(
+	parts: Array,
+	line: int,
+	data: ScenarioData,
+	lower_to_presentation_batch: bool = false,
+) -> CommandData:
+	var location := _source_location(data, line)
+	if not parts.is_empty():
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @dialogue_clear accepts no arguments at %s" % location,
+			line,
+		)
+		return null
+	var payload := {"scope": "page"}
+	if lower_to_presentation_batch:
+		var batch_command := _make_cmd("presentation_batch", {
+			"policy": "join",
+			"operations": [{
+				"kind": "dialogue_clear",
+				"payload": payload.duplicate(true),
+			}],
+			"operation_lines": [line],
+		})
+		batch_command.declared_line = line
+		return batch_command
+	return _make_cmd("dialogue_clear", payload)
 
 
 static func _invalid_stage_redraw_value(

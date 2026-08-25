@@ -4,6 +4,8 @@
 ## Handles skip (toolbar + Ctrl held) and auto-play.
 extends Control
 
+const DialogueClearOperationRequest = preload(
+	"res://addons/stella/core/data/dialogue_clear_operation_request.gd")
 const DEFAULT_NVL_ENTRY_PREFIX := ""
 const DEFAULT_NVL_ENTRY_SEPARATOR := "\n"
 const _CHARACTER_MAP_SENTINEL := "\u2060"
@@ -92,6 +94,7 @@ var _dialogue_visibility_effective_signatures: Dictionary = {
 	"quick_menu": "",
 }
 var _dialogue_visibility_active: Dictionary = {}
+var _dialogue_clear_participant_capability: RefCounted
 
 # A configured wait glyph is presentation-only. It is created lazily so
 # projects that do not opt in keep the exact legacy scene tree and visuals.
@@ -166,6 +169,12 @@ var _playback_is_dialogue: bool = true
 
 
 func _ready():
+	_dialogue_clear_participant_capability = (
+		StellaRuntime._register_dialogue_clear_presenter(self))
+	if _dialogue_clear_participant_capability == null:
+		push_error(
+			"DialoguePresenter could not join the internal clear registry")
+		return
 	SignalBus.dialogue_requested.connect(_on_dialogue_requested)
 	SignalBus.hide_dialogue.connect(_on_hide_dialogue)
 	SignalBus.dialogue_advance_committed.connect(
@@ -199,10 +208,18 @@ func _ready():
 		(SignalBus.get(&"dialogue_visibility_operations_requested") as Signal).connect(
 			_on_dialogue_visibility_operations_requested
 		)
+	SignalBus.dialogue_clear_validate_requested.connect(
+		_on_dialogue_clear_validate_requested)
+	SignalBus.dialogue_clear_accept_requested.connect(
+		_on_dialogue_clear_accept_requested)
+	SignalBus.dialogue_clear_apply_requested.connect(
+		_on_dialogue_clear_apply_requested)
 	if SignalBus.has_signal(&"dialogue_visibility_state_apply_requested"):
 		(SignalBus.get(&"dialogue_visibility_state_apply_requested") as Signal).connect(
 			_on_dialogue_visibility_state_apply_requested
 		)
+	SignalBus.dialogue_content_state_apply_requested.connect(
+		_on_dialogue_content_state_apply_requested)
 	SignalBus.dialogue_visibility_targets_state_apply_requested.connect(
 		_on_dialogue_visibility_targets_state_apply_requested)
 	if SignalBus.has_signal(&"dialogue_visibility_visuals_reset_requested"):
@@ -237,6 +254,9 @@ func _ready():
 
 
 func _exit_tree() -> void:
+	StellaRuntime._unregister_dialogue_clear_presenter(
+		self, _dialogue_clear_participant_capability)
+	_dialogue_clear_participant_capability = null
 	_request_lifecycle_boundary(_LIFECYCLE_EXIT)
 
 
@@ -3326,6 +3346,87 @@ func _on_dialogue_visibility_operations_requested(
 		tween.finished.connect(on_finished, CONNECT_ONE_SHOT)
 
 
+func _on_dialogue_clear_validate_requested(
+	request: DialogueClearOperationRequest,
+) -> void:
+	if request == null or not request.is_target(self):
+		return
+	var operation := request.get_operation()
+	if (
+		operation == null
+		or operation.get_payload() != {"scope": "page"}
+		or not PresentationState._validate_dialogue_content(
+			operation.get_target_content(), false)
+		or not bool(operation.get_target_content().get("cleared", false))
+	):
+		SignalBus.reject_dialogue_clear_request(
+			request,
+			self,
+			_dialogue_clear_participant_capability,
+			"DialoguePresenter received a non-canonical clear operation",
+		)
+		return
+	SignalBus.validate_dialogue_clear_request(
+		request, self, _dialogue_clear_participant_capability)
+
+
+func _on_dialogue_clear_accept_requested(
+	request: DialogueClearOperationRequest,
+) -> void:
+	if request == null or not request.is_target(self):
+		return
+	SignalBus.accept_dialogue_clear_request(
+		request, self, _dialogue_clear_participant_capability)
+
+
+func _on_dialogue_clear_apply_requested(
+	request: DialogueClearOperationRequest,
+) -> void:
+	if request == null or not request.is_target(self):
+		return
+	var operation := request.get_operation()
+	if operation == null or not _apply_dialogue_clear(operation):
+		return
+	SignalBus.acknowledge_dialogue_clear_apply(
+		request, self, _dialogue_clear_participant_capability)
+
+
+func _apply_dialogue_clear(
+	operation: DialogueClearPresentationOperation,
+) -> bool:
+	if (
+		SignalBus.current_dialogue_visibility_request_id() <= 0
+		or not SignalBus.is_current_dialogue_visibility_operation_valid()
+	):
+		return false
+	var retiring_gen := _dialogue_gen
+	var retiring_queue_gen := _playback_queue_gen
+	if not _retire_dialogue_lifecycle(false):
+		return false
+	if (
+		retiring_gen != _dialogue_gen
+		or retiring_queue_gen + 1 != _playback_queue_gen
+		or not SignalBus.is_current_dialogue_visibility_operation_valid()
+	):
+		return false
+	_dialogue_gen += 1
+	_skip_pending_dialogue_gen = -1
+	_retire_auto_play_attempt()
+	_invalidate_advance_indicator()
+	_is_typing = false
+	_current_dialogue_activation = null
+	_current_scenario_id = ""
+	_current_scenario_identity = ""
+	_current_scene_id = ""
+	_current_command_index = -1
+	_current_command_uid = -1
+	_avatar_expressions.clear()
+	_apply_visual_only_dialogue_restore(
+		operation.get_target_content(), operation.get_runtime_binding(), true)
+	_apply_canonical_dialogue_visibility()
+	return SignalBus.is_current_dialogue_visibility_operation_valid()
+
+
 func _on_dialogue_visibility_state_apply_requested(
 	visibility: Dictionary,
 	content: Dictionary,
@@ -3336,6 +3437,14 @@ func _on_dialogue_visibility_state_apply_requested(
 	_canonical_dialogue_visibility = visibility.duplicate(true)
 	_dialogue_visibility_runtime_binding = runtime_binding.duplicate(true)
 	_apply_visual_only_dialogue_restore(content, runtime_binding)
+	_apply_canonical_dialogue_visibility()
+
+
+func _on_dialogue_content_state_apply_requested(
+	content: Dictionary,
+	runtime_binding: Dictionary,
+) -> void:
+	_apply_visual_only_dialogue_restore(content, runtime_binding, true)
 	_apply_canonical_dialogue_visibility()
 
 
@@ -3609,9 +3718,11 @@ func _emit_dialogue_visibility_binding_warning(
 func _apply_visual_only_dialogue_restore(
 	content: Dictionary,
 	runtime_binding: Dictionary,
+	preserve_current_presentation: bool = false,
 ) -> void:
 	_abort_current_dialogue_activation()
-	_restore_authored_presentation()
+	if not preserve_current_presentation:
+		_restore_authored_presentation()
 	_current_voice = ""
 	_current_voice_character = ""
 	_voice_playing = false
@@ -3644,10 +3755,13 @@ func _apply_visual_only_dialogue_restore(
 	_dialogue_segments = (content.get("segments", []) as Array).duplicate(true)
 	_dialogue_voice_character = ""
 	_dialogue_total_duration = 0.0
+	if _voice_replay_btn != null:
+		_voice_replay_btn.visible = false
 	_segment_presentation_complete = false
 	_next_stage_segment_index = 0
 	if not bool(content.get("active", false)):
-		_apply_dialogue_mode_presentation("adv", null, false)
+		if not preserve_current_presentation:
+			_apply_dialogue_mode_presentation("adv", null, false)
 		visible = false
 		_reset_nvl_accumulator()
 		name_label.text = ""
@@ -3668,12 +3782,27 @@ func _apply_visual_only_dialogue_restore(
 			current.get("provenance", {}) as Dictionary,
 		)
 		_active_stla_mode_profile = mode_profile
-		_apply_dialogue_mode_presentation(
-			_current_mode, mode_profile, _active_uses_stla_presentation)
+		if not preserve_current_presentation:
+			_apply_dialogue_mode_presentation(
+				_current_mode, mode_profile, _active_uses_stla_presentation)
 	else:
 		_active_stla_mode_profile = null
-		_apply_dialogue_mode_presentation(
-			_current_mode, null, _active_uses_stla_presentation)
+		if not preserve_current_presentation:
+			_apply_dialogue_mode_presentation(
+				_current_mode, null, _active_uses_stla_presentation)
+	if bool(content.get("cleared", false)):
+		_reset_nvl_accumulator()
+		name_label.text = ""
+		name_label.visible = false
+		text_label.text = ""
+		text_label.visible_characters = -1
+		if _avatar_container:
+			_avatar_container.visible = false
+			if _avatar_texture:
+				_avatar_texture.texture = null
+		_update_dialogue_visibility_node_baseline(name_label)
+		_update_dialogue_visibility_node_baseline(text_label)
+		return
 	if _current_mode == "nvl":
 		name_label.text = ""
 		name_label.visible = false
