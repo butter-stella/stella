@@ -413,11 +413,6 @@ func test_duplicate_targets_stage_conflicts_and_illegal_children_fail_atomically
 			"line": 4,
 		},
 		{
-			"label": "BGM child",
-			"children": "  @bgm bgm_theme",
-			"line": 4,
-		},
-		{
 			"label": "SE child",
 			"children": "  @se se_select",
 			"line": 4,

@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="BgmTrackDefinition" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://addons/stella/core/data/bgm_track_definition.gd" id="1_track"]
+
+[sub_resource type="AudioStreamWAV" id="AudioStreamWAV_invalid"]
+format = 0
+mix_rate = 1000
+data = PackedByteArray(128, 192, 234, 192, 128, 64, 22, 64, 128, 192, 234, 192, 128, 64, 22, 64, 128, 192, 234, 192)
+
+[resource]
+script = ExtResource("1_track")
+stream = SubResource("AudioStreamWAV_invalid")
+loop = true
+start_position = 0.01
+loop_position = 0.005

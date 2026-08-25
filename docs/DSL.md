@@ -261,7 +261,7 @@ Advance indicator 是可选的、按 Profile 独立配置的表现节点。`adva
 @end
 ```
 
-`@presentation_batch` header 只接受一个严格小写的 `policy=join|fire_and_forget`。block 不能为空，合法 child 只有 canonical `@stage`、canonical `@dialogue_visibility`、canonical `@chapter_indicator` 与 canonical `@loop_se`；child 与 standalone 共用各自唯一的 parser/canonicalization。每批最多一个 chapter-indicator child，因为它们共享固定 `chapter:indicator` channel；每个 loop-SE channel 也最多出现一次。解析器保留跨 kind 的 authored child 顺序，且 `operation_lines` 与 child 一一对应；duplicate Stage layer、duplicate visibility target（省略 target 的 surface 与显式 surface 也视为重复）、duplicate chapter/loop-SE target、nested batch/if/parallel/combine、scene gap、非法 child 与缺失 `@end` 都会令整块 fail-close。既有 `@stage_batch` 继续保持 Stage-only public contract，不会静默扩成 mixed alias。
+`@presentation_batch` header 只接受一个严格小写的 `policy=join|fire_and_forget`。block 不能为空，合法 child 只有 canonical `@stage`、canonical `@dialogue_visibility`、canonical `@chapter_indicator`、canonical `@loop_se` 与 canonical `@bgm`；child 与 standalone 共用各自唯一的 parser/canonicalization。每批最多一个 chapter-indicator child 和一个 BGM child，因为它们分别共享固定 `chapter:indicator` / `bgm:main` channel；每个 loop-SE channel 也最多出现一次。解析器保留跨 kind 的 authored child 顺序，且 `operation_lines` 与 child 一一对应；duplicate Stage layer、duplicate visibility target（省略 target 的 surface 与显式 surface 也视为重复）、duplicate chapter/BGM/loop-SE target、nested batch/if/parallel/combine、scene gap、非法 child 与缺失 `@end` 都会令整块 fail-close。既有 `@stage_batch` 继续保持 Stage-only public contract，不会静默扩成 mixed alias。
 
 Director 在任何 child apply 之前完成整批 typed schema/context preflight，并把 chapter Presenter binding registry 与唯一 AudioPresenter 完整 validate、seal 与 accept；任何 child 的 preflight 在其 source line 失败时都不会留下 Stage、dialogue、chapter 或 audio 的部分 mutation。apply 按 authored child 顺序跨 kind 派发，JOIN 等待 seal 后的 exact receipt union，FNF 则在 seal 后继续。普通 `@chapter_indicator` 和 `@dialogue_visibility` 仍应使用简短 standalone 写法；只有真正需要这个原子边界时才使用 batch。
 
@@ -338,11 +338,12 @@ Director 在任何 child apply 之前完成整批 typed schema/context preflight
 ### 3.6 音频
 
 ```
-// BGM — 默认淡入
-@bgm bgm_spring
-@bgm bgm_spring 1.5        // 指定淡入时间
-@bgm off                    // 淡出停止
-@bgm off 2.0               // 指定淡出时间
+// BGM — lifecycle 动画必须由作者显式声明
+@bgm play bgm_spring
+@bgm play bgm_cafe volume=0.7 fade=1.5
+@bgm pause fade=0.2
+@bgm resume fade=0.2
+@bgm stop fade=1.0
 
 // 一次性音效
 @se se_door_open
@@ -357,7 +358,44 @@ Director 在任何 child apply 之前完成整批 typed schema/context preflight
 @voice sakura_001
 ```
 
-`@se <asset>` 只播放一次，不可寻址；它没有 `loop` / `off` 参数，也没有按素材名停止的 API。持续环境声使用唯一 canonical grammar：
+`@se <asset>` 只播放一次，不可寻址；它没有 `loop` / `off` 参数，也没有按素材名停止的 API。
+
+BGM 是单一固定 channel，唯一 public grammar 是：
+
+```stla
+@bgm play <asset> [cue=<name>] [volume=0..1] [fade=<seconds>]
+@bgm pause [fade=<seconds>]
+@bgm resume [fade=<seconds>]
+@bgm stop [fade=<seconds>]
+```
+
+`volume` 默认 `1`，所有 action 的 `fade` 都默认 `0`；最短命令因此是立即操作，淡变必须显式书写。`fade` 是整个 replacement crossfade 的总时长，不是先淡出再淡入的两段时长。standalone BGM 默认 fire-and-forget；需要等待淡变或与 Stage 等 child 共用原子边界时，只使用现有 `@presentation_batch`：
+
+```stla
+@presentation_batch policy=join
+  @bgm play bgm_cafe cue=evening fade=0.8
+  @stage cafe show asset=stage:cafe transition=fade duration=0.8
+@end
+```
+
+同一 playing asset+cue 且 volume 相同仍会通过 AudioPresenter/resource positive preflight，物理投影稳定时不重播、不 seek、也不创建 receipt；只改 volume 会复用同一个 player/cursor 并淡变 authored gain。若相同 play/pause/resume/stop target 仍由上一条 fire-and-forget fade 持有，新的同 action 会先把旧 exact receipt 完成到唯一 authored endpoint，再以零新 Tween 同步确认；旧 token 的迟到 callback 无效。paused 状态下 `play` 从 cue 的 authored start marker 重播，只有 `resume` 从保留 cursor 继续；显式重启写成 `stop` 后再 `play`，不存在 `restart` option。对空 channel 执行 `pause`/`resume` 会在该行 fail-close；`stop` 为空时同步 no-op。
+
+原始 OGG/MP3/WAV 默认 `loop=true`、start=0，并保留格式自身合法的 loop marker。需要 authored start/loop marker 或 named cue 时，asset 指向 `BgmTrackDefinition` `.tres`；default 与每个 `BgmCueDefinition` 都是完整定义，cue 不继承 track 字段：
+
+```gdscript
+# BgmTrackDefinition
+stream = <AudioStream>
+loop = true
+start_position = 0.0
+loop_position = 4.2
+cues = [<BgmCueDefinition cue_name="evening" ...>]
+```
+
+每个 default/cue 的 `start_position` 与 `loop_position` 必须有限、非负且满足 `start_position <= loop_position < stream length`；即使 `loop=false` 也保留同一完整 marker schema，只是不启用循环。循环区间从 `loop_position` 到 stream 末尾；这一版没有 `loop_end`。stream 无法报告有限正长度、cue 重名/非法/缺失、marker 越界、资源缺失/歧义或格式不支持时，Director 会在 mixed batch 的任何 child mutation 前按 BGM child 的 `source_path:line` 拒绝整批。
+
+旧 `@bgm asset [fade]` / `@bgm off [fade]` grammar 已删除，不作为 alias 接受；迁移为 `@bgm play asset fade=...` / `@bgm stop fade=...`。
+
+持续环境声使用唯一 canonical grammar：
 
 ```stla
 @loop_se <channel> play <asset> [volume=0..1] [fade=<seconds>]
@@ -696,7 +734,8 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | 删除舞台层 | `@stage id remove transition=... duration=...` | `@stage id remove` |
 | 清空舞台层 | `@stage clear` | `@stage clear` |
 | 句内头像表情 | `[expr:expression]` | — |
-| BGM | `@bgm asset fadein` | `@bgm asset` |
+| BGM 播放 | `@bgm play asset cue=... volume=... fade=...` | `@bgm play asset` |
+| BGM 暂停/继续/停止 | `@bgm pause\|resume\|stop fade=...` | `@bgm pause` / `@bgm resume` / `@bgm stop` |
 | 音效 | `@se asset` | `@se asset` |
 | 循环音效播放 | `@loop_se channel play asset volume=... fade=...` | `@loop_se channel play asset` |
 | 循环音效停止 | `@loop_se channel stop fade=...` | `@loop_se channel stop` |
@@ -724,8 +763,7 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | 舞台层动作 | `show` | `@stage id key=value` 等价于 `@stage id show key=value` |
 | 舞台层转场 | `cut 0s` | 通过 `transition` / `duration` 显式启用动画 |
 | 章节标题指示器 | `cut 0s`；`fade` 为 `0.25s` | `none` 规范化为 `cut 0s` |
-| BGM 淡入 | `1.0s` | — |
-| BGM 淡出 | `1.0s` | — |
+| BGM 音量 / 淡变 | `1` / `0s` | standalone 默认 fire-and-forget；所有动画显式写 `fade=` |
 | loop-SE 音量 / 淡变 | `1` / `0s` | standalone 默认 fire-and-forget；JOIN 只通过 `@presentation_batch` 选择 |
 | timed wait 可跳过 | `false` | 显式 `skippable=true` 才接受普通推进或 Skip |
 | 对话推进 | 等待点击 | 有语音时可配置等语音播完 |

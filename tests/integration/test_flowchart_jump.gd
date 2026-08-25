@@ -250,7 +250,10 @@ func test_prepare_scenario_clears_flowchart_state():
 	f.store_string("@chapter ch\n@scene start\nnarrator「hi」\n")
 	f.close()
 	_runtime.presentation_state.current_bg = "stale_title"
-	_runtime.presentation_state.current_bgm = "stale_bgm"
+	_runtime.presentation_state.current_bgm = {
+		"asset": "stale_bgm", "cue": "", "loop": true, "position": 0.0,
+		"status": "playing", "volume": 1.0,
+	}
 	_runtime.presentation_state.stage_layers = {
 		"stale": StageLayerState.default_state(),
 	}
@@ -265,7 +268,7 @@ func test_prepare_scenario_clears_flowchart_state():
 		{
 			"bg": "",
 			"stage_layers": {},
-			"bgm": "",
+			"bgm": {},
 			"loop_se_channels": {},
 			"dialogue_visibility": {
 				"surface": true,

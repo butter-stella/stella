@@ -1,0 +1,26 @@
+[gd_resource type="Resource" script_class="BgmTrackDefinition" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://addons/stella/core/data/bgm_track_definition.gd" id="1_track"]
+[ext_resource type="Script" path="res://addons/stella/core/data/bgm_cue_definition.gd" id="2_cue"]
+
+[sub_resource type="AudioStreamWAV" id="AudioStreamWAV_synthetic"]
+format = 0
+loop_mode = 0
+mix_rate = 1000
+stereo = false
+data = PackedByteArray(128, 165, 198, 222, 234, 233, 218, 192, 158, 121, 85, 53, 31, 21, 25, 42, 70, 105, 143, 178, 208, 228, 235, 229, 210, 180, 145, 107, 72, 43, 25, 21, 31, 53, 85, 121, 158, 192, 218, 233, 234, 222, 198, 165, 128, 91, 58, 34, 22, 23, 38, 64, 98, 135, 171, 203, 225, 235, 231, 214, 186, 151, 113, 78, 49, 27, 21, 27, 47, 76, 111, 149, 184, 213, 231, 235, 225, 203, 171, 135, 98, 64, 38, 23, 22, 34, 58, 91, 128, 165, 198, 222, 234, 233, 218, 192, 158, 121, 85, 53, 31, 21, 25, 42, 70, 105, 143, 178, 208, 228, 235, 229, 210, 180, 145, 107, 72, 43, 25, 21, 31, 53, 85, 121, 158, 192, 218, 233, 234, 222, 198, 165, 128, 91, 58, 34, 22, 23, 38, 64, 98, 135, 171, 203, 225, 235, 231, 214, 186, 151, 113, 78, 49, 27, 21, 27, 47, 76, 111, 149, 184, 213, 231, 235, 225, 203, 171, 135, 98, 64, 38, 23, 22, 34, 58, 91, 128, 165, 198, 222, 234, 233, 218, 192, 158, 121, 85, 53, 31, 21, 25, 42, 70, 105, 143, 178, 208, 228)
+
+[sub_resource type="Resource" id="Resource_intro"]
+script = ExtResource("2_cue")
+cue_name = "intro"
+loop = false
+start_position = 0.02
+loop_position = 0.02
+
+[resource]
+script = ExtResource("1_track")
+stream = SubResource("AudioStreamWAV_synthetic")
+loop = true
+start_position = 0.01
+loop_position = 0.05
+cues = Array[ExtResource("2_cue")]([SubResource("Resource_intro")])

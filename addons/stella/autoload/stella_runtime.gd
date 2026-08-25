@@ -17,6 +17,8 @@ const DEFAULT_SETTINGS_SCENE = "res://addons/stella/scenes/settings.tscn"
 const DEFAULT_SAVE_LOAD_SCENE = "res://addons/stella/scenes/save_load.tscn"
 const DEFAULT_BACKLOG_SCENE = "res://addons/stella/scenes/backlog.tscn"
 const DEFAULT_FLOWCHART_SCENE = "res://addons/stella/scenes/flowchart.tscn"
+const AUDIO_SHUTDOWN_MAX_PROCESS_FRAMES := 120
+const AUDIO_MIX_ROLLOVER_EPSILON := 0.000000001
 var engine: ScenarioEngine
 var registry: CommandRegistry
 var config: StellaConfig
@@ -94,6 +96,10 @@ var _emitting_chapter_id := ""
 var _emitting_chapter_title := ""
 var _chapter_indicator_registrar_authority := RefCounted.new()
 var _loop_se_registrar_authority := RefCounted.new()
+var _bgm_registrar_authority := RefCounted.new()
+var _quit_requested := false
+var _quit_exit_code := 0
+var _quit_completion_started := false
 
 
 func _init() -> void:
@@ -111,6 +117,8 @@ func _init() -> void:
 		push_error("StellaRuntime: chapter indicator registrar authority conflict")
 	if not SignalBus.configure_loop_se_registrar(_loop_se_registrar_authority):
 		push_error("StellaRuntime: loop-SE registrar authority conflict")
+	if not SignalBus.configure_bgm_registrar(_bgm_registrar_authority):
+		push_error("StellaRuntime: BGM registrar authority conflict")
 
 
 ## Composition-owned admission keeps the cross-layer Bus free of concrete
@@ -134,24 +142,34 @@ func _unregister_chapter_indicator_presenter(
 	)
 
 
-func _register_loop_se_presenter(presenter: Object) -> RefCounted:
+func _register_audio_presenter(presenter: Object) -> Dictionary:
 	if not presenter is AudioPresenter:
-		return null
-	return SignalBus.register_loop_se_presenter(
-		presenter, _loop_se_registrar_authority)
+		return {}
+	return SignalBus.register_audio_presenter(
+		presenter,
+		_loop_se_registrar_authority,
+		_bgm_registrar_authority,
+	)
 
 
-func _unregister_loop_se_presenter(
+func _unregister_audio_presenter(
 	presenter: Object,
-	capability: RefCounted,
-) -> void:
-	SignalBus.unregister_loop_se_presenter(
-		presenter, capability, _loop_se_registrar_authority)
+	loop_se_capability: RefCounted,
+	bgm_capability: RefCounted,
+) -> bool:
+	return SignalBus.unregister_audio_presenter(
+		presenter,
+		loop_se_capability,
+		bgm_capability,
+		_loop_se_registrar_authority,
+		_bgm_registrar_authority,
+	)
 
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		auto_save()
+		request_quit()
 	elif (
 		what == NOTIFICATION_TRANSLATION_CHANGED
 		and engine != null
@@ -160,7 +178,103 @@ func _notification(what: int) -> void:
 		_publish_current_chapter(engine.context, true)
 
 
+## Product shutdown boundary for title actions, explicit performance-mode quit,
+## and OS close. AudioStreamPlayer.stop() is not a synchronous retirement
+## boundary in Godot 4.6.1, so quit is deferred until the unique AudioPresenter
+## has quiesced and AudioServer reports a subsequent real mix rollover.
+func request_quit(exit_code: int = 0) -> void:
+	if not _begin_quit_request(exit_code):
+		return
+	_complete_graceful_quit.call_deferred()
+
+
+func _begin_quit_request(exit_code: int) -> bool:
+	if _quit_requested:
+		return false
+	_quit_requested = true
+	_quit_exit_code = exit_code
+	return true
+
+
+func _complete_graceful_quit() -> void:
+	if _quit_completion_started:
+		return
+	_quit_completion_started = true
+	if not await _await_runtime_audio_quiesce():
+		_fail_graceful_quit(
+			"StellaRuntime: AudioPresenter did not acknowledge graceful shutdown")
+		return
+	if not await _await_audio_mix_boundary():
+		_fail_graceful_quit(
+			"StellaRuntime: no bounded AudioServer mix boundary during graceful shutdown")
+		return
+	get_tree().quit(_quit_exit_code)
+
+
+func _fail_graceful_quit(message: String) -> void:
+	push_error(message)
+	get_tree().quit(_quit_exit_code if _quit_exit_code != 0 else 1)
+
+
+func _await_runtime_audio_quiesce(
+	max_process_frames: int = AUDIO_SHUTDOWN_MAX_PROCESS_FRAMES,
+) -> bool:
+	for frame_index: int in range(max_process_frames + 1):
+		if SignalBus.quiesce_runtime_audio_for_shutdown():
+			return true
+		if frame_index == max_process_frames:
+			break
+		await get_tree().process_frame
+	return false
+
+
+func _await_audio_mix_boundary(
+	max_process_frames: int = AUDIO_SHUTDOWN_MAX_PROCESS_FRAMES,
+	mix_time_reader: Callable = Callable(),
+	driver_name_override: Variant = null,
+) -> bool:
+	var driver_name := (
+		AudioServer.get_driver_name()
+		if driver_name_override == null
+		else String(driver_name_override)
+	)
+	if driver_name.strip_edges().is_empty() or max_process_frames <= 0:
+		return false
+	var previous := _read_audio_mix_time(mix_time_reader)
+	if not _audio_mix_time_is_valid(previous):
+		return false
+	for _frame_index: int in range(max_process_frames):
+		await get_tree().process_frame
+		var current := _read_audio_mix_time(mix_time_reader)
+		if not _audio_mix_time_is_valid(current):
+			return false
+		if current < previous - AUDIO_MIX_ROLLOVER_EPSILON:
+			# Audio-thread playback deletion becomes visible to ObjectDB/resource
+			# cleanup on the main thread. Give that cleanup one explicit process
+			# boundary after the observed mix before asking SceneTree to terminate.
+			await get_tree().process_frame
+			return true
+		previous = current
+	return false
+
+
+func _read_audio_mix_time(mix_time_reader: Callable) -> float:
+	var value: Variant = (
+		mix_time_reader.call()
+		if mix_time_reader.is_valid()
+		else AudioServer.get_time_since_last_mix()
+	)
+	if not value is float and not value is int:
+		return NAN
+	return float(value)
+
+
+func _audio_mix_time_is_valid(value: float) -> bool:
+	return is_finite(value) and value >= 0.0
+
+
 func _ready():
+	get_tree().auto_accept_quit = false
 	# Main-scene replacement is settled only by this central observer. It is
 	# connected before any framework scene work so a destination root's _ready()
 	# cannot make path equality masquerade as a completed SceneTree handoff.
@@ -329,7 +443,6 @@ func _register_handlers():
 	registry.register(SetHandler.new())
 	registry.register(ConditionHandler.new())
 	registry.register(ChoiceHandler.new())
-	registry.register(BgmHandler.new())
 	registry.register(SeHandler.new())
 	registry.register(VoiceHandler.new())
 	registry.register(FadeHandler.new())
@@ -2038,7 +2151,7 @@ func _install_scenario(data: ScenarioData, scenario_path: String) -> void:
 	initial_snapshot["presentation_state"] = {
 		"bg": "",
 		"stage_layers": {},
-		"bgm": "",
+		"bgm": {},
 		"loop_se_channels": {},
 		"dialogue_visibility": {
 			"surface": true,
@@ -2140,7 +2253,8 @@ func _reset_presentation(
 	SignalBus.reset_chapter_indicator_presentation()
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
-	SignalBus.bgm_stop.emit(0.0)
+	presentation_state.current_bgm.clear()
+	SignalBus.reset_bgm_presentation()
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
 	SignalBus.hide_dialogue.emit()
@@ -3161,8 +3275,8 @@ func get_backlog() -> Array:
 ##    the global signal remains for non-context compatibility listeners.
 ##    Ownership transfer happens before any hard presentation boundary so a
 ##    synchronous Presenter abort cannot make the stale run report scenario_ended.
-## 7. Reset visuals to a clean slate. bgm_stop triggers the PresentationState
-##    listener; restore_snapshot then overwrites it. fade("in",0) drops any
+## 7. Reset visuals to a clean slate. The canonical BGM reset is then replaced
+##    by restore_snapshot. fade("in",0) drops any
 ##    lingering screen-fade overlay.
 ## 8. Restore presentation_state and apply_to_presenters, snapping visuals to
 ##    the restored state before the target command is re-dispatched.
@@ -3256,7 +3370,8 @@ func _restore_runtime_from_snapshot(
 	SignalBus.reset_chapter_indicator_presentation()
 	if not _owns_navigation_context(navigation, new_ctx):
 		return false
-	SignalBus.bgm_stop.emit(0.0)
+	presentation_state.current_bgm.clear()
+	SignalBus.reset_bgm_presentation()
 	if not _owns_navigation_context(navigation, new_ctx):
 		return false
 	SignalBus.hide_dialogue.emit()
@@ -3406,7 +3521,8 @@ func reset_settings() -> void:
 
 
 func _play_title_bgm() -> void:
-	SignalBus.bgm_play.emit(config.title_bgm, 1.0)
+	presentation_state.current_bgm.clear()
+	SignalBus.apply_title_bgm_cut(config.title_bgm)
 
 
 ## Play a system sound effect (UI clicks, confirmations, etc.)

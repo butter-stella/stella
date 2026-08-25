@@ -1,0 +1,32 @@
+// Public synthetic BGM lifecycle example. The tone resource is CC0.
+
+@chapter bgm_lifecycle_demo "BGM lifecycle demo"
+@scene bgm_lifecycle_start "BGM lifecycle demo"
+
+@bgm play synthetic_bgm cue=opening volume=0.04 fade=0.2
+
+「Standalone play is fire-and-forget and starts at the authored cue marker.」
+
+@presentation_batch policy=join
+  @bgm pause fade=0.2
+@end
+
+「JOIN reaches a stable paused state and preserves the playback cursor.」
+
+@bgm resume fade=0.2
+
+「Resume continues that cursor; play would restart the authored cue.」
+
+@presentation_batch policy=join
+  @bgm play synthetic_bgm cue=bridge volume=0.03 fade=0.2
+  @stage lifecycle_card show asset=character:sakura/smile transition=fade duration=0.2
+@end
+
+「The mixed batch uses one crossfade interval and waits for exact receipts.」
+
+@presentation_batch policy=join
+  @bgm stop fade=0.2
+  @stage lifecycle_card remove transition=fade duration=0.2
+@end
+
+「Stopped.」

@@ -58,4 +58,4 @@ func _on_pressed() -> void:
 		Action.TOGGLE_SKIP:
 			StellaRuntime.toggle_skip()
 		Action.QUIT:
-			get_tree().quit()
+			StellaRuntime.request_quit()

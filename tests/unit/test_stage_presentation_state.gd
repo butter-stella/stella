@@ -88,7 +88,7 @@ func test_stage_operations_are_tracked_and_json_roundtrip_exactly() -> void:
 func test_snapshot_without_stage_layers_restores_empty_stage() -> void:
 	var state := PresentationState.new()
 	state.stage_layers = {"old": StageLayerState.default_state()}
-	state.restore_snapshot({"bg": "", "bgm": ""})
+	state.restore_snapshot({"bg": "", "bgm": {}})
 	assert_true(state.stage_layers.is_empty())
 
 
@@ -157,7 +157,7 @@ func test_dialogue_projection_defaults_and_restore_are_stable() -> void:
 	var stable := {
 		"bg": "",
 		"stage_layers": {},
-		"bgm": "",
+		"bgm": {},
 		"loop_se_channels": {},
 		"dialogue_visibility": {"surface": false, "quick_menu": true},
 		"dialogue_content": {
