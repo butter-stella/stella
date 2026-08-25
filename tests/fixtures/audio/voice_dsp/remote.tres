@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="VoiceDspChainDefinition" load_steps=4 format=3]
+
+[ext_resource type="Script" uid="uid://ilmgh5b6md28" path="res://addons/stella/core/data/voice_dsp_chain_definition.gd" id="1_chain"]
+[ext_resource type="Script" uid="uid://bf4jwpvd5w1n2" path="res://addons/stella/core/data/voice_dsp_band_pass_effect.gd" id="2_band"]
+[ext_resource type="Script" uid="uid://ba14rdlwqv3m1" path="res://addons/stella/core/data/voice_dsp_effect_definition.gd" id="3_base"]
+
+[sub_resource type="Resource" id="BandPass_remote"]
+script = ExtResource("2_band")
+center_hz = 1900.0
+bandwidth_hz = 2900.0
+order = 2
+
+[resource]
+script = ExtResource("1_chain")
+effects = Array[ExtResource("3_base")]([SubResource("BandPass_remote")])
+tail_seconds = 0.0

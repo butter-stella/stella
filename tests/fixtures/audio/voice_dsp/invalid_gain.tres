@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="VoiceDspChainDefinition" load_steps=4 format=3]
+
+[ext_resource type="Script" uid="uid://ilmgh5b6md28" path="res://addons/stella/core/data/voice_dsp_chain_definition.gd" id="1_chain"]
+[ext_resource type="Script" uid="uid://c1fmmww7d3jme" path="res://addons/stella/core/data/voice_dsp_delay_effect.gd" id="2_delay"]
+[ext_resource type="Script" uid="uid://ba14rdlwqv3m1" path="res://addons/stella/core/data/voice_dsp_effect_definition.gd" id="3_base"]
+
+[sub_resource type="Resource" id="Delay_invalid"]
+script = ExtResource("2_delay")
+time_ms = 300.0
+feedback = 0.0005
+mix = 0.35
+
+[resource]
+script = ExtResource("1_chain")
+effects = Array[ExtResource("3_base")]([SubResource("Delay_invalid")])
+tail_seconds = 0.6

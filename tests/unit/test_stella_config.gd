@@ -131,6 +131,7 @@ func before_each():
 		"bgm_path": _runtime.bgm_path,
 		"se_path": _runtime.se_path,
 		"voice_path": _runtime.voice_path,
+		"voice_dsp_path": _runtime.voice_dsp_path,
 		"title_scene_path": _runtime.title_scene_path,
 	}
 
@@ -194,6 +195,7 @@ func test_defaults_when_no_file():
 	assert_eq(config.bgm_path, "res://audio/bgm/")
 	assert_eq(config.se_path, "res://audio/se/")
 	assert_eq(config.voice_path, "res://audio/voice/")
+	assert_eq(config.voice_dsp_path, "res://audio/voice_dsp/")
 
 	assert_eq(config.cg_gallery, false)
 	assert_eq(config.backlog, true)
@@ -304,6 +306,7 @@ func test_runtime_applies_config_paths():
 	cf.set_value("paths", "bgm", "res://custom/bgm/")
 	cf.set_value("paths", "se", "res://custom/se/")
 	cf.set_value("paths", "voice", "res://custom/voice/")
+	cf.set_value("paths", "voice_dsp", "res://custom/voice_dsp/")
 	cf.save(path)
 
 	var loaded_config := StellaConfig.new()
@@ -317,6 +320,7 @@ func test_runtime_applies_config_paths():
 	assert_eq(_runtime.bgm_path, "res://custom/bgm/")
 	assert_eq(_runtime.se_path, "res://custom/se/")
 	assert_eq(_runtime.voice_path, "res://custom/voice/")
+	assert_eq(_runtime.voice_dsp_path, "res://custom/voice_dsp/")
 
 
 func test_runtime_applies_default_snapshot_after_config_sources_are_removed():
@@ -327,6 +331,7 @@ func test_runtime_applies_default_snapshot_after_config_sources_are_removed():
 	_runtime.bgm_path = "res://private/bgm/"
 	_runtime.se_path = "res://private/se/"
 	_runtime.voice_path = "res://private/voice/"
+	_runtime.voice_dsp_path = "res://private/voice_dsp/"
 
 	_runtime.config = StellaConfig.new()
 	_runtime._apply_config()
@@ -337,6 +342,7 @@ func test_runtime_applies_default_snapshot_after_config_sources_are_removed():
 	assert_eq(_runtime.bgm_path, "res://audio/bgm/")
 	assert_eq(_runtime.se_path, "res://audio/se/")
 	assert_eq(_runtime.voice_path, "res://audio/voice/")
+	assert_eq(_runtime.voice_dsp_path, "res://audio/voice_dsp/")
 
 
 func test_runtime_title_scene_defaults_to_builtin():

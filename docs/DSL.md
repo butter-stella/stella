@@ -102,6 +102,9 @@ sakura（这个人...好奇怪。）
 // 附带语音
 sakura「你好，初次见面。」 #voice:sakura_001
 
+// 为这一条语音选择有序 DSP preset；没有 #voice_dsp 时保持普通干声
+sakura「电话里的声音。」 #voice:sakura_001 #voice_dsp:telephone
+
 // 句内头像表情提示
 sakura「我本来很开心的...[expr:surprised]但是听到这个消息...[expr:cry]呜呜...」
 
@@ -121,6 +124,33 @@ sakura「那个人就是..{wait:500}{speed:30}你吗？」
 `{wait:...}` 与 `{speed:...}` 都使用毫秒：`{wait:500}` 暂停 500ms，
 `{speed:30}` 把后续每字间隔设为 30ms。未知标签、非数字或负数会产生
 warning，并按普通文本显示。
+
+`#voice_dsp:<preset>` 只能与同一行的 `#voice:<asset>` 一起使用。preset 是
+相对于 `[paths] voice_dsp` 的 Stella 逻辑资源 ID，例如 `telephone` 会解析为
+`res://audio/voice_dsp/telephone.tres`（或 `.res`）。空值、重复 metadata、未知
+metadata、绝对路径、`res://` / `user://` 和包含 `.` / `..` 的路径都会在带
+source line 的 parser 边界 fail-close。`@combine` 中每个对话 segment 独立选择
+preset；Backlog 重播保留各 segment 的选择和顺序，普通语音不会继承上一条链。
+
+DSP preset 是 `VoiceDspChainDefinition` Resource，`effects` 按数组顺序执行，
+`tail_seconds` 声明最后一个有声 sample 后仍需保留物理效果链的最长尾音。当前
+通用 primitive 为：
+
+- `VoiceDspBandPassEffect(center_hz, bandwidth_hz, order)`：lower edge
+  `center-bandwidth/2` 的 HighPass 后接 upper edge `center+bandwidth/2` 的
+  LowPass；order `1..4` 映射 Godot 的 `6/12/18/24 dB/oct`。这里定义的是
+  Stella/Godot 的确定性频响，并不宣称与任意外部 Butterworth 实现逐 sample
+  等价；不采用 `AudioEffectBandPassFilter`，因为其 resonance 没有文档化的
+  bandwidth 映射。
+- `VoiceDspDelayEffect(time_ms, feedback, mix)`：`mix` 是线性的湿声 tap gain，
+  干声始终为 `1.0`，不是 dry/wet crossfade；`feedback` 也是线性 gain。零值
+  关闭对应支路，非零值必须至少为 `0.001`，因为 Godot 的可表达 floor 是
+  `-60 dB`。
+
+preset 在修改 AudioServer 前完成完整 detached validation。资源缺失、类型错误、
+非法频率/阶数/gain 或无法安装完整 chain 时拒绝该 voice request，不会中断当前
+有效语音后再降级成干声。hide、clear、load/rollback、return-to-title、替换语音
+和 Presenter 退出都会清理 private bus effects 与 tail Timer。
 
 每个可见字符的基础延迟来自该句开始显示时取得的
 `character_interval`；字符属于固定集合 `，。！？；：、,.!?;:…—` 时，再加上

@@ -2368,6 +2368,8 @@ func test_f_mid_fnf_save_load_uses_canonical_checkpoint_and_same_cursor_no_work(
 	assert_eq(new_dialogue_segments, [[{
 		"text": "FNF save tail.",
 		"voice": "",
+		"voice_dsp": "",
+		"voice_dsp_line": 0,
 		"stage_ops": [],
 		"stage_operation_lines": [],
 	}]], "load fresh-dispatches the authored tail exactly once")

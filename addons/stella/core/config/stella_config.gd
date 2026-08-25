@@ -22,6 +22,7 @@ const _CONFIG_SCHEMA := {
 		"bgm": {"property": "bgm_path", "type": TYPE_STRING},
 		"se": {"property": "se_path", "type": TYPE_STRING},
 		"voice": {"property": "voice_path", "type": TYPE_STRING},
+		"voice_dsp": {"property": "voice_dsp_path", "type": TYPE_STRING},
 	},
 	"features": {
 		"cg_gallery": {"property": "cg_gallery", "type": TYPE_BOOL},
@@ -136,6 +137,7 @@ var stage_path: String = "res://art/stage/"
 var bgm_path: String = "res://audio/bgm/"
 var se_path: String = "res://audio/se/"
 var voice_path: String = "res://audio/voice/"
+var voice_dsp_path: String = "res://audio/voice_dsp/"
 
 # [features]
 var cg_gallery: bool = false
@@ -245,6 +247,7 @@ func reset() -> void:
 	bgm_path = "res://audio/bgm/"
 	se_path = "res://audio/se/"
 	voice_path = "res://audio/voice/"
+	voice_dsp_path = "res://audio/voice_dsp/"
 	cg_gallery = false
 	backlog = true
 	save_slots = 8

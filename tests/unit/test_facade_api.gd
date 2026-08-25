@@ -1014,6 +1014,7 @@ func _disconnect_game_presenters():
 			"dialogue_requested", "dialogue_backlog_effects_resolved",
 			"voice_play", "voice_playback_requested", "voice_playback_event",
 			"dialogue_voice_replay_requested",
+			"dialogue_voice_segment_replay_requested",
 			"dialogue_voice_started", "dialogue_voice_progress",
 			"dialogue_voice_finished",
 			"system_se_play", "advance_dispatch_started",

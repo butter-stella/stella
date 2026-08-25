@@ -191,13 +191,17 @@ func test_add_entry_strips_only_registered_custom_bbcode_effects():
 
 func test_add_entry_concatenates_combine_segments():
 	var segs = [
-		{"text": "foo", "voice": "v1"},
-		{"text": "bar", "voice": "v2"},
+		{"text": "foo", "voice": "v1", "voice_dsp": "radio", "voice_dsp_line": 7},
+		{"text": "bar", "voice": "v2", "voice_dsp": "echo", "voice_dsp_line": 8},
 	]
 	_mgr.add_entry("a", segs, 0, func(): return {})
 	var e = _mgr.get_entries()[0]
 	assert_eq(e["text"], "foobar")
 	assert_eq(e["voices"], ["v1", "v2"])
+	assert_eq_deep(e["voice_segments"], [
+		{"voice": "v1", "voice_dsp": "radio", "voice_dsp_line": 7},
+		{"voice": "v2", "voice_dsp": "echo", "voice_dsp_line": 8},
+	])
 
 
 func test_every_entry_carries_a_snapshot():
