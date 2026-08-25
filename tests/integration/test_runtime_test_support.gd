@@ -91,7 +91,7 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 	)
 	_runtime.presentation_state.current_bgm = {
 		"asset": "dirty_bgm", "cue": "", "loop": true, "position": 0.0,
-		"status": "playing", "volume": 1.0,
+		"status": "playing", "stem_mix": {}, "volume": 1.0,
 	}
 	_runtime.game_state.current_state = GameStateMachine.State.BACKLOG
 	_runtime.game_state.previous_state = GameStateMachine.State.PLAYING
@@ -671,12 +671,12 @@ func _assert_blocking_load_boundary(
 func _install_synthetic_bgm(audio_presenter: Node) -> AudioStreamPlayer:
 	var stream := AudioStreamGenerator.new()
 	var voice: Dictionary = audio_presenter._create_bgm_voice(
-		stream, "synthetic", "", true, 0.0, 0.0, 1.0)
+		stream, "synthetic", "", true, 0.0, 0.0, 1.0, {}, [], {})
 	audio_presenter._bgm_channel = audio_presenter._new_bgm_channel()
 	audio_presenter._bgm_channel["current"] = voice
 	audio_presenter._bgm_channel["target_state"] = {
 		"asset": "synthetic", "cue": "", "loop": true, "position": 0.0,
-		"status": "playing", "volume": 1.0,
+		"status": "playing", "stem_mix": {}, "volume": 1.0,
 	}
 	return voice["player"] as AudioStreamPlayer
 

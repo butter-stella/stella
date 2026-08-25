@@ -252,7 +252,7 @@ func test_prepare_scenario_clears_flowchart_state():
 	_runtime.presentation_state.current_bg = "stale_title"
 	_runtime.presentation_state.current_bgm = {
 		"asset": "stale_bgm", "cue": "", "loop": true, "position": 0.0,
-		"status": "playing", "volume": 1.0,
+		"status": "playing", "stem_mix": {}, "volume": 1.0,
 	}
 	_runtime.presentation_state.stage_layers = {
 		"stale": StageLayerState.default_state(),
