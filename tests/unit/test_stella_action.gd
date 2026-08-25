@@ -13,7 +13,9 @@ func before_each():
 
 
 func after_each():
-	_btn.queue_free()
+	if is_instance_valid(_btn):
+		_btn.free()
+	await get_tree().process_frame
 
 
 ## --- Connection ---
@@ -30,7 +32,8 @@ func test_auto_connects_to_parent_button():
 
 
 func test_does_not_crash_on_non_button_parent():
-	_btn.queue_free()
+	_btn.free()
+	_btn = null
 	var node = Node.new()
 	var action = StellaAction.new()
 	action.action = StellaAction.Action.QUICK_SAVE
@@ -38,12 +41,7 @@ func test_does_not_crash_on_non_button_parent():
 	add_child(node)
 	# Should not crash, just warn
 	assert_true(true)
-	node.queue_free()
-	# Re-create for after_each
-	_btn = Button.new()
-	_action = StellaAction.new()
-	_btn.add_child(_action)
-	add_child(_btn)
+	node.free()
 
 
 func test_default_action_is_none():
@@ -89,6 +87,7 @@ func test_show_settings_transitions_state():
 	# Clean up overlay
 	runtime._close_current_overlay()
 	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
+	await get_tree().process_frame
 
 
 func test_show_save_transitions_state():
@@ -101,6 +100,7 @@ func test_show_save_transitions_state():
 
 	runtime._close_current_overlay()
 	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
+	await get_tree().process_frame
 
 
 func test_show_load_transitions_state():
@@ -113,6 +113,7 @@ func test_show_load_transitions_state():
 
 	runtime._close_current_overlay()
 	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
+	await get_tree().process_frame
 
 
 func test_show_backlog_transitions_state():
@@ -125,6 +126,7 @@ func test_show_backlog_transitions_state():
 
 	runtime._close_current_overlay()
 	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
+	await get_tree().process_frame
 
 
 ## --- Save/Load ---

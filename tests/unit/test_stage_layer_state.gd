@@ -11,6 +11,7 @@ func _op(
 		"id": layer_id,
 		"properties": properties,
 		"transition": "cut",
+		"transition_params": {},
 		"duration": 0.0,
 	}
 
@@ -344,8 +345,19 @@ func test_operation_envelope_is_closed_and_rejects_invalid_timing():
 	assert_false(StageLayerState.validate_operation(unknown_property, false))
 
 	var invalid_transition := valid.duplicate(true)
-	invalid_transition["transition"] = "warp"
+	invalid_transition["transition"] = "9warp"
 	assert_false(StageLayerState.validate_operation(invalid_transition, false))
+
+	var missing_transition_params := valid.duplicate(true)
+	missing_transition_params.erase("transition_params")
+	assert_false(StageLayerState.validate_operation(
+		missing_transition_params, false))
+
+	for noncanonical_transition in ["none", "CUT", " cut", "cut "]:
+		var noncanonical := valid.duplicate(true)
+		noncanonical["transition"] = noncanonical_transition
+		assert_false(StageLayerState.validate_operation(noncanonical, false),
+			noncanonical_transition)
 
 	var negative_duration := valid.duplicate(true)
 	negative_duration["duration"] = -0.1
@@ -465,7 +477,9 @@ func test_invalid_and_non_finite_values_preserve_json_safe_state():
 	assert_false(encoded.contains("inf"))
 
 
-func test_stage_layer_handler_emits_one_atomic_operation():
+func test_stage_layer_handler_emits_one_typed_atomic_operation():
+	var presenter := StagePresenter.new()
+	add_child_autoqfree(presenter)
 	var received: Array = []
 	var callback = func(operations, force_cut):
 		received.append({"operations": operations, "force_cut": force_cut})
@@ -477,7 +491,7 @@ func test_stage_layer_handler_emits_one_atomic_operation():
 		"action": "show",
 		"id": "hero",
 		"properties": {
-			"face": "stage:sad",
+			"face": "background:bg_cafe",
 			"redraw": [{
 				"type": "brightness_contrast",
 				"brightness": 17,
@@ -485,20 +499,29 @@ func test_stage_layer_handler_emits_one_atomic_operation():
 			}],
 		},
 		"transition": "fade",
+		"transition_params": {},
 		"duration": 0.25,
 	}
-	await StageLayerHandler.new().execute(command, null)
+	var scenario := ScenarioData.new()
+	scenario.id = "stage_handler_test"
+	var context := ScenarioContext.new(scenario)
+	await StageLayerHandler.new(
+		StellaRuntime.presentation_director).execute(command, context)
 
 	assert_eq(received.size(), 1)
 	assert_false(received[0]["force_cut"])
 	assert_eq(received[0]["operations"][0]["id"], "hero")
-	assert_eq(received[0]["operations"][0]["properties"]["face"], "stage:sad")
+	assert_eq(
+		received[0]["operations"][0]["properties"]["face"],
+		"background:bg_cafe",
+	)
 	assert_eq(
 		received[0]["operations"][0]["properties"]["redraw"][0]["brightness"],
 		17,
 	)
 	SignalBus.stage_operations_requested.disconnect(callback)
 	StellaRuntime.clear_stage_layers()
+	await get_tree().process_frame
 
 
 func test_runtime_registers_stage_layer_handler():

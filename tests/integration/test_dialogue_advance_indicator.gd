@@ -69,6 +69,11 @@ func before_each() -> void:
 func after_each() -> void:
 	INDICATOR_SCENE_SCRIPT.ready_callback = Callable()
 	SignalBus.hide_dialogue.emit()
+	if is_instance_valid(_presenter):
+		assert_true(
+			(_presenter._dialogue_timer_waiters as Dictionary).is_empty(),
+			"dialogue lifecycle teardown leaves the timer authority empty",
+		)
 	StellaRuntime.auto_play.is_active = false
 	StellaRuntime.skip_controller.is_active = false
 	StellaRuntime.set_setting("auto_play_delay", _original_auto_play_delay)
@@ -83,6 +88,36 @@ func after_each() -> void:
 	StellaRuntime.game_state.current_state = GameStateMachine.State.TITLE
 	StellaRuntime.game_state.previous_state = GameStateMachine.State.TITLE
 	await get_tree().process_frame
+
+
+func _retire_presenter_test_owner() -> void:
+	if not is_instance_valid(_presenter):
+		return
+	# Retire the exact Presenter generation before freeing the test-owned scene.
+	# This releases inline waits and skip/auto continuations without shortening
+	# the behavior exercised by the test itself.
+	SignalBus.hide_dialogue.emit()
+	assert_true(
+		(_presenter._dialogue_timer_waiters as Dictionary).is_empty(),
+		"hard retirement settles every Presenter-owned dialogue timer waiter",
+	)
+	_presenter.queue_free()
+	await get_tree().process_frame
+	_presenter = null
+
+
+func _finish_active_voice_for_test(audio_presenter: AudioPresenter) -> void:
+	assert_not_null(audio_presenter)
+	if audio_presenter == null:
+		return
+	var playback_token: int = audio_presenter._voice_playback_token
+	assert_gt(playback_token, 0, "the replacement owns an exact playback token")
+	audio_presenter._voice_player.stop()
+	audio_presenter._on_voice_playback_finished()
+	await get_tree().process_frame
+	assert_eq(audio_presenter._voice_playback_token, -1)
+	assert_false(_presenter._playback_queue_active,
+		"the strict physical terminal releases the replacement dialogue queue")
 
 
 func test_unconfigured_presenter_never_creates_an_indicator() -> void:
@@ -480,6 +515,7 @@ func test_input_immediately_after_show_completes_without_advancing() -> void:
 
 	SignalBus.advance_requested.disconnect(on_advance)
 	SignalBus.dialogue_voice_finished.disconnect(on_voice_finished)
+	await _retire_presenter_test_owner()
 
 
 func test_real_click_to_finish_shows_ready_then_next_click_hides() -> void:
@@ -555,6 +591,7 @@ func test_click_to_finish_cancels_a_long_inline_wait_immediately() -> void:
 	assert_true(waiting)
 	if not waiting:
 		SignalBus.advance_requested.disconnect(on_advance)
+		await _retire_presenter_test_owner()
 		return
 
 	var input_handler: Node = game.get_node("InputHandler")
@@ -579,6 +616,7 @@ func test_click_to_finish_cancels_a_long_inline_wait_immediately() -> void:
 		assert_eq(advance_count[0], 1)
 		assert_false(indicator.visible)
 	SignalBus.advance_requested.disconnect(on_advance)
+	await _retire_presenter_test_owner()
 
 
 func test_auto_keyboard_completion_resumes_the_auto_advance_tail() -> void:
@@ -612,6 +650,7 @@ func test_auto_keyboard_completion_resumes_the_auto_advance_tail() -> void:
 	assert_true(waiting)
 	if not waiting:
 		SignalBus.advance_requested.disconnect(on_advance)
+		await _retire_presenter_test_owner()
 		return
 	var space := InputEventKey.new()
 	space.keycode = KEY_SPACE
@@ -628,6 +667,7 @@ func test_auto_keyboard_completion_resumes_the_auto_advance_tail() -> void:
 	assert_true(advanced)
 	assert_eq(advance_count[0], 1)
 	SignalBus.advance_requested.disconnect(on_advance)
+	await _retire_presenter_test_owner()
 
 
 func test_active_skip_never_exposes_a_ready_indicator() -> void:
@@ -795,6 +835,7 @@ func test_toolbar_skip_checks_unread_gate_before_finalizing_typewriter() -> void
 	assert_true(waiting)
 	if not waiting:
 		SignalBus.advance_requested.disconnect(on_advance)
+		await _retire_presenter_test_owner()
 		return
 	_presenter._current_scenario_id = "issue_154_skip_gate"
 	_presenter._current_scenario_identity = ""
@@ -807,6 +848,7 @@ func test_toolbar_skip_checks_unread_gate_before_finalizing_typewriter() -> void
 
 	if not _press_toolbar_skip(_presenter):
 		SignalBus.advance_requested.disconnect(on_advance)
+		await _retire_presenter_test_owner()
 		return
 	assert_false(StellaRuntime.is_skipping(),
 		"toolbar skip stops at an unread line before completing it")
@@ -822,6 +864,7 @@ func test_toolbar_skip_checks_unread_gate_before_finalizing_typewriter() -> void
 	assert_false(StellaRuntime.read_flags.is_read(
 		"issue_154_skip_gate", "start", 15402))
 	SignalBus.advance_requested.disconnect(on_advance)
+	await _retire_presenter_test_owner()
 
 
 func test_stella_action_skip_applies_unread_gate_during_typewriter() -> void:
@@ -845,6 +888,7 @@ func test_stella_action_skip_applies_unread_gate_during_typewriter() -> void:
 	assert_true(typing_started)
 	if not typing_started:
 		SignalBus.advance_requested.disconnect(on_advance)
+		await _retire_presenter_test_owner()
 		return
 	_presenter._current_scenario_id = "issue_154_public_skip_gate"
 	_presenter._current_scenario_identity = ""
@@ -868,6 +912,7 @@ func test_stella_action_skip_applies_unread_gate_during_typewriter() -> void:
 		"issue_154_public_skip_gate", "start", 15403))
 	assert_eq(advance_count[0], 0)
 	SignalBus.advance_requested.disconnect(on_advance)
+	await _retire_presenter_test_owner()
 
 
 func test_cancelling_toolbar_skip_during_its_delay_restores_ready_state() -> void:
@@ -999,6 +1044,7 @@ func test_ctrl_release_cancels_pending_skip_and_restores_ready_immediately() -> 
 	)
 	assert_true(pending)
 	if not pending:
+		await _retire_presenter_test_owner()
 		return
 	var release := InputEventKey.new()
 	release.keycode = KEY_CTRL
@@ -1010,6 +1056,7 @@ func test_ctrl_release_cancels_pending_skip_and_restores_ready_immediately() -> 
 	if indicator != null:
 		assert_true(indicator.visible,
 			"releasing Ctrl restores ready feedback without waiting 500 ms")
+	await _retire_presenter_test_owner()
 
 
 func test_auto_play_shows_during_wait_then_advance_hides_it() -> void:
@@ -1284,6 +1331,7 @@ func test_ctrl_input_in_system_overlay_preserves_ready_and_typing_lines() -> voi
 		_presenter, "Ready beneath system overlay", "adv", _texture_profile())
 	if indicator == null:
 		SignalBus.advance_requested.disconnect(on_advance)
+		await _retire_presenter_test_owner()
 		return
 	StellaRuntime.game_state.current_state = GameStateMachine.State.BACKLOG
 	var ctrl_press := InputEventKey.new()
@@ -1312,6 +1360,7 @@ func test_ctrl_input_in_system_overlay_preserves_ready_and_typing_lines() -> voi
 	assert_true(waiting)
 	if not waiting:
 		SignalBus.advance_requested.disconnect(on_advance)
+		await _retire_presenter_test_owner()
 		return
 	var visible_before := _text_label(_presenter).visible_characters
 	StellaRuntime.game_state.current_state = GameStateMachine.State.SETTINGS
@@ -1330,6 +1379,7 @@ func test_ctrl_input_in_system_overlay_preserves_ready_and_typing_lines() -> voi
 	assert_false(_presenter._ctrl_held,
 		"Ctrl release remains unconditional in a system overlay")
 	SignalBus.advance_requested.disconnect(on_advance)
+	await _retire_presenter_test_owner()
 
 
 func test_leaving_playing_retires_held_ctrl_and_pending_skip() -> void:
@@ -1847,7 +1897,8 @@ func test_advance_tail_cannot_stop_voice_started_by_finalize_replacement() -> vo
 	StellaRuntime.voice_path = "res://examples/demo/audio/voice/"
 	StellaRuntime.set_setting("voice_continue_on_advance", false)
 	_presenter._char_interval = 0.05
-	var audio_presenter := StellaRuntime.get_node_or_null("AudioPresenter")
+	var audio_presenter := (
+		StellaRuntime.get_node_or_null("AudioPresenter") as AudioPresenter)
 	assert_not_null(audio_presenter)
 	if audio_presenter == null:
 		return
@@ -1882,8 +1933,7 @@ func test_advance_tail_cannot_stop_voice_started_by_finalize_replacement() -> vo
 		"the ordinary tail of the retired advance must not stop replacement audio")
 	assert_true(_presenter._playback_queue_active,
 		"replacement playback must still own its live queue")
-	audio_presenter._voice_player.stop()
-	SignalBus.voice_finished.emit()
+	await _finish_active_voice_for_test(audio_presenter)
 
 
 func test_voice_progress_consumer_rejects_retired_finished_tail() -> void:
@@ -1920,10 +1970,9 @@ func test_voice_progress_consumer_rejects_retired_finished_tail() -> void:
 		"Replacement keeps its progress visible")
 	assert_true(progress_bar.visible,
 		"the retired FINISHED tail must not hide replacement voice progress")
-	var audio_presenter := StellaRuntime.get_node_or_null("AudioPresenter")
-	if audio_presenter != null:
-		audio_presenter._voice_player.stop()
-	SignalBus.voice_finished.emit()
+	var audio_presenter := (
+		StellaRuntime.get_node_or_null("AudioPresenter") as AudioPresenter)
+	await _finish_active_voice_for_test(audio_presenter)
 
 
 func test_owned_dialogue_voice_started_tail_rejects_replacement() -> void:
@@ -1963,10 +2012,9 @@ func test_owned_dialogue_voice_started_tail_rejects_replacement() -> void:
 			accepted_totals[0], _presenter._playback_total_duration, 0.001,
 			"the one accepted event belongs to replacement playback",
 		)
-	var audio_presenter := StellaRuntime.get_node_or_null("AudioPresenter")
-	if audio_presenter != null:
-		audio_presenter._voice_player.stop()
-	SignalBus.voice_finished.emit()
+	var audio_presenter := (
+		StellaRuntime.get_node_or_null("AudioPresenter") as AudioPresenter)
+	await _finish_active_voice_for_test(audio_presenter)
 
 
 func test_typed_voice_progress_rejects_a_replaced_playback_owner() -> void:
@@ -2025,10 +2073,9 @@ func test_typed_voice_progress_rejects_a_replaced_playback_owner() -> void:
 		"a late low-level consumer rejects the retired playback tail")
 	assert_eq(accepted_dialogue_progress.size(), 0,
 		"a typed event retired by an earlier listener cannot reach the dialogue relay")
-	var audio_presenter := StellaRuntime.get_node_or_null("AudioPresenter")
-	if audio_presenter != null:
-		audio_presenter._voice_player.stop()
-	SignalBus.voice_finished.emit()
+	var audio_presenter := (
+		StellaRuntime.get_node_or_null("AudioPresenter") as AudioPresenter)
+	await _finish_active_voice_for_test(audio_presenter)
 
 
 func test_high_level_voice_progress_tail_rejects_replacement() -> void:
@@ -2066,10 +2113,9 @@ func test_high_level_voice_progress_tail_rejects_replacement() -> void:
 	assert_true(progress_bar.visible)
 	assert_almost_eq(float(progress_bar.value), 0.0, 0.001,
 		"the retired high-level PROGRESS tail cannot overwrite replacement START")
-	var audio_presenter := StellaRuntime.get_node_or_null("AudioPresenter")
-	if audio_presenter != null:
-		audio_presenter._voice_player.stop()
-	SignalBus.voice_finished.emit()
+	var audio_presenter := (
+		StellaRuntime.get_node_or_null("AudioPresenter") as AudioPresenter)
+	await _finish_active_voice_for_test(audio_presenter)
 
 
 func test_voice_kickoff_cannot_overwrite_a_synchronously_shown_replacement() -> void:

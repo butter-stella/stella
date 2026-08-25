@@ -587,7 +587,8 @@ func _current_dialogue_presentation_frame(segments: Variant) -> Dictionary:
 signal bg_changed(asset: String, transition: String, duration: float)
 
 # Generic named stage layers
-## operations: Array of {action, id, properties, transition, duration}.
+## operations: canonical Stage payloads. Public raw programmatic callers use
+## this notification; authored DSL goes through the typed participant gate.
 ## force_cut is used when skipping to a dialogue's final authored checkpoint;
 ## presenters reduce the whole batch before touching resources.
 signal stage_operations_requested(operations: Array, force_cut: bool)
@@ -639,6 +640,280 @@ signal stage_transitions_finish_requested(transitions: Array)
 ## exact presenter, layer, token, operation request, and Presenter-owned
 ## generation identity. Legacy three-field completion remains above.
 signal stage_transition_receipts_finish_requested(transitions: Array)
+## Typed, source-located Stage participant gate. A contiguous run is validated
+## and accepted by every Runtime-owned StagePresenter before any mixed-batch
+## child mutates presentation state.
+signal stage_validate_requested(request: StageOperationRequest)
+signal stage_accept_requested(request: StageOperationRequest)
+signal stage_apply_readiness_requested(request: StageOperationRequest)
+signal stage_apply_requested(request: StageOperationRequest)
+
+var _dispatching_stage_request: StageOperationRequest
+var _applying_stage_request: StageOperationRequest
+var _stage_participant_authority := RefCounted.new()
+var _stage_registrar_authority: Object
+var _stage_participants: Dictionary = {}
+
+
+func configure_stage_registrar(authority: Object) -> bool:
+	if authority == null:
+		return false
+	if _stage_registrar_authority == null:
+		_stage_registrar_authority = authority
+	return _stage_registrar_authority == authority
+
+
+func register_stage_presenter(
+	presenter: Object,
+	registrar_authority: Object,
+	transaction: Callable,
+) -> RefCounted:
+	if (
+		registrar_authority != _stage_registrar_authority
+		or presenter == null
+		or not is_instance_valid(presenter)
+		or not presenter is Node
+		or (presenter as Node).is_queued_for_deletion()
+		or not transaction.is_valid()
+		or transaction.get_object() != presenter
+	):
+		return null
+	var presenter_id := presenter.get_instance_id()
+	var existing: Dictionary = _stage_participants.get(presenter_id, {})
+	if not existing.is_empty():
+		var weak_existing: WeakRef = existing.get("presenter")
+		if weak_existing != null and weak_existing.get_ref() == presenter:
+			return existing.get("capability") as RefCounted
+	var capability := RefCounted.new()
+	_stage_participants[presenter_id] = {
+		"presenter": weakref(presenter),
+		"capability": capability,
+		"transaction": transaction,
+	}
+	return capability
+
+
+func unregister_stage_presenter(
+	presenter: Object,
+	capability: RefCounted,
+	registrar_authority: Object,
+) -> void:
+	if registrar_authority != _stage_registrar_authority:
+		return
+	if _stage_participant_is_current(presenter, capability):
+		_stage_participants.erase(presenter.get_instance_id())
+
+
+func reject_stage_request(
+	request: StageOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	operation_index: int,
+	error: String,
+) -> bool:
+	if not _stage_request_target_is_current(request, presenter, capability, false):
+		return false
+	return request._reject(operation_index, error, _stage_participant_authority)
+
+
+func validate_stage_request(
+	request: StageOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	plan: Dictionary,
+) -> bool:
+	if not _stage_request_target_is_current(request, presenter, capability, false):
+		return false
+	return request._validate(presenter, plan, _stage_participant_authority)
+
+
+func accept_stage_request(
+	request: StageOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _stage_request_target_is_current(request, presenter, capability, false):
+		return false
+	return request._accept(presenter, _stage_participant_authority)
+
+
+func acknowledge_stage_apply(
+	request: StageOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _stage_request_target_is_current(request, presenter, capability, true):
+		return false
+	return request._apply(presenter, _stage_participant_authority)
+
+
+func mark_stage_apply_ready(
+	request: StageOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _stage_request_target_is_current(request, presenter, capability, true):
+		return false
+	return request._mark_apply_ready(presenter, _stage_participant_authority)
+
+
+func mark_stage_apply_claimed(
+	request: StageOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _stage_request_target_is_current(request, presenter, capability, true):
+		return false
+	return request._mark_apply_claimed(presenter, _stage_participant_authority)
+
+
+func fail_stage_apply(
+	request: StageOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	operation_index: int,
+	error: String,
+) -> bool:
+	if not _stage_request_target_is_current(request, presenter, capability, true):
+		return false
+	return request._fail_apply(
+		presenter,
+		operation_index,
+		error,
+		_stage_participant_authority,
+	)
+
+
+func _stage_request_target_is_current(
+	request: StageOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	applying: bool,
+) -> bool:
+	return (
+		request != null
+		and request == (
+			_applying_stage_request if applying else _dispatching_stage_request)
+		and _stage_participant_is_current(presenter, capability)
+		and request.is_target(presenter)
+	)
+
+
+func _stage_participant_is_current(
+	presenter: Object,
+	capability: Object,
+) -> bool:
+	if (
+		presenter == null
+		or capability == null
+		or not is_instance_valid(presenter)
+		or not presenter is Node
+		or (presenter as Node).is_queued_for_deletion()
+	):
+		return false
+	var entry: Dictionary = _stage_participants.get(presenter.get_instance_id(), {})
+	if entry.is_empty() or entry.get("capability") != capability:
+		return false
+	var weak_presenter: WeakRef = entry.get("presenter")
+	return weak_presenter != null and weak_presenter.get_ref() == presenter
+
+
+func _stage_participant_snapshot() -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for presenter_id: int in _stage_participants.keys():
+		var entry: Dictionary = _stage_participants[presenter_id]
+		var weak_presenter: WeakRef = entry.get("presenter")
+		var presenter: Object = weak_presenter.get_ref() if weak_presenter != null else null
+		var capability: Object = entry.get("capability")
+		if not _stage_participant_is_current(presenter, capability):
+			_stage_participants.erase(presenter_id)
+			continue
+		result.append({
+			"presenter": presenter,
+			"capability": capability,
+			"transaction": entry.get("transaction", Callable()),
+		})
+	return result
+
+
+func _commit_stage_request(request: StageOperationRequest) -> bool:
+	if request == null or request != _applying_stage_request:
+		return false
+	var participants := request._get_transaction_participants(
+		_stage_participant_authority)
+	var held: Array[Dictionary] = []
+	for participant: Dictionary in participants:
+		var transaction: Callable = participant.get("transaction", Callable())
+		if (
+			not transaction.is_valid()
+			or not bool(transaction.call(
+				request, participant.get("capability"), &"hold"))
+		):
+			_abort_stage_request_transaction(request, held)
+			return false
+		held.append(participant)
+	for participant: Dictionary in participants:
+		var transaction: Callable = participant.get("transaction")
+		if not bool(transaction.call(
+			request, participant.get("capability"), &"commit")):
+			_abort_stage_request_transaction(request, held)
+			return false
+	if not request.all_presenters_applied():
+		_abort_stage_request_transaction(request, held)
+		return false
+	return true
+
+
+func _publish_stage_request(
+	request: StageOperationRequest,
+	expected_epoch: int,
+) -> bool:
+	if request == null or request != _applying_stage_request:
+		return false
+	var participants := request._get_transaction_participants(
+		_stage_participant_authority)
+	for participant: Dictionary in participants:
+		if (
+			request != _applying_stage_request
+			or expected_epoch != _stage_operation_epoch
+			or not request.presenters_are_live()
+		):
+			_abort_stage_request_transaction(request, participants)
+			return false
+		var transaction: Callable = participant.get(
+			"transaction", Callable())
+		if (
+			not transaction.is_valid()
+			or not bool(transaction.call(
+				request, participant.get("capability"), &"publish"))
+		):
+			_abort_stage_request_transaction(request, participants)
+			return false
+		if (
+			request != _applying_stage_request
+			or expected_epoch != _stage_operation_epoch
+			or not request.presenters_are_live()
+		):
+			_abort_stage_request_transaction(request, participants)
+			return false
+	return true
+
+
+func _abort_stage_request_transaction(
+	request: StageOperationRequest,
+	participants: Array[Dictionary] = [],
+) -> void:
+	var targets := participants
+	if targets.is_empty() and request != null:
+		targets = request._get_transaction_participants(
+			_stage_participant_authority)
+	for participant: Dictionary in targets:
+		var transaction: Callable = participant.get(
+			"transaction", Callable())
+		if transaction.is_valid():
+			transaction.call(
+				request, participant.get("capability"), &"abort")
+
 signal dialogue_visibility_operations_requested(operations: Array, force_cut: bool)
 signal presentation_operation_request_finished(request_id: int, delivered: bool)
 signal presentation_projection_lifecycle_finished(lifecycle_id: int)
@@ -1600,7 +1875,7 @@ func is_current_stage_projection_valid() -> bool:
 	return _stage_projection_epoch_stack.back() == _stage_operation_epoch
 
 
-## Like projection validity, direct compatibility emits remain valid. Reset
+## Like projection validity, direct public raw emits remain valid. Reset
 ## transactions carry an exact epoch so a nested newer boundary can stop the
 ## stale outer signal tail from clearing later-connected presenters.
 func is_current_stage_reset_valid() -> bool:
@@ -1650,14 +1925,17 @@ func emit_dialogue_visibility_operations(
 	return request_id
 
 
-## The optional apply callback reports the exact channels in each contiguous
-## authored run immediately before its consumer signal. Director uses this to
-## distinguish mutation-free participant rejection from partial apply failure.
+## The optional dispatch callback fires exactly once when the queued request
+## starts delivery, before any typed phase. Stage channels are reported only
+## after their private participant commit quorum succeeds; existing non-Stage
+## domains retain their established pre-apply ownership handoff so synchronous
+## supersession terminals cannot roll back the incoming owner.
 func emit_presentation_operations(
 	operations: Array,
 	force_cut: bool = false,
 	request_id: int = 0,
 	on_apply_started: Callable = Callable(),
+	on_dispatch_started: Callable = Callable(),
 ) -> int:
 	if request_id <= 0:
 		request_id = reserve_stage_operation_request_id()
@@ -1698,6 +1976,7 @@ func emit_presentation_operations(
 		"force_cut": force_cut,
 		"request_id": request_id,
 		"on_apply_started": on_apply_started,
+		"on_dispatch_started": on_dispatch_started,
 		"stage_epoch": _stage_operation_epoch,
 		"visibility_epoch": _dialogue_visibility_epoch,
 		"chapter_epoch": _chapter_indicator_epoch,
@@ -1923,6 +2202,8 @@ func _drain_presentation_operation_queue_once() -> void:
 	var force_cut := bool(request.get("force_cut", false))
 	var apply_started_callback: Callable = request.get(
 		"on_apply_started", Callable())
+	var dispatch_started_callback: Callable = request.get(
+		"on_dispatch_started", Callable())
 	var uses_stage := false
 	var uses_dialogue_visibility := false
 	var uses_chapter_indicator := false
@@ -1947,12 +2228,84 @@ func _drain_presentation_operation_queue_once() -> void:
 	_dialogue_visibility_epoch_stack.append(visibility_epoch)
 	_loop_se_epoch_stack.append(loop_se_epoch)
 	_bgm_epoch_stack.append(bgm_epoch)
+	if dispatch_started_callback.is_valid():
+		dispatch_started_callback.call()
 	var dialogue_clear_requests: Dictionary = {}
+	var stage_requests: Dictionary = {}
 	var chapter_requests: Dictionary = {}
 	var loop_se_requests: Dictionary = {}
 	var bgm_requests: Dictionary = {}
 	var preflight_valid := true
+	var stage_runs: Array[Dictionary] = []
+	var stage_preflight_index := 0
+	while stage_preflight_index < operations.size():
+		if not operations[stage_preflight_index] is StagePresentationOperation:
+			stage_preflight_index += 1
+			continue
+		var first_stage_operation: StagePresentationOperation = (
+			operations[stage_preflight_index])
+		var stage_run: Array[StagePresentationOperation] = []
+		while (
+			stage_preflight_index < operations.size()
+			and operations[stage_preflight_index] is StagePresentationOperation
+		):
+			stage_run.append(operations[stage_preflight_index])
+			stage_preflight_index += 1
+		stage_runs.append({
+			"first_operation": first_stage_operation,
+			"operations": stage_run,
+		})
+	for stage_run_index in range(stage_runs.size()):
+		var stage_run_record: Dictionary = stage_runs[stage_run_index]
+		var first_stage_operation: StagePresentationOperation = (
+			stage_run_record["first_operation"])
+		var stage_run: Array[StagePresentationOperation] = []
+		stage_run.assign(stage_run_record["operations"])
+		var stage_request := StageOperationRequest.new(stage_run, force_cut)
+		stage_request._bind_authority(
+			_stage_participant_authority,
+			_stage_participant_is_current,
+		)
+		stage_request._bind_preflight_chain(
+			request_id,
+			stage_run_index,
+			stage_runs.size(),
+			_stage_participant_authority,
+		)
+		# Own every created request before validation. A participant may reserve
+		# detached projections and a later participant/domain may still reject.
+		stage_requests[first_stage_operation.get_instance_id()] = stage_request
+		for participant: Dictionary in _stage_participant_snapshot():
+			stage_request._snapshot_presenter(
+				participant.get("presenter"),
+				participant.get("capability"),
+				_stage_participant_authority,
+				participant.get("transaction", Callable()),
+			)
+		_dispatching_stage_request = stage_request
+		stage_validate_requested.emit(stage_request)
+		if (
+			stage_epoch != _stage_operation_epoch
+			or not stage_request._seal_validation(
+				request_id, _stage_participant_authority)
+		):
+			_report_stage_rejection(stage_request.get_validation_errors())
+			preflight_valid = false
+			break
+		stage_accept_requested.emit(stage_request)
+		if (
+			not stage_request.all_presenters_accepted()
+			or not stage_request.presenters_are_live()
+		):
+			_report_stage_rejection([{
+				"source": first_stage_operation.get_source(),
+				"error": "a sealed StagePresenter did not accept the captured binding",
+			}])
+			preflight_valid = false
+			break
 	for operation_value: Variant in operations:
+		if not preflight_valid:
+			break
 		if operation_value is DialogueClearPresentationOperation:
 			var operation: DialogueClearPresentationOperation = operation_value
 			var clear_request := DialogueClearOperationRequest.new(operation)
@@ -2097,6 +2450,7 @@ func _drain_presentation_operation_queue_once() -> void:
 				preflight_valid = false
 				break
 			bgm_requests[operation.get_instance_id()] = bgm_request
+	_dispatching_stage_request = null
 	_dispatching_dialogue_clear_request = null
 	_dispatching_chapter_indicator_request = null
 	_dispatching_loop_se_request = null
@@ -2114,6 +2468,9 @@ func _drain_presentation_operation_queue_once() -> void:
 		uses_bgm,
 	)
 	if not preflight_valid or not epochs_valid:
+		for stage_request_value: Variant in stage_requests.values():
+			(stage_request_value as StageOperationRequest)._finish(
+				false, false, _stage_participant_authority)
 		for clear_request_value: Variant in dialogue_clear_requests.values():
 			(clear_request_value as DialogueClearOperationRequest)._finish(
 				false, false, _dialogue_clear_participant_authority)
@@ -2139,6 +2496,7 @@ func _drain_presentation_operation_queue_once() -> void:
 	while operation_index < operations.size():
 		var operation: PresentationOperation = operations[operation_index]
 		if operation is StagePresentationOperation:
+			var first_stage_operation := operation as StagePresentationOperation
 			var stage_run: Array = []
 			var stage_channels: Array[StringName] = []
 			while (
@@ -2150,9 +2508,67 @@ func _drain_presentation_operation_queue_once() -> void:
 				stage_run.append(stage_operation.get_payload())
 				stage_channels.append(stage_operation.get_channel())
 				operation_index += 1
+			var stage_request: StageOperationRequest = stage_requests.get(
+				first_stage_operation.get_instance_id())
+			_applying_stage_request = stage_request
+			stage_apply_readiness_requested.emit(stage_request)
+			if (
+				stage_request == null
+				or not stage_request.all_presenters_apply_ready()
+				or not stage_request.presenters_are_live()
+				or stage_epoch != _stage_operation_epoch
+			):
+				if (
+					stage_request != null
+					and not stage_request.get_validation_errors().is_empty()
+				):
+					_report_stage_rejection(
+						stage_request.get_validation_errors())
+				_applying_stage_request = null
+				delivered = false
+				break
+			stage_apply_requested.emit(stage_request)
+			if (
+				stage_request == null
+				or not stage_request.all_presenters_apply_claimed()
+				or not stage_request.presenters_are_live()
+				or stage_epoch != _stage_operation_epoch
+			):
+				if (
+					stage_request != null
+					and not stage_request.get_validation_errors().is_empty()
+				):
+					_report_stage_rejection(
+						stage_request.get_validation_errors())
+				_applying_stage_request = null
+				delivered = false
+				break
+			if not _commit_stage_request(stage_request):
+				if not stage_request.get_validation_errors().is_empty():
+					_report_stage_rejection(stage_request.get_validation_errors())
+				_applying_stage_request = null
+				delivered = false
+				break
+			if (
+				stage_request != _applying_stage_request
+				or not stage_request.presenters_are_live()
+				or stage_epoch != _stage_operation_epoch
+			):
+				_abort_stage_request_transaction(stage_request)
+				_applying_stage_request = null
+				delivered = false
+				break
 			if apply_started_callback.is_valid():
 				apply_started_callback.call(stage_channels)
+			if not _publish_stage_request(stage_request, stage_epoch):
+				_applying_stage_request = null
+				delivered = false
+				break
+			# Canonical save state and third-party observers retain the public raw
+			# notification. Runtime-owned StagePresenters ignore it while the typed
+			# request is active, so the visual run is never applied twice.
 			stage_operations_requested.emit(stage_run, force_cut)
+			_applying_stage_request = null
 		elif operation is DialogueVisibilityPresentationOperation:
 			var visibility_run: Array = []
 			var visibility_channels: Array[StringName] = []
@@ -2255,6 +2671,9 @@ func _drain_presentation_operation_queue_once() -> void:
 		):
 			delivered = false
 			break
+	for stage_request_value: Variant in stage_requests.values():
+		(stage_request_value as StageOperationRequest)._finish(
+			delivered, false, _stage_participant_authority)
 	for clear_request_value: Variant in dialogue_clear_requests.values():
 		(clear_request_value as DialogueClearOperationRequest)._finish(
 			delivered, false, _dialogue_clear_participant_authority)
@@ -2324,7 +2743,17 @@ func is_stage_operation_request_active(request_id: int) -> bool:
 	for request in _stage_operation_queue:
 		if int(request.get("request_id", 0)) == request_id:
 			return true
+	for request in _presentation_operation_queue:
+		if int(request.get("request_id", 0)) != request_id:
+			continue
+		for operation_value: Variant in request.get("operations", []):
+			if operation_value is StagePresentationOperation:
+				return true
 	return false
+
+
+func is_applying_typed_stage_request() -> bool:
+	return _applying_stage_request != null
 
 
 ## Cancel a request that has been queued behind the batch currently being
@@ -2377,11 +2806,30 @@ func _run_stage_reset_transaction(after_reset_consumers: Callable) -> void:
 		else:
 			cancelled_requests.append(request)
 	_stage_operation_queue = retained_requests
+	var cancelled_presentation_requests: Array[Dictionary] = []
+	var retained_presentation_requests: Array[Dictionary] = []
 	for request: Dictionary in _presentation_operation_queue:
 		if _request_belongs_to_retained_projection(request):
 			request["stage_epoch"] = reset_epoch
+			retained_presentation_requests.append(request)
+			continue
+		var has_stage_child := false
+		for operation_value: Variant in request.get("operations", []):
+			if operation_value is StagePresentationOperation:
+				has_stage_child = true
+				break
+		if has_stage_child:
+			cancelled_presentation_requests.append(request)
+		else:
+			retained_presentation_requests.append(request)
+	_presentation_operation_queue = retained_presentation_requests
 	for request: Dictionary in cancelled_requests:
 		stage_operation_request_finished.emit(
+			int(request.get("request_id", 0)),
+			false,
+		)
+	for request: Dictionary in cancelled_presentation_requests:
+		presentation_operation_request_finished.emit(
 			int(request.get("request_id", 0)),
 			false,
 		)
@@ -2422,6 +2870,14 @@ func emit_stage_operations(
 			push_warning(
 				"SignalBus: rejected invalid stage operation batch %d" % request_id
 			)
+			stage_operation_request_finished.emit(request_id, false)
+			return request_id
+		var transition_kind := String(
+			(operation as Dictionary).get("transition", "cut"))
+		if StageTransitionSpec.is_projection_effect(transition_kind):
+			push_error(
+				"SignalBus: projection Stage transition '%s' requires the typed PresentationDirector"
+				% transition_kind)
 			stage_operation_request_finished.emit(request_id, false)
 			return request_id
 	_stage_operation_queue.append({
@@ -2923,6 +3379,20 @@ func _report_chapter_indicator_rejection(
 	push_error(
 		"%s chapter indicator request rejected: %s"
 		% [_chapter_indicator_source_label(source), "; ".join(messages)])
+
+
+func _report_stage_rejection(errors: Array) -> void:
+	if errors.is_empty():
+		push_error("[runtime] Stage request rejected: preflight invalidated")
+		return
+	for error_value: Variant in errors:
+		var entry: Dictionary = (
+			error_value if error_value is Dictionary else {"error": String(error_value)})
+		var source: Dictionary = entry.get("source", {})
+		var message := String(entry.get("error", "preflight invalidated"))
+		push_error(
+			"%s Stage request rejected: %s"
+			% [_chapter_indicator_source_label(source), message])
 
 
 func _report_loop_se_rejection(source: Dictionary, errors: Array) -> void:

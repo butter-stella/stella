@@ -24,6 +24,14 @@ func before_each() -> void:
 
 
 func after_each() -> void:
+	SignalBus.hide_dialogue.emit()
+	SignalBus.engine_abort_requested.emit()
+	StellaRuntime.auto_play.stop()
+	StellaRuntime.skip_controller.stop()
+	if is_instance_valid(_game_scene):
+		_game_scene.queue_free()
+	await get_tree().process_frame
+	_game_scene = null
 	StellaRuntime.voice_path = _original_voice_path
 
 

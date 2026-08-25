@@ -4,7 +4,7 @@ class_name PresentationBatchHandler extends CommandHandler
 const EXACT_PARAM_KEYS := ["operation_lines", "operations", "policy"]
 const EXACT_ENVELOPE_KEYS := ["kind", "payload"]
 const EXACT_STAGE_PAYLOAD_KEYS := [
-	"action", "duration", "id", "properties", "transition",
+	"action", "duration", "id", "properties", "transition", "transition_params",
 ]
 const EXACT_VISIBILITY_PAYLOAD_KEYS := [
 	"action", "duration", "target", "transition",
@@ -57,8 +57,6 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 			String(validation.get("error", "invalid presentation batch")),
 			int(validation.get("line", data.declared_line if data != null else 0)),
 		)
-		return
-	if bool(validation.get("no_work", false)):
 		return
 	if _director == null:
 		_fail_context(data, context, "PresentationDirector is unavailable")
@@ -206,7 +204,7 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 				var stage_keys := payload.keys()
 				stage_keys.sort()
 				if stage_keys != EXACT_STAGE_PAYLOAD_KEYS:
-					return {"valid": false, "error": "stage payload must use the canonical five-field schema", "line": int(operation_lines[index])}
+					return {"valid": false, "error": "stage payload must use the canonical six-field schema", "line": int(operation_lines[index])}
 				if not StageLayerState.validate_operation(payload, false):
 					return {"valid": false, "error": "stage payload failed canonical validation", "line": int(operation_lines[index])}
 				var action := String(payload.get("action", ""))
@@ -342,7 +340,8 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 		"target_loop_se": loop_se_target,
 		"before_bgm": bgm_before,
 		"no_work": (
-			stage_target == stage_before
+			stage_operations.is_empty()
+			and stage_target == stage_before
 			and visibility_target == visibility_before
 			and loop_se_operations.is_empty()
 			and bgm_operations.is_empty()

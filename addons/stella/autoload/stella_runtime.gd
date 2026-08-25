@@ -96,6 +96,7 @@ var _publishing_current_chapter := false
 var _chapter_republish_pending := false
 var _emitting_chapter_id := ""
 var _emitting_chapter_title := ""
+var _stage_registrar_authority := RefCounted.new()
 var _dialogue_clear_registrar_authority := RefCounted.new()
 var _chapter_indicator_registrar_authority := RefCounted.new()
 var _loop_se_registrar_authority := RefCounted.new()
@@ -119,6 +120,8 @@ func _init() -> void:
 		local_config_path = ""
 	config = _load_project_config(CONFIG_PATH, local_config_path)
 	_apply_config()
+	if not SignalBus.configure_stage_registrar(_stage_registrar_authority):
+		push_error("StellaRuntime: Stage presenter registrar authority conflict")
 	if not SignalBus.configure_dialogue_clear_registrar(
 		_dialogue_clear_registrar_authority):
 		push_error("StellaRuntime: dialogue clear registrar authority conflict")
@@ -134,6 +137,27 @@ func _init() -> void:
 ## Composition-owned admission keeps the cross-layer Bus free of concrete
 ## Presentation dependencies while preventing arbitrary signal listeners from
 ## enlarging the chapter-indicator quorum.
+func _register_stage_presenter(presenter: Object) -> RefCounted:
+	if not presenter is StagePresenter:
+		return null
+	return SignalBus.register_stage_presenter(
+		presenter,
+		_stage_registrar_authority,
+		Callable(presenter, "_run_sealed_stage_transaction_phase"),
+	)
+
+
+func _unregister_stage_presenter(
+	presenter: Object,
+	capability: RefCounted,
+) -> void:
+	SignalBus.unregister_stage_presenter(
+		presenter,
+		capability,
+		_stage_registrar_authority,
+	)
+
+
 func _register_dialogue_clear_presenter(presenter: Object) -> RefCounted:
 	if (
 		presenter == null
@@ -466,7 +490,7 @@ func _register_handlers():
 	_register_dialogue_handler()
 	registry.register(ChapterIndicatorHandler.new(presentation_director))
 	registry.register(BgHandler.new())
-	registry.register(StageLayerHandler.new())
+	registry.register(StageLayerHandler.new(presentation_director))
 	registry.register(StageBatchHandler.new(
 		presentation_director, presentation_state))
 	registry.register(PresentationBatchHandler.new(
@@ -3322,7 +3346,7 @@ func _finish_choice_hard_boundary(publish_hide: bool) -> void:
 
 ## Apply an atomic batch of named-stage operations. Each operation uses the
 ## same schema as the `stage_layer` CommandData payload: action, id,
-## properties, transition, and duration.
+## properties, transition, transition_params, and duration.
 func apply_stage_operations(
 	operations: Array,
 	force_cut: bool = false,
@@ -3339,6 +3363,61 @@ func apply_stage_operations(
 			authored_operations.append(raw_operation)
 	if authored_operations.is_empty() and not operations.is_empty():
 		return
+	var canonical_batch := true
+	for operation_value: Variant in authored_operations:
+		if not StageLayerState.validate_operation(operation_value, false):
+			canonical_batch = false
+			break
+	if not canonical_batch:
+		# Preserve the public void Facade's exact failed request notification,
+		# but let Bus own the single warning/report. Its schema gate runs before
+		# the projection ingress gate, so an invalid custom-looking spelling can
+		# never reach a listener or be mistaken for a typed provider request.
+		SignalBus.emit_stage_operations(
+			authored_operations.duplicate(true), force_cut)
+		return
+	var requires_typed_transition := false
+	for operation_value: Variant in authored_operations:
+		if not operation_value is Dictionary:
+			continue
+		var kind := String((operation_value as Dictionary).get(
+			"transition", "cut")).strip_edges().to_lower()
+		if StageTransitionSpec.is_projection_effect(kind):
+			requires_typed_transition = true
+			break
+	if requires_typed_transition:
+		var context := engine.context if engine != null else null
+		if (
+			presentation_director == null
+			or context == null
+			or not context.is_runtime_owner_current()
+		):
+			push_error(
+				"StellaRuntime: projection Stage transitions require a current scenario owner")
+			return
+		var source := {
+			"source_path": (
+				context.scenario_data.source_path
+				if context.scenario_data != null else ""),
+			"scenario_id": (
+				context.scenario_data.id if context.scenario_data != null else ""),
+			"line": 0,
+		}
+		var typed_operations: Array[PresentationOperation] = []
+		for operation_value: Variant in authored_operations:
+			if not operation_value is Dictionary:
+				push_error("StellaRuntime: invalid Stage operation in typed facade batch")
+				return
+			typed_operations.append(StagePresentationOperation.new(
+				(operation_value as Dictionary).duplicate(true), source))
+		presentation_director.submit(
+			typed_operations,
+			PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+			context,
+			source,
+			force_cut,
+		)
+		return
 	SignalBus.emit_stage_operations(
 		authored_operations.duplicate(true),
 		force_cut,
@@ -3350,9 +3429,10 @@ func show_stage_layer(
 	properties: Dictionary,
 	transition: String = "cut",
 	duration: float = 0.0,
+	transition_params: Dictionary = {},
 ) -> void:
 	_emit_stage_operation(
-		"show", layer_id, properties, transition, duration
+		"show", layer_id, properties, transition, duration, transition_params
 	)
 
 
@@ -3361,9 +3441,10 @@ func update_stage_layer(
 	properties: Dictionary,
 	transition: String = "cut",
 	duration: float = 0.0,
+	transition_params: Dictionary = {},
 ) -> void:
 	_emit_stage_operation(
-		"update", layer_id, properties, transition, duration
+		"update", layer_id, properties, transition, duration, transition_params
 	)
 
 
@@ -3371,23 +3452,29 @@ func hide_stage_layer(
 	layer_id: String,
 	transition: String = "cut",
 	duration: float = 0.0,
+	transition_params: Dictionary = {},
 ) -> void:
-	_emit_stage_operation("hide", layer_id, {}, transition, duration)
+	_emit_stage_operation(
+		"hide", layer_id, {}, transition, duration, transition_params)
 
 
 func remove_stage_layer(
 	layer_id: String,
 	transition: String = "cut",
 	duration: float = 0.0,
+	transition_params: Dictionary = {},
 ) -> void:
-	_emit_stage_operation("remove", layer_id, {}, transition, duration)
+	_emit_stage_operation(
+		"remove", layer_id, {}, transition, duration, transition_params)
 
 
 func clear_stage_layers(
 	transition: String = "cut",
 	duration: float = 0.0,
+	transition_params: Dictionary = {},
 ) -> void:
-	_emit_stage_operation("clear", "", {}, transition, duration)
+	_emit_stage_operation(
+		"clear", "", {}, transition, duration, transition_params)
 
 
 func _emit_stage_operation(
@@ -3396,6 +3483,7 @@ func _emit_stage_operation(
 	properties: Dictionary,
 	transition: String,
 	duration: float,
+	transition_params: Dictionary,
 ) -> void:
 	if action != "clear" and layer_id.strip_edges() == "":
 		push_warning("StellaRuntime: stage operation requires a layer id")
@@ -3405,6 +3493,7 @@ func _emit_stage_operation(
 		"id": layer_id,
 		"properties": properties.duplicate(true),
 		"transition": transition,
+		"transition_params": transition_params.duplicate(true),
 		"duration": duration,
 	}])
 

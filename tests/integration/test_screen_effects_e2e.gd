@@ -246,6 +246,7 @@ func test_dynamic_stage_layer_moves_with_the_stage_shake_root() -> void:
 		"action": "show",
 		"id": "shake_probe",
 		"properties": {"position": [320.0, 240.0]},
+		"transition_params": {},
 		"transition": "cut",
 		"duration": 0.0,
 	}], true)

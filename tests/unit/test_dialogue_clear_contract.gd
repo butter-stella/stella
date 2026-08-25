@@ -8,6 +8,25 @@ const REQUIRED_CLASSES := [
 	"DialogueClearPresentationOperation",
 	"PresentationBatchHandler",
 ]
+const STAGE_ASSET_ROOT := "res://tests/fixtures/stage/"
+
+var _stage_runtime: Node
+var _stage_presenter: StagePresenter
+var _original_stage_assets_path := ""
+
+
+func before_each() -> void:
+	_stage_runtime = get_tree().root.get_node("StellaRuntime")
+	_original_stage_assets_path = _stage_runtime.stage_assets_path
+	_stage_runtime.stage_assets_path = STAGE_ASSET_ROOT
+	_stage_presenter = StagePresenter.new()
+	_stage_presenter.name = "DialogueClearContractStagePresenter"
+	add_child_autoqfree(_stage_presenter)
+	await get_tree().process_frame
+
+
+func after_each() -> void:
+	_stage_runtime.stage_assets_path = _original_stage_assets_path
 
 
 func _global_class_script(class_name_value: String) -> Script:
@@ -262,22 +281,41 @@ func test_clear_is_positive_headless_work_and_does_not_claim_independent_stage_o
 			"segments": [{"text": "live page"}],
 		}],
 	}
-	var stage_receipt: Array[int] = []
+	var stage_receipt: Dictionary = {}
+	var stage_raw_notifications := [0]
 	var on_stage := func(operations: Array, _force_cut: bool) -> void:
-		var request_id := SignalBus.current_stage_operation_request_id()
 		for payload_value: Variant in operations:
 			var payload: Dictionary = payload_value
 			if String(payload.get("id", "")) != "independent":
 				continue
-			stage_receipt.assign([request_id, 910169, 1, 1])
-			SignalBus.stage_transition_receipt_started.emit(
-				910169, "independent", 1, request_id, 1)
+			stage_raw_notifications[0] += 1
+	var on_stage_receipt := func(
+		presenter_instance_id: int,
+		layer_id: String,
+		token: int,
+		operation_request_id: int,
+		generation: int,
+	) -> void:
+		if (
+			presenter_instance_id != _stage_presenter.get_instance_id()
+			or layer_id != "independent"
+		):
+			return
+		stage_receipt.assign({
+			"presenter_instance_id": presenter_instance_id,
+			"layer_id": layer_id,
+			"token": token,
+			"operation_request_id": operation_request_id,
+			"generation": generation,
+		})
 	SignalBus.stage_operations_requested.connect(on_stage)
+	SignalBus.stage_transition_receipt_started.connect(on_stage_receipt)
 	var stage_operations: Array[PresentationOperation] = [
 		StagePresentationOperation.new({
 			"action": "show",
 			"id": "independent",
-			"properties": {"asset": "stage:synthetic"},
+			"properties": {"asset": "stage:redraw_source"},
+			"transition_params": {},
 			"transition": "fade",
 			"duration": 10.0,
 		}),
@@ -315,11 +353,13 @@ func test_clear_is_positive_headless_work_and_does_not_claim_independent_stage_o
 	assert_true(bool(state.dialogue_content.get("cleared", false)))
 	assert_eq(context.nvl_page_epoch, 8)
 	assert_eq(context.nvl_page_entries, [])
-	if stage_receipt.size() == 4:
-		SignalBus.stage_transition_terminal.emit(
-			stage_receipt[1], "independent", stage_receipt[2],
-			stage_receipt[0], stage_receipt[3], &"completed")
+	assert_eq(stage_raw_notifications[0], 1)
+	assert_eq(stage_receipt.size(), 5)
+	if stage_receipt.size() == 5:
+		SignalBus.stage_transition_receipts_finish_requested.emit(
+			[stage_receipt.duplicate(true)])
 	assert_true(stage_request.is_settled())
+	SignalBus.stage_transition_receipt_started.disconnect(on_stage_receipt)
 	SignalBus.stage_operations_requested.disconnect(on_stage)
 	state.disconnect_signals()
 
@@ -368,7 +408,8 @@ func test_mixed_failure_rolls_back_cleared_content_page_and_stage_atomically() -
 		StagePresentationOperation.new({
 			"action": "show",
 			"id": "rollback",
-			"properties": {"asset": "stage:rollback"},
+			"properties": {"asset": "stage:redraw_source"},
+			"transition_params": {},
 			"transition": "fade",
 			"duration": 10.0,
 		}),
@@ -454,7 +495,8 @@ func test_reversible_navigation_restores_preclear_page_before_replay() -> void:
 		StagePresentationOperation.new({
 			"action": "show",
 			"id": "replay",
-			"properties": {"asset": "stage:replay"},
+			"properties": {"asset": "stage:redraw_source"},
+			"transition_params": {},
 			"transition": "fade",
 			"duration": 10.0,
 		}),

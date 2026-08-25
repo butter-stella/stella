@@ -4,6 +4,8 @@
 ## Handles skip (toolbar + Ctrl held) and auto-play.
 extends Control
 
+signal _owned_stage_operation_finished(request_id: int, delivered: bool)
+
 const DialogueClearOperationRequest = preload(
 	"res://addons/stella/core/data/dialogue_clear_operation_request.gd")
 const DEFAULT_NVL_ENTRY_PREFIX := ""
@@ -12,7 +14,76 @@ const _CHARACTER_MAP_SENTINEL := "\u2060"
 const _LIFECYCLE_HIDE := &"hide"
 const _LIFECYCLE_TRANSITION := &"transition"
 const _LIFECYCLE_EXIT := &"exit"
+const _TIMER_PURPOSE_TYPEWRITER := &"typewriter"
+const _TIMER_PURPOSE_SKIP := &"skip"
+const _TIMER_PURPOSE_AUTO := &"auto"
+const _VOICE_EVENT_PURPOSE_AUTO := &"auto"
+const _VOICE_EVENT_PURPOSE_QUEUE := &"queue"
+const _NEXT_FRAME_PURPOSE_SHOW := &"show"
 const _TYPEWRITER_PUNCTUATION := "，。！？；：、,.!?;:…—"
+
+
+class DialogueTimerWaiter:
+	extends RefCounted
+
+	signal settled(natural_timeout: bool)
+
+	var timer: Timer
+	var dialogue_gen: int = -1
+	var purpose: StringName
+	var attempt: int = -1
+	var is_settled: bool = false
+
+
+	func settle(natural_timeout: bool) -> bool:
+		if is_settled:
+			return false
+		is_settled = true
+		settled.emit(natural_timeout)
+		return true
+
+
+class DialogueVoiceEventWaiter:
+	extends RefCounted
+
+	signal settled
+
+	var dialogue_gen: int = -1
+	var purpose: StringName
+	var attempt: int = -1
+	var queue_gen: int = -1
+	var event: VoicePlaybackEvent
+	var cancelled: bool = false
+	var is_settled: bool = false
+
+
+	func settle(p_event: VoicePlaybackEvent, p_cancelled: bool) -> bool:
+		if is_settled:
+			return false
+		is_settled = true
+		event = p_event
+		cancelled = p_cancelled
+		settled.emit()
+		return true
+
+
+class DialogueNextFrameWaiter:
+	extends RefCounted
+
+	signal settled(natural_frame: bool)
+
+	var dialogue_gen: int = -1
+	var purpose: StringName
+	var callback: Callable
+	var is_settled: bool = false
+
+
+	func settle(natural_frame: bool) -> bool:
+		if is_settled:
+			return false
+		is_settled = true
+		settled.emit(natural_frame)
+		return true
 
 @export_group("Dialogue Presentation")
 ## Advanced scene-side fallback. Normal projects declare profiles in STLA.
@@ -121,6 +192,15 @@ var _auto_pending_dialogue_gen: int = -1
 ## displayed line, but toggling Auto off and back on can reuse that same line.
 var _auto_attempt_serial: int = 0
 var _auto_pending_attempt: int = -1
+var _dialogue_timer_serial: int = 0
+var _dialogue_timer_waiters: Dictionary = {}
+var _dialogue_timer_authority_exiting: bool = false
+var _voice_event_waiter_serial: int = 0
+var _voice_event_waiters: Dictionary = {}
+var _voice_event_waiter_authority_exiting: bool = false
+var _next_frame_waiter_serial: int = 0
+var _next_frame_waiters: Dictionary = {}
+var _next_frame_waiter_authority_exiting: bool = false
 
 ## Icon paths — set these to customize toolbar button icons.
 var toolbar_icons: Dictionary = {
@@ -216,6 +296,9 @@ func _ready():
 	SignalBus.scenario_ended_event.connect(func(_id): _refresh_prev_choice_btn())
 	SignalBus.stage_transition_started.connect(_on_stage_transition_started)
 	SignalBus.stage_operation_request_finished.connect(
+		_on_stage_operation_request_finished
+	)
+	SignalBus.presentation_operation_request_finished.connect(
 		_on_stage_operation_request_finished
 	)
 	if SignalBus.has_signal(&"dialogue_visibility_operations_requested"):
@@ -357,7 +440,268 @@ static func _typewriter_character_delay_seconds(
 	return delay
 
 
+func _await_dialogue_timer(
+	duration: float,
+	dialogue_gen: int,
+	purpose: StringName,
+	attempt: int = -1,
+) -> bool:
+	if (
+		_dialogue_timer_authority_exiting
+		or dialogue_gen != _dialogue_gen
+		or not is_inside_tree()
+		or is_queued_for_deletion()
+	):
+		return false
+	_dialogue_timer_serial += 1
+	var waiter_id := _dialogue_timer_serial
+	var waiter := DialogueTimerWaiter.new()
+	waiter.dialogue_gen = dialogue_gen
+	waiter.purpose = purpose
+	waiter.attempt = attempt
+	var timer := Timer.new()
+	timer.name = "DialogueTimer_%d" % waiter_id
+	timer.one_shot = true
+	timer.process_callback = Timer.TIMER_PROCESS_IDLE
+	timer.process_mode = Node.PROCESS_MODE_ALWAYS
+	timer.ignore_time_scale = false
+	waiter.timer = timer
+	_dialogue_timer_waiters[waiter_id] = waiter
+	add_child(timer)
+	timer.timeout.connect(
+		_on_dialogue_timer_timeout.bind(waiter_id), CONNECT_ONE_SHOT)
+	# SceneTree.create_timer(0) settles on the next idle boundary. Timer requires
+	# a positive wait_time, so the smallest positive duration preserves that
+	# asynchronous boundary without introducing a wall-clock polling path.
+	timer.start(maxf(duration, 0.000001))
+	var natural_timeout: bool = await waiter.settled
+	return natural_timeout
+
+
+func _on_dialogue_timer_timeout(waiter_id: int) -> void:
+	_settle_dialogue_timer_waiter(waiter_id, true)
+
+
+func _settle_dialogue_timer_waiter(
+	waiter_id: int,
+	natural_timeout: bool,
+) -> bool:
+	var waiter := _dialogue_timer_waiters.get(waiter_id) as DialogueTimerWaiter
+	if waiter == null:
+		return false
+	# Erase authority before stopping or settling. Both operations can synchronously
+	# re-enter Presenter code; the retired waiter must already be unreachable.
+	_dialogue_timer_waiters.erase(waiter_id)
+	var timer := waiter.timer
+	waiter.timer = null
+	if is_instance_valid(timer):
+		timer.stop()
+		timer.queue_free()
+	return waiter.settle(natural_timeout)
+
+
+func _cancel_dialogue_timer_waiters(
+	dialogue_gen: int,
+	purpose: StringName = &"",
+	attempt: int = -1,
+) -> void:
+	for waiter_id_value: Variant in _dialogue_timer_waiters.keys():
+		var waiter_id := int(waiter_id_value)
+		var waiter := (
+			_dialogue_timer_waiters.get(waiter_id) as DialogueTimerWaiter)
+		if waiter == null or waiter.dialogue_gen != dialogue_gen:
+			continue
+		if not purpose.is_empty() and waiter.purpose != purpose:
+			continue
+		if attempt >= 0 and waiter.attempt != attempt:
+			continue
+		_settle_dialogue_timer_waiter(waiter_id, false)
+
+
+func _cancel_all_dialogue_timer_waiters() -> void:
+	for waiter_id_value: Variant in _dialogue_timer_waiters.keys():
+		_settle_dialogue_timer_waiter(int(waiter_id_value), false)
+
+
+func _await_owned_voice_event(
+	dialogue_gen: int,
+	purpose: StringName,
+	attempt: int = -1,
+	queue_gen: int = -1,
+) -> DialogueVoiceEventWaiter:
+	if (
+		_voice_event_waiter_authority_exiting
+		or dialogue_gen != _dialogue_gen
+		or not is_inside_tree()
+		or is_queued_for_deletion()
+	):
+		return null
+	if purpose == _VOICE_EVENT_PURPOSE_AUTO:
+		if (
+			attempt < 0
+			or _auto_pending_dialogue_gen != dialogue_gen
+			or _auto_pending_attempt != attempt
+		):
+			return null
+	elif purpose == _VOICE_EVENT_PURPOSE_QUEUE:
+		if queue_gen < 0 or queue_gen != _playback_queue_gen:
+			return null
+	else:
+		return null
+	_voice_event_waiter_serial += 1
+	var waiter_id := _voice_event_waiter_serial
+	var waiter := DialogueVoiceEventWaiter.new()
+	waiter.dialogue_gen = dialogue_gen
+	waiter.purpose = purpose
+	waiter.attempt = attempt
+	waiter.queue_gen = queue_gen
+	_voice_event_waiters[waiter_id] = waiter
+	await waiter.settled
+	return waiter
+
+
+func _settle_voice_event_waiter(
+	waiter_id: int,
+	event: VoicePlaybackEvent,
+	cancelled: bool,
+) -> bool:
+	var waiter := (
+		_voice_event_waiters.get(waiter_id) as DialogueVoiceEventWaiter)
+	if waiter == null:
+		return false
+	# Authority is erased before settlement because the resumed continuation may
+	# synchronously register its next wait or publish another physical event.
+	_voice_event_waiters.erase(waiter_id)
+	return waiter.settle(event, cancelled)
+
+
+func _settle_voice_event_entry_snapshot(
+	waiter_ids: Array,
+	event: VoicePlaybackEvent,
+) -> void:
+	for waiter_id_value: Variant in waiter_ids:
+		_settle_voice_event_waiter(int(waiter_id_value), event, false)
+
+
+func _cancel_voice_event_waiters(
+	dialogue_gen: int = -1,
+	purpose: StringName = &"",
+	attempt: int = -1,
+	queue_gen: int = -1,
+) -> void:
+	for waiter_id_value: Variant in _voice_event_waiters.keys():
+		var waiter_id := int(waiter_id_value)
+		var waiter := (
+			_voice_event_waiters.get(waiter_id) as DialogueVoiceEventWaiter)
+		if waiter == null:
+			continue
+		if dialogue_gen >= 0 and waiter.dialogue_gen != dialogue_gen:
+			continue
+		if not purpose.is_empty() and waiter.purpose != purpose:
+			continue
+		if attempt >= 0 and waiter.attempt != attempt:
+			continue
+		if queue_gen >= 0 and waiter.queue_gen != queue_gen:
+			continue
+		_settle_voice_event_waiter(waiter_id, null, true)
+
+
+func _cancel_all_voice_event_waiters() -> void:
+	for waiter_id_value: Variant in _voice_event_waiters.keys():
+		_settle_voice_event_waiter(int(waiter_id_value), null, true)
+
+
+func _await_owned_next_frame(
+	dialogue_gen: int,
+	purpose: StringName,
+) -> bool:
+	if (
+		_next_frame_waiter_authority_exiting
+		or dialogue_gen != _dialogue_gen
+		or purpose != _NEXT_FRAME_PURPOSE_SHOW
+		or not is_inside_tree()
+		or is_queued_for_deletion()
+	):
+		return false
+	_next_frame_waiter_serial += 1
+	var waiter_id := _next_frame_waiter_serial
+	var waiter := DialogueNextFrameWaiter.new()
+	waiter.dialogue_gen = dialogue_gen
+	waiter.purpose = purpose
+	waiter.callback = _on_owned_next_frame.bind(waiter_id)
+	_next_frame_waiters[waiter_id] = waiter
+	get_tree().process_frame.connect(waiter.callback, CONNECT_ONE_SHOT)
+	var natural_frame: bool = await waiter.settled
+	return natural_frame
+
+
+func _on_owned_next_frame(waiter_id: int) -> void:
+	_settle_next_frame_waiter(waiter_id, true)
+
+
+func _settle_next_frame_waiter(
+	waiter_id: int,
+	natural_frame: bool,
+) -> bool:
+	var waiter := (
+		_next_frame_waiters.get(waiter_id) as DialogueNextFrameWaiter)
+	if waiter == null:
+		return false
+	# Disconnect and erase authority before synchronous settlement. A resumed
+	# SHOW may publish a replacement generation and register another frame wait.
+	_next_frame_waiters.erase(waiter_id)
+	var callback := waiter.callback
+	waiter.callback = Callable()
+	var tree := get_tree()
+	if (
+		callback.is_valid()
+		and tree != null
+		and tree.process_frame.is_connected(callback)
+	):
+		tree.process_frame.disconnect(callback)
+	return waiter.settle(natural_frame)
+
+
+func _cancel_next_frame_waiters(dialogue_gen: int) -> void:
+	for waiter_id_value: Variant in _next_frame_waiters.keys():
+		var waiter_id := int(waiter_id_value)
+		var waiter := (
+			_next_frame_waiters.get(waiter_id) as DialogueNextFrameWaiter)
+		if waiter != null and waiter.dialogue_gen == dialogue_gen:
+			_settle_next_frame_waiter(waiter_id, false)
+
+
+func _cancel_all_next_frame_waiters() -> void:
+	for waiter_id_value: Variant in _next_frame_waiters.keys():
+		_settle_next_frame_waiter(int(waiter_id_value), false)
+
+
+func _publish_next_dialogue_generation() -> int:
+	var previous_gen := _dialogue_gen
+	_dialogue_gen += 1
+	_cancel_dialogue_timer_waiters(previous_gen)
+	_cancel_voice_event_waiters(previous_gen)
+	_cancel_next_frame_waiters(previous_gen)
+	return _dialogue_gen
+
+
+func _publish_next_voice_queue_generation() -> int:
+	var previous_queue_gen := _playback_queue_gen
+	# Publish replacement ownership before waking the old continuation. It must
+	# observe itself as stale even when cancellation resumes synchronously.
+	_playback_queue_gen += 1
+	_cancel_voice_event_waiters(
+		-1, _VOICE_EVENT_PURPOSE_QUEUE, -1, previous_queue_gen)
+	return _playback_queue_gen
+
+
 func _exit_tree() -> void:
+	_dialogue_timer_authority_exiting = true
+	_voice_event_waiter_authority_exiting = true
+	_next_frame_waiter_authority_exiting = true
+	_cancel_all_dialogue_timer_waiters()
+	_cancel_all_voice_event_waiters()
+	_cancel_all_next_frame_waiters()
 	StellaRuntime._unregister_dialogue_clear_presenter(
 		self, _dialogue_clear_participant_capability)
 	_dialogue_clear_participant_capability = null
@@ -528,7 +872,9 @@ func _cancel_queued_stage_requests_for_voice_queue(queue_gen: int) -> void:
 			or bool((owner as Dictionary).get("dispatch_active", false))
 		):
 			continue
-		SignalBus.cancel_stage_operation_request(int(raw_request_id))
+		var request_id := int(raw_request_id)
+		if not SignalBus.cancel_presentation_operation_request(request_id):
+			SignalBus.cancel_stage_operation_request(request_id)
 
 
 func _logical_dialogue_voice_session_is_open() -> bool:
@@ -610,7 +956,7 @@ func _retire_dialogue_lifecycle(
 	_finalization_transition_records.clear()
 	_stage_operation_request_owners.clear()
 	_stage_operation_request_results.clear()
-	_playback_queue_gen += 1
+	_publish_next_voice_queue_generation()
 	_playback_queue_active = false
 	_playback_owner_dialogue_gen = -1
 	_playback_aborted = true
@@ -682,7 +1028,7 @@ func _apply_exit_boundary(revision: int) -> void:
 	_retire_dialogue_lifecycle(false, true)
 	if revision != _boundary_revision:
 		return
-	_dialogue_gen += 1
+	_publish_next_dialogue_generation()
 	_indicator_token += 1
 	_indicator_candidate_dialogue_gen = -1
 	_dialogue_ready = false
@@ -712,8 +1058,9 @@ func _start_voice_playback(
 		return false
 	# Claim the queue before any public signal. A synchronous listener may SHOW a
 	# replacement, whose kickoff then owns a newer dialogue + queue generation.
-	_playback_queue_gen += 1
-	var queue_gen := _playback_queue_gen
+	var queue_gen := _publish_next_voice_queue_generation()
+	if owner_gen != _dialogue_gen or queue_gen != _playback_queue_gen:
+		return false
 	_playback_owner_dialogue_gen = owner_gen
 	_playback_queue_active = false
 	_playback_is_dialogue = is_dialogue_playback
@@ -868,6 +1215,7 @@ func _on_choice_modal_started(_prompt: String, _options: Array) -> void:
 	# Retire the preceding dialogue's timers without entering the normal
 	# cancelled-skip restoration path, which could otherwise schedule Auto again.
 	_ctrl_held = false
+	_cancel_dialogue_timer_waiters(_dialogue_gen, _TIMER_PURPOSE_SKIP)
 	_skip_pending_dialogue_gen = -1
 	_retire_auto_play_attempt()
 
@@ -929,8 +1277,12 @@ func _on_skip_active_changed(active: bool) -> void:
 
 func _schedule_advance_after_skip_delay(gen: int) -> void:
 	_skip_pending_dialogue_gen = gen
-	await get_tree().create_timer(
-		StellaRuntime.get_setting("skip_interval") / 1000.0).timeout
+	if not await _await_dialogue_timer(
+		StellaRuntime.get_setting("skip_interval") / 1000.0,
+		gen,
+		_TIMER_PURPOSE_SKIP,
+	):
+		return
 	if gen != _dialogue_gen or _skip_pending_dialogue_gen != gen:
 		return
 	_skip_pending_dialogue_gen = -1
@@ -947,6 +1299,8 @@ func _schedule_advance_after_skip_delay(gen: int) -> void:
 func cancel_pending_skip() -> void:
 	if _skip_pending_dialogue_gen != _dialogue_gen:
 		return
+	_cancel_dialogue_timer_waiters(
+		_dialogue_gen, _TIMER_PURPOSE_SKIP)
 	_skip_pending_dialogue_gen = -1
 	_restore_ready_after_cancelled_skip(_dialogue_gen)
 
@@ -1378,8 +1732,7 @@ func _show_dialogue_now(
 
 	# Publish replacement ownership before cancellation or any custom indicator
 	# hook can synchronously emit signals or queue another SHOW.
-	_dialogue_gen += 1
-	var gen := _dialogue_gen
+	var gen := _publish_next_dialogue_generation()
 	_is_typing = false
 	_invalidate_advance_indicator()
 	if gen != _dialogue_gen:
@@ -1624,7 +1977,8 @@ func _show_dialogue_now(
 
 	# Signal emission returns at the await below. Active/not-ready was established
 	# before every reentrant hook, so same-frame input completes this line.
-	await get_tree().process_frame
+	if not await _await_owned_next_frame(gen, _NEXT_FRAME_PURPOSE_SHOW):
+		return
 	if gen != _dialogue_gen:
 		return
 
@@ -1681,8 +2035,8 @@ func _show_dialogue_now(
 					if effect["type"] == "wait":
 						var wait_seconds := float(effect["value"]) / 1000.0
 						if wait_seconds > 0.0:
-							await get_tree().create_timer(wait_seconds).timeout
-							if gen != _dialogue_gen:
+							if not await _await_dialogue_timer(
+								wait_seconds, gen, _TIMER_PURPOSE_TYPEWRITER):
 								return
 					elif effect["type"] == "speed":
 						current_char_interval = effect["value"] / 1000.0
@@ -1706,8 +2060,8 @@ func _show_dialogue_now(
 			line_punctuation_pause,
 		)
 		if character_delay > 0.0:
-			await get_tree().create_timer(character_delay).timeout
-			if gen != _dialogue_gen:
+			if not await _await_dialogue_timer(
+				character_delay, gen, _TIMER_PURPOSE_TYPEWRITER):
 				return
 	if gen != _dialogue_gen:
 		return
@@ -1720,8 +2074,11 @@ func _show_dialogue_now(
 				and effect["type"] == "wait"
 				and float(effect["value"]) > 0.0
 			):
-				await get_tree().create_timer(effect["value"] / 1000.0).timeout
-				if gen != _dialogue_gen:
+				if not await _await_dialogue_timer(
+					effect["value"] / 1000.0,
+					gen,
+					_TIMER_PURPOSE_TYPEWRITER,
+				):
 					return
 
 	# Public playback facades can activate skip during the final character's
@@ -1796,7 +2153,9 @@ func _continue_auto_play_after_ready(gen: int) -> void:
 			if not await _wait_for_active_voice_finished(gen, attempt):
 				return
 	var auto_play_delay: float = StellaRuntime.get_setting("auto_play_delay")
-	await get_tree().create_timer(auto_play_delay).timeout
+	if not await _await_dialogue_timer(
+		auto_play_delay, gen, _TIMER_PURPOSE_AUTO, attempt):
+		return
 	if (
 		gen != _dialogue_gen
 		or _auto_pending_dialogue_gen != gen
@@ -1815,7 +2174,11 @@ func _continue_auto_play_after_ready(gen: int) -> void:
 func _wait_for_active_voice_finished(gen: int, attempt: int) -> bool:
 	var expected_token := _active_voice_token
 	while _voice_playing:
-		var event: VoicePlaybackEvent = await SignalBus.voice_playback_event
+		var waiter := await _await_owned_voice_event(
+			gen, _VOICE_EVENT_PURPOSE_AUTO, attempt)
+		if waiter == null or waiter.cancelled:
+			return false
+		var event: VoicePlaybackEvent = waiter.event
 		if (
 			gen != _dialogue_gen
 			or _auto_pending_dialogue_gen != gen
@@ -1824,7 +2187,8 @@ func _wait_for_active_voice_finished(gen: int, attempt: int) -> bool:
 		):
 			return false
 		if (
-			event.get_kind() == VoicePlaybackEvent.Kind.FINISHED
+			event != null
+			and event.get_kind() == VoicePlaybackEvent.Kind.FINISHED
 			and event.get_playback_token() >= 0
 			and event.get_playback_token() == expected_token
 			and event.is_current()
@@ -1834,9 +2198,19 @@ func _wait_for_active_voice_finished(gen: int, attempt: int) -> bool:
 
 
 func _retire_auto_play_attempt() -> void:
+	var retiring_gen := _auto_pending_dialogue_gen
+	var retiring_attempt := _auto_pending_attempt
 	_auto_attempt_serial += 1
 	_auto_pending_dialogue_gen = -1
 	_auto_pending_attempt = -1
+	if retiring_gen >= 0 and retiring_attempt >= 0:
+		_cancel_dialogue_timer_waiters(
+			retiring_gen, _TIMER_PURPOSE_AUTO, retiring_attempt)
+		_cancel_voice_event_waiters(
+			retiring_gen,
+			_VOICE_EVENT_PURPOSE_AUTO,
+			retiring_attempt,
+		)
 
 
 func _configure_advance_indicator(
@@ -2134,7 +2508,7 @@ func _apply_indicator_transition_boundary(revision: int) -> void:
 		return
 	if revision != _boundary_revision:
 		return
-	_dialogue_gen += 1
+	_publish_next_dialogue_generation()
 	_is_typing = false
 	_invalidate_advance_indicator()
 
@@ -2203,7 +2577,7 @@ func _run_voice_queue(
 				stage_request_id > 0
 				and SignalBus.is_stage_operation_request_active(stage_request_id)
 			):
-				await SignalBus.stage_operation_request_finished
+				await _owned_stage_operation_finished
 				if not _voice_queue_is_current(owner_gen, queue_gen):
 					_retire_voice_queue_if_current(queue_gen)
 					return
@@ -2280,13 +2654,17 @@ func _apply_segment_presentation(
 	var stage_ops = segment.get("stage_ops", [])
 	var request_id := 0
 	if stage_ops is Array and not stage_ops.is_empty():
-		var emitted_ops: Array = stage_ops.duplicate(true)
-		if force_cut:
-			for operation in emitted_ops:
-				if operation is Dictionary:
-					operation["transition"] = "cut"
-					operation["duration"] = 0.0
-		request_id = SignalBus.reserve_stage_operation_request_id()
+		var director: PresentationDirector = StellaRuntime.presentation_director
+		if director == null:
+			push_error(
+				"DialoguePresenter: segment Stage cue requires the Runtime Director")
+			return 0
+		var reservation := director.reserve_request()
+		if reservation == null:
+			push_error(
+				"DialoguePresenter: segment Stage request could not be reserved")
+			return 0
+		request_id = reservation.get_request_id()
 		_stage_operation_request_owners[request_id] = {
 			"dialogue_gen": dispatch_gen,
 			"finalization": _finalization_in_progress,
@@ -2294,13 +2672,76 @@ func _apply_segment_presentation(
 			"segment_index": segment_index,
 			"segment_count": segment_count,
 			"dispatch_active": false,
+			"await_result": queue_gen >= 0,
 		}
-		SignalBus.emit_stage_operations(
-			emitted_ops,
+		var abandon_reservation := func() -> void:
+			director.abandon_request_reservation(reservation)
+			_on_stage_operation_request_finished(request_id, false)
+		var operation_lines_value: Variant = segment.get("stage_operation_lines")
+		if (
+			not operation_lines_value is Array
+			or (operation_lines_value as Array).size() != stage_ops.size()
+		):
+			push_error(
+				"DialoguePresenter: segment Stage source-line sidecar is malformed")
+			abandon_reservation.call()
+			return request_id
+		var context: ScenarioContext = (
+			StellaRuntime.engine.context if StellaRuntime.engine != null else null)
+		var source_path := ""
+		var scenario_id := ""
+		if context != null and context.scenario_data != null:
+			source_path = context.scenario_data.source_path
+			scenario_id = context.scenario_data.id
+		var typed_operations: Array[PresentationOperation] = []
+		for operation_index in range(stage_ops.size()):
+			var line_value: Variant = (operation_lines_value as Array)[operation_index]
+			if not line_value is int or int(line_value) <= 0:
+				push_error(
+					"DialoguePresenter: segment Stage source line is malformed")
+				abandon_reservation.call()
+				return request_id
+			var operation_value: Variant = stage_ops[operation_index]
+			if not operation_value is Dictionary:
+				push_error(
+					"DialoguePresenter: segment Stage operation is malformed")
+				abandon_reservation.call()
+				return request_id
+			typed_operations.append(StagePresentationOperation.new(
+				(operation_value as Dictionary).duplicate(true),
+				{
+					"source_path": source_path,
+					"scenario_id": scenario_id,
+					"line": int(line_value),
+				},
+			))
+		if (
+			context == null
+			or not context.is_runtime_owner_current()
+		):
+			push_error(
+				"DialoguePresenter: segment Stage cue requires the current Runtime Director")
+			abandon_reservation.call()
+			return request_id
+		var source := typed_operations[0].get_source()
+		var typed_request := director.submit(
+			typed_operations,
+			PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+			context,
+			source,
 			force_cut,
-			request_id,
+			reservation,
 			_on_owned_stage_operation_dispatch.bind(request_id),
 		)
+		if (
+			typed_request.is_settled()
+			and _stage_operation_request_owners.has(request_id)
+		):
+			_on_stage_operation_request_finished(
+				request_id,
+				typed_request.get_outcome()
+					== PresentationBatchRequest.Outcome.COMPLETED,
+			)
 	elif stage_ops is Array:
 		_mark_segment_presentation_dispatched(segment_index, segment_count)
 	else:
@@ -2344,8 +2785,12 @@ func _on_stage_operation_request_finished(
 	if not owner is Dictionary:
 		return
 	_stage_operation_request_owners.erase(request_id)
-	if int((owner as Dictionary).get("dialogue_gen", -1)) == _dialogue_gen:
+	if (
+		int((owner as Dictionary).get("dialogue_gen", -1)) == _dialogue_gen
+		and bool((owner as Dictionary).get("await_result", false))
+	):
 		_stage_operation_request_results[request_id] = delivered
+	_owned_stage_operation_finished.emit(request_id, delivered)
 	if not bool((owner as Dictionary).get("dispatch_active", false)):
 		return
 	_finish_presentation_dispatch()
@@ -2408,8 +2853,7 @@ func _drain_deferred_presentation_work() -> void:
 
 func _retire_typewriter_generation() -> int:
 	var previous_gen := _dialogue_gen
-	_dialogue_gen += 1
-	var replacement_gen := _dialogue_gen
+	var replacement_gen := _publish_next_dialogue_generation()
 	# A completion/advance can be requested by an early listener while the
 	# current owned stage batch is still being delivered. The late
 	# StagePresenter listener must remain part of the retiring dialogue so its
@@ -2485,7 +2929,9 @@ func _cancel_pending_stage_operation_requests() -> void:
 	# and let that handler erase only requests it actually finished; a request
 	# already being delivered must remain owned until its delivery guard unwinds.
 	for raw_request_id in _stage_operation_request_owners.keys():
-		SignalBus.cancel_stage_operation_request(int(raw_request_id))
+		var request_id := int(raw_request_id)
+		if not SignalBus.cancel_presentation_operation_request(request_id):
+			SignalBus.cancel_stage_operation_request(request_id)
 
 
 ## Click/skip bypasses remaining voice clips. Preserve operation ordering by
@@ -2500,16 +2946,21 @@ func _apply_final_segment_presentation(
 	var finalization_gen := _dialogue_gen
 	_finalization_in_progress = true
 	var remaining_stage_ops: Array = []
+	var remaining_stage_operation_lines: Array = []
 	for index in range(segments.size()):
 		var segment = segments[index]
 		if not segment is Dictionary:
 			continue
 		var segment_stage_ops = segment.get("stage_ops", [])
+		var segment_stage_lines = segment.get("stage_operation_lines", [])
 		if (
 			index >= _next_stage_segment_index
 			and segment_stage_ops is Array
 		):
 			remaining_stage_ops.append_array(segment_stage_ops.duplicate(true))
+			if segment_stage_lines is Array:
+				remaining_stage_operation_lines.append_array(
+					segment_stage_lines.duplicate())
 
 	# Commit the logical finalization before emitting either operation batch.
 	# Synchronous callbacks now observe a completed cursor and an empty shared
@@ -2520,7 +2971,10 @@ func _apply_final_segment_presentation(
 	_cancel_pending_stage_operation_requests()
 	_segment_presentation_complete = true
 
-	_apply_segment_presentation({"stage_ops": remaining_stage_ops}, force_cut)
+	_apply_segment_presentation({
+		"stage_ops": remaining_stage_ops,
+		"stage_operation_lines": remaining_stage_operation_lines,
+	}, force_cut)
 	if finalization_gen != _dialogue_gen:
 		_abort_final_segment_presentation()
 		return
@@ -2557,11 +3011,16 @@ func _wait_for_voice_playback_finished(
 	while _voice_queue_is_current(owner_gen, queue_gen):
 		if completion_state != null and completion_state.is_finished():
 			return true
-		var event: VoicePlaybackEvent = await SignalBus.voice_playback_event
+		var waiter := await _await_owned_voice_event(
+			owner_gen, _VOICE_EVENT_PURPOSE_QUEUE, -1, queue_gen)
+		if waiter == null or waiter.cancelled:
+			return false
+		var event: VoicePlaybackEvent = waiter.event
 		if not _voice_queue_is_current(owner_gen, queue_gen):
 			return false
 		if (
-			event.get_kind() == VoicePlaybackEvent.Kind.FINISHED
+			event != null
+			and event.get_kind() == VoicePlaybackEvent.Kind.FINISHED
 			and event.get_playback_token() == expected_token
 			and event.get_playback_token() >= 0
 			and event.is_current()
@@ -2640,21 +3099,32 @@ func _finalize_dialogue(character: String, segments: Array, gen: int) -> void:
 
 
 func _on_voice_playback_event(event: VoicePlaybackEvent) -> void:
-	if event == null or not event.is_current():
-		return
-	match event.get_kind():
-		VoicePlaybackEvent.Kind.STARTED:
-			if event.get_playback_token() < 0 and _active_voice_token >= 0:
-				return
-			_active_voice_token = event.get_playback_token()
-			_voice_playing = true
-		VoicePlaybackEvent.Kind.PROGRESS:
-			if event.get_playback_token() < 0 and _playback_voice_token >= 0:
-				return
-			_relay_voice_progress(
-				event.get_position(), event.get_duration(), event.get_playback_token())
-		VoicePlaybackEvent.Kind.FINISHED:
-			_on_voice_playback_finished(event.get_playback_token())
+	# Only waiters that existed at callback entry may observe this event. A
+	# continuation resumed by nested delivery can register its next wait without
+	# the outer callback consuming that new authority.
+	var entry_waiter_ids: Array = _voice_event_waiters.keys()
+	if event != null and event.is_current():
+		match event.get_kind():
+			VoicePlaybackEvent.Kind.STARTED:
+				if not (
+					event.get_playback_token() < 0
+					and _active_voice_token >= 0
+				):
+					_active_voice_token = event.get_playback_token()
+					_voice_playing = true
+			VoicePlaybackEvent.Kind.PROGRESS:
+				if not (
+					event.get_playback_token() < 0
+					and _playback_voice_token >= 0
+				):
+					_relay_voice_progress(
+						event.get_position(),
+						event.get_duration(),
+						event.get_playback_token(),
+					)
+			VoicePlaybackEvent.Kind.FINISHED:
+				_on_voice_playback_finished(event.get_playback_token())
+	_settle_voice_event_entry_snapshot(entry_waiter_ids, event)
 
 
 func _on_voice_playback_finished(playback_token: int) -> void:
@@ -3577,7 +4047,7 @@ func _apply_dialogue_clear(
 		or not SignalBus.is_current_dialogue_visibility_operation_valid()
 	):
 		return false
-	_dialogue_gen += 1
+	_publish_next_dialogue_generation()
 	_skip_pending_dialogue_gen = -1
 	_retire_auto_play_attempt()
 	_invalidate_advance_indicator()
@@ -3600,6 +4070,10 @@ func _on_dialogue_visibility_state_apply_requested(
 	content: Dictionary,
 	runtime_binding: Dictionary,
 ) -> void:
+	# Save/load and rollback projection are hard generation boundaries. Wake all
+	# waiters before replacing their canonical content so no stale continuation
+	# can mutate the restored presentation.
+	_publish_next_dialogue_generation()
 	for target: String in ["surface", "quick_menu"]:
 		_retire_dialogue_visibility_target(target, &"cancelled")
 	_canonical_dialogue_visibility = visibility.duplicate(true)
@@ -3612,6 +4086,7 @@ func _on_dialogue_content_state_apply_requested(
 	content: Dictionary,
 	runtime_binding: Dictionary,
 ) -> void:
+	_publish_next_dialogue_generation()
 	_apply_visual_only_dialogue_restore(content, runtime_binding, true)
 	_apply_canonical_dialogue_visibility()
 
@@ -4337,8 +4812,7 @@ func _apply_hide_dialogue_boundary(revision: int) -> void:
 		or revision != _boundary_revision
 	):
 		return
-	_dialogue_gen += 1
-	var hide_gen := _dialogue_gen
+	var hide_gen := _publish_next_dialogue_generation()
 	_skip_pending_dialogue_gen = -1
 	_retire_auto_play_attempt()
 	_ctrl_held = false
@@ -4383,7 +4857,7 @@ func _apply_hide_dialogue_boundary(revision: int) -> void:
 	# voice queue coroutine (e.g. a backlog replay still running) sees the
 	# mismatch on its next iteration and exits cleanly instead of leaking into
 	# the next dialogue.
-	_playback_queue_gen += 1
+	_publish_next_voice_queue_generation()
 	_playback_queue_active = false
 	_playback_owner_dialogue_gen = -1
 	_playback_aborted = true

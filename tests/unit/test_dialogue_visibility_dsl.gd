@@ -182,7 +182,7 @@ func test_mixed_join_preserves_exact_authored_order_and_source_lines() -> void:
 	if operations.size() != 3:
 		return
 	assert_eq(_sorted_keys(operations[0]["payload"]), [
-		"action", "duration", "id", "properties", "transition",
+		"action", "duration", "id", "properties", "transition", "transition_params",
 	])
 	assert_eq(operations[1]["payload"]["target"], "surface")
 	assert_eq(operations[2]["payload"]["target"], "quick_menu")

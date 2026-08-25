@@ -114,12 +114,12 @@ func test_stage_rejects_invalid_typed_values_and_transition():
 
 func test_stage_rejects_invalid_timing_and_empty_keys_atomically():
 	var invalid_arguments := [
-		["transition=warp", "transition 'warp'"],
 		["transition=", "transition ''"],
 		["duration=-0.1", "finite non-negative"],
 		["duration=bad", "finite non-negative"],
 		["duration=NaN", "finite non-negative"],
 		["duration=INF", "finite non-negative"],
+		["transition=cut duration=0.1", "cut/none transition requires duration=0"],
 		["=value", "property name cannot be empty"],
 	]
 	for invalid_case in invalid_arguments:
@@ -128,6 +128,86 @@ func test_stage_rejects_invalid_timing_and_empty_keys_atomically():
 		var data := _parse("""@chapter test
 @scene start
 @stage hero update face=stage:must_not_apply %s""" % argument)
+		assert_true(data.scenes[0].commands.is_empty(), argument)
+		assert_true(_has_diagnostic_at_line(data, message, 3), argument)
+
+
+func test_stage_transition_expression_lowers_to_typed_canonical_params():
+	var data := _parse("""@chapter test
+@scene start
+@stage hero show asset=stage:target transition=rule(mask=stage:reveal) duration=0.8
+@stage hero update asset=stage:next transition=mosaic duration=0.6
+@stage hero hide transition=fade duration=0.2""")
+	assert_true(data.diagnostics.is_empty(), str(data.diagnostics))
+	assert_eq(data.scenes[0].commands.size(), 3)
+	var rule: Dictionary = data.scenes[0].commands[0].params
+	assert_eq(rule["transition"], "rule")
+	assert_eq(rule["transition_params"], {
+		"mask": "stage:reveal",
+		"softness": 0.0,
+		"invert": false,
+	})
+	var mosaic: Dictionary = data.scenes[0].commands[1].params
+	assert_eq(mosaic["transition"], "mosaic")
+	assert_eq(mosaic["transition_params"], {"cell": 32})
+	assert_eq(
+		data.scenes[0].commands[2].params["transition_params"],
+		{},
+		"plain transition spellings keep the same six-field typed schema",
+	)
+
+
+func test_stage_transition_expression_rejects_ambiguous_parameter_grammar():
+	var invalid_arguments := [
+		["transition=rule(mask=stage:a,mask=stage:b)", "duplicate transition parameter 'mask'"],
+		["transition=rule(mask)", "use key=value"],
+		["transition=rule(mask=)", "parameter 'mask' cannot be empty"],
+		["transition=rule(mask=stage:a,) ", "empty transition parameter"],
+		["transition=rule(mask=stage:a", "transition expression"],
+		["transition=rule()", "requires parameters"],
+		["transition=9rule(mask=stage:a)", "transition kind"],
+	]
+	for invalid_case in invalid_arguments:
+		var argument: String = invalid_case[0]
+		var message: String = invalid_case[1]
+		var data := _parse("""@chapter test
+@scene start
+@stage hero update asset=stage:must_not_apply %s duration=0.5""" % argument)
+		assert_true(data.scenes[0].commands.is_empty(), argument)
+		assert_true(_has_diagnostic_at_line(data, message, 3), argument)
+
+
+func test_stage_transition_expression_keeps_custom_kinds_typed_for_runtime_registry():
+	var data := _parse("""@chapter test
+@scene start
+@stage hero update asset=stage:next transition=project_warp(iterations=3,mirror=false,label=wide) duration=0.5""")
+	assert_true(data.diagnostics.is_empty(), str(data.diagnostics))
+	assert_eq(data.scenes[0].commands.size(), 1)
+	var params: Dictionary = data.scenes[0].commands[0].params
+	assert_eq(params["transition"], "project_warp")
+	assert_eq(params["transition_params"], {
+		"iterations": 3,
+		"mirror": false,
+		"label": "wide",
+	})
+
+
+func test_builtin_transition_params_fail_close_at_authored_line():
+	var invalid_arguments := [
+		["transition=rule(softness=0.2)", "rule transition requires 'mask'"],
+		["transition=rule(mask=stage:a,unknown=1)", "unknown rule transition parameter 'unknown'"],
+		["transition=rule(mask=stage:a,softness=-0.1)", "softness"],
+		["transition=rule(mask=stage:a,invert=1)", "invert"],
+		["transition=mosaic(mask=stage:a)", "unknown mosaic transition parameter 'mask'"],
+		["transition=mosaic(cell=1)", "cell"],
+		["transition=fade(amount=0.5)", "fade transition does not accept parameters"],
+	]
+	for invalid_case in invalid_arguments:
+		var argument: String = invalid_case[0]
+		var message: String = invalid_case[1]
+		var data := _parse("""@chapter test
+@scene start
+@stage hero show asset=stage:must_not_apply %s duration=0.5""" % argument)
 		assert_true(data.scenes[0].commands.is_empty(), argument)
 		assert_true(_has_diagnostic_at_line(data, message, 3), argument)
 
@@ -353,6 +433,8 @@ sakura「二」 #voice:v2
 	assert_eq(segments[1]["stage_ops"].size(), 2)
 	assert_eq(segments[1]["stage_ops"][0]["id"], "event")
 	assert_eq(segments[1]["stage_ops"][1]["properties"]["face"], "stage:happy")
+	assert_eq(segments[0]["stage_operation_lines"], [4])
+	assert_eq(segments[1]["stage_operation_lines"], [6, 7])
 	assert_eq(
 		data.scenes[0].commands.size(),
 		1,

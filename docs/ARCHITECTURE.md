@@ -295,12 +295,13 @@ signal settings_changed(key: String, value: Variant)
 - `PresentationOperation` 是只读 typed operation，暴露 kind、channel、deep-copy payload 和 source location。concrete kind 为 `StagePresentationOperation`（`stage:<layer_id>` / `stage:*`）、`DialogueVisibilityPresentationOperation`（`dialogue:surface` / `dialogue:quick_menu`）、固定 channel `dialogue:content` 的 `DialogueClearPresentationOperation`、固定 channel `chapter:indicator` 的 `ChapterIndicatorPresentationOperation`、`LoopSePresentationOperation`（`loop_se:<channel_id>`），以及固定 channel `bgm:main` 的 `BgmPresentationOperation`。
 - `PresentationOperationReceipt` 用 `batch_id / presenter_instance_id / channel / token / generation` 五元组唯一标识 Presenter 真正拥有的转场；单独 layer ID 不能完成批次。
 - `PresentationBatchRequest` 的 policy 为 `JOIN` / `FIRE_AND_FORGET`，outcome 为 `COMPLETED` / `CANCELLED` / `FAILED`。operation/receipt getter 返回 defensive container，`settled(batch_id, outcome)` 只发送一次。`_bind_authority()`、`_seal()` 和 `_settle()` 是 Director 内部 authority 方法，不是 caller API。
+- `PresentationRequestReservation` 是 Director 签发、绑定签发 authority 且只能消费一次的内部 capability。`@combine` 可在同步投递前读取其单调 request ID 来登记 exact segment owner，但 `submit()` 只接受并消费同一 Director 当前持有的 capability；伪造、跨 Director、重复、取消、放弃或与 active raw queue 数值碰撞的 token 都会在建立 entry、入队或触发 callback 前 fail-close。任何本地 sidecar/context 失败会显式放弃 capability，Director reset 则取消全部尚未消费的 capability，不能留下裸整数 reservation 或悬挂 bookkeeping。
 
-Parser 把整个 `@stage_batch` 编译为一个 addressable `CommandData(type="stage_batch")`，`declared_line` 是 block opening line，params 精确为 `policy / operations / operation_lines`。`operations` 中每项都是 `action / id / properties / transition / duration` canonical five-field；`operation_lines` 与 child 一一对应，保留在可执行 params 中供程序化调用在 runtime fail-close 时定位原始 child source line，但它只是诊断元数据，会从 `stage_batch` semantic content fingerprint 排除；`policy` 与 `operations` 仍参与 identity。
+Parser 把整个 `@stage_batch` 编译为一个 addressable `CommandData(type="stage_batch")`，`declared_line` 是 block opening line，params 精确为 `policy / operations / operation_lines`。`operations` 中每项都是 `action / id / properties / transition / transition_params / duration` canonical six-field；`transition_params` 是参数顺序无关、primitive-only 的 typed Dictionary，内置 rule/mosaic 使用 closed schema，扩展 kind 到 Presenter-local registry 再完成 provider schema/resource validation。`operation_lines` 与 child 一一对应，保留在可执行 params 中供程序化调用在 runtime fail-close 时定位原始 child source line，但它只是诊断元数据，会从 `stage_batch` semantic content fingerprint 排除；`policy` 与 `operations` 仍参与 identity。
 
-`submit()` 在分配 request ID 之前完成 authoritative typed schema/context preflight：检查所有 kind 的 canonical payload、duplicate channel、Stage clear 冲突，并以 canonical state 做 semantic reduce。chapter 即使已经处于 authored target 也不会跳过 binding validation；loop-SE/BGM 也必须进入 Bus，让唯一 Runtime-owned AudioPresenter 证明资源、完整 loop region 与当前投影都可用。invalid 和不含 Stage clear/dialogue clear/loop-SE/BGM 的真实 no-work 路径不进入 Bus，也不分配 receipt、token 或 Tween；这类 no-work 会以 `batch_id=0`、`receipts=[]` 同步 `COMPLETED`。Stage clear、dialogue clear 与每条 loop-SE/BGM 都是 live projection ownership exception：它们不能仅凭 canonical Dictionary 相等而短路。dialogue clear 即使页面已为空也取得 positive batch id，并由 Runtime-owned Presenter quorum 完成 validate → accept → synchronous apply；clear 是 cut-only content boundary，不创建 transition receipt、token、Tween 或 wall-clock wait，headless 零 Presenter 同样以正向零 receipt 完成。BGM same playing asset+cue+volume+stem mix 仍取得 positive Presenter/resource preflight；稳定物理投影才以零 receipt 完成，只改 volume 或 stem mix 则保留 player/stream/cursor。若同 target 仍在 fade，Presenter 先 exact-complete 旧 receipt 到 canonical endpoint，再让当前 positive batch 继续；paused `play` 重启 cue，`resume` 才保留 cursor。
+`submit()` 对普通调用会在自动分配 request ID 之前完成 authoritative typed schema/context preflight；`@combine` 为先登记本地 segment owner 而预留的 capability 也必须在这一步单次消费并从 reservation map 移除。preflight 检查所有 kind 的 canonical payload、duplicate channel、Stage clear 冲突，并以 canonical state 做 semantic reduce。chapter 即使已经处于 authored target 也不会跳过 binding validation；loop-SE/BGM 也必须进入 Bus，让唯一 Runtime-owned AudioPresenter 证明资源、完整 loop region 与当前投影都可用。invalid 与不含 Stage/dialogue clear/loop-SE/BGM live ownership 的真实 no-work 路径不进入 Bus，也不分配 receipt、token 或 Tween；这类 no-work 会以 `batch_id=0`、`receipts=[]` 同步 `COMPLETED`。每条 Stage（包括 same-target、unknown remove）、dialogue clear 与每条 loop-SE/BGM 都是 live projection ownership exception：它们不能仅凭 canonical Dictionary 相等而短路；Stage 仍须让本轮 Runtime-owned Presenter quorum 重验 provider、资源与 viewport/budget，稳定对齐时以 positive batch、零 receipt/Tween 同步完成。dialogue clear 即使页面已为空也取得 positive batch id，并由 Runtime-owned Presenter quorum 完成 validate → accept → synchronous apply；clear 是 cut-only content boundary，不创建 transition receipt、token、Tween 或 wall-clock wait，headless 零 Presenter 同样以正向零 receipt 完成。BGM same playing asset+cue+volume+stem mix 仍取得 positive Presenter/resource preflight；稳定物理投影才以零 receipt 完成，只改 volume 或 stem mix 则保留 player/stream/cursor。若同 target 仍在 fade，Presenter 先 exact-complete 旧 receipt 到 canonical endpoint，再让当前 positive batch 继续；paused `play` 重启 cue，`resume` 才保留 cursor。
 
-有工作的操作在同一 `SignalBus` dispatch boundary 中原子派发。Bus 在任何 child apply 前收集并验证完整 chapter Presenter registry，并让唯一 AudioPresenter 对每个 loop-SE/BGM resource 完成 typed validate/accept；任一资源、cue、marker 缺失/非法或 participant 拒绝都会在第一个 child mutation 前令整批 `FAILED`。seal 后按 authored child order 跨 kind 派发，operation source line、channel 与 receipt 一一保持。Bus 在每个连续 typed run 即将 apply 时才把实际 channels 交给 Director；post-apply failure 只回滚该失败 request 仍持有的 applied domains，并在同一 projection lifecycle 内 cut-project canonical Stage、受影响的 dialogue/audio targets 与 chapter state。已由 fresh request 接管的域不会被旧 terminal 回滚，无关域的 epoch 变化也不会使 fresh dispatch tail 失败。`JOIN` 只等待 dispatch tail 封存的 exact receipt union；零 receipt 同步完成，current owner 的任一 superseded/cancelled receipt 都使该 JOIN fail-close。`FIRE_AND_FORGET` 在 dispatch seal 后释放剧情，但 Director 继续持有 receipts 直到 terminal cleanup。连续 batch 经 Bus 串行；同 channel 重叠时由 Presenter generation 决定 winner，late、foreign 或 duplicate terminal 不能完成新 batch。
+有工作的操作在同一 `SignalBus` dispatch boundary 中原子派发。Bus 在任何 child apply 前收集并验证完整 Stage/dialogue/chapter Presenter registry，并让唯一 AudioPresenter 对每个 loop-SE/BGM resource 完成 typed validate/accept。每个连续 Stage run 建立一个 `StageOperationRequest`：Runtime admission snapshot 绑定 exact Presenter+capability 与 capability-bound transaction callable；同一 generic batch 的所有 Stage run还共享一条 authored-order preflight chain，因此即使中间隔着 dialogue/chapter/audio child，Presenter 也先在私有 shadow state 中依次 reduce，后一条 Stage 的 source snapshot 可以来自前一条 sealed target，但 live state 仍保持未变。Presenter-local transition registry 同步验证 provider、Shader、逻辑资源、viewport/预算，并在 live layer mutation 前构造 sealed source/target projection snapshots；零 StagePresenter、validate/accept/apply 任一 quorum 缺失都 fail-close。apply 前先经过 readiness 与 claim 两道无 mutation barrier：所有捕获的 StagePresenter 都重验 viewport、expected-before 与 sealed holder/material；全员 claim 且 capability/liveness/epoch 仍有效后，Bus 才进入不再广播普通 apply signal 的私有 hold→commit 段。所有 Presenter 的 receipt/start/terminal 都在 whole quorum private commit 完成前保持队列化；全员 commit 后 Bus 再检查 exact participant、capability 与 Stage epoch，先把 Stage rollback ownership 交给 Director，然后才逐 Presenter 释放 publication hold。每次 publication 返回后仍重验相同 authority；同步 receipt listener 若 reset、替换 scene 或退休其他 Presenter，旧 request 会禁止 public raw notification，epoch 仍 current 才由 Director rollback，epoch 已变化则由新 lifecycle boundary 收敛且旧 rollback 不得覆盖。所有 hold、queued event 与 applying slot 在每个 terminal path exact 清理。任一资源、cue、marker 缺失/非法或 participant 拒绝都会在第一个 child mutation 前令整批 `FAILED`。seal 后按 authored child order 跨 kind 派发，operation source line、channel 与 receipt 一一保持。Bus 在每个连续 typed Stage run whole private commit 成功后才把实际 channels 交给 Director。`JOIN` 只等待 dispatch tail 封存的 exact receipt union；零 receipt 同步完成，current owner 的任一 superseded/cancelled receipt 都使该 JOIN fail-close。`FIRE_AND_FORGET` 在 dispatch seal 后释放剧情，但 Director 继续持有 receipts 直到 terminal cleanup。连续 batch 经 Bus 串行；同 channel 重叠时由 Presenter generation 决定 winner，late、foreign 或 duplicate terminal 不能完成新 batch。
 
 Director 还统一拥有 blocking presentation waiter。所有 typed operation 共享 Runtime 的 generic lifecycle 判断，不再各自维护 sibling flag。dialogue clear 提交显式 `cleared=true` 的 versioned content state，同时只推进 NVL page epoch；它不通过空字符串推断，也不改 mode/profile/visibility/backlog。Presenter 只退休当前 dialogue-content 拥有的 typewriter、voice 与 inline stage-cue callback，绝不触碰独立 Stage owner。session reset、load、rollback、restart、return-to-title 或 context replacement 先退休旧 generation/owner，再 reset 并在需要时 cut canonical state；旧 callback 不能复活。纯 Presentation SceneTree/UI replacement 不清 persistent loop-SE/BGM canonical state：旧 AudioPresenter 同步提交 canonical incoming 的物理 position、退休自己的 projection/callback，新 Runtime-owned Presenter 再从该 state cut-project 一次，不能重复 player。context/global abort 会把仍有 exact BGM receipt 的 Tween cut 到已提交 stable target，不能留下无 Director owner 的 player。可逆导航被拒绝时，Runtime 恢复该命令之前的 canonical state，然后在 retained cursor 重新派发，不会 resume 已取消的 coroutine。
 
@@ -345,7 +346,7 @@ func restore_snapshot(snapshot: Dictionary) -> void: ...
 
 `SaveManager` 维护 provider 列表，存档时遍历调用 `capture_snapshot()` 聚合为 JSON 写入 `user://saves/save_<slot>.json`，读档时反向恢复。Scenario snapshot 同时保存剧本 ID 与版本化来源 identity；scenario-aware 读取必须二者都与目标 `ScenarioData` 一致，缺少来源 identity 的旧存档由 Runtime 拒绝，不能仅凭同名文件猜测目标。`ScenarioContext` 还只保存 chapter indicator 的 authored visibility `bool`；chapter ID/title 始终从恢复后的执行 cursor 与 `TranslationServer` 重算，Tween、Presenter/Label identity 和 barrier ticket 都不进入 JSON。缺少该 bool 的旧快照按 hidden 恢复，存在但非 bool 的快照在 restore 前原子拒绝。除了变量系统，`PresentationState` 也作为 provider 捕获基础背景、动态舞台层、BGM 与 persistent loop-SE 等表现层状态，实现真正的“所见即所存”。运行中读档、快读或回退会先把 `ScenarioEngine.context` 所有权交给新 context，再只通知转移前捕获的 abort audience，最后 hard hide 旧 Presenter；同步创建的替换 handler 不会收到旧代际的 abort。旧阻塞命令的同步取消因此只能观察到 stale owner，不能把取消误报为 `scenario_ended` 或抢回最终 context。导航会先 invalidate engine run generation，再取消 Director-owned generic blocking presentation waiter；winning context 按 reset-hidden → metadata → cut target → `engine.run()` 的顺序投影，failed/superseded navigation 则 cut 恢复保留 context。
 
-动态舞台层以 `stage_layers: Dictionary` 保存：键是稳定业务 ID，值是经过 `StageLayerState` 归一化的完整 JSON-safe 状态。人物、事件图和其他舞台图片都使用这一份状态，不存在第二套人物快照。`PresentationState` 与 `StagePresenter` 使用同一 reducer，所以 patch 语义不会漂移。JOIN 动画进行中仍可存档；存档只包含已原子提交的 final canonical `stage_layers` 和 scenario cursor，绝不保存 operation、policy、request/batch、receipt、token、generation、Tween、barrier 或 progress，也不新增 in-flight schema。恢复顺序是 cancel old generation → reset + atomic cut canonical target → same-cursor re-dispatch；非 clear 目标已满足时以 no-work 同步完成，且零新 batch/receipt/token/Tween，不重播旧动画。clear 仍须经过 typed dispatch 取得 live projection ownership；它以 positive batch、同步 participant apply、零 transition receipt 完成。
+动态舞台层以 `stage_layers: Dictionary` 保存：键是稳定业务 ID，值是经过 `StageLayerState` 归一化的完整 JSON-safe 状态。人物、事件图和其他舞台图片都使用这一份状态，不存在第二套人物快照。`PresentationState` 与 `StagePresenter` 使用同一 reducer，所以 patch 语义不会漂移。JOIN 动画进行中仍可存档；存档只包含已原子提交的 final canonical `stage_layers` 和 scenario cursor，绝不保存 operation、policy、request/batch、receipt、token、generation、Tween、barrier 或 progress，也不新增 in-flight schema。恢复顺序是 cancel old generation → reset + atomic cut canonical target → same-cursor re-dispatch；已满足的 Stage 目标仍以 positive typed batch 重验 Presenter/provider/resource binding，但以零 receipt/token/Tween 同步完成，不重播旧动画。clear 同样经过 typed dispatch 取得 live projection ownership；它以 positive batch、同步 participant apply、零 transition receipt 完成。
 
 loop-SE 以 `loop_se_channels: Dictionary` 保存，键为 authored stable channel，值精确为 `{asset, loop: true, volume, position}`。save capture 同步询问唯一 AudioPresenter 的 canonical incoming position；outgoing voice、fade progress、receipt/generation、Tween 与 wall-clock 都不入 JSON。load/rollback 取消旧 generation 后按 position cut-project 单 player；same cursor 重派同 asset+volume 仍走 Presenter/resource preflight，live projection 完全对齐时不 seek、不复制也不创建 receipt。session/new-game/title reset 清空该 Dictionary；普通 scenario scene 变化和 AudioPresenter replacement 保留它。
 
@@ -452,7 +453,7 @@ Core → Presentation 的 canonical 对话与语音链均使用只读 typed DTO�
 - `[expr:surprised]` 等句内标记随打字进度更新头像
 - 头像状态与舞台层相互独立；舞台人物差分必须通过 `@stage` 更新
 
-`@combine` 的每个 segment 还可携带 `stage_ops`。DialoguePresenter 在对应 voice 开始前原子派发该批舞台操作；点击补全或快进会按顺序归约全句已声明的操作，再以单次 force-cut 投影最终画面。隐藏/读档会递增 dialogue generation，使已取消的字符基础间隔、标点停顿、内联 wait、voice 或 skip await 不能在新上下文中继续推进。
+`@combine` 的每个 segment 还可携带 `stage_ops`，parser 同时保存与每项一一对应的 authored source line。DialoguePresenter 在对应 voice 开始前把它们构造为 source-located `StagePresentationOperation`，并提交到唯一 Runtime-owned `PresentationDirector`；它不再直接广播 raw Stage signal。点击补全或快进仍按顺序归约全句待处理操作，但以 typed `force_cut` intent 通过同一 provider/resource/viewport/budget preflight，绝不把 rule/mosaic/custom payload 改写为 cut。同步 preflight 失败也会 exact settle segment owner，隐藏、替换或取消则复用同一 request id 与 Director queue/generation。隐藏/读档会递增 dialogue generation，使已取消的字符基础间隔、标点停顿、内联 wait、voice 或 skip await 不能在新上下文中继续推进。
 
 **SD / 插画**与人物、事件图使用同一套命名层 API：
 
@@ -564,6 +565,29 @@ var effect_enabled: bool = true
 settings-backed cache、转换为秒并再次做防御性校验，因此 reset 的同步重入不会
 取得新旧混合值，也绝不创建负时长计时器。direct set、reset 或成功 load 发出的通知
 更新下一行；启动阶段在创建 Presenter 前载入的值用于首行。
+
+DialoguePresenter 的字符/标点间隔、内联 wait、句尾 wait、Skip 延迟与 Auto 延迟
+共用唯一的 Presenter-owned Timer authority。每个 idle Timer child 精确绑定 dialogue
+generation、用途以及必要时的 Auto attempt，继承 SceneTreeTimer 的 time scale 与 pause
+行为；自然 timeout 与主动取消都先从 authority 擦除并停止 Timer，再 exact-once 唤醒
+await continuation。新句、hide/clear、load/rollback、场景替换和 tree exit 会退休旧
+generation 的全部 waiter；Skip/Auto 的局部取消只退休对应 owner，不会误杀同代际其他
+用途。因而取消不是简单 free Timer 后留下悬挂函数，也不需要第二 scheduler、wall-clock
+轮询或测试专用清理路径。
+
+语音完成等待同样由该 DialoguePresenter 的单一 cancellable authority 管理，而不是让
+queue/Auto coroutine 直接悬挂在全局 signal。每个 voice-event waiter 绑定 dialogue
+generation、`queue`/`auto` 用途，以及对应 queue generation 或 Auto attempt；物理事件
+回调先快照 entry waiter，再按 canonical token/currentness 更新物理状态，最后只结算该
+快照。无效或 stale 事件仍会唤醒既有 waiter，由 continuation 过滤并重新登记，因此同步
+重入的新 waiter 不会被外层事件重复消费。新 queue generation 会在取消旧 waiter 前先
+发布，Auto retirement 只取消 exact attempt；新句、hide/clear、load/rollback、场景替换
+和 tree exit 则 exact-once 唤醒旧 generation 的全部 waiter，退出后 authority 必为空。
+SHOW 进入 typewriter 前的首个主线程帧边界也由 Presenter-owned next-frame waiter
+管理，而不是直接悬挂在 `SceneTree.process_frame`。该 waiter 绑定 exact dialogue
+generation；自然帧、replacement 与 tree exit 都先断开 one-shot callback、从 authority
+map 删除，再同步结算 continuation，因此退场节点不会由局部 ExpressionTimeline 反向
+保活，旧帧 callback 也不能消费 replacement generation 新登记的 waiter。
 
 ### 3.6 播放控制
 
@@ -817,7 +841,8 @@ stella/
 
 ```bash
 godot --headless --import
-STELLA_DISABLE_LOCAL_CONFIG=1 godot -s addons/gut/gut_cmdln.gd --headless 2>&1
+STELLA_DISABLE_LOCAL_CONFIG=1 godot --audio-driver Dummy \
+  -s addons/gut/gut_cmdln.gd --headless 2>&1
 ```
 
 ---

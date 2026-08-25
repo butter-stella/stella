@@ -889,8 +889,10 @@ func test_issue169_clear_retires_owned_inline_stage_callback_without_finishing_t
 				"id": "issue169_owned_inline",
 				"properties": {"asset": "stage:redraw_source"},
 				"transition": "fade",
+				"transition_params": {},
 				"duration": 10.0,
 			}],
+			"stage_operation_lines": [887],
 		}],
 	)
 	if dialogue == null:
@@ -1090,6 +1092,14 @@ func test_a_standalone_join_preserves_dialogue_ownership_and_group_independence(
 			_assert_exact_finish_record(_visibility_finish_requests[0][0])
 	assert_true(_dialogue_requests[1].get_activation().is_pending(),
 		"the finishing advance cannot cross into the following Dialogue")
+	var next_activation := _dialogue_requests[1].get_activation()
+	var dialogue_count := _dialogue_requests.size()
+	assert_true(_dialogue_requests[1].abort(),
+		"test teardown aborts only the exact pending Dialogue owner")
+	await get_tree().process_frame
+	assert_eq(next_activation.get_outcome(), DialogueActivation.Outcome.ABORTED)
+	assert_eq(_dialogue_requests.size(), dialogue_count,
+		"aborting the exact pending owner cannot replay Dialogue")
 
 
 func test_a_fade_join_naturally_completes_and_cleans_exact_visual_work() -> void:
@@ -2359,6 +2369,7 @@ func test_f_mid_fnf_save_load_uses_canonical_checkpoint_and_same_cursor_no_work(
 		"text": "FNF save tail.",
 		"voice": "",
 		"stage_ops": [],
+		"stage_operation_lines": [],
 	}]], "load fresh-dispatches the authored tail exactly once")
 	assert_true(_dialogue_requests[-1].get_activation().is_pending())
 

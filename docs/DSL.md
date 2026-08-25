@@ -362,7 +362,25 @@ Director 在任何 child apply 之前完成整批 typed schema/context preflight
 @stage dusk update redraw=clear
 ```
 
-`transition` / `duration` 属于 operation，不进入持久层状态。支持 `cut` / `none`、`fade`、`move` 和 `slide_left/right/up/down`；`duration` 必须是有限的非负秒数。只有省略字段时才使用 `cut` / `0` 默认值，显式空值或非法值不会回退。每层拥有独立 Tween。快进、点击补全和读档会以强制 cut 一次投影最终状态。
+`transition` / `duration` 属于 operation，不进入持久层状态。最短写法仍是 `transition=cut|fade|move|slide_left|slide_right|slide_up|slide_down`；`none` 是既有的 `cut` authoring spelling，canonical payload 中保存为 `cut`。投影型转场使用同一个无空格表达式 `transition=<kind>(key=value,...)`：
+
+```stla
+@stage event update asset=stage:event/night transition=rule(mask=stage:masks/diagonal) duration=0.8
+@stage event update asset=stage:event/dawn transition=rule(mask=stage:masks/cloud,softness=0.12,invert=true) duration=1.0
+@stage event update asset=stage:event/noon transition=mosaic duration=0.6
+@stage event hide transition=mosaic(cell=48) duration=0.4
+```
+
+- `rule(mask=<logical-id>, softness=0..1, invert=true|false)`：`mask` 必填，必须是 `background:` / `character:` / `stage:` 或裸 stage logical ID，不能是 `res://`、`user://`、绝对路径或 `..` 路径；`softness` 默认 `0`，`invert` 默认 `false`。
+- `mosaic(cell=2..256)`：先把 source 像素块放大，到中点切换 target，再缩小像素块；`cell` 默认 `32`，因此最短作者写法只是 `transition=mosaic`。
+
+参数顺序不影响 canonical payload；重复、未知、非有限或类型错误的参数会整条 fail-close。普通转场不接受括号参数。`duration` 必须是有限的非负秒数，`cut` / `none` 只接受 `0`。每条 operation canonicalize 为 `action / id / properties / transition / transition_params / duration` 六字段，`transition_params` 是 primitive-only 的 defensive typed Dictionary。
+
+Rule 遮罩以 normalized viewport UV 拉伸到整个视口、nearest sample，不做 aspect-fit；存储的 RGB bytes 作为数据，以 `(54R + 183G + 19B) / 256` 计算 luminance。`softness=0` 使用 hard threshold；非零 softness 使用 `1 - smoothstep(progress-softness/2, progress+softness/2, luminance)`，`invert=true` 只反转 luminance。`progress=0/1` 直接选择 source/target endpoint，完成后释放 shader/snapshot 并恢复 live canonical target。
+
+内置 provider 和项目注册的扩展 provider 都只负责同步 schema/resource validation 与 `ShaderMaterial`；Tween、JOIN/FNF receipt、Skip/click exact completion、abort/cancel 和 stale generation 仍由唯一 Runtime-owned Director/StagePresenter 生命周期拥有。资源、Shader、viewport/budget 与 source/target projection snapshot 必须在任何舞台 mutation 或 receipt claim 前通过 typed participant preflight；缺失 mask、未注册 provider 或超预算会以 child 的 `source_path:line` fail-close。每个 Presenter 的 mask/resource LRU 上限为 16，active transition snapshot 预算为 256 MiB，单轴还受设备 2D texture limit 与 8192 上限约束。
+
+每层拥有独立 Tween。快进、点击补全和读档会以强制 cut 一次投影已封存的最终 canonical state；存档不保存 Tween/progress/snapshot，读档、回滚、重启和 scene replacement 会先退休旧 token/generation，再 cut 恢复 target，旧 callback 不能覆盖新投影。
 
 资源引用可使用 `background:`、`character:`、`stage:` 或完整 `res://` 前缀。没有前缀的相对路径从 `[paths] stage` / `StellaRuntime.stage_assets_path` 解析；扩展名可省略。层 ID 应是稳定业务名称，而不是资源路径或场景节点路径。
 
@@ -617,9 +635,9 @@ child 只能是经现有 `@stage` parser 完整规范化的 canonical Stage 操�
 
 header、空 block、scene 边界或缺失 `@end` 的错误定位 opening line；duplicate/clear-conflicting canonical `@stage`、其他非法 child 或 nested block 定位 offending child line。canonical child 原本产生 warning 并拒绝命令时，batch 边界会把同一 message/source path/line 升级为 fatal error。缺失 `@end` 在 opening line 报错，且不会吞掉后续 `@scene` 或 `@chapter`。任意错误都使整块 fail-close：不生成 `stage_batch` command，child 不泄漏为 standalone command，runtime 也不发生部分 mutation。
 
-`join` 在本批 dispatch tail 封存 exact receipt set 后，等待全部 receipt 成功 terminal；零 token 同步完成。不含 live projection exception 的 semantic no-work 会在任何 request/batch ID、Bus、receipt、token 或 Tween 分配前同步完成。每条 loop-SE 即使 canonical state 相等也必须取得 positive batch，经 AudioPresenter 重新验证资源与真实 player；完全稳定对齐时才在 Presenter 内以零 receipt 同步完成，仍在 fade 的同 target 则先 exact-complete 旧 owner。当前 owner 的任一 superseded 或 cancelled receipt 都使 JOIN fail-close。普通左键、Space 或 Enter 只 finish 当前 sealed JOIN，不会跨越到下一命令。`fire_and_forget` 在 dispatch seal 后立即继续，不占用输入，此时 Tween 可仍在运行。连续 batch 按 SignalBus 顺序派发；后来的同层 generation 拥有最终状态，旧 terminal 不能完成新 batch。不得使用计时等待或 `@parallel` 伪造 JOIN。
+`join` 在本批 dispatch tail 封存 exact receipt set 后，等待全部 receipt 成功 terminal；零 token 同步完成。不含 live projection exception 的 semantic no-work 会在任何 request/batch ID、Bus、receipt、token 或 Tween 分配前同步完成。每条 Stage 即使 canonical state 相等或 remove 的层不存在也必须取得 positive batch，让 Presenter quorum 重验 provider、资源与 viewport/budget；稳定对齐时零 receipt/Tween 同步完成。每条 loop-SE 即使 canonical state 相等也必须取得 positive batch，经 AudioPresenter 重新验证资源与真实 player；完全稳定对齐时才在 Presenter 内以零 receipt 同步完成，仍在 fade 的同 target 则先 exact-complete 旧 owner。当前 owner 的任一 superseded 或 cancelled receipt 都使 JOIN fail-close。普通左键、Space 或 Enter 只 finish 当前 sealed JOIN，不会跨越到下一命令。`fire_and_forget` 在 dispatch seal 后立即继续，不占用输入，此时 Tween 可仍在运行。连续 batch 按 SignalBus 顺序派发；后来的同层 generation 拥有最终状态，旧 terminal 不能完成新 batch。不得使用计时等待或 `@parallel` 伪造 JOIN。
 
-兼容面保持不变：standalone `@stage` 仍是 nonblocking；`@parallel` 仍只是同栈启动 child，不 join；`@combine` 仍是 dialogue segment cue，不是 batch barrier。公开 reference scenario 见 [`examples/demo/scenarios/stage_batch.stla`](../examples/demo/scenarios/stage_batch.stla)；它用于文档链接，不是默认 Start Game 入口。
+既有作者语义保持不变：standalone `@stage` 仍是 nonblocking；`@parallel` 仍只是同栈启动 child，不 join；`@combine` 仍是 dialogue segment cue，不是 batch barrier。每条 combine Stage cue 的 authored line 会随 canonical 六字段 payload进入唯一 typed Director；rule/mosaic/custom 即使因点击或 Skip 以 force-cut 完成，也仍先验证 provider、mask、viewport 与预算，不会改写 authored transition 或走 raw Stage backdoor。公开 reference scenario 见 [`examples/demo/scenarios/stage_batch.stla`](../examples/demo/scenarios/stage_batch.stla)；它用于文档链接，不是默认 Start Game 入口。
 
 ### 3.13 合并对话（@combine）
 

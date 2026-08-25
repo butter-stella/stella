@@ -79,6 +79,7 @@ func _operation(
 		"action": action,
 		"id": layer_id,
 		"properties": properties,
+		"transition_params": {},
 		"transition": transition,
 		"duration": duration,
 	}
@@ -1037,6 +1038,7 @@ func test_invalid_clear_keeps_canonical_and_visible_state_identical() -> void:
 		"action": "clear",
 		"id": "",
 		"properties": {"asset": "stage:unused"},
+		"transition_params": {},
 		"transition": "cut",
 		"duration": 0.0,
 	}], true)

@@ -181,7 +181,7 @@ func test_save_and_load_restores_state():
 	# Load should restore
 	_manager.load_save(1)
 
-	assert_eq(provider.data["hp"], 100)
+	assert_eq(provider.data["hp"], 100.0)
 	assert_eq(provider.data["location"], "school")
 
 
@@ -201,7 +201,7 @@ func test_multiple_providers():
 
 	_manager.load_save(1)
 
-	assert_eq(vars_provider.data["hp"], 100)
+	assert_eq(vars_provider.data["hp"], 100.0)
 	assert_eq(engine_provider.data["scene"], "start")
 
 
