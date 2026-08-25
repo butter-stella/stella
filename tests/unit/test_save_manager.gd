@@ -111,8 +111,9 @@ func _make_valid_dialogue_save_snapshot(mode: String = "adv") -> Dictionary:
 		"quick_menu": true,
 	}
 	var content := {
-		"version": 1,
+		"version": 2,
 		"active": true,
+		"cleared": false,
 		"mode": "adv",
 		"profile_name": "message",
 		"declarative_presentation": true,
@@ -123,8 +124,9 @@ func _make_valid_dialogue_save_snapshot(mode: String = "adv") -> Dictionary:
 	}
 	if mode == "nvl":
 		content = {
-			"version": 1,
+			"version": 2,
 			"active": true,
+			"cleared": false,
 			"mode": "nvl",
 			"profile_name": "novel_second",
 			"declarative_presentation": true,
@@ -450,6 +452,50 @@ func test_dialogue_projection_adv_and_nvl_snapshots_validate_exactly() -> void:
 		assert_true(_manager.validate_data_for_scenario(round_tripped, scenario))
 
 
+func test_explicit_cleared_dialogue_projection_round_trips_without_text_inference() -> void:
+	var scenario := _make_validation_scenario()
+	var authored_blank := _make_valid_dialogue_save_snapshot("adv")
+	var blank_content: Dictionary = authored_blank["presentation_state"]["dialogue_content"]
+	blank_content["character"] = ""
+	blank_content["segments"] = [{"text": ""}]
+	blank_content["avatar_expression"] = ""
+	assert_true(_manager.validate_data_for_scenario(authored_blank, scenario),
+		"an authored blank line remains active content with cleared=false")
+	assert_false(bool(blank_content["cleared"]))
+	for mode: String in ["adv", "nvl", "overlay"]:
+		var snapshot := _make_valid_dialogue_save_snapshot("adv")
+		snapshot["presentation_state"]["dialogue_content"] = {
+			"version": 2,
+			"active": true,
+			"cleared": true,
+			"mode": mode,
+			"profile_name": "message" if mode != "nvl" else "novel_second",
+			"declarative_presentation": true,
+			"character": "",
+			"segments": [],
+			"avatar_expression": "",
+			"nvl_entries": [],
+		}
+		assert_true(_manager.validate_data_for_scenario(snapshot, scenario))
+		var round_tripped: Variant = JSON.parse_string(JSON.stringify(snapshot))
+		assert_true(round_tripped is Dictionary)
+		if round_tripped is Dictionary:
+			assert_true(_manager.validate_data_for_scenario(round_tripped, scenario))
+	var inferred_blank := _make_valid_dialogue_save_snapshot("adv")
+	inferred_blank["presentation_state"]["dialogue_content"]["segments"] = []
+	assert_false(_manager.validate_data_for_scenario(inferred_blank, scenario),
+		"empty text without explicit cleared=true is not a cleared page")
+	var smuggled := _make_valid_dialogue_save_snapshot("adv")
+	smuggled["presentation_state"]["dialogue_content"]["cleared"] = true
+	assert_false(_manager.validate_data_for_scenario(smuggled, scenario),
+		"cleared state cannot retain hidden content")
+	var legacy_inference := _make_valid_dialogue_save_snapshot("adv")
+	legacy_inference["presentation_state"]["dialogue_content"].erase("cleared")
+	legacy_inference["presentation_state"]["dialogue_content"]["version"] = 1
+	assert_false(_manager.validate_data_for_scenario(legacy_inference, scenario),
+		"schema v2 has no old-shape or empty-text inference branch")
+
+
 func test_save_without_dialogue_projection_remains_a_valid_old_save() -> void:
 	var scenario := _make_validation_scenario()
 	var old_save := _make_valid_save_snapshot()
@@ -575,7 +621,7 @@ func test_dialogue_content_exact_schema_rejects_transient_or_malformed_data() ->
 	invalid_contents.append(missing_key)
 	var bad_version := extra_key.duplicate(true)
 	bad_version.erase("token")
-	bad_version["version"] = 2
+	bad_version["version"] = 3
 	invalid_contents.append(bad_version)
 	var bad_mode := extra_key.duplicate(true)
 	bad_mode.erase("token")
@@ -633,8 +679,9 @@ func test_inactive_dialogue_projection_must_be_the_exact_canonical_default() -> 
 	var scenario := _make_validation_scenario()
 	var valid := _make_valid_dialogue_save_snapshot()
 	valid["presentation_state"]["dialogue_content"] = {
-		"version": 1,
+		"version": 2,
 		"active": false,
+		"cleared": false,
 		"mode": "adv",
 		"profile_name": "",
 		"declarative_presentation": false,
@@ -658,7 +705,7 @@ func test_inactive_dialogue_projection_must_be_the_exact_canonical_default() -> 
 	assert_false(_manager.validate_data_for_scenario(noncanonical_mode, scenario),
 		"inactive content must fail closed when the canonical mode drifts")
 	var noncanonical_version := valid.duplicate(true)
-	noncanonical_version["presentation_state"]["dialogue_content"]["version"] = 2.0
+	noncanonical_version["presentation_state"]["dialogue_content"]["version"] = 3.0
 	assert_false(_manager.validate_data_for_scenario(noncanonical_version, scenario),
 		"inactive content must fail closed when the canonical version drifts")
 

@@ -1,0 +1,24 @@
+// Public synthetic reference for canonical dialogue-page clearing.
+
+@dialogue_profile message surface_groups=dialogue_surface quick_menu_groups=quick_menu
+@dialogue_profile novel surface_groups=dialogue_surface quick_menu_groups=quick_menu entry_separator="\n"
+
+@chapter dialogue_clear_demo "Dialogue clear"
+
+@scene dialogue_clear_start
+@adv profile=message
+sakura「This ADV page is visible before the clear.」
+@dialogue_clear
+@wait 0.25
+sakura「The same ADV mode and profile render this new page.」
+
+@nvl profile=novel
+sakura「First accumulated NVL entry.」
+senpai「Second accumulated NVL entry.」
+@presentation_batch policy=join
+  @dialogue_clear
+  @dialogue_visibility hide transition=fade duration=0.25
+@end
+@dialogue_visibility show
+senpai「This begins a fresh NVL page after the clear.」
+@nvl off

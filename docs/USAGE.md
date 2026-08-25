@@ -396,6 +396,31 @@ Godot 4.6 的 redraw 像素管线使用 Forward+ 或 Mobile renderer。macOS 上
 显式 `surface` 仍属于同一套可选 target grammar，并与省略形式生成相同的
 canonical payload。精确语法和 fail-close 规则见 [DSL 文档](DSL.md#35a-dialogue-visibility)。
 
+### 清空当前对话页
+
+普通作者只写零参数命令：
+
+```stla
+@dialogue_clear
+```
+
+它清空当前 ADV/overlay 内容或当前 NVL 累计页，但保留 mode、所选 profile、surface 与
+quick-menu 显隐、Stage、音频和 backlog。它不是 `@dialogue_visibility hide`，也不是
+`@nvl off`；下一行仍用原 mode/profile。页面已经为空时仍会正向执行。只有需要与其他
+presentation child 共用原子 authored boundary 时才放入 batch：
+
+```stla
+@presentation_batch policy=join
+  @dialogue_clear
+  @dialogue_visibility hide transition=fade duration=0.25
+@end
+```
+
+clear 只退休当前 dialogue-content 拥有的 typewriter/voice/inline cue callback，不会取消
+独立 Stage transition。cleared 是版本化存档中的显式状态，读档、回滚、重启和场景替换
+都不会让旧 callback 重新写回文本。公开 synthetic reference 是
+[`examples/demo/scenarios/dialogue_clear.stla`](../examples/demo/scenarios/dialogue_clear.stla)。
+
 ### 持续命名 loop-SE
 
 普通一次性音效仍只写 `@se asset`。需要跨对话、普通 scenario scene 变化或 AudioPresenter 重建持续播放的环境声时，以稳定 channel（而不是素材名）寻址：
@@ -472,7 +497,7 @@ same playing asset+cue+volume 会重新完成 resource/Presenter positive prefli
 
 普通左键、Space 或 Enter 只会把当前 sealed JOIN 的 exact receipts snap 到 authored endpoint；`FIRE_AND_FORGET` 不 claim input。Skip 从 false 切换为 true 时 exact-finish 当前 JOIN 一次；Skip 是持续模式，新 batch 提交时已 active 则直接 force-cut。Auto 状态本身不结束 Stage JOIN。完整语法、ordering 与 fail-close 规则见 [DSL 文档](DSL.md#312-舞台批次组合stage_batch)；公开的 reference scenario 见 [`examples/demo/scenarios/stage_batch.stla`](../examples/demo/scenarios/stage_batch.stla)，它不是默认 Start Game 入口。
 
-高级 typed surface 由 `PresentationOperation`、`StagePresentationOperation`、`DialogueVisibilityPresentationOperation`、`ChapterIndicatorPresentationOperation`、`LoopSePresentationOperation`、`BgmPresentationOperation`、`PresentationOperationReceipt`、`PresentationBatchRequest` 和 `PresentationDirector` 组成。唯一 owner 是 `StellaRuntime.presentation_director`；项目不应自行 `new()` 第二个 Director，也不应调用 `_bind_authority()`、`_seal()` 或 `_settle()` 等下划线内部方法。同一个 Director 支持 Stage、`@dialogue_visibility`、`@chapter_indicator`、`@loop_se` 与 `@bgm` 的 mixed `@presentation_batch`，在任何 apply 前完成全批 preflight/seal，再按 authored child order dispatch。它只用于需要跨 channel 共享 JOIN/FNF boundary 的高级 composition；普通 chapter/dialogue 显隐与 loop-SE/BGM 保持各自 standalone 写法，并由 parser lowering 到同一条 canonical child 路径。
+高级 typed surface 由 `PresentationOperation`、`StagePresentationOperation`、`DialogueVisibilityPresentationOperation`、`DialogueClearPresentationOperation`、`ChapterIndicatorPresentationOperation`、`LoopSePresentationOperation`、`BgmPresentationOperation`、`PresentationOperationReceipt`、`PresentationBatchRequest` 和 `PresentationDirector` 组成。唯一 owner 是 `StellaRuntime.presentation_director`；项目不应自行 `new()` 第二个 Director，也不应调用 `_bind_authority()`、`_seal()` 或 `_settle()` 等下划线内部方法。同一个 Director 支持 Stage、`@dialogue_visibility`、`@dialogue_clear`、`@chapter_indicator`、`@loop_se` 与 `@bgm` 的 mixed `@presentation_batch`，在任何 apply 前完成全批 preflight/seal，再按 authored child order dispatch。它只用于需要跨 channel 共享 JOIN/FNF boundary 的高级 composition；普通 chapter/dialogue clear/显隐与 loop-SE/BGM 保持各自 standalone 写法，并由 parser lowering 到同一条 canonical child 路径。
 
 既有 `StellaRuntime.apply_stage_operations(operations, force_cut) -> void` 仍是 raw 兼容 Facade：它不返回 receipt、不等待 Tween，也不等价于 authored `@stage_batch`。standalone `@stage`、`@parallel` 和 `@combine` 的既有语义同样保持不变。
 

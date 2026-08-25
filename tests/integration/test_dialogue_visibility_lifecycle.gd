@@ -46,6 +46,7 @@ var _visibility_finish_requests: Array = []
 var _visibility_state_applies: Array[Dictionary] = []
 var _visibility_resets := 0
 var _visibility_lifecycle_sequence: Array[String] = []
+var _dialogue_clear_requests: Array = []
 var _original_stage_assets_path := ""
 var _original_title_scene_path := ""
 
@@ -80,6 +81,7 @@ func before_each() -> void:
 		&"dialogue_visibility_visuals_reset_requested", _on_visibility_reset)
 	_connect_optional_signal(
 		&"dialogue_visibility_state_apply_requested", _on_visibility_state_apply)
+	SignalBus.dialogue_clear_apply_requested.connect(_on_dialogue_clear_apply)
 
 	_dialogue_presenter = DIALOGUE_FIXTURE.instantiate()
 	_dialogue_presenter.name = "DialogueVisibilityContractPresenter"
@@ -125,6 +127,10 @@ func after_each() -> void:
 		&"dialogue_visibility_visuals_reset_requested", _on_visibility_reset)
 	_disconnect_optional_signal(
 		&"dialogue_visibility_state_apply_requested", _on_visibility_state_apply)
+	if SignalBus.dialogue_clear_apply_requested.is_connected(
+		_on_dialogue_clear_apply):
+		SignalBus.dialogue_clear_apply_requested.disconnect(
+			_on_dialogue_clear_apply)
 	_runtime.stage_assets_path = _original_stage_assets_path
 	_runtime.title_scene_path = _original_title_scene_path
 	_runtime._navigation_scene_change_override = Callable()
@@ -146,6 +152,7 @@ func _clear_observations() -> void:
 	_visibility_state_applies.clear()
 	_visibility_resets = 0
 	_visibility_lifecycle_sequence.clear()
+	_dialogue_clear_requests.clear()
 
 
 func _connect_optional_signal(signal_name: StringName, callback: Callable) -> void:
@@ -273,6 +280,10 @@ func _on_visibility_state_apply(
 		"content": content.duplicate(true),
 		"runtime_binding": runtime_binding.duplicate(true),
 	})
+
+
+func _on_dialogue_clear_apply(request: RefCounted) -> void:
+	_dialogue_clear_requests.append(request)
 
 
 func _wait_until(predicate: Callable, max_frames: int = 180) -> bool:
@@ -657,6 +668,75 @@ func _visibility_operation(
 	return operation as PresentationOperation
 
 
+func _dialogue_clear_operation(
+	context: ScenarioContext,
+) -> DialogueClearPresentationOperation:
+	return DialogueClearPresentationOperation.new(
+		{"scope": "page"},
+		PresentationState.cleared_dialogue_content(context),
+		_runtime._runtime_dialogue_visibility_binding(context),
+		{
+			"source_path": "res://synthetic/dialogue_clear.stla",
+			"scenario_id": "dialogue_clear_programmatic",
+			"line": 9,
+		},
+	)
+
+
+func _submit_dialogue_clear() -> PresentationBatchRequest:
+	var context: ScenarioContext = _runtime.engine.context
+	return _director().submit(
+		_typed_operations([_dialogue_clear_operation(context)]),
+		PresentationBatchRequest.Policy.JOIN,
+		context,
+		{
+			"source_path": "res://synthetic/dialogue_clear.stla",
+			"scenario_id": "dialogue_clear_programmatic",
+			"line": 9,
+		},
+	)
+
+
+func _prepare_manual_dialogue(
+	mode: String,
+	profile_name: String,
+	character: String,
+	text: String,
+	nvl_entries: Array = [],
+	segments_override: Array = [],
+) -> DialogueRequest:
+	var prepared: bool = _runtime._prepare_scenario(SCENARIO_PATH)
+	assert_true(prepared)
+	if not prepared:
+		return null
+	var context: ScenarioContext = _runtime.engine.context
+	context.current_dialogue_mode = mode
+	context.current_dialogue_profile_name = profile_name
+	context.current_dialogue_uses_declarative_presentation = true
+	context.nvl_page_entries = nvl_entries.duplicate(true)
+	var profile: Dictionary = context.scenario_data.get_dialogue_profile(
+		profile_name)
+	var segments := (
+		[{"text": text, "voice": ""}]
+		if segments_override.is_empty()
+		else segments_override.duplicate(true)
+	)
+	var request := DialogueRequest.new(
+		character,
+		segments,
+		mode,
+		profile,
+		true,
+		"manual:%d" % context.nvl_page_epoch,
+		context.scenario_data.get_dialogue_profile_provenance(profile_name),
+		nvl_entries,
+		"manual-dialogue",
+		169,
+	)
+	SignalBus.emit_dialogue_request(request)
+	return request
+
+
 func _submit_visibility(
 	target: String,
 	action: String,
@@ -688,6 +768,283 @@ func _assert_stable_adv_content(content: Dictionary) -> void:
 		"text": "Owned ADV[expr:happy] content survives a hidden surface.",
 	}])
 	assert_eq(content.get("nvl_entries"), [])
+
+
+func test_issue169_clear_is_positive_synchronous_apply_without_transition_receipt() -> void:
+	var dialogue := _prepare_manual_dialogue(
+		"adv", "message", "sakura", "Stable ADV clear projection.")
+	if dialogue == null:
+		return
+	assert_true(await _wait_for_dialogues(1))
+	var context: ScenarioContext = _runtime.engine.context
+	var mode_before := context.current_dialogue_mode
+	var profile_before := context.current_dialogue_profile_name
+	var visibility_before := _visibility_snapshot()
+	var request := _submit_dialogue_clear()
+	assert_true(request.is_settled())
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_gt(request.get_batch_id(), 0, "clear is positive work")
+	assert_eq(request.get_receipts(), [], "synchronous cut owns no transition")
+	assert_eq(_dialogue_clear_requests.size(), 1)
+	var clear_request: RefCounted = _dialogue_clear_requests[0]
+	assert_gt(clear_request.call("get_presenter_count"), 0)
+	assert_eq(
+		clear_request.call("get_applied_presenter_count"),
+		clear_request.call("get_presenter_count"),
+	)
+	assert_true(clear_request.call("was_successful"))
+	assert_eq(clear_request.call("get_request_id"), request.get_batch_id())
+	assert_eq(context.current_dialogue_mode, mode_before)
+	assert_eq(context.current_dialogue_profile_name, profile_before)
+	assert_eq(_visibility_snapshot(), visibility_before)
+	var content := _content_snapshot()
+	assert_true(bool(content.get("active", false)))
+	assert_true(bool(content.get("cleared", false)))
+	assert_eq(content.get("segments"), [])
+	assert_eq(content.get("character"), "")
+	assert_eq(_dialogue_presenter.get("_dialogue_segments"), [])
+	assert_eq((_dialogue_presenter.get_node("%TextLabel") as RichTextLabel).text, "")
+	assert_false((_dialogue_presenter.get_node("%NameLabel") as Label).visible)
+	var replay_button := _dialogue_presenter.get("_voice_replay_btn") as Button
+	assert_true(replay_button == null or not replay_button.visible)
+	assert_true((_dialogue_presenter.get_node("UnrelatedHUD") as CanvasItem).visible)
+
+	var second := _submit_dialogue_clear()
+	assert_true(second.is_settled(), "already-empty clear is still positive work")
+	assert_eq(second.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_gt(second.get_batch_id(), request.get_batch_id())
+	assert_eq(second.get_receipts(), [])
+	assert_eq(_dialogue_clear_requests.size(), 2)
+	var second_clear_request: RefCounted = _dialogue_clear_requests[1]
+	assert_eq(
+		second_clear_request.call("get_applied_presenter_count"),
+		second_clear_request.call("get_presenter_count"),
+	)
+	assert_true(second_clear_request.call("was_successful"))
+
+
+func test_issue169_clear_retires_typewriter_owner_and_rejects_stale_tail() -> void:
+	_dialogue_presenter.set("_char_interval", 0.01)
+	var dialogue := _prepare_manual_dialogue(
+		"adv", "message", "sakura",
+		"A deliberately long synthetic typewriter tail must never repaint after clear.")
+	if dialogue == null:
+		return
+	assert_true(await _wait_until(func() -> bool:
+		return (
+			_dialogue_requests.size() == 1
+			and bool(_dialogue_presenter.get("_is_typing"))
+		)
+	))
+	var old_generation := int(_dialogue_presenter.get("_dialogue_gen"))
+	var old_queue_generation := int(
+		_dialogue_presenter.get("_playback_queue_gen"))
+	# Synthetic in-flight voice ownership uses the same generation guards as a
+	# real AudioPresenter callback without depending on a private audio asset.
+	_dialogue_presenter.set("_playback_owner_dialogue_gen", old_generation)
+	_dialogue_presenter.set("_playback_queue_active", true)
+	_dialogue_presenter.set("_playback_total_duration", 1.0)
+	_dialogue_presenter.set("_playback_is_dialogue", true)
+	_dialogue_presenter.set("_playback_dialogue_finished_emitted", false)
+	_dialogue_presenter.set("_playback_voice_token", 90169)
+	_dialogue_presenter.set("_voice_playing", true)
+	_dialogue_presenter.set("_active_voice_token", 90169)
+	_dialogue_presenter.set("_current_voice", "synthetic_voice")
+	var request := _submit_dialogue_clear()
+	assert_true(request.is_settled())
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_gt(int(_dialogue_presenter.get("_dialogue_gen")), old_generation)
+	assert_eq(
+		int(_dialogue_presenter.get("_playback_queue_gen")),
+		old_queue_generation + 1,
+	)
+	assert_false(bool(_dialogue_presenter.call(
+		"_voice_queue_is_current", old_generation, old_queue_generation)))
+	assert_eq(int(_dialogue_presenter.get("_playback_voice_token")), -1)
+	assert_eq(int(_dialogue_presenter.get("_active_voice_token")), -1)
+	assert_eq(_dialogue_presenter.get("_current_voice"), "")
+	await get_tree().create_timer(0.9).timeout
+	assert_false(bool(_dialogue_presenter.get("_is_typing")))
+	assert_eq((_dialogue_presenter.get_node("%TextLabel") as RichTextLabel).text, "")
+	assert_eq(_dialogue_presenter.get("_dialogue_segments"), [])
+	assert_true(bool(_content_snapshot().get("cleared", false)))
+
+
+func test_issue169_clear_retires_owned_inline_stage_callback_without_finishing_tween() -> void:
+	var finish_requests: Array = []
+	var on_finish := func(records: Array) -> void:
+		finish_requests.append(records.duplicate(true))
+	SignalBus.stage_transitions_finish_requested.connect(on_finish)
+	var dialogue := _prepare_manual_dialogue(
+		"adv",
+		"message",
+		"sakura",
+		"Inline cue ownership probe.",
+		[],
+		[{
+			"text": "Inline cue ownership probe.",
+			"voice": "",
+			"stage_ops": [{
+				"action": "show",
+				"id": "issue169_owned_inline",
+				"properties": {"asset": "stage:redraw_source"},
+				"transition": "fade",
+				"duration": 10.0,
+			}],
+		}],
+	)
+	if dialogue == null:
+		SignalBus.stage_transitions_finish_requested.disconnect(on_finish)
+		return
+	assert_true(await _wait_until(func() -> bool:
+		return _stage_exact_starts.any(func(record: Dictionary) -> bool:
+			return String(record.get("layer_id", "")) == "issue169_owned_inline")))
+	var owned_record: Dictionary = {}
+	for record: Dictionary in _stage_exact_starts:
+		if String(record.get("layer_id", "")) == "issue169_owned_inline":
+			owned_record = record.duplicate(true)
+			break
+	assert_false(owned_record.is_empty())
+	assert_false(
+		(_dialogue_presenter.get("_stage_transition_records") as Dictionary).is_empty(),
+		"the live inline cue initially has a dialogue-owned callback ledger",
+	)
+	var token_before := int(
+		(_stage_presenter.get("_layer_transition_tokens") as Dictionary).get(
+			"issue169_owned_inline", -1))
+	assert_gt(token_before, 0)
+	var request := _submit_dialogue_clear()
+	assert_true(request.is_settled())
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_true(
+		(_dialogue_presenter.get("_stage_transition_records") as Dictionary).is_empty(),
+		"clear retires the callback ledger owned by the old dialogue content",
+	)
+	assert_eq(finish_requests, [],
+		"retiring an inline callback does not finish its already-dispatched Stage tween")
+	assert_eq(
+		int((_stage_presenter.get("_layer_transition_tokens") as Dictionary).get(
+			"issue169_owned_inline", -1)),
+		token_before,
+		"the independent Stage transition owner remains live after dialogue clear",
+	)
+	assert_not_null(_stage_presenter.get_layer_node("issue169_owned_inline"))
+	SignalBus.stage_transitions_finish_requested.disconnect(on_finish)
+	if not owned_record.is_empty():
+		SignalBus.stage_transitions_finish_requested.emit([{
+			"presenter_instance_id": int(owned_record.get("presenter_instance_id", 0)),
+			"layer_id": String(owned_record.get("layer_id", "")),
+			"token": int(owned_record.get("token", 0)),
+		}])
+
+
+func test_issue169_nvl_clear_advances_page_epoch_without_changing_mode() -> void:
+	var entries := [{
+		"command_uid": 168,
+		"scene_index": 8,
+		"command_index": 0,
+		"profile_name": "novel_first",
+		"character": "sakura",
+		"segments": [{"text": "First NVL entry.", "voice": ""}],
+	}, {
+		"command_uid": 169,
+		"scene_index": 8,
+		"command_index": 1,
+		"profile_name": "novel_second",
+		"character": "senpai",
+		"segments": [{"text": "Second NVL entry.", "voice": ""}],
+	}]
+	var dialogue := _prepare_manual_dialogue(
+		"nvl", "novel_second", "senpai", "Second NVL entry.", entries)
+	if dialogue == null:
+		return
+	assert_true(await _wait_for_dialogues(1))
+	var context: ScenarioContext = _runtime.engine.context
+	assert_eq(context.current_dialogue_mode, "nvl")
+	assert_eq(context.nvl_page_entries.size(), 2)
+	var old_epoch := context.nvl_page_epoch
+	var request := _submit_dialogue_clear()
+	assert_true(request.is_settled())
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(context.current_dialogue_mode, "nvl")
+	assert_eq(context.nvl_page_epoch, old_epoch + 1)
+	assert_eq(context.nvl_page_entries, [])
+	assert_true(bool(_content_snapshot().get("cleared", false)))
+	assert_eq(_content_snapshot().get("mode"), "nvl")
+	assert_eq(_dialogue_presenter.get("_nvl_render_source"), "")
+	assert_false(bool(_dialogue_presenter.get("_nvl_has_entries")))
+
+
+func test_issue169_mixed_clear_and_hide_follow_authored_order_both_ways() -> void:
+	var dialogue := _prepare_manual_dialogue(
+		"adv", "message", "sakura", "Ordering probe.")
+	if dialogue == null:
+		return
+	assert_true(await _wait_for_dialogues(1))
+	var order: Array[String] = []
+	var visibility_tween_at_clear := {"tween": null}
+	var on_clear := func(_request: RefCounted) -> void:
+		order.append("clear")
+		var active: Dictionary = _dialogue_presenter.get(
+			"_dialogue_visibility_active")
+		if active.has("surface"):
+			visibility_tween_at_clear["tween"] = (
+				(active["surface"] as Dictionary).get("tween") as Tween)
+	var on_visibility := func(operations: Array, _force_cut: bool) -> void:
+		for operation_value: Variant in operations:
+			var payload := (operation_value as PresentationOperation).get_payload()
+			order.append("visibility:%s" % String(payload.get("action", "")))
+	SignalBus.dialogue_clear_apply_requested.connect(on_clear)
+	SignalBus.dialogue_visibility_operations_requested.connect(on_visibility)
+	var context: ScenarioContext = _runtime.engine.context
+	var clear_then_hide: Array[PresentationOperation] = [
+		_dialogue_clear_operation(context),
+		_visibility_operation("surface", "hide", "cut", 0.0),
+	]
+	var first := _director().submit(
+		clear_then_hide,
+		PresentationBatchRequest.Policy.JOIN,
+		context,
+		{"source_path": "res://synthetic/clear_hide.stla", "line": 4},
+	)
+	assert_true(first.is_settled())
+	assert_eq(first.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(order, ["clear", "visibility:hide"])
+	assert_false(bool(_visibility_snapshot().get("surface", true)))
+	assert_true(bool(_content_snapshot().get("cleared", false)))
+	order.clear()
+	var show_then_clear: Array[PresentationOperation] = [
+		_visibility_operation("surface", "show", "fade", 10.0),
+		_dialogue_clear_operation(context),
+	]
+	var second := _director().submit(
+		show_then_clear,
+		PresentationBatchRequest.Policy.JOIN,
+		context,
+		{"source_path": "res://synthetic/hide_clear.stla", "line": 4},
+	)
+	assert_false(second.is_settled())
+	assert_eq(order, ["visibility:show", "clear"])
+	assert_true(bool(_visibility_snapshot().get("surface", false)))
+	assert_true(bool(_content_snapshot().get("cleared", false)))
+	assert_not_null(visibility_tween_at_clear["tween"])
+	var active_after_clear: Dictionary = _dialogue_presenter.get(
+		"_dialogue_visibility_active")
+	assert_true(active_after_clear.has("surface"))
+	if active_after_clear.has("surface"):
+		assert_same(
+			(active_after_clear["surface"] as Dictionary).get("tween"),
+			visibility_tween_at_clear["tween"],
+			"content clear preserves the independent visibility transition owner",
+		)
+	assert_eq(_receipt_channels(second), ["dialogue:surface"])
+	if second.get_receipts().size() == 1:
+		_emit_visibility_finish(second.get_receipts()[0])
+	assert_true(second.is_settled())
+	assert_eq(second.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_true(bool(_content_snapshot().get("cleared", false)))
+	SignalBus.dialogue_clear_apply_requested.disconnect(on_clear)
+	SignalBus.dialogue_visibility_operations_requested.disconnect(on_visibility)
 
 
 func test_a_standalone_join_preserves_dialogue_ownership_and_group_independence() -> void:
@@ -1010,8 +1367,9 @@ func test_c_direct_state_apply_cancels_live_fnf_visual_owner_before_restore() ->
 	assert_eq(supplied_field_lines.get("surface_groups"), 3)
 	assert_eq(supplied_field_lines.get("quick_menu_groups"), 3)
 	var supplied_content := {
-		"version": 1,
+		"version": 2,
 		"active": true,
+		"cleared": false,
 		"mode": "adv",
 		"profile_name": "message",
 		"declarative_presentation": true,
@@ -2119,8 +2477,9 @@ func test_h_retained_visual_apply_is_a_side_effect_free_content_and_gate_cut() -
 	context.current_dialogue_profile_name = "message"
 	context.current_dialogue_uses_declarative_presentation = true
 	var stable_content := {
-		"version": 1,
+		"version": 2,
 		"active": true,
+		"cleared": false,
 		"mode": "adv",
 		"profile_name": "message",
 		"declarative_presentation": true,
@@ -2224,7 +2583,7 @@ func test_h_nvl_visual_cut_restores_each_entry_with_its_own_profile() -> void:
 		},
 	]
 	var content := {
-		"version": 1, "active": true, "mode": "nvl",
+		"version": 2, "active": true, "cleared": false, "mode": "nvl",
 		"profile_name": "novel_second", "declarative_presentation": true,
 		"character": "senpai", "segments": [{"text": "Second entry"}],
 		"avatar_expression": "", "nvl_entries": context.nvl_page_entries,
@@ -2477,8 +2836,9 @@ func test_j_hard_reset_cancels_old_generations_and_clears_projection() -> void:
 		"surface": true, "quick_menu": true,
 	})
 	assert_eq(_content_snapshot(), {
-		"version": 1,
+		"version": 2,
 		"active": false,
+		"cleared": false,
 		"mode": "adv",
 		"profile_name": "",
 		"declarative_presentation": false,
