@@ -11,7 +11,7 @@
 @scene standalone_join
 @adv profile=message
 sakura「Owned ADV[expr:happy] content survives a hidden surface.」
-@dialogue_visibility surface hide transition=fade duration=10
+@dialogue_visibility hide transition=fade duration=10
 sakura「Standalone JOIN tail.」
 
 @scene independent_groups
@@ -28,7 +28,7 @@ sakura「Quick menu remained independently owned.」
 sakura「Mixed ownership begins here.」
 @presentation_batch policy=join
   @stage mixed show asset=stage:redraw_source transition=fade duration=10
-  @dialogue_visibility surface hide transition=fade duration=10
+  @dialogue_visibility hide transition=fade duration=10
   @dialogue_visibility quick_menu hide transition=fade duration=10
 @end
 sakura「Mixed JOIN tail.」

@@ -123,8 +123,11 @@ func test_dialogue_visibility_public_reference_parses_without_private_content() 
 	var scene := data.get_scene("dialogue_visibility_start")
 	assert_not_null(scene)
 	assert_true("@presentation_batch" in source)
-	assert_true("@dialogue_visibility surface" in source)
+	assert_true("@dialogue_visibility hide" in source)
+	assert_true("@dialogue_visibility show" in source)
 	assert_true("@dialogue_visibility quick_menu" in source)
+	assert_false("@dialogue_visibility surface" in source,
+		"public surface examples use the shortest canonical spelling")
 	var message := data.get_dialogue_profile("message")
 	var novel := data.get_dialogue_profile("novel")
 	assert_eq(_profile_groups(message.get("surface_groups", [])), [

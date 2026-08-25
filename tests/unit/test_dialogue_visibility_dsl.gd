@@ -71,6 +71,8 @@ func _assert_single_error_at(
 		"%s error stays on its offending child" % label)
 	assert_true(message_part in String(error.get("message", "")),
 		"%s error names the illegal child" % label)
+	assert_true("%s:%d" % [SOURCE_PATH, line] in String(error.get("message", "")),
+		"%s error message preserves exact source path and line" % label)
 	assert_eq(String(error.get("source_path", SOURCE_PATH)), SOURCE_PATH,
 		"%s error preserves source provenance" % label)
 
@@ -97,15 +99,16 @@ func _property_names(object: Object) -> Array[String]:
 	return names
 
 
-func test_standalone_cut_lowers_to_one_join_batch_with_exact_defaults() -> void:
+func test_standalone_omitted_surface_actions_lower_to_canonical_join_batches() -> void:
 	var data := _parse("""@chapter synthetic
 @scene start
-@dialogue_visibility surface hide""")
+@dialogue_visibility hide
+@dialogue_visibility show""")
 	assert_eq(_error_diagnostics(data), [], str(data.diagnostics))
 	var batches := _presentation_batches(data)
-	assert_eq(batches.size(), 1,
-		"standalone visibility is one addressable presentation batch")
-	if batches.size() != 1:
+	assert_eq(batches.size(), 2,
+		"each standalone visibility command is one addressable presentation batch")
+	if batches.size() != 2:
 		return
 	var batch: CommandData = batches[0]
 	assert_eq(batch.declared_line, 3)
@@ -123,6 +126,14 @@ func test_standalone_cut_lowers_to_one_join_batch_with_exact_defaults() -> void:
 	assert_eq(operations[0]["payload"], {
 		"target": "surface",
 		"action": "hide",
+		"transition": "cut",
+		"duration": 0.0,
+	})
+	assert_eq(batches[1].declared_line, 4)
+	assert_eq(batches[1].params["operation_lines"], [4])
+	assert_eq(batches[1].params["operations"][0]["payload"], {
+		"target": "surface",
+		"action": "show",
 		"transition": "cut",
 		"duration": 0.0,
 	})
@@ -151,7 +162,7 @@ func test_mixed_join_preserves_exact_authored_order_and_source_lines() -> void:
 @scene start
 @presentation_batch policy=join
   @stage sakura show asset=stage:redraw_source transition=fade duration=0.3
-  @dialogue_visibility surface hide transition=fade duration=0.3
+  @dialogue_visibility hide transition=fade duration=0.3
   @dialogue_visibility quick_menu hide transition=fade duration=0.3
 @end""")
 	assert_eq(_error_diagnostics(data), [], str(data.diagnostics))
@@ -220,7 +231,7 @@ func test_presentation_batch_is_valid_inside_the_taken_if_branch() -> void:
 @scene start
 @if route == 1
   @presentation_batch policy=join
-    @dialogue_visibility surface hide
+    @dialogue_visibility hide
   @end
 @end""")
 	assert_eq(_error_diagnostics(data), [], str(data.diagnostics))
@@ -245,7 +256,7 @@ func test_batch_headers_are_strict_and_fail_closed_at_the_opening_line() -> void
 		var data := _parse("""@chapter synthetic
 @scene start
 %s
-  @dialogue_visibility surface hide
+  @dialogue_visibility hide
 @end""" % header)
 		assert_eq(_presentation_batches(data).size(), 0, header)
 		assert_eq(_all_commands(data).size(), 0,
@@ -253,21 +264,49 @@ func test_batch_headers_are_strict_and_fail_closed_at_the_opening_line() -> void
 		assert_true(_has_error_at(data, 3), header)
 
 
-func test_standalone_visibility_tokens_and_duration_are_strict() -> void:
+func test_missing_action_and_illegal_first_token_fail_at_exact_source_line() -> void:
+	var cases: Array[Dictionary] = [
+		{"command": "@dialogue_visibility", "message": "requires an action"},
+		{"command": "@dialogue_visibility surface", "message": "requires an action"},
+		{"command": "@dialogue_visibility quick_menu", "message": "requires an action"},
+		{"command": "@dialogue_visibility panel hide", "message": "first token"},
+		{"command": "@dialogue_visibility Surface hide", "message": "first token"},
+		{"command": "@dialogue_visibility transition=fade hide", "message": "first token"},
+	]
+	for case_value: Variant in cases:
+		var case: Dictionary = case_value
+		var data := _parse("""@chapter synthetic
+@scene start
+%s""" % String(case["command"]))
+		assert_eq(_presentation_batches(data).size(), 0, String(case["command"]))
+		_assert_single_error_at(
+			data, 3, String(case["message"]), String(case["command"]))
+
+	var batch_data := _parse("""@chapter synthetic
+@scene start
+@presentation_batch policy=join
+  @dialogue_visibility
+@end""")
+	assert_eq(_presentation_batches(batch_data).size(), 0)
+	assert_eq(_all_commands(batch_data).size(), 0,
+		"a missing batch-child action rejects the whole block")
+	_assert_single_error_at(
+		batch_data, 4, "requires an action", "batch child missing action")
+
+
+func test_visibility_actions_options_and_duration_are_strict() -> void:
 	var commands := [
-		"@dialogue_visibility Surface hide",
 		"@dialogue_visibility surface Hide",
-		"@dialogue_visibility panel hide",
 		"@dialogue_visibility surface toggle",
-		"@dialogue_visibility surface hide transition=Fade",
-		"@dialogue_visibility surface hide transition=move",
-		"@dialogue_visibility surface hide transition=cut duration=0.1",
-		"@dialogue_visibility surface hide transition=fade duration=-1",
-		"@dialogue_visibility surface hide transition=fade duration=nan",
-		"@dialogue_visibility surface hide transition=fade duration=inf",
-		"@dialogue_visibility surface hide duration=1 duration=2",
-		"@dialogue_visibility surface hide unknown=true",
-		"@dialogue_visibility surface hide extra",
+		"@dialogue_visibility hide transition=Fade",
+		"@dialogue_visibility hide transition=move",
+		"@dialogue_visibility hide transition=cut duration=0.1",
+		"@dialogue_visibility hide transition=fade duration=-1",
+		"@dialogue_visibility hide transition=fade duration=nan",
+		"@dialogue_visibility hide transition=fade duration=inf",
+		"@dialogue_visibility hide duration=1 duration=2",
+		"@dialogue_visibility hide unknown=true",
+		"@dialogue_visibility hide extra",
 	]
 	for authored_command: String in commands:
 		var data := _parse("""@chapter synthetic
@@ -280,8 +319,8 @@ func test_standalone_visibility_tokens_and_duration_are_strict() -> void:
 func test_duplicate_targets_stage_conflicts_and_illegal_children_fail_atomically() -> void:
 	var cases: Array[Dictionary] = [
 		{
-			"label": "duplicate surface",
-			"children": "  @dialogue_visibility surface hide\n"
+			"label": "omitted and explicit surface duplicate",
+			"children": "  @dialogue_visibility hide\n"
 				+ "  @dialogue_visibility surface show",
 			"line": 5,
 		},
@@ -406,7 +445,7 @@ func test_duplicate_targets_stage_conflicts_and_illegal_children_fail_atomically
 %s
 @end
 @scene recovered
-@dialogue_visibility surface show""" % String(case["children"]))
+@dialogue_visibility show""" % String(case["children"]))
 		var broken := recovered.get_scene("broken")
 		var recovered_scene := recovered.get_scene("recovered")
 		assert_not_null(broken, String(case["label"]))
@@ -437,7 +476,7 @@ func test_empty_gap_and_missing_end_errors_recover_without_child_leaks() -> void
 	assert_true(_has_error_at(empty, 3))
 
 	var gap := _parse("""@presentation_batch policy=join
-  @dialogue_visibility surface hide
+  @dialogue_visibility hide
 @end
 @chapter synthetic
 @scene recovered
@@ -449,7 +488,7 @@ func test_empty_gap_and_missing_end_errors_recover_without_child_leaks() -> void
 	var missing_end := _parse("""@chapter synthetic
 @scene broken
 @presentation_batch policy=join
-  @dialogue_visibility surface hide
+  @dialogue_visibility hide
 @scene recovered
 「tail」""")
 	assert_eq(_presentation_batches(missing_end).size(), 0)

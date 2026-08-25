@@ -2127,23 +2127,40 @@ static func _parse_dialogue_visibility_command(
 	lower_to_presentation_batch: bool = false,
 ) -> CommandData:
 	var location := _source_location(data, line)
-	if parts.size() < 2:
+	if parts.is_empty():
 		_record_diagnostic(
 			data,
 			"error",
-			"DslParser: @dialogue_visibility requires <target> <action> at %s"
+			"DslParser: @dialogue_visibility requires an action at %s"
 			% location,
 			line,
 		)
 		return null
-	var target := String(parts[0])
-	var action := String(parts[1])
-	if target not in _DIALOGUE_VISIBILITY_TARGETS:
+	var first := String(parts[0])
+	var target := "surface"
+	var action := ""
+	var option_start := 1
+	if first in _DIALOGUE_VISIBILITY_ACTIONS:
+		action = first
+	elif first in _DIALOGUE_VISIBILITY_TARGETS:
+		target = first
+		if parts.size() < 2:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: @dialogue_visibility requires an action after target '%s' at %s"
+				% [target, location],
+				line,
+			)
+			return null
+		action = String(parts[1])
+		option_start = 2
+	else:
 		_record_diagnostic(
 			data,
 			"error",
-			"DslParser: invalid @dialogue_visibility target '%s' at %s"
-			% [target, location],
+			"DslParser: invalid @dialogue_visibility first token '%s' at %s; expected show|hide or surface|quick_menu"
+			% [first, location],
 			line,
 		)
 		return null
@@ -2160,7 +2177,7 @@ static func _parse_dialogue_visibility_command(
 	var duration := 0.0
 	var duration_set := false
 	var seen: Dictionary = {}
-	for index in range(2, parts.size()):
+	for index in range(option_start, parts.size()):
 		var encoded := String(parts[index])
 		var equals_at := encoded.find("=")
 		if equals_at < 1:

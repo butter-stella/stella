@@ -295,12 +295,12 @@ func test_stage_batch_fingerprint_excludes_only_operation_line_metadata() -> voi
 	assert_ne(original.get_read_identity(), changed_operation.get_read_identity())
 
 
-func test_presentation_batch_fingerprint_excludes_only_operation_lines() -> void:
+func test_presentation_batch_identity_canonicalizes_surface_and_excludes_lines() -> void:
 	var original := DslParser.parse(DslLexer.tokenize("""@chapter route
 @scene start
 @presentation_batch policy=join
   @stage hero show asset=stage:redraw_source transition=fade duration=0.3
-  @dialogue_visibility surface hide transition=fade duration=0.3
+  @dialogue_visibility hide transition=fade duration=0.3
 @end"""), "main", "res://story/dialogue_visibility.stla")
 	var format_shifted := DslParser.parse(DslLexer.tokenize("""// lead note
 
@@ -317,18 +317,18 @@ func test_presentation_batch_fingerprint_excludes_only_operation_lines() -> void
 @scene start
 @presentation_batch policy=fire_and_forget
   @stage hero show asset=stage:redraw_source transition=fade duration=0.3
-  @dialogue_visibility surface hide transition=fade duration=0.3
+  @dialogue_visibility hide transition=fade duration=0.3
 @end"""), "main", "res://story/dialogue_visibility.stla")
 	var changed_visibility := DslParser.parse(DslLexer.tokenize("""@chapter route
 @scene start
 @presentation_batch policy=join
   @stage hero show asset=stage:redraw_source transition=fade duration=0.3
-  @dialogue_visibility surface show transition=fade duration=0.3
+  @dialogue_visibility show transition=fade duration=0.3
 @end"""), "main", "res://story/dialogue_visibility.stla")
 	var changed_order := DslParser.parse(DslLexer.tokenize("""@chapter route
 @scene start
 @presentation_batch policy=join
-  @dialogue_visibility surface hide transition=fade duration=0.3
+  @dialogue_visibility hide transition=fade duration=0.3
   @stage hero show asset=stage:redraw_source transition=fade duration=0.3
 @end"""), "main", "res://story/dialogue_visibility.stla")
 	var scenarios := [
@@ -361,7 +361,7 @@ func test_presentation_batch_fingerprint_excludes_only_operation_lines() -> void
 	assert_eq(batches[0].params["policy"], batches[1].params["policy"])
 	assert_eq(batches[0].params["operations"], batches[1].params["operations"])
 	assert_eq(original.content_fingerprint, format_shifted.content_fingerprint,
-		"presentation child lines remain diagnostic-only metadata")
+		"child lines and explicit surface spelling preserve semantic identity")
 	assert_eq(original.get_read_identity(), format_shifted.get_read_identity())
 	for changed: ScenarioData in [
 		changed_policy, changed_visibility, changed_order,
