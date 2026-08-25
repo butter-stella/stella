@@ -2,6 +2,7 @@
 class_name AudioPresenter extends Node
 
 const BGM_NATURAL_LOOP_END := -1.0
+const BGM_MAX_SIGNED_MIXER_FRAMES := 2147483647.0
 
 var _se_players: Array = []
 var _max_se_channels: int = 4
@@ -1411,11 +1412,17 @@ func _native_compressed_bgm_loop_region(
 	beat_count: int,
 	length: float,
 ) -> Dictionary:
-	if not is_finite(loop_position) or loop_position < 0.0:
+	if (
+		not is_finite(loop_position)
+		or loop_position < 0.0
+		or not is_finite(bpm)
+		or bpm < 0.0
+		or beat_count < 0
+	):
 		return {}
 	var loop_end_position := length
-	if beat_count != 0 or bpm != 0.0:
-		if beat_count <= 0 or not is_finite(bpm) or bpm <= 0.0:
+	if beat_count > 0:
+		if bpm <= 0.0:
 			return {}
 		loop_end_position = float(beat_count) * 60.0 / bpm
 	return {
@@ -1512,6 +1519,12 @@ func _configure_bgm_beat_loop_end(
 		or sample_rate <= 0
 	):
 		return false
+	var requested_frames := loop_end_position * float(sample_rate)
+	if (
+		not is_finite(requested_frames)
+		or requested_frames > BGM_MAX_SIGNED_MIXER_FRAMES
+	):
+		return false
 	stream.set("beat_count", 1)
 	stream.set("bpm", 60.0 / loop_end_position)
 	var stored_beat_count := int(stream.get("beat_count"))
@@ -1521,7 +1534,7 @@ func _configure_bgm_beat_loop_end(
 	var represented_frames := int(
 		float(stored_beat_count) * float(sample_rate) * 60.0 / stored_bpm)
 	return absf(
-		float(represented_frames) - loop_end_position * float(sample_rate)) < 1.0
+		float(represented_frames) - requested_frames) < 1.0
 
 
 func _bgm_stream_sample_rate(stream: AudioStream) -> int:

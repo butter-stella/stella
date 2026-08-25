@@ -389,6 +389,10 @@ func test_beat_boundary_roundtrip_accepts_long_and_one_sample_regions() -> void:
 		minimum.loop_position = 0.0
 		assert_false(_audio._prepare_bgm_definition(minimum, "").is_empty(),
 			extension + " accepts the minimum one-source-sample legal region")
+		var overflow_duplicate := source.duplicate(true) as AudioStream
+		assert_false(_audio._configure_bgm_beat_loop_end(
+			overflow_duplicate, 36000.0, 96000),
+			extension + " rejects a mixer boundary beyond signed 32-bit frames")
 
 
 func test_natural_sentinel_clears_definition_markers_but_raw_preserves_them() -> void:
@@ -437,6 +441,47 @@ func test_natural_sentinel_clears_definition_markers_but_raw_preserves_them() ->
 	assert_eq(wav.loop_mode, AudioStreamWAV.LOOP_PINGPONG)
 	assert_eq(wav.loop_begin, 7497)
 	assert_eq(wav.loop_end, 22050)
+
+
+func test_raw_bpm_only_metadata_preserves_natural_end_and_remains_playable() -> void:
+	for extension: String in ["ogg", "mp3"]:
+		var source := _loop_region_stream(extension).duplicate(true) as AudioStream
+		source.set("loop", false)
+		source.set("loop_offset", 0.17)
+		source.set("beat_count", 0)
+		source.set("bpm", 120.0)
+		var raw: Dictionary = _audio._prepare_raw_bgm_stream(source)
+		assert_false(raw.is_empty(), extension + " BPM-only metadata is valid")
+		if raw.is_empty():
+			continue
+		assert_almost_eq(float(raw["loop_end_position"]), source.get_length(),
+			0.000001, extension + " beat_count=0 keeps the physical end")
+		var duplicate := raw["stream"] as AudioStream
+		assert_true(bool(duplicate.get("loop")), extension)
+		assert_almost_eq(float(duplicate.get("loop_offset")), 0.17,
+			0.000001, extension)
+		assert_eq(int(duplicate.get("beat_count")), 0, extension)
+		assert_eq(float(duplicate.get("bpm")), 120.0, extension)
+		var playback := duplicate.instantiate_playback()
+		playback.start(0.0)
+		var frames := int(round(1.1 * float(AudioServer.get_mix_rate())))
+		assert_eq(playback.mix_audio(1.0, frames).size(), frames, extension)
+		assert_true(playback.is_playing(), extension)
+		assert_gt(playback.get_playback_position(), 0.16, extension)
+		assert_lt(playback.get_playback_position(), 0.45, extension)
+		assert_false(bool(source.get("loop")), extension)
+		assert_eq(int(source.get("beat_count")), 0, extension)
+		assert_eq(float(source.get("bpm")), 120.0, extension)
+		for invalid_bpm: float in [NAN, INF, -1.0]:
+			assert_eq(_audio._native_compressed_bgm_loop_region(
+				0.17, invalid_bpm, 0, source.get_length()), {},
+				"%s rejects invalid BPM %s independently" % [extension, invalid_bpm])
+		assert_eq(_audio._native_compressed_bgm_loop_region(
+			0.17, 120.0, -1, source.get_length()), {},
+			extension + " rejects a negative beat count")
+		assert_eq(_audio._native_compressed_bgm_loop_region(
+			0.17, 0.0, 1, source.get_length()), {},
+			extension + " positive beat count requires positive BPM")
 
 
 func test_nonloop_explicit_end_keeps_the_complete_natural_tail() -> void:
