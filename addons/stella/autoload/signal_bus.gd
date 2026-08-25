@@ -635,6 +635,12 @@ signal dialogue_visibility_state_apply_requested(
 	content: Dictionary,
 	runtime_binding: Dictionary,
 )
+## Target-scoped cut projection used by Director failure rollback. Unlike a
+## save/load restore, it does not rebuild dialogue content or runtime binding.
+signal dialogue_visibility_targets_state_apply_requested(
+	visibility: Dictionary,
+	targets: Array,
+)
 signal dialogue_visibility_transition_receipt_started(
 	presenter_instance_id: int,
 	target: String,
@@ -696,6 +702,10 @@ func is_current_stage_operation_valid() -> bool:
 	return _stage_operation_epoch_stack.back() == _stage_operation_epoch
 
 
+func current_stage_operation_epoch() -> int:
+	return _stage_operation_epoch
+
+
 ## Atomic reset projections carry their exact reset generation through the
 ## existing state-apply signal. Raw compatibility emits have no frame and
 ## therefore remain valid as before.
@@ -712,6 +722,12 @@ func is_current_stage_reset_valid() -> bool:
 	if _stage_reset_epoch_stack.is_empty():
 		return true
 	return _stage_reset_epoch_stack.back() == _stage_operation_epoch
+
+
+func current_stage_reset_epoch() -> int:
+	if _stage_reset_epoch_stack.is_empty():
+		return 0
+	return _stage_reset_epoch_stack.back()
 
 
 func emit_dialogue_visibility_operations(
@@ -746,10 +762,14 @@ func emit_dialogue_visibility_operations(
 	return request_id
 
 
+## The optional apply callback reports the exact channels in each contiguous
+## authored run immediately before its consumer signal. Director uses this to
+## distinguish mutation-free participant rejection from partial apply failure.
 func emit_presentation_operations(
 	operations: Array,
 	force_cut: bool = false,
 	request_id: int = 0,
+	on_apply_started: Callable = Callable(),
 ) -> int:
 	if request_id <= 0:
 		request_id = reserve_stage_operation_request_id()
@@ -774,6 +794,7 @@ func emit_presentation_operations(
 		"operations": operations.duplicate(),
 		"force_cut": force_cut,
 		"request_id": request_id,
+		"on_apply_started": on_apply_started,
 		"stage_epoch": _stage_operation_epoch,
 		"visibility_epoch": _dialogue_visibility_epoch,
 		"chapter_epoch": _chapter_indicator_epoch,
@@ -802,6 +823,10 @@ func is_current_dialogue_visibility_operation_valid() -> bool:
 	if _dialogue_visibility_epoch_stack.is_empty():
 		return true
 	return _dialogue_visibility_epoch_stack.back() == _dialogue_visibility_epoch
+
+
+func current_dialogue_visibility_epoch() -> int:
+	return _dialogue_visibility_epoch
 
 
 func reset_dialogue_visibility_visuals() -> void:
@@ -857,6 +882,23 @@ func apply_dialogue_visibility_state(
 		content.duplicate(true),
 		runtime_binding.duplicate(true),
 	)
+
+
+func apply_dialogue_visibility_targets_state(
+	visibility: Dictionary,
+	targets: Array,
+) -> void:
+	var normalized_targets: Array[String] = []
+	for target_value: Variant in targets:
+		var target := String(target_value).strip_edges()
+		if target not in ["surface", "quick_menu"] or target in normalized_targets:
+			continue
+		normalized_targets.append(target)
+	if normalized_targets.is_empty():
+		return
+	_mark_presentation_projection_retirement_started()
+	dialogue_visibility_targets_state_apply_requested.emit(
+		visibility.duplicate(true), normalized_targets.duplicate())
 
 
 func run_presentation_projection(body: Callable) -> void:
@@ -964,6 +1006,18 @@ func _drain_presentation_operation_queue_once() -> void:
 	var chapter_epoch := int(request.get("chapter_epoch", 0))
 	var operations: Array = request.get("operations", [])
 	var force_cut := bool(request.get("force_cut", false))
+	var apply_started_callback: Callable = request.get(
+		"on_apply_started", Callable())
+	var uses_stage := false
+	var uses_dialogue_visibility := false
+	var uses_chapter_indicator := false
+	for operation_value: Variant in operations:
+		if operation_value is StagePresentationOperation:
+			uses_stage = true
+		elif operation_value is DialogueVisibilityPresentationOperation:
+			uses_dialogue_visibility = true
+		elif operation_value is ChapterIndicatorPresentationOperation:
+			uses_chapter_indicator = true
 	_stage_operation_dispatch_stack.append(request_id)
 	_stage_operation_epoch_stack.append(stage_epoch)
 	_dialogue_visibility_dispatch_stack.append(request_id)
@@ -1019,10 +1073,13 @@ func _drain_presentation_operation_queue_once() -> void:
 			break
 		chapter_requests[operation.get_instance_id()] = chapter_request
 	_dispatching_chapter_indicator_request = null
-	var epochs_valid := (
-		stage_epoch == _stage_operation_epoch
-		and visibility_epoch == _dialogue_visibility_epoch
-		and chapter_epoch == _chapter_indicator_epoch
+	var epochs_valid := _presentation_operation_epochs_are_current(
+		stage_epoch,
+		visibility_epoch,
+		chapter_epoch,
+		uses_stage,
+		uses_dialogue_visibility,
+		uses_chapter_indicator,
 	)
 	if not preflight_valid or not epochs_valid:
 		for chapter_request_value: Variant in chapter_requests.values():
@@ -1040,28 +1097,41 @@ func _drain_presentation_operation_queue_once() -> void:
 		var operation: PresentationOperation = operations[operation_index]
 		if operation is StagePresentationOperation:
 			var stage_run: Array = []
+			var stage_channels: Array[StringName] = []
 			while (
 				operation_index < operations.size()
 				and operations[operation_index] is StagePresentationOperation
 			):
-				stage_run.append(
-					(operations[operation_index] as PresentationOperation).get_payload())
+				var stage_operation := (
+					operations[operation_index] as PresentationOperation)
+				stage_run.append(stage_operation.get_payload())
+				stage_channels.append(stage_operation.get_channel())
 				operation_index += 1
+			if apply_started_callback.is_valid():
+				apply_started_callback.call(stage_channels)
 			stage_operations_requested.emit(stage_run, force_cut)
 		elif operation is DialogueVisibilityPresentationOperation:
 			var visibility_run: Array = []
+			var visibility_channels: Array[StringName] = []
 			while (
 				operation_index < operations.size()
 				and operations[operation_index]
 					is DialogueVisibilityPresentationOperation
 			):
-				visibility_run.append(operations[operation_index])
+				var visibility_operation := (
+					operations[operation_index] as PresentationOperation)
+				visibility_run.append(visibility_operation)
+				visibility_channels.append(visibility_operation.get_channel())
 				operation_index += 1
+			if apply_started_callback.is_valid():
+				apply_started_callback.call(visibility_channels)
 			dialogue_visibility_operations_requested.emit(
 				visibility_run, force_cut)
 		elif operation is ChapterIndicatorPresentationOperation:
 			var chapter_request: ChapterIndicatorRequest = chapter_requests.get(
 				operation.get_instance_id())
+			if apply_started_callback.is_valid():
+				apply_started_callback.call([operation.get_channel()])
 			_applying_chapter_indicator_request = chapter_request
 			chapter_indicator_apply_requested.emit(chapter_request)
 			_applying_chapter_indicator_request = null
@@ -1074,10 +1144,13 @@ func _drain_presentation_operation_queue_once() -> void:
 				break
 			delivered = delivered and chapter_request != null
 			operation_index += 1
-		if (
-			stage_epoch != _stage_operation_epoch
-			or visibility_epoch != _dialogue_visibility_epoch
-			or chapter_epoch != _chapter_indicator_epoch
+		if not _presentation_operation_epochs_are_current(
+			stage_epoch,
+			visibility_epoch,
+			chapter_epoch,
+			uses_stage,
+			uses_dialogue_visibility,
+			uses_chapter_indicator,
 		):
 			delivered = false
 			break
@@ -1091,9 +1164,35 @@ func _drain_presentation_operation_queue_once() -> void:
 	presentation_operation_request_finished.emit(
 		request_id,
 		delivered
-		and stage_epoch == _stage_operation_epoch
-		and visibility_epoch == _dialogue_visibility_epoch
-		and chapter_epoch == _chapter_indicator_epoch,
+		and _presentation_operation_epochs_are_current(
+			stage_epoch,
+			visibility_epoch,
+			chapter_epoch,
+			uses_stage,
+			uses_dialogue_visibility,
+			uses_chapter_indicator,
+		),
+	)
+
+
+func _presentation_operation_epochs_are_current(
+	stage_epoch: int,
+	visibility_epoch: int,
+	chapter_epoch: int,
+	uses_stage: bool,
+	uses_dialogue_visibility: bool,
+	uses_chapter_indicator: bool,
+) -> bool:
+	return (
+		(not uses_stage or stage_epoch == _stage_operation_epoch)
+		and (
+			not uses_dialogue_visibility
+			or visibility_epoch == _dialogue_visibility_epoch
+		)
+		and (
+			not uses_chapter_indicator
+			or chapter_epoch == _chapter_indicator_epoch
+		)
 	)
 
 
@@ -1645,8 +1744,10 @@ func _chapter_event_owner_is_current(owner_validator: Callable) -> bool:
 ## A lifecycle cancellation is not an authored command failure and never changes
 ## the ScenarioContext target captured by save/rollback.
 func reset_chapter_indicator_presentation() -> bool:
+	_mark_presentation_projection_retirement_started()
 	_chapter_indicator_epoch += 1
 	var reset_epoch := _chapter_indicator_epoch
+	_retain_projection_chapter_indicator_epoch(reset_epoch)
 	_chapter_indicator_projection_active = false
 	_chapter_indicator_projected_visible = false
 	_dispatching_chapter_indicator_request = null
@@ -1659,16 +1760,25 @@ func reset_chapter_indicator_presentation() -> bool:
 ## listener synchronously projects a newer context, later listeners ignore this
 ## outer tail instead of overwriting the fresh state.
 func apply_chapter_indicator_state(visible: bool) -> int:
-	# State, reset, and authored requests share one ownership generation. A nested
-	# event on any channel retires every outer signal tail across all channels.
+	# State, reset, and authored chapter requests share one ownership generation.
+	# Queued mixed requests born inside this projection retain the new chapter
+	# epoch; requests that do not author chapter ignore this domain's generation.
+	_mark_presentation_projection_retirement_started()
 	_chapter_indicator_epoch += 1
 	var generation := _chapter_indicator_epoch
+	_retain_projection_chapter_indicator_epoch(generation)
 	_chapter_indicator_projection_active = true
 	_chapter_indicator_projected_visible = visible
 	_dispatching_chapter_indicator_request = null
 	_applying_chapter_indicator_request = null
 	chapter_indicator_state_apply_requested.emit(visible, generation)
 	return generation
+
+
+func _retain_projection_chapter_indicator_epoch(epoch: int) -> void:
+	for request: Dictionary in _presentation_operation_queue:
+		if _request_belongs_to_retained_projection(request):
+			request["chapter_epoch"] = epoch
 
 
 func commit_chapter_indicator_projection(visible: bool) -> int:

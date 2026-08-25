@@ -211,14 +211,20 @@ signal hide_dialogue()
 # 已确认 request 的表现层兼容通知；不负责完成剧情命令
 signal advance_requested()
 
+# 对话可见性；target-scoped state apply 只用于失败事务的 cut rollback
+signal dialogue_visibility_operations_requested(operations: Array, force_cut: bool)
+signal dialogue_visibility_targets_state_apply_requested(visibility: Dictionary, targets: Array)
+signal dialogue_visibility_transition_receipt_started(presenter_instance_id: int, target: String, token: int, operation_request_id: int, generation: int)
+signal dialogue_visibility_transition_terminal(presenter_instance_id: int, target: String, token: int, operation_request_id: int, generation: int, outcome: StringName)
+
 # 当前章节；public metadata 与内部 typed barrier 分离
 signal current_chapter_changed(chapter_id: String, title: String)
 signal chapter_indicator_validate_requested(request: ChapterIndicatorRequest)
 signal chapter_indicator_accept_requested(request: ChapterIndicatorRequest)
 signal chapter_indicator_apply_requested(request: ChapterIndicatorRequest)
 signal chapter_indicator_request_finished(request_id: int, success: bool)
-signal chapter_indicator_transition_started(request_id: int, presenter_instance_id: int, channel: String, token: int, generation: int)
-signal chapter_indicator_transition_terminal(request_id: int, presenter_instance_id: int, channel: String, token: int, generation: int, status: int)
+signal chapter_indicator_transition_receipt_started(presenter_instance_id: int, token: int, operation_request_id: int, generation: int)
+signal chapter_indicator_transition_terminal(presenter_instance_id: int, token: int, operation_request_id: int, generation: int, outcome: StringName)
 
 # 动态命名舞台层
 signal stage_operations_requested(operations: Array, force_cut: bool)
@@ -274,7 +280,7 @@ Parser 把整个 `@stage_batch` 编译为一个 addressable `CommandData(type="s
 
 `submit()` 在分配 request ID 之前完成 authoritative typed schema/context preflight：检查三个 kind 的 canonical payload、duplicate channel、Stage clear 冲突，并以 canonical state 做 semantic reduce。chapter 即使已经处于 authored target 也不会跳过 binding validation。invalid 和非 clear Stage 的真实 no-work 路径不进入 Bus，也不分配 receipt、token 或 Tween；真实 no-work 会以 `batch_id=0`、`receipts=[]` 同步 `COMPLETED`。canonical clear 是 live projection ownership exception：它不能仅凭 canonical Dictionary 相等而短路，因为仍须接管已经离开 canonical state、但尚在 remove transition 中的视觉 owner；Presenter 真正为空时，clear 仍取得 positive batch ID，并以零 receipt 在 dispatch tail 同步完成。
 
-有工作的操作在同一 `SignalBus` dispatch boundary 中原子派发。Bus 在任何 child apply 前收集并验证完整 chapter Presenter registry，seal 后要求所有 participant accept；随后按 authored child order 跨 kind 派发，operation source line、channel 与 receipt 一一保持。`JOIN` 只等待 dispatch tail 封存的 exact receipt union；零 receipt 同步完成，current owner 的任一 superseded/cancelled receipt 都使该 JOIN fail-close。`FIRE_AND_FORGET` 在 dispatch seal 后释放剧情，但 Director 继续持有 receipts 直到 terminal cleanup。连续 batch 经 Bus 串行；同 channel 重叠时由 Presenter generation 决定 winner，late、foreign 或 duplicate terminal 不能完成新 batch。
+有工作的操作在同一 `SignalBus` dispatch boundary 中原子派发。Bus 在任何 child apply 前收集并验证完整 chapter Presenter registry，seal 后要求所有 participant accept；随后按 authored child order 跨 kind 派发，operation source line、channel 与 receipt 一一保持。participant rejection 发生在第一个 child apply 前，因而以 `FAILED` 结束且不触发任何 reset/state projection，也不退休既存 Presenter owner。Bus 在每个连续 typed run 即将 apply 时才把实际 channels 交给 Director；post-apply failure 只回滚该失败 request 仍持有的 applied domains，并在同一 projection lifecycle 内 cut-project canonical Stage、受影响的 dialogue targets 与 chapter state。已由 fresh request 接管的域不会被旧 terminal 回滚，无关域的 epoch 变化也不会使 fresh dispatch tail 失败。`JOIN` 只等待 dispatch tail 封存的 exact receipt union；零 receipt 同步完成，current owner 的任一 superseded/cancelled receipt 都使该 JOIN fail-close。`FIRE_AND_FORGET` 在 dispatch seal 后释放剧情，但 Director 继续持有 receipts 直到 terminal cleanup。连续 batch 经 Bus 串行；同 channel 重叠时由 Presenter generation 决定 winner，late、foreign 或 duplicate terminal 不能完成新 batch。
 
 Director 还统一拥有 blocking presentation waiter。Stage、dialogue visibility 与 chapter indicator 共享 Runtime 的 generic lifecycle 判断，不再各自维护 sibling flag。reset、load、rollback、restart、return-to-title、context 或 SceneTree replacement 都先退休旧 generation/owner，再 reset 并在需要时 cut canonical state；旧 callback 不能复活。可逆导航被拒绝时，Runtime 恢复该命令之前的 canonical state，然后在 retained cursor 重新派发，不会 resume 已取消的 coroutine。
 

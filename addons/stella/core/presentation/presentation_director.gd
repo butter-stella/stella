@@ -23,6 +23,10 @@ var _external_blockers: Dictionary = {}
 var _generation: int = 1
 var _dialogue_visibility_reset_allows_next_apply: bool = false
 var _retired_presentation_projection_lifecycle_id: int = 0
+var _latest_stage_owner_request_id: int = 0
+var _latest_dialogue_owner_request_ids: Dictionary = {}
+var _latest_chapter_owner_request_id: int = 0
+var _rollback_stage_reset_epoch: int = 0
 
 
 func _init(
@@ -90,7 +94,8 @@ func submit(
 	var preflight := _preflight_operations(operations, policy, context)
 	if not bool(preflight.get("valid", false)):
 		_report_submit_error(
-			_diagnostic_source(source),
+			_diagnostic_source(
+				preflight.get("source", source) as Dictionary),
 			String(preflight.get("error", "invalid presentation batch")),
 		)
 		request._settle(PresentationBatchRequest.Outcome.FAILED, _authority)
@@ -108,6 +113,7 @@ func submit(
 
 	var request_id := SignalBus.reserve_stage_operation_request_id()
 	var entry := {
+		"request_id": request_id,
 		"request": request,
 		"context": context,
 		"source": _diagnostic_source(source),
@@ -120,9 +126,13 @@ func submit(
 		"target_chapter_indicator_visible": bool(
 			preflight["target_chapter_indicator_visible"]),
 		"has_chapter_indicator": bool(preflight["has_chapter_indicator"]),
+		"has_stage_operations": bool(preflight["has_stage_operations"]),
 		"chapter_indicator_source": (
 			preflight["chapter_indicator_source"] as Dictionary).duplicate(true),
 		"chapter_indicator_epoch": SignalBus.current_chapter_indicator_epoch(),
+		"stage_epoch": SignalBus.current_stage_operation_epoch(),
+		"dialogue_visibility_epoch": (
+			SignalBus.current_dialogue_visibility_epoch()),
 		"policy": policy,
 		"receipts": [],
 		"receipt_keys": {},
@@ -133,6 +143,9 @@ func submit(
 		"accept_advance_serial": SignalBus.current_advance_dispatch_serial(),
 		"context_cancel": Callable(),
 		"dialogue_targets": (preflight.get("dialogue_targets", []) as Array).duplicate(),
+		"applied_stage": false,
+		"applied_dialogue_targets": {},
+		"applied_chapter": false,
 	}
 	_entries[request_id] = entry
 	if context != null:
@@ -144,17 +157,29 @@ func submit(
 	var force_cut := _is_skip_active()
 	var stage_only := true
 	var stage_payloads: Array = []
+	var stage_channels: Array[StringName] = []
 	for operation: PresentationOperation in operations:
 		if operation is StagePresentationOperation:
 			stage_payloads.append(operation.get_payload())
+			stage_channels.append(operation.get_channel())
 		else:
 			stage_only = false
 			break
 	if stage_only:
-		SignalBus.emit_stage_operations(stage_payloads, force_cut, request_id)
+		var on_stage_apply_started := func() -> void:
+			_on_presentation_operation_apply_started(
+				request_id, stage_channels)
+		SignalBus.emit_stage_operations(
+			stage_payloads,
+			force_cut,
+			request_id,
+			on_stage_apply_started,
+		)
 	else:
+		var on_apply_started := func(channels: Array) -> void:
+			_on_presentation_operation_apply_started(request_id, channels)
 		SignalBus.emit_presentation_operations(
-			operations, force_cut, request_id)
+			operations, force_cut, request_id, on_apply_started)
 	return request
 
 
@@ -359,6 +384,7 @@ func _preflight_operations(
 	if _presentation_state == null:
 		return {"valid": false, "error": "PresentationState is unavailable"}
 	var stage_payloads: Array = []
+	var stage_typed_operations: Array[StagePresentationOperation] = []
 	var visibility_payloads: Array = []
 	var visibility_canonical_payloads: Array = []
 	var seen_layers := {}
@@ -374,10 +400,10 @@ func _preflight_operations(
 		payload_keys.sort()
 		if operation is StagePresentationOperation:
 			if payload_keys != EXACT_STAGE_OPERATION_KEYS:
-				return {
-					"valid": false,
-					"error": "stage payload must use the canonical five-field schema",
-				}
+				return _preflight_failure(
+					"stage payload must use the canonical five-field schema",
+					operation,
+				)
 			if (
 				not payload["action"] is String
 				or not payload["id"] is String
@@ -388,7 +414,8 @@ func _preflight_operations(
 					or payload["duration"] is float
 				)
 			):
-				return {"valid": false, "error": "stage payload has invalid types"}
+				return _preflight_failure(
+					"stage payload has invalid types", operation)
 			var action := String(payload.get("action", ""))
 			var raw_layer_id := String(payload.get("id", ""))
 			var layer_id := raw_layer_id.strip_edges()
@@ -400,53 +427,58 @@ func _preflight_operations(
 				or raw_layer_id != layer_id
 				or String(operation.get_channel()) != expected_channel
 			):
-				return {"valid": false, "error": "invalid typed Stage ownership"}
+				return _preflight_failure(
+					"invalid typed Stage ownership", operation)
 			if (
 				action not in StageLayerState.VALID_ACTIONS
 				or String(payload["transition"])
 				not in StageLayerState.VALID_TRANSITIONS
 				or not StageLayerState.validate_operation(payload, false)
 			):
-				return {"valid": false, "error": "stage payload is not canonical"}
+				return _preflight_failure(
+					"stage payload is not canonical", operation)
 			if action == "clear":
 				if saw_clear or not stage_payloads.is_empty():
-					return {"valid": false, "error": "clear must be the only Stage operation"}
+					return _preflight_failure(
+						"clear must be the only Stage operation", operation)
 				saw_clear = true
 			elif layer_id == "*" or saw_clear or seen_layers.has(layer_id):
-				return {
-					"valid": false,
-					"error": "duplicate or invalid Stage channel '%s'" % layer_id,
-				}
+				return _preflight_failure(
+					"duplicate or invalid Stage channel '%s'" % layer_id,
+					operation,
+				)
 			else:
 				seen_layers[layer_id] = true
 			stage_payloads.append(payload.duplicate(true))
+			stage_typed_operations.append(operation)
 		elif operation is DialogueVisibilityPresentationOperation:
 			if payload_keys != EXACT_DIALOGUE_VISIBILITY_KEYS:
-				return {
-					"valid": false,
-					"error": "dialogue visibility payload must use the canonical four-field schema",
-				}
+				return _preflight_failure(
+					"dialogue visibility payload must use the canonical four-field schema",
+					operation,
+				)
 			var target := String(payload.get("target", "")).strip_edges()
 			if (
 				String(operation.get_channel()) != "dialogue:%s" % target
 				or not DialogueVisibilityState.validate_operation(payload, false)
 			):
-				return {"valid": false, "error": "invalid typed dialogue visibility ownership"}
+				return _preflight_failure(
+					"invalid typed dialogue visibility ownership", operation)
 			if seen_targets.has(target):
-				return {
-					"valid": false,
-					"error": "duplicate dialogue visibility channel '%s'" % target,
-			}
+				return _preflight_failure(
+					"duplicate dialogue visibility channel '%s'" % target,
+					operation,
+				)
 			seen_targets[target] = true
 			saw_visibility = true
 			visibility_canonical_payloads.append(payload.duplicate(true))
 			visibility_payloads.append(operation)
 		elif operation is ChapterIndicatorPresentationOperation:
 			if payload_keys != EXACT_CHAPTER_INDICATOR_KEYS:
-				return {
-					"valid": false,
-					"error": "chapter indicator payload must use the canonical three-field schema",
-				}
+				return _preflight_failure(
+					"chapter indicator payload must use the canonical three-field schema",
+					operation,
+				)
 			if (
 				saw_chapter_indicator
 				or String(operation.get_channel()) != "chapter:indicator"
@@ -460,26 +492,28 @@ func _preflight_operations(
 					and float(payload.get("duration", -1.0)) != 0.0
 				)
 			):
-				return {"valid": false, "error": "invalid typed chapter indicator ownership"}
+				return _preflight_failure(
+					"invalid typed chapter indicator ownership", operation)
 			saw_chapter_indicator = true
 			chapter_indicator_source = operation.get_source()
 			target_chapter_indicator_visible = (
 				String(payload.get("action", "")) == "show")
 		else:
-			return {"valid": false, "error": "unsupported presentation operation kind"}
+			return _preflight_failure(
+				"unsupported presentation operation kind", operation)
 
 	var before_state := _presentation_state.stage_layers.duplicate(true)
 	var before_visibility := _presentation_state.dialogue_visibility.duplicate(true)
 	var simulated := before_state.duplicate(true)
-	for payload_value: Variant in stage_payloads:
-		var payload: Dictionary = payload_value
+	for stage_index in range(stage_payloads.size()):
+		var payload: Dictionary = stage_payloads[stage_index]
 		var action := String(payload["action"])
 		var layer_id := String(payload["id"])
 		if action in ["update", "hide"] and not simulated.has(layer_id):
-			return {
-				"valid": false,
-				"error": "cannot %s unknown layer '%s'" % [action, layer_id],
-			}
+			return _preflight_failure(
+				"cannot %s unknown layer '%s'" % [action, layer_id],
+				stage_typed_operations[stage_index],
+			)
 		simulated = StageLayerState.reduce(simulated, [payload], false)
 	var target_visibility := DialogueVisibilityState.reduce(
 		before_visibility,
@@ -499,6 +533,7 @@ func _preflight_operations(
 		"target_visibility": target_visibility,
 		"target_chapter_indicator_visible": target_chapter_indicator_visible,
 		"has_chapter_indicator": saw_chapter_indicator,
+		"has_stage_operations": not stage_payloads.is_empty(),
 		"chapter_indicator_source": chapter_indicator_source,
 		"dialogue_targets": seen_targets.keys(),
 		"no_work": (
@@ -508,6 +543,18 @@ func _preflight_operations(
 			and not saw_chapter_indicator
 		),
 	}
+
+
+func _preflight_failure(
+	error: String,
+	operation: PresentationOperation = null,
+) -> Dictionary:
+	var result := {"valid": false, "error": error}
+	if operation != null:
+		var operation_source := operation.get_source()
+		if not operation_source.is_empty():
+			result["source"] = operation_source
+	return result
 
 
 func _has_active_dialogue_visibility_owner(target: String) -> bool:
@@ -619,24 +666,32 @@ func _on_generic_request_finished(
 	var context: ScenarioContext = entry.get("context")
 	if delivered and (context == null or not context.is_runtime_owner_current()):
 		delivered = false
-	if delivered and bool(entry.get("has_chapter_indicator", false)):
-		var target_visible := bool(
-			entry.get("target_chapter_indicator_visible", false))
-		context.chapter_indicator_visible = target_visible
-		SignalBus.commit_chapter_indicator_projection(target_visible)
 	if not delivered:
 		if not _seal_entry(request_id, entry):
+			if (
+				context != null
+				and context.is_runtime_owner_current()
+				and _entry_owns_any_rollback_domain(entry)
+			):
+				entry["settling_failure"] = true
+				_rollback_entry(entry)
+				_report_entry_participant_failure(entry)
 			request._settle(PresentationBatchRequest.Outcome.FAILED, _authority)
 		else:
 			entry["sealed"] = true
+			var owns_applied_domain := _entry_owns_any_rollback_domain(entry)
 			if (
-				bool(entry.get("has_chapter_indicator", false))
-				and int(entry.get("chapter_indicator_epoch", -1))
-					== SignalBus.current_chapter_indicator_epoch()
-				and context != null
+				context != null
 				and context.is_runtime_owner_current()
+				and (
+					owns_applied_domain
+					or _entry_dispatch_epochs_are_current(entry)
+				)
 			):
-				_rollback_entry(entry)
+				if owns_applied_domain:
+					entry["settling_failure"] = true
+					_rollback_entry(entry)
+					_report_entry_participant_failure(entry)
 				request._settle(
 					PresentationBatchRequest.Outcome.FAILED, _authority)
 			else:
@@ -645,11 +700,24 @@ func _on_generic_request_finished(
 		_cleanup_entry(request_id)
 		return
 	if not _seal_entry(request_id, entry):
+		if (
+			context != null
+			and context.is_runtime_owner_current()
+			and _entry_owns_any_rollback_domain(entry)
+		):
+			entry["settling_failure"] = true
+			_rollback_entry(entry)
+			_report_entry_participant_failure(entry)
 		request._settle(
 			PresentationBatchRequest.Outcome.FAILED, _authority)
 		_cleanup_entry(request_id)
 		return
 	entry["sealed"] = true
+	if bool(entry.get("has_chapter_indicator", false)):
+		var target_visible := bool(
+			entry.get("target_chapter_indicator_visible", false))
+		context.chapter_indicator_visible = target_visible
+		SignalBus.commit_chapter_indicator_projection(target_visible)
 	if int(entry["policy"]) == PresentationBatchRequest.Policy.FIRE_AND_FORGET:
 		request._settle(PresentationBatchRequest.Outcome.COMPLETED, _authority)
 	if receipts.is_empty():
@@ -798,6 +866,32 @@ func _on_chapter_indicator_transition_receipt_started(
 	(entry["receipts"] as Array).append(receipt)
 
 
+func _on_presentation_operation_apply_started(
+	request_id: int,
+	channels: Array,
+) -> void:
+	var entry: Dictionary = _entries.get(request_id, {})
+	if (
+		entry.is_empty()
+		or bool(entry.get("sealed", false))
+		or int(entry.get("generation", -1)) != _generation
+	):
+		return
+	for channel_value: Variant in channels:
+		var channel := String(channel_value)
+		if channel.begins_with("stage:"):
+			entry["applied_stage"] = true
+			_latest_stage_owner_request_id = request_id
+		elif channel.begins_with("dialogue:"):
+			var target := channel.trim_prefix("dialogue:")
+			if target in ["surface", "quick_menu"]:
+				(entry["applied_dialogue_targets"] as Dictionary)[target] = true
+				_latest_dialogue_owner_request_ids[target] = request_id
+		elif channel == "chapter:indicator":
+			entry["applied_chapter"] = true
+			_latest_chapter_owner_request_id = request_id
+
+
 func _on_chapter_indicator_transition_terminal(
 	presenter_instance_id: int,
 	token: int,
@@ -844,14 +938,7 @@ func _evaluate_terminal_state(request_id: int) -> void:
 			var context: ScenarioContext = entry.get("context")
 			if context != null and context.is_runtime_owner_current():
 				_rollback_entry(entry)
-				if bool(entry.get("has_chapter_indicator", false)):
-					_report_submit_error(
-						entry.get(
-							"chapter_indicator_source",
-							entry.get("source", {}),
-						),
-						"a sealed presentation participant failed or was superseded",
-					)
+				_report_entry_participant_failure(entry)
 			request._settle(
 				PresentationBatchRequest.Outcome.FAILED
 				if context != null and context.is_runtime_owner_current()
@@ -868,20 +955,147 @@ func _evaluate_terminal_state(request_id: int) -> void:
 		_cleanup_entry(request_id)
 
 
+func _report_entry_participant_failure(entry: Dictionary) -> void:
+	if not bool(entry.get("has_chapter_indicator", false)):
+		return
+	_report_submit_error(
+		entry.get(
+			"chapter_indicator_source",
+			entry.get("source", {}),
+		),
+		"a sealed presentation participant failed or was superseded",
+	)
+
+
 func _rollback_entry(entry: Dictionary) -> void:
 	var context: ScenarioContext = entry.get("context")
 	if context == null or not context.is_runtime_owner_current():
 		return
-	if _presentation_state != null:
-		_presentation_state.stage_layers = (
-			entry.get("previous_stage_layers", {}) as Dictionary).duplicate(true)
-		_presentation_state.dialogue_visibility = (
-			entry.get("previous_dialogue_visibility", {}) as Dictionary).duplicate(true)
-	if bool(entry.get("has_chapter_indicator", false)):
-		var previous_visible := bool(
-			entry.get("previous_chapter_indicator_visible", false))
-		context.chapter_indicator_visible = previous_visible
-		SignalBus.apply_chapter_indicator_state(previous_visible)
+	var rollback_stage := _entry_owns_stage(entry)
+	var rollback_dialogue_targets := _entry_owned_dialogue_targets(entry)
+	var rollback_chapter := _entry_owns_chapter(entry)
+	if (
+		not rollback_stage
+		and rollback_dialogue_targets.is_empty()
+		and not rollback_chapter
+	):
+		return
+	var previous_stage := (
+		entry.get("previous_stage_layers", {}) as Dictionary).duplicate(true)
+	var previous_visibility := (
+		entry.get("previous_dialogue_visibility", {}) as Dictionary).duplicate(true)
+	var previous_visible := bool(
+		entry.get("previous_chapter_indicator_visible", false))
+	SignalBus.run_presentation_projection(func() -> void:
+		if rollback_stage and _entry_owns_stage(entry):
+			if _presentation_state != null:
+				_presentation_state.stage_layers = previous_stage.duplicate(true)
+			var expected_reset_epoch := (
+				SignalBus.current_stage_operation_epoch() + 1)
+			_rollback_stage_reset_epoch = expected_reset_epoch
+			SignalBus.reset_and_apply_stage_state(previous_stage)
+			if _rollback_stage_reset_epoch == expected_reset_epoch:
+				_rollback_stage_reset_epoch = 0
+		var current_dialogue_targets := _entry_owned_dialogue_targets(entry)
+		var targets_to_restore: Array[String] = []
+		for target: String in rollback_dialogue_targets:
+			if target in current_dialogue_targets:
+				targets_to_restore.append(target)
+		if not targets_to_restore.is_empty():
+			var rollback_visibility := (
+				_presentation_state.dialogue_visibility.duplicate(true)
+				if _presentation_state != null
+				else DialogueVisibilityState.default_state()
+			)
+			for target: String in targets_to_restore:
+				rollback_visibility[target] = bool(
+					previous_visibility.get(target, true))
+			if _presentation_state != null:
+				_presentation_state.dialogue_visibility = (
+					rollback_visibility.duplicate(true))
+			SignalBus.apply_dialogue_visibility_targets_state(
+				rollback_visibility, targets_to_restore)
+		if rollback_chapter and _entry_owns_chapter(entry):
+			context.chapter_indicator_visible = previous_visible
+			SignalBus.apply_chapter_indicator_state(previous_visible)
+	)
+
+
+func _entry_dispatch_epochs_are_current(entry: Dictionary) -> bool:
+	return (
+		(
+			not bool(entry.get("has_stage_operations", false))
+			or int(entry.get("stage_epoch", -1))
+				== SignalBus.current_stage_operation_epoch()
+		)
+		and (
+			(entry.get("dialogue_targets", []) as Array).is_empty()
+			or int(entry.get("dialogue_visibility_epoch", -1))
+				== SignalBus.current_dialogue_visibility_epoch()
+		)
+		and (
+			not bool(entry.get("has_chapter_indicator", false))
+			or int(entry.get("chapter_indicator_epoch", -1))
+				== SignalBus.current_chapter_indicator_epoch()
+		)
+	)
+
+
+func _entry_owns_any_rollback_domain(entry: Dictionary) -> bool:
+	return (
+		_entry_owns_stage(entry)
+		or not _entry_owned_dialogue_targets(entry).is_empty()
+		or _entry_owns_chapter(entry)
+	)
+
+
+func _entry_owns_stage(entry: Dictionary) -> bool:
+	return (
+		_entry_is_current(entry)
+		and bool(entry.get("applied_stage", false))
+		and int(entry.get("request_id", 0))
+			== _latest_stage_owner_request_id
+		and int(entry.get("stage_epoch", -1))
+			== SignalBus.current_stage_operation_epoch()
+	)
+
+
+func _entry_owned_dialogue_targets(entry: Dictionary) -> Array[String]:
+	var request_id := int(entry.get("request_id", 0))
+	var result: Array[String] = []
+	if (
+		not _entry_is_current(entry)
+		or int(entry.get("dialogue_visibility_epoch", -1))
+		!= SignalBus.current_dialogue_visibility_epoch()
+	):
+		return result
+	for target_value: Variant in (
+		entry.get("applied_dialogue_targets", {}) as Dictionary
+	).keys():
+		var target := String(target_value)
+		if int(_latest_dialogue_owner_request_ids.get(target, 0)) == request_id:
+			result.append(target)
+	return result
+
+
+func _entry_owns_chapter(entry: Dictionary) -> bool:
+	return (
+		_entry_is_current(entry)
+		and bool(entry.get("applied_chapter", false))
+		and int(entry.get("request_id", 0))
+			== _latest_chapter_owner_request_id
+		and int(entry.get("chapter_indicator_epoch", -1))
+			== SignalBus.current_chapter_indicator_epoch()
+	)
+
+
+func _entry_is_current(entry: Dictionary) -> bool:
+	var request_id := int(entry.get("request_id", 0))
+	return (
+		request_id > 0
+		and int(entry.get("generation", -1)) == _generation
+		and _entries.has(request_id)
+	)
 
 
 func _on_advance_requested() -> void:
@@ -1168,6 +1382,11 @@ func _receipt_key_parts(
 
 
 func _on_stage_visuals_reset_requested() -> void:
+	var reset_epoch := SignalBus.current_stage_reset_epoch()
+	if reset_epoch > 0 and reset_epoch == _rollback_stage_reset_epoch:
+		_rollback_stage_reset_epoch = 0
+		if SignalBus.is_current_stage_reset_valid():
+			return
 	if not SignalBus.is_current_stage_reset_valid():
 		return
 	_cancel_for_presentation_reset()
