@@ -357,7 +357,42 @@ Backlog replay restores text and never re-dispatches avatar operations.
 The CI-compiled public reference scenario is
 [`examples/demo/scenarios/dialogue_avatar.stla`](../examples/demo/scenarios/dialogue_avatar.stla).
 
-### 3.5C Dialogue page clear
+### 3.5C Declarative presentation clip
+
+```stla
+@presentation_clip ui/eyecatch
+@presentation_clip ui/eyecatch policy=fire_and_forget
+```
+
+精确 grammar 只有 `@presentation_clip <logical-id> [policy=join|fire_and_forget]`。普通作者
+只选 definition；默认 JOIN 等待其 bounded main AnimationPlayer timeline 与 exact receipt，
+FNF 在 whole-plan seal 后继续剧情。重复/未知参数、非 canonical logical ID 或其他 policy
+都在 source line fail-close。
+
+logical definition 是 `PresentationClipDefinition .tres`，内部持有 `.tscn`、唯一 main
+AnimationPlayer、logical viewport/fit、entry/exit transition、可选 dialogue surface /
+quick-menu suppression，以及一份按作者顺序排列的 state/system-audio cue 数组。同 offset
+不会按 kind、ID 或角色重排。state cue 的 named animation 由 main clock 的
+`main_position - cue.offset` 确定性投影；pending audio 在 Skip/cut 时取消，不会补放。
+definition 与 scene 只接受 data-only text Resource。文本/依赖图门在首次 load 前拒绝项目
+Script、embedded Script、binary 或 malformed dependency；isolated definition 的 SceneState
+门在 instantiate 前拒绝 script、nested render surface、3D 与独立 clock owner；最后在尚未
+入树的 detached instance 上拒绝 autoplay、audio/video node、第二动画时钟、AnimatedTexture、
+`TIME` shader 和越界 track target。Importer 只写 Stella canonical definition 和可选 cue
+provenance，不把源 macro/格式名称加入 DSL。
+
+`entry_transition` / `exit_transition` 只接受 `cut` 或内建 exact 64×64 tile `turn`；turn
+tile count 按实际 target pixel size 计算，支持非 64 整除边界。Skip 只 cut
+`skippable=true` definition，且仍先完成 definition/scene/audio/resource/viewport preflight。
+whole-plan 由 Runtime-owned visual、DialoguePresenter 与 AudioPresenter 共同 validate →
+claim → private commit → publish；任一后置 participant 失效都释放 B 并保留已发布 A。
+Backlog 不重新派发 clip；load、rollback、restart、return-to-title 和 scene replacement
+退休旧 generation，不恢复中间 clock/tween/cue cursor。
+公开 synthetic scenario
+[`tests/fixtures/scenarios/presentation_clip/lifecycle.stla`](../tests/fixtures/scenarios/presentation_clip/lifecycle.stla)
+由 CI 通过同一 parser、Director 与三个 Runtime-owned participant 实际执行。
+
+### 3.5D Dialogue page clear
 
 ```stla
 @dialogue_clear

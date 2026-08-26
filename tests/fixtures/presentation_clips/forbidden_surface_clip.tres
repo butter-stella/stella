@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="PresentationClipDefinition" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://addons/stella/core/data/presentation_clip_definition.gd" id="1_definition"]
+[ext_resource type="PackedScene" path="res://tests/fixtures/presentation_clips/forbidden_surface_scene.tscn" id="2_scene"]
+
+[resource]
+script = ExtResource("1_definition")
+scene = ExtResource("2_scene")
+animation_player_path = NodePath("AnimationPlayer")
+animation_name = &"clip"
+entry_transition = &"cut"
+exit_transition = &"cut"
+exit_duration = 0.0
+suppress_dialogue_surface = false
+suppress_quick_menu = false

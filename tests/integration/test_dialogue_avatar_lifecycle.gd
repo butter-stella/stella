@@ -355,6 +355,51 @@ func test_skip_and_explicit_force_cut_still_preflight_assets_without_receipt() -
 	assert_true(_receipts.is_empty())
 
 
+func test_invalid_canonical_before_state_rejects_exactly_without_mutation() -> void:
+	var public_before: Dictionary = (
+		_runtime.presentation_state.dialogue_avatar.duplicate(true))
+	var presenter_before: Dictionary = (
+		_dialogue.get("_addressable_avatar_state") as Dictionary).duplicate(true)
+	var payload := _payload("show", {"asset": "stage:redraw_source"})
+	var operation := _operation(payload, 22)
+	var invalidated_live_state := operation.get_target_state()
+	var presenter_validate := Callable(
+		_dialogue, "_on_dialogue_avatar_validate_requested")
+	assert_true(SignalBus.dialogue_avatar_validate_requested.is_connected(
+		presenter_validate))
+	SignalBus.dialogue_avatar_validate_requested.disconnect(presenter_validate)
+	var invalidate_before_presenter_validate := func(
+		_request: Variant,
+	) -> void:
+		_dialogue.set(
+			"_addressable_avatar_state", invalidated_live_state.duplicate(true))
+	SignalBus.dialogue_avatar_validate_requested.connect(
+		invalidate_before_presenter_validate)
+	SignalBus.dialogue_avatar_validate_requested.connect(presenter_validate)
+	var operations: Array[PresentationOperation] = [operation]
+	var request: PresentationBatchRequest = _runtime.presentation_director.submit(
+		operations,
+		PresentationBatchRequest.Policy.JOIN,
+		_context,
+		operation.get_source(),
+	)
+	SignalBus.dialogue_avatar_validate_requested.disconnect(
+		invalidate_before_presenter_validate)
+	SignalBus.dialogue_avatar_validate_requested.disconnect(presenter_validate)
+	SignalBus.dialogue_avatar_validate_requested.connect(presenter_validate)
+	assert_push_error(
+		"[%s:22] dialogue avatar request rejected: " % SOURCE_PATH
+		+ "DialoguePresenter avatar binding or canonical before-state is invalid")
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	assert_eq(_runtime.presentation_state.dialogue_avatar, public_before)
+	assert_eq(_dialogue.get("_addressable_avatar_state"), invalidated_live_state,
+		"the rejected typed request does not mutate the externally invalidated binding")
+	assert_true(_receipts.is_empty())
+	assert_null(_dialogue.get("_dialogue_avatar_tween"))
+	_dialogue.set("_addressable_avatar_state", presenter_before.duplicate(true))
+	assert_eq(_dialogue.get("_addressable_avatar_state"), presenter_before)
+
+
 func test_load_reset_retires_old_fade_and_stale_terminal_cannot_overwrite() -> void:
 	_submit(_payload("show", {"asset": "stage:redraw_source"}),
 		PresentationBatchRequest.Policy.FIRE_AND_FORGET, 30)

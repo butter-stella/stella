@@ -23,6 +23,23 @@ const _CONFIG_SCHEMA := {
 		"se": {"property": "se_path", "type": TYPE_STRING},
 		"voice": {"property": "voice_path", "type": TYPE_STRING},
 		"voice_dsp": {"property": "voice_dsp_path", "type": TYPE_STRING},
+		"presentation_clips": {
+			"property": "presentation_clips_path", "type": TYPE_STRING,
+		},
+	},
+	"presentation_clips": {
+		"resource_budget_bytes": {
+			"property": "presentation_clip_resource_budget_bytes",
+			"type": TYPE_INT,
+			"minimum": 32 * 1024 * 1024,
+			"maximum": 2 * 1024 * 1024 * 1024,
+		},
+		"max_viewport_pixels": {
+			"property": "presentation_clip_max_viewport_pixels",
+			"type": TYPE_INT,
+			"minimum": 320 * 180,
+			"maximum": 16384 * 16384,
+		},
 	},
 	"features": {
 		"cg_gallery": {"property": "cg_gallery", "type": TYPE_BOOL},
@@ -138,6 +155,9 @@ var bgm_path: String = "res://audio/bgm/"
 var se_path: String = "res://audio/se/"
 var voice_path: String = "res://audio/voice/"
 var voice_dsp_path: String = "res://audio/voice_dsp/"
+var presentation_clips_path: String = "res://presentation/clips/"
+var presentation_clip_resource_budget_bytes: int = 512 * 1024 * 1024
+var presentation_clip_max_viewport_pixels: int = 3840 * 2160
 
 # [features]
 var cg_gallery: bool = false
@@ -248,6 +268,9 @@ func reset() -> void:
 	se_path = "res://audio/se/"
 	voice_path = "res://audio/voice/"
 	voice_dsp_path = "res://audio/voice_dsp/"
+	presentation_clips_path = "res://presentation/clips/"
+	presentation_clip_resource_budget_bytes = 512 * 1024 * 1024
+	presentation_clip_max_viewport_pixels = 3840 * 2160
 	cg_gallery = false
 	backlog = true
 	save_slots = 8

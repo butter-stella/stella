@@ -20,10 +20,15 @@ class _WaitRace extends RefCounted:
 
 
 var _skip_controller: SkipController
+var _skip_modal_claimed: Callable
 
 
-func _init(skip_controller: SkipController = null) -> void:
+func _init(
+	skip_controller: SkipController = null,
+	skip_modal_claimed: Callable = Callable(),
+) -> void:
 	_skip_controller = skip_controller
+	_skip_modal_claimed = skip_modal_claimed
 
 
 func get_command_type() -> String:
@@ -65,6 +70,8 @@ func _await_race(
 	var on_timer := func():
 		race.settle(_WaitOutcome.TIMER)
 	var on_advance := func():
+		if SignalBus.current_advance_dispatch_was_claimed():
+			return
 		# The dispatch hook increments before ordinary listeners. A waiter created
 		# by the previous command's signal tail records that same serial and must
 		# not consume the old input.
@@ -79,6 +86,9 @@ func _await_race(
 		race.settle(_WaitOutcome.CANCELLED)
 	var on_skip_changed := func(active: bool):
 		if active:
+			if _skip_modal_claimed.is_valid() and bool(
+				_skip_modal_claimed.call()):
+				return
 			race.settle(_WaitOutcome.ADVANCE)
 
 	if not timer_signal.is_null():

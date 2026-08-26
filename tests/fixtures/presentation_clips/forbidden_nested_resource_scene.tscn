@@ -1,0 +1,10 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Material" path="res://tests/fixtures/presentation_clips/forbidden_nested_resource.tres" id="1_material"]
+
+[node name="ForbiddenNestedResourceClip" type="Node2D"]
+
+[node name="Visual" type="ColorRect" parent="."]
+material = ExtResource("1_material")
+offset_right = 64.0
+offset_bottom = 64.0

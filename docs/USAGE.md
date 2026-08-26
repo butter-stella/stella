@@ -85,6 +85,11 @@ bgm = "res://audio/bgm/"
 se = "res://audio/se/"
 voice = "res://audio/voice/"
 voice_dsp = "res://audio/voice_dsp/"
+presentation_clips = "res://presentation/clips/"
+
+[presentation_clips]
+resource_budget_bytes = 536870912
+max_viewport_pixels = 8294400
 
 [features]
 cg_gallery = false
@@ -163,7 +168,7 @@ var sources: PackedStringArray = StellaRuntime.get_applied_config_sources()
 自动化、CI 或一次性诊断应通过通用环境变量显式禁用本地层，避免当前机器的 `res://stella.local.cfg` 污染结果：
 
 ```bash
-STELLA_DISABLE_LOCAL_CONFIG=1 godot --headless --path /path/to/project --quit
+STELLA_DISABLE_LOCAL_CONFIG=1 godot --audio-driver Dummy --headless --path /path/to/project --quit
 ```
 
 该环境变量只跳过启动时隐式加载的本地文件；测试代码显式传入的 synthetic 配置路径仍可用于验证分层行为。
@@ -431,6 +436,40 @@ scheduler。完整语法见 [DSL 文档](DSL.md#35b-addressable-dialogue-avatar)
 无符号、定点或角度编码，不能把 raw 数字直接塞入 Stella DSL。
 可运行且由 CI 实际解析的公开 synthetic 示例位于
 [`examples/demo/scenarios/dialogue_avatar.stla`](../examples/demo/scenarios/dialogue_avatar.stla)。
+
+### 声明式 presentation clip
+
+普通作者只选择一个 logical definition；时间线、命名状态 cue、system audio cue、UI 抑制和
+转场都保存在可复用的 `PresentationClipDefinition` 中，不展开成一长串 DSL 参数：
+
+```stla
+@presentation_clip ui/eyecatch
+@presentation_clip ui/eyecatch policy=fire_and_forget
+```
+
+默认 `policy=join`，仅另接受 `fire_and_forget`。definition 从
+`[paths] presentation_clips`（默认 `res://presentation/clips/`）下以 logical ID 解析为
+`.tres`，并引用纯数据 `.tscn`。首次 Resource load 前的文本/依赖门先拒绝 script 与 binary
+依赖；dependency 与 SceneState walk 都有显式 depth/work 上限。随后 isolated definition 的
+SceneState 在 instantiate 前按 nested instance multiplicity 封顶 512 nodes，并与 detached
+instance 的 exact node count 一致；两道门还会在入树前拒绝 autoplay、
+音视频 node、独立 Timer/AnimationTree/AnimatedTexture、nested render surface/3D owner 与
+`TIME` shader。可见变化只由一个 bounded main `AnimationPlayer` clock 和 authored-order cue
+数组驱动。state cue
+的 named animation 使用 main position 确定性 seek，不自行播放第二时钟；system audio 仍由
+唯一 AudioPresenter typed ownership 预检并播放。
+
+`logical_viewport_size` 与 `fit_mode=contain|cover|stretch` 明确坐标空间；resource cap 和
+viewport cap 在 `[presentation_clips] resource_budget_bytes` / `max_viewport_pixels` 配置，
+默认分别为 512 MiB 与 3840×2160 pixels。texture、显式 clip SubViewport surface 与封存的
+under snapshot surface 在任何 UI、audio、scene mutation 前预算；失败会报告 scenario
+`source_path:line`、definition path 和
+cue ordinal/provenance。`cut` / exact `turn`、Skip、cancel、replacement、load/rollback/
+restart/return-to-title/scene replacement 都走同一 Runtime-owned Director quorum。项目无需也
+不应添加专用 Presenter、源格式 alias、预烘帧/video 或 wall-clock timer。
+CI 会通过公开 synthetic scene/audio definition 实际解析并运行
+[`tests/fixtures/scenarios/presentation_clip/lifecycle.stla`](../tests/fixtures/scenarios/presentation_clip/lifecycle.stla)，
+该 fixture 不依赖任何私有来源、名称或素材。
 
 ### 清空当前对话页
 

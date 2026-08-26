@@ -1,0 +1,39 @@
+[gd_resource type="Resource" script_class="PresentationClipDefinition" load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://addons/stella/core/data/presentation_clip_definition.gd" id="1_definition"]
+[ext_resource type="PackedScene" path="res://tests/fixtures/presentation_clips/synthetic_clip.tscn" id="2_scene"]
+[ext_resource type="Script" path="res://addons/stella/core/data/presentation_clip_state_cue.gd" id="3_state"]
+[ext_resource type="Script" path="res://addons/stella/core/data/presentation_clip_audio_cue.gd" id="4_audio"]
+[ext_resource type="Script" path="res://addons/stella/core/data/presentation_clip_cue.gd" id="5_cue"]
+
+[sub_resource type="Resource" id="StateCue_left"]
+script = ExtResource("3_state")
+offset_seconds = 0.1
+animation_player_path = NodePath("StatePlayer")
+animation_name = &"left"
+
+[sub_resource type="Resource" id="StateCue_right"]
+script = ExtResource("3_state")
+offset_seconds = 0.1
+animation_player_path = NodePath("StatePlayer")
+animation_name = &"right"
+
+[sub_resource type="Resource" id="AudioCue"]
+script = ExtResource("4_audio")
+offset_seconds = 0.1
+asset = "synthetic_loop_region"
+volume_db = -6.0
+
+[resource]
+script = ExtResource("1_definition")
+scene = ExtResource("2_scene")
+animation_player_path = NodePath("AnimationPlayer")
+animation_name = &"clip"
+entry_transition = &"turn"
+entry_duration = 0.05
+exit_transition = &"turn"
+exit_duration = 0.05
+suppress_dialogue_surface = true
+suppress_quick_menu = true
+skippable = true
+cues = Array[ExtResource("5_cue")]([SubResource("StateCue_left"), SubResource("AudioCue"), SubResource("StateCue_right")])

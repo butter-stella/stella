@@ -25,11 +25,14 @@ const EXACT_BGM_KEYS := [
 	"action", "asset", "cue", "fade_duration", "resume_position", "stem_mix",
 	"volume",
 ]
+const EXACT_PRESENTATION_CLIP_KEYS := ["asset"]
 
 var _authority := RefCounted.new()
 var _reservation_authority := RefCounted.new()
 var _presentation_state: PresentationState
 var _skip_active: Callable
+var _cancel_skip_after_clip_claim: Callable
+var _skip_activation_claimed_by_clip: bool = false
 var _entries: Dictionary = {}
 var _pending_request_reservations: Dictionary = {}
 var _external_blockers: Dictionary = {}
@@ -43,15 +46,18 @@ var _latest_dialogue_avatar_owner_request_id: int = 0
 var _latest_chapter_owner_request_id: int = 0
 var _latest_loop_se_owner_request_ids: Dictionary = {}
 var _latest_bgm_owner_request_id: int = 0
+var _latest_presentation_clip_owner_request_id: int = 0
 var _rollback_stage_reset_epoch: int = 0
 
 
 func _init(
 	presentation_state: PresentationState = null,
 	skip_active: Callable = Callable(),
+	cancel_skip_after_clip_claim: Callable = Callable(),
 ) -> void:
 	_presentation_state = presentation_state
 	_skip_active = skip_active
+	_cancel_skip_after_clip_claim = cancel_skip_after_clip_claim
 	SignalBus.stage_transition_receipt_started.connect(
 		_on_stage_transition_receipt_started)
 	SignalBus.stage_operation_request_finished.connect(
@@ -91,6 +97,12 @@ func _init(
 	SignalBus.bgm_transition_terminal.connect(_on_bgm_transition_terminal)
 	SignalBus.bgm_projection_reset_requested.connect(
 		_on_bgm_projection_reset_requested)
+	SignalBus.presentation_clip_transition_receipt_started.connect(
+		_on_presentation_clip_transition_receipt_started)
+	SignalBus.presentation_clip_transition_terminal.connect(
+		_on_presentation_clip_transition_terminal)
+	SignalBus.presentation_clip_projection_reset_requested.connect(
+		_on_presentation_clip_projection_reset_requested)
 	if SignalBus.has_signal(&"dialogue_visibility_visuals_reset_requested"):
 		(SignalBus.get(&"dialogue_visibility_visuals_reset_requested") as Signal).connect(
 			_on_dialogue_visibility_visuals_reset_requested
@@ -197,11 +209,15 @@ func submit(
 		"has_stage_operations": bool(preflight["has_stage_operations"]),
 		"has_loop_se_operations": bool(preflight["has_loop_se_operations"]),
 		"has_bgm_operation": bool(preflight["has_bgm_operation"]),
+		"has_presentation_clip": bool(preflight["has_presentation_clip"]),
+		"presentation_clip_source": (
+			preflight.get("presentation_clip_source", {}) as Dictionary).duplicate(true),
 		"chapter_indicator_source": (
 			preflight["chapter_indicator_source"] as Dictionary).duplicate(true),
 		"chapter_indicator_epoch": SignalBus.current_chapter_indicator_epoch(),
 		"loop_se_epoch": SignalBus.current_loop_se_epoch(),
 		"bgm_epoch": SignalBus.current_bgm_epoch(),
+		"presentation_clip_epoch": SignalBus.current_presentation_clip_epoch(),
 		"stage_epoch": SignalBus.current_stage_operation_epoch(),
 		"dialogue_visibility_epoch": (
 			SignalBus.current_dialogue_visibility_epoch()),
@@ -228,6 +244,7 @@ func submit(
 		"applied_chapter": false,
 		"applied_loop_se_channels": {},
 		"applied_bgm": false,
+		"applied_presentation_clip": false,
 	}
 	_entries[request_id] = entry
 	if context != null:
@@ -246,6 +263,19 @@ func submit(
 		on_apply_started,
 		on_dispatch_started,
 	)
+	# Persistent Skip is part of typed clip dispatch intent, but an
+	# unskippable FNF projection remains modal after the command settles. Consume
+	# that pre-existing intent at the newly published owner so content behind it
+	# cannot observe the same state as a second Skip edge.
+	if (
+		force_cut
+		and _is_skip_active()
+		and _entries.has(request_id)
+		and _entry_owns_presentation_clip(_entries[request_id])
+		and SignalBus.claim_active_presentation_clip_input(request_id)
+		and _cancel_skip_after_clip_claim.is_valid()
+	):
+		_cancel_skip_after_clip_claim.call()
 	return request
 
 
@@ -616,6 +646,8 @@ func _preflight_operations(
 	var seen_targets := {}
 	var seen_loop_se_channels := {}
 	var saw_bgm := false
+	var saw_presentation_clip := false
+	var presentation_clip_source: Dictionary = {}
 	var saw_clear := false
 	var saw_visibility := false
 	var saw_chapter_indicator := false
@@ -840,6 +872,24 @@ func _preflight_operations(
 			saw_bgm = true
 			bgm_source = operation.get_source()
 			bgm_payloads.append(payload.duplicate(true))
+		elif operation is PresentationClipPresentationOperation:
+			stage_run_open = false
+			if (
+				saw_presentation_clip
+				or operations.size() != 1
+				or payload_keys != EXACT_PRESENTATION_CLIP_KEYS
+				or not payload.get("asset", null) is String
+				or not PresentationClipDefinition.is_logical_id(
+					String(payload.get("asset", "")))
+				or String(operation.get_channel())
+					!= "clip:%s" % String(payload.get("asset", ""))
+			):
+				return _preflight_failure(
+					"presentation clip must be the only operation in its batch",
+					operation,
+				)
+			saw_presentation_clip = true
+			presentation_clip_source = operation.get_source()
 		else:
 			stage_run_open = false
 			return _preflight_failure(
@@ -895,9 +945,11 @@ func _preflight_operations(
 		"has_stage_operations": not stage_payloads.is_empty(),
 		"has_loop_se_operations": not loop_se_payloads.is_empty(),
 		"has_bgm_operation": saw_bgm,
+		"has_presentation_clip": saw_presentation_clip,
 		"chapter_indicator_source": chapter_indicator_source,
 		"loop_se_sources": loop_se_sources,
 		"bgm_source": bgm_source,
+		"presentation_clip_source": presentation_clip_source,
 		"dialogue_targets": seen_targets.keys(),
 		"loop_se_channels": seen_loop_se_channels.keys(),
 		"no_work": (
@@ -910,6 +962,7 @@ func _preflight_operations(
 			and not saw_dialogue_clear
 			and not saw_dialogue_avatar
 			and not saw_chapter_indicator
+			and not saw_presentation_clip
 		),
 	}
 
@@ -1366,6 +1419,36 @@ func _on_bgm_transition_receipt_started(
 	(entry["receipts"] as Array).append(receipt)
 
 
+func _on_presentation_clip_transition_receipt_started(
+	presenter_instance_id: int,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+) -> void:
+	var entry: Dictionary = _entries.get(operation_request_id, {})
+	if (
+		entry.is_empty()
+		or bool(entry.get("sealed", false))
+		or int(entry.get("generation", -1)) != _generation
+	):
+		return
+	if presenter_instance_id <= 0 or token <= 0 or generation <= 0:
+		entry["receipt_invalid"] = true
+		return
+	var receipt := PresentationOperationReceipt.new(
+		operation_request_id,
+		presenter_instance_id,
+		&"clip:main",
+		token,
+		generation,
+	)
+	var key := _receipt_key(receipt)
+	if (entry["receipt_keys"] as Dictionary).has(key):
+		return
+	(entry["receipt_keys"] as Dictionary)[key] = true
+	(entry["receipts"] as Array).append(receipt)
+
+
 func _on_presentation_operation_apply_started(
 	request_id: int,
 	channels: Array,
@@ -1404,6 +1487,9 @@ func _on_presentation_operation_apply_started(
 		elif channel == "bgm:main":
 			entry["applied_bgm"] = true
 			_latest_bgm_owner_request_id = request_id
+		elif channel.begins_with("clip:"):
+			entry["applied_presentation_clip"] = true
+			_latest_presentation_clip_owner_request_id = request_id
 
 
 func _on_chapter_indicator_transition_terminal(
@@ -1494,6 +1580,35 @@ func _on_bgm_transition_terminal(
 		_evaluate_terminal_state(operation_request_id)
 
 
+func _on_presentation_clip_transition_terminal(
+	presenter_instance_id: int,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+	outcome: StringName,
+) -> void:
+	if outcome not in [&"completed", &"superseded", &"cancelled"]:
+		return
+	var entry: Dictionary = _entries.get(operation_request_id, {})
+	if entry.is_empty() or int(entry.get("generation", -1)) != _generation:
+		return
+	var key := _receipt_key_parts(
+		operation_request_id,
+		presenter_instance_id,
+		&"clip:main",
+		token,
+		generation,
+	)
+	if (
+		not (entry["receipt_keys"] as Dictionary).has(key)
+		or (entry["terminal_keys"] as Dictionary).has(key)
+	):
+		return
+	(entry["terminal_keys"] as Dictionary)[key] = outcome
+	if bool(entry.get("sealed", false)):
+		_evaluate_terminal_state(operation_request_id)
+
+
 func _evaluate_terminal_state(request_id: int) -> void:
 	var entry: Dictionary = _entries.get(request_id, {})
 	if entry.is_empty() or not bool(entry.get("sealed", false)):
@@ -1549,6 +1664,7 @@ func _report_entry_participant_failure(
 		and not bool(entry.get("has_chapter_indicator", false))
 		and not bool(entry.get("has_loop_se_operations", false))
 		and not bool(entry.get("has_bgm_operation", false))
+		and not bool(entry.get("has_presentation_clip", false))
 	):
 		return
 	var failure_source: Dictionary = entry.get("source", {})
@@ -1570,6 +1686,9 @@ func _report_entry_participant_failure(
 					"chapter_indicator_source", failure_source)
 			elif failed_channel == "bgm:main":
 				failure_source = entry.get("bgm_source", failure_source)
+			elif failed_channel == "clip:main":
+				failure_source = entry.get(
+					"presentation_clip_source", failure_source)
 			break
 	elif bool(entry.get("has_dialogue_clear", false)):
 		failure_source = entry.get("dialogue_clear_source", failure_source)
@@ -1587,6 +1706,8 @@ func _report_entry_participant_failure(
 		failure_source = entry.get("chapter_indicator_source", failure_source)
 	elif bool(entry.get("has_bgm_operation", false)):
 		failure_source = entry.get("bgm_source", failure_source)
+	elif bool(entry.get("has_presentation_clip", false)):
+		failure_source = entry.get("presentation_clip_source", failure_source)
 	_report_submit_error(
 		failure_source,
 		"a sealed presentation participant failed or was superseded",
@@ -1604,6 +1725,7 @@ func _rollback_entry(entry: Dictionary) -> void:
 	var rollback_chapter := _entry_owns_chapter(entry)
 	var rollback_loop_se_channels := _entry_owned_loop_se_channels(entry)
 	var rollback_bgm := _entry_owns_bgm(entry)
+	var rollback_presentation_clip := _entry_owns_presentation_clip(entry)
 	if (
 		not rollback_stage
 		and rollback_dialogue_targets.is_empty()
@@ -1612,6 +1734,7 @@ func _rollback_entry(entry: Dictionary) -> void:
 		and not rollback_chapter
 		and rollback_loop_se_channels.is_empty()
 		and not rollback_bgm
+		and not rollback_presentation_clip
 	):
 		return
 	var previous_stage := (
@@ -1699,6 +1822,8 @@ func _rollback_entry(entry: Dictionary) -> void:
 			if _presentation_state != null:
 				_presentation_state.current_bgm = previous_bgm.duplicate(true)
 			SignalBus.reset_and_apply_bgm_state(previous_bgm)
+		if rollback_presentation_clip and _entry_owns_presentation_clip(entry):
+			SignalBus.reset_presentation_clip()
 	)
 
 
@@ -1737,6 +1862,11 @@ func _entry_dispatch_epochs_are_current(entry: Dictionary) -> bool:
 			or int(entry.get("bgm_epoch", -1))
 				== SignalBus.current_bgm_epoch()
 		)
+		and (
+			not bool(entry.get("has_presentation_clip", false))
+			or int(entry.get("presentation_clip_epoch", -1))
+				== SignalBus.current_presentation_clip_epoch()
+		)
 	)
 
 
@@ -1749,6 +1879,7 @@ func _entry_owns_any_rollback_domain(entry: Dictionary) -> bool:
 		or _entry_owns_chapter(entry)
 		or not _entry_owned_loop_se_channels(entry).is_empty()
 		or _entry_owns_bgm(entry)
+		or _entry_owns_presentation_clip(entry)
 	)
 
 
@@ -1841,6 +1972,17 @@ func _entry_owns_bgm(entry: Dictionary) -> bool:
 	)
 
 
+func _entry_owns_presentation_clip(entry: Dictionary) -> bool:
+	return (
+		_entry_is_current(entry)
+		and bool(entry.get("applied_presentation_clip", false))
+		and int(entry.get("request_id", 0))
+			== _latest_presentation_clip_owner_request_id
+		and int(entry.get("presentation_clip_epoch", -1))
+			== SignalBus.current_presentation_clip_epoch()
+	)
+
+
 func _entry_is_current(entry: Dictionary) -> bool:
 	var request_id := int(entry.get("request_id", 0))
 	return (
@@ -1851,18 +1993,46 @@ func _entry_is_current(entry: Dictionary) -> bool:
 
 
 func _on_advance_requested() -> void:
+	if SignalBus.current_advance_dispatch_was_claimed():
+		return
+	if consume_active_presentation_clip_input():
+		return
 	var current_serial := SignalBus.current_advance_dispatch_serial()
 	_finish_latest_join(current_serial, true)
 
 
 func on_skip_active_changed(active: bool) -> void:
 	if active:
+		_skip_activation_claimed_by_clip = (
+			consume_active_presentation_clip_input())
+		if _skip_activation_claimed_by_clip:
+			if _cancel_skip_after_clip_claim.is_valid():
+				_cancel_skip_after_clip_claim.call()
+			return
 		_finish_latest_join_for_skip.call_deferred(_generation)
+
+
+func current_skip_activation_was_claimed_by_clip() -> bool:
+	return _skip_activation_claimed_by_clip
 
 
 func _finish_latest_join_for_skip(generation: int) -> void:
 	if generation == _generation and _is_skip_active():
+		if consume_active_presentation_clip_input():
+			return
 		_finish_latest_join(0, false)
+
+
+## Claim the latest active clip before typewriter/dialogue ownership. This
+## includes fire-and-forget entries whose request is already settled but whose
+## typed receipt still owns the visible projection. The Presenter decides
+## whether the sealed definition may finish or must only consume the input.
+func consume_active_presentation_clip_input() -> bool:
+	var request_id := _latest_presentation_clip_owner_request_id
+	var entry: Dictionary = _entries.get(request_id, {})
+	if entry.is_empty() or not _entry_owns_presentation_clip(entry):
+		return false
+	return SignalBus.claim_active_presentation_clip_input(request_id)
 
 
 func _is_skip_active() -> bool:
@@ -1904,6 +2074,7 @@ func _finish_join(request_id: int) -> void:
 	var dialogue_avatar_records: Array = []
 	var loop_se_records: Array = []
 	var bgm_records: Array = []
+	var has_presentation_clip_receipt := false
 	var has_chapter_indicator_receipt := false
 	for receipt_value: Variant in entry["receipts"]:
 		var receipt: PresentationOperationReceipt = receipt_value
@@ -1948,6 +2119,8 @@ func _finish_join(request_id: int) -> void:
 				"operation_request_id": receipt.get_batch_id(),
 				"generation": receipt.get_generation(),
 			})
+		elif channel == "clip:main":
+			has_presentation_clip_receipt = true
 	if not stage_records.is_empty():
 		SignalBus.stage_transition_receipts_finish_requested.emit(stage_records)
 	if not visibility_records.is_empty():
@@ -1963,6 +2136,8 @@ func _finish_join(request_id: int) -> void:
 		SignalBus.loop_se_transition_receipts_finish_requested.emit(loop_se_records)
 	if not bgm_records.is_empty():
 		SignalBus.bgm_transition_receipts_finish_requested.emit(bgm_records)
+	if has_presentation_clip_receipt:
+		SignalBus.presentation_clip_finish_requested.emit(request_id)
 
 
 func _cancel_entry(
@@ -1986,6 +2161,7 @@ func _cancel_entry(
 		request._settle(outcome, _authority)
 	_finish_owned_dialogue_avatar_transition(entry)
 	_finish_owned_bgm_transition(entry)
+	_finish_owned_presentation_clip(entry)
 	SignalBus.cancel_stage_operation_request(request_id)
 	SignalBus.cancel_presentation_operation_request(request_id)
 	SignalBus.cancel_dialogue_visibility_operation_request(request_id)
@@ -2012,9 +2188,15 @@ func _cancel_detached_entry(
 		request._settle(outcome, _authority)
 	_finish_owned_dialogue_avatar_transition(entry)
 	_finish_owned_bgm_transition(entry)
+	_finish_owned_presentation_clip(entry)
 	SignalBus.cancel_stage_operation_request(request_id)
 	SignalBus.cancel_presentation_operation_request(request_id)
 	SignalBus.cancel_dialogue_visibility_operation_request(request_id)
+
+
+func _finish_owned_presentation_clip(entry: Dictionary) -> void:
+	if _entry_owns_presentation_clip(entry):
+		SignalBus.reset_presentation_clip()
 
 
 ## Cancelling scenario ownership must not leave an authored BGM Tween running
@@ -2147,6 +2329,7 @@ func _receipts_are_valid(
 					channel.trim_prefix("loop_se:"))
 			)
 			or channel == "bgm:main"
+			or channel == "clip:main"
 		)
 		if (
 			receipt.get_batch_id() != batch_id
@@ -2175,6 +2358,8 @@ func _receipt_matches_authored_operation(
 		var authored_channel := String(
 			(operation_value as PresentationOperation).get_channel())
 		if authored_channel == receipt_channel:
+			return true
+		if authored_channel.begins_with("clip:") and receipt_channel == "clip:main":
 			return true
 		if (
 			authored_channel == "stage:*"
@@ -2234,7 +2419,34 @@ func _on_loop_se_projection_reset_requested(epoch: int) -> void:
 
 
 func _on_bgm_projection_reset_requested(epoch: int) -> void:
-	if epoch == SignalBus.current_bgm_epoch():
+	if epoch != SignalBus.current_bgm_epoch():
+		return
+	# A coordinated save/load/rollback projection remains one whole lifecycle:
+	# the first domain reset retires every entry exactly once. A direct BGM reset,
+	# however, is domain-local and cannot revoke an unrelated typed transaction.
+	if SignalBus.current_presentation_projection_lifecycle_id() > 0:
+		_cancel_for_presentation_reset()
+		return
+	_cancel_entries_for_bgm_reset()
+
+
+func _cancel_entries_for_bgm_reset() -> void:
+	var request_ids: Array[int] = []
+	for request_id_value: Variant in _entries.keys():
+		var request_id := int(request_id_value)
+		var entry: Dictionary = _entries.get(request_id, {})
+		if (
+			bool(entry.get("has_bgm_operation", false))
+			or bool(entry.get("applied_bgm", false))
+		):
+			request_ids.append(request_id)
+	for request_id: int in request_ids:
+		_cancel_entry(request_id, PresentationBatchRequest.Outcome.CANCELLED)
+
+
+func _on_presentation_clip_projection_reset_requested(epoch: int) -> void:
+	if epoch == SignalBus.current_presentation_clip_epoch():
+		_latest_presentation_clip_owner_request_id = 0
 		_cancel_for_presentation_reset()
 
 
