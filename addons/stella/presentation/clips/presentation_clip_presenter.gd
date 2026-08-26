@@ -15,6 +15,10 @@ const STATE_CUE_SCRIPT_PATH := (
 	"res://addons/stella/core/data/presentation_clip_state_cue.gd")
 const AUDIO_CUE_SCRIPT_PATH := (
 	"res://addons/stella/core/data/presentation_clip_audio_cue.gd")
+const AUDIO_CHOICE_CUE_SCRIPT_PATH := (
+	"res://addons/stella/core/data/presentation_clip_audio_choice_cue.gd")
+const AUDIO_CHOICE_CANDIDATE_SCRIPT_PATH := (
+	"res://addons/stella/core/data/presentation_clip_audio_choice_candidate.gd")
 const PARTICLE_LAYER_SCRIPT_PATH := (
 	"res://addons/stella/core/data/presentation_clip_particle_layer.gd")
 const PARTICLE_MIX_SHADER := preload(
@@ -30,6 +34,8 @@ const ALLOWED_DEFINITION_SCRIPTS := [
 	CUE_SCRIPT_PATH,
 	STATE_CUE_SCRIPT_PATH,
 	AUDIO_CUE_SCRIPT_PATH,
+	AUDIO_CHOICE_CUE_SCRIPT_PATH,
+	AUDIO_CHOICE_CANDIDATE_SCRIPT_PATH,
 	PARTICLE_LAYER_SCRIPT_PATH,
 ]
 const MAX_DEPENDENCY_DEPTH := 128
@@ -101,6 +107,17 @@ func _on_prepare_requested(request: PresentationClipOperationRequest) -> void:
 			self,
 			_participant_capability,
 			String(result.get("error", "clip definition could not be resolved")),
+		)
+		return
+	var audio_choice_work_error := definition.bounded_audio_choice_work_error()
+	if not audio_choice_work_error.is_empty():
+		SignalBus.reject_presentation_clip_definition(
+			request,
+			self,
+			_participant_capability,
+			"clip '%s' definition: %s" % [
+				request.get_asset(), audio_choice_work_error,
+			],
 		)
 		return
 	SignalBus.prepare_presentation_clip_definition(
@@ -431,6 +448,7 @@ func _prepare_active_publication(request: PresentationClipOperationRequest) -> v
 	animation_player.animation_finished.connect(
 		_on_animation_finished.bind(request_id, generation), CONNECT_ONE_SHOT)
 	animation_player.play(definition.animation_name)
+	animation_player.advance(0.0)
 	if not _active_identity_is_current(request_id, generation):
 		return
 
@@ -598,7 +616,7 @@ func _dispatch_due_cues(position: float, include_audio: bool = true) -> void:
 		var claimed_ordinal := next_cue
 		next_cue += 1
 		_active["next_cue"] = next_cue
-		if cue is PresentationClipAudioCue:
+		if cue is PresentationClipAudioCue or cue is PresentationClipAudioChoiceCue:
 			if include_audio:
 				SignalBus.presentation_clip_audio_cue_requested.emit(
 					request_id, claimed_ordinal, generation)
@@ -980,8 +998,8 @@ func _prepare_plan(definition: PresentationClipDefinition) -> Dictionary:
 		return {
 			"valid": false,
 			"error": (
-				"clip definition, cues, and particle layers must use exact Stella "
-				+ "Resource scripts"),
+				"clip definition, cues, audio-choice candidates, and particle layers "
+				+ "must use exact Stella Resource scripts"),
 		}
 	if (
 		not definition.resource_path.is_empty()
@@ -1518,7 +1536,7 @@ func _resolve_definition_result(asset: String) -> Dictionary:
 					"definition": null,
 					"error": (
 						("clip logical id '%s' at '%s' must use exact Stella definition, "
-						+ "cue, and particle-layer Resource scripts")
+						+ "cue, audio-choice-candidate, and particle-layer Resource scripts")
 						% [asset, path]),
 				}
 			return {"definition": resource, "error": ""}
@@ -1647,6 +1665,19 @@ func _definition_resource_scripts_are_exact(
 		var expected_script_path := ""
 		if cue is PresentationClipAudioCue:
 			expected_script_path = AUDIO_CUE_SCRIPT_PATH
+		elif cue is PresentationClipAudioChoiceCue:
+			expected_script_path = AUDIO_CHOICE_CUE_SCRIPT_PATH
+			for candidate: PresentationClipAudioChoiceCandidate in (
+				(cue as PresentationClipAudioChoiceCue).candidates
+			):
+				if candidate == null:
+					continue
+				if (
+					candidate.get_script() == null
+					or candidate.get_script().resource_path
+						!= AUDIO_CHOICE_CANDIDATE_SCRIPT_PATH
+				):
+					return false
 		elif cue is PresentationClipStateCue:
 			expected_script_path = STATE_CUE_SCRIPT_PATH
 		else:

@@ -18,10 +18,18 @@ var _context: ScenarioContext
 var _original_engine: ScenarioEngine
 var _original_clip_root := ""
 var _original_se_root := ""
+var _original_voice_root := ""
 var _original_skip := false
 var _original_clip_resource_budget := 0
 var _original_clip_viewport_budget := 0
 var _original_save_dir := ""
+var _original_choice_seed := 0
+var _original_choice_entropy_source: Callable
+var _original_choice_snapshot: Dictionary = {}
+var _original_master_volume := 1.0
+var _original_system_se_volume := 1.0
+var _original_character_voice_enabled: Dictionary = {}
+var _original_character_voice_volume: Dictionary = {}
 var _master_bus_index := -1
 var _original_master_bus_muted := false
 var _receipts: Array[Dictionary] = []
@@ -40,15 +48,33 @@ func before_each() -> void:
 	_original_engine = _runtime.engine
 	_original_clip_root = _runtime.presentation_clips_path
 	_original_se_root = _runtime.se_path
+	_original_voice_root = _runtime.voice_path
 	_original_skip = _runtime.skip_controller.is_active
 	_original_clip_resource_budget = _runtime.presentation_clip_resource_budget_bytes
 	_original_clip_viewport_budget = _runtime.presentation_clip_max_viewport_pixels
 	_original_save_dir = _runtime.save_manager.save_dir
+	_original_choice_seed = int(
+		_runtime.presentation_clip_audio_choice_authority._configured_seed)
+	_original_choice_entropy_source = (
+		_runtime.presentation_clip_audio_choice_authority._entropy_source)
+	_original_choice_snapshot = (
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot())
+	_original_master_volume = float(_runtime.get_setting("master_volume"))
+	_original_system_se_volume = float(_runtime.get_setting("system_se_volume"))
+	_original_character_voice_enabled = (
+		_runtime.get_setting("character_voice_enabled") as Dictionary).duplicate(true)
+	_original_character_voice_volume = (
+		_runtime.get_setting("character_voice_volume") as Dictionary).duplicate(true)
 	_runtime.presentation_clips_path = CLIP_ROOT
 	_runtime.se_path = SE_ROOT
+	_runtime.voice_path = SE_ROOT
+	_runtime.presentation_clip_audio_choice_authority._configured_seed = 17
+	assert_true(
+		_runtime.presentation_clip_audio_choice_authority.start_fresh_run())
 	_runtime.skip_controller.is_active = false
 	_runtime.save_manager.save_dir = SAVE_DIR
 	_runtime.save_manager.delete_quick_save()
+	_runtime.save_manager.delete_auto_save()
 	_clip_presenter = _runtime.get_node("PresentationClipPresenter")
 	_audio_presenter = _runtime.get_node("AudioPresenter")
 	var scenario := ScenarioData.new()
@@ -94,10 +120,24 @@ func after_each() -> void:
 	_runtime._navigation_scene_change_override = Callable()
 	_runtime.presentation_clips_path = _original_clip_root
 	_runtime.se_path = _original_se_root
+	_runtime.voice_path = _original_voice_root
+	_runtime.presentation_clip_audio_choice_authority._configured_seed = (
+		_original_choice_seed)
+	_runtime.presentation_clip_audio_choice_authority._entropy_source = (
+		_original_choice_entropy_source)
+	assert_true(_runtime.presentation_clip_audio_choice_authority.restore_snapshot(
+		_original_choice_snapshot))
+	_runtime.set_setting("master_volume", _original_master_volume)
+	_runtime.set_setting("system_se_volume", _original_system_se_volume)
+	_runtime.set_setting(
+		"character_voice_enabled", _original_character_voice_enabled.duplicate(true))
+	_runtime.set_setting(
+		"character_voice_volume", _original_character_voice_volume.duplicate(true))
 	_runtime.skip_controller.is_active = _original_skip
 	_runtime.presentation_clip_resource_budget_bytes = _original_clip_resource_budget
 	_runtime.presentation_clip_max_viewport_pixels = _original_clip_viewport_budget
 	_runtime.save_manager.delete_quick_save()
+	_runtime.save_manager.delete_auto_save()
 	_runtime.save_manager.save_dir = _original_save_dir
 	_runtime.engine = _original_engine
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
@@ -219,6 +259,18 @@ func _assert_clip_projection_retired(label: String) -> void:
 	assert_eq(_clip_presenter._reserved_resource_bytes, 0, label + " resource budget")
 
 
+func _canonical_saved_choice_snapshot(serialized: Variant) -> Dictionary:
+	assert_true(
+		PresentationClipAudioChoiceAuthority.validate_playthrough_snapshot(serialized),
+		"serialized JSON preserves the exact audio-choice provider schema",
+	)
+	if not PresentationClipAudioChoiceAuthority.validate_playthrough_snapshot(serialized):
+		return {}
+	var restored := PresentationClipAudioChoiceAuthority.new(17)
+	assert_true(restored.restore_snapshot(serialized))
+	return restored.capture_snapshot()
+
+
 func _on_receipt(
 	presenter_instance_id: int,
 	token: int,
@@ -263,8 +315,13 @@ func _on_audio_cue(request_id: int, cue_index: int, generation: int) -> void:
 			position = (scene_root.get_node("Visual") as ColorRect).position
 	var players_by_cue: Dictionary = _audio_presenter._presentation_clip_audio.get(
 		"players_by_cue", {})
-	if players_by_cue.has(cue_index):
-		var cue_player := players_by_cue[cue_index] as AudioStreamPlayer
+	var cue_player := players_by_cue.get(cue_index) as AudioStreamPlayer
+	if cue_player == null:
+		var choice_record: Dictionary = (
+			_audio_presenter._presentation_clip_audio.get(
+				"choice_players_by_cue", {}) as Dictionary).get(cue_index, {})
+		cue_player = choice_record.get("player") as AudioStreamPlayer
+	if cue_player != null:
 		cue_player_is_playing = cue_player != null and cue_player.playing
 	_audio_cues.append({
 		"request_id": request_id,
@@ -329,6 +386,465 @@ func test_join_runs_one_clock_and_same_offset_state_cues_in_authored_order() -> 
 		"normal completion hides and restores the quick menu exactly once")
 	assert_true(_clip_presenter._active.is_empty())
 	assert_true(_audio_presenter._presentation_clip_audio.is_empty())
+
+
+func test_audio_choice_volume_zero_still_selects_draws_and_really_plays_muted() -> void:
+	_runtime.set_setting("master_volume", 1.0)
+	_runtime.set_setting("system_se_volume", 0.0)
+	var authority: PresentationClipAudioChoiceAuthority = (
+		_runtime.presentation_clip_audio_choice_authority)
+	var request := _submit(
+		"synthetic_choice", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 31)
+	await _await_settled(request)
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	var main := _clip_presenter._active.get("animation_player") as AnimationPlayer
+	main.pause()
+	var choices: Dictionary = _audio_presenter._presentation_clip_audio.get(
+		"choice_players_by_cue", {})
+	assert_eq(choices.size(), 1, "only the selected candidate creates one player")
+	var selected: Dictionary = choices.get(0, {})
+	assert_eq(selected.get("id"), "first")
+	var player := selected.get("player") as AudioStreamPlayer
+	assert_not_null(player)
+	assert_eq(player.volume_db, -80.0,
+		"zero system-SE gain is physical silence, not choice ineligibility")
+	assert_eq(authority.capture_snapshot().get("state"), 820607)
+	main.seek(0.1, true)
+	_clip_presenter._process(0.0)
+	assert_true(player.playing,
+		"the test-local muted Master still exercises a real selected player")
+	assert_eq(authority.capture_snapshot().get("state"), 820607,
+		"cue publication never draws again")
+	SignalBus.presentation_clip_finish_requested.emit(_active_request_id())
+
+
+func test_character_volume_zero_is_eligible_and_plays_the_selected_voice_silently() -> void:
+	_runtime.set_setting("character_voice_enabled", {})
+	_runtime.set_setting("character_voice_volume", {"guide": 0.0})
+	var authority: PresentationClipAudioChoiceAuthority = (
+		_runtime.presentation_clip_audio_choice_authority)
+	var request := _submit(
+		"synthetic_choice_character",
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		38,
+	)
+	await _await_settled(request)
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	var main := _clip_presenter._active.get("animation_player") as AnimationPlayer
+	main.pause()
+	var selected: Dictionary = (
+		_audio_presenter._presentation_clip_audio.get(
+			"choice_players_by_cue", {}) as Dictionary).get(0, {})
+	assert_eq(selected.get("id"), "guide",
+		"missing character enable entries default to eligible")
+	var player := selected.get("player") as AudioStreamPlayer
+	assert_not_null(player)
+	assert_eq(player.volume_db, -80.0,
+		"zero character volume is silent gain, never choice ineligibility")
+	assert_eq(authority.capture_snapshot().get("state"), 820607)
+	main.seek(0.1, true)
+	_clip_presenter._process(0.0)
+	assert_true(player.playing,
+		"zero-volume character choice still starts its real muted player")
+	assert_eq(authority.capture_snapshot().get("state"), 820607)
+	SignalBus.presentation_clip_finish_requested.emit(_active_request_id())
+
+
+func test_all_disabled_choice_preflights_every_stream_but_draws_and_owns_zero() -> void:
+	var authority: PresentationClipAudioChoiceAuthority = (
+		_runtime.presentation_clip_audio_choice_authority)
+	var before: Dictionary = authority.capture_snapshot()
+	var request := _submit(
+		"synthetic_choice_all_disabled",
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		32,
+	)
+	await _await_settled(request)
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	var record: Dictionary = _audio_presenter._presentation_clip_audio
+	assert_eq(
+		(record.get("choice_candidates_by_cue", {}) as Dictionary).get(0, []).size(),
+		1,
+		"authored-disabled resources were still detached-preflighted",
+	)
+	assert_true((record.get("choice_players_by_cue", {}) as Dictionary).is_empty())
+	assert_true((record.get("players", []) as Array).is_empty())
+	assert_eq(authority.capture_snapshot().get("state"), before.get("state"),
+		"zero eligible candidates consume zero RNG values")
+	SignalBus.presentation_clip_finish_requested.emit(_active_request_id())
+
+
+func test_authored_disabled_candidate_still_fails_detached_asset_preflight() -> void:
+	var authority: PresentationClipAudioChoiceAuthority = (
+		_runtime.presentation_clip_audio_choice_authority)
+	var before: Dictionary = authority.capture_snapshot()
+	var request := _submit(
+		"synthetic_choice_missing_disabled",
+		PresentationBatchRequest.Policy.JOIN,
+		37,
+	)
+	await _await_settled(request)
+	assert_push_error(
+		SOURCE_PATH + ":37] presentation clip request rejected: audio participant: "
+		+ CLIP_ROOT + "synthetic_choice_missing_disabled.tres cues[0] "
+		+ "candidates[0] id 'missing' authored at "
+		+ "res://synthetic/audio_choice_definition.stla:30: asset "
+		+ "'missing_synthetic_audio' could not be resolved")
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	assert_eq(authority.capture_snapshot(), before,
+		"detached preflight failure cannot hold or consume the RNG authority")
+	assert_true(_audio_presenter._presentation_clip_prepared.is_empty())
+	assert_true(_audio_presenter._presentation_clip_claimed.is_empty())
+	assert_true(_audio_presenter._presentation_clip_audio.is_empty())
+	assert_eq(_receipts.size(), 0)
+
+
+func test_choice_work_caps_reject_before_any_candidate_stream_load() -> void:
+	var authority: PresentationClipAudioChoiceAuthority = (
+		_runtime.presentation_clip_audio_choice_authority)
+	var before: Dictionary = authority.capture_snapshot()
+	var per_cue := _submit(
+		"synthetic_choice_overflow_per_cue",
+		PresentationBatchRequest.Policy.JOIN,
+		47,
+	)
+	await _await_settled(per_cue)
+	assert_push_error(
+		SOURCE_PATH + ":47] presentation clip request rejected: clip "
+		+ "'synthetic_choice_overflow_per_cue' definition: "
+		+ CLIP_ROOT + "synthetic_choice_overflow_per_cue.tres cues[0] authored at "
+		+ "res://synthetic/audio_choice_overflow.stla:32: candidates exceeds the "
+		+ "32-candidate work cap")
+	assert_eq(per_cue.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	var cumulative := _submit(
+		"synthetic_choice_overflow_total",
+		PresentationBatchRequest.Policy.JOIN,
+		48,
+	)
+	await _await_settled(cumulative)
+	assert_push_error(
+		SOURCE_PATH + ":48] presentation clip request rejected: clip "
+		+ "'synthetic_choice_overflow_total' definition: "
+		+ CLIP_ROOT + "synthetic_choice_overflow_total.tres cues[8] authored at "
+		+ "res://synthetic/audio_choice_overflow.stla:258: definition exceeds the "
+		+ "256 total audio-choice candidate work cap")
+	assert_eq(cumulative.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	assert_eq(authority.capture_snapshot(), before)
+	assert_true(_audio_presenter._presentation_clip_prepared.is_empty(),
+		"prepare-phase caps reject before AudioPresenter can load any candidate")
+	assert_true(_audio_presenter._presentation_clip_claimed.is_empty())
+	assert_true(_audio_presenter._presentation_clip_audio.is_empty())
+	assert_eq(_receipts.size(), 0)
+
+
+func test_selected_character_disabled_before_cue_is_permanent_no_op() -> void:
+	_runtime.set_setting("character_voice_enabled", {"guide": true})
+	var authority: PresentationClipAudioChoiceAuthority = (
+		_runtime.presentation_clip_audio_choice_authority)
+	var request := _submit(
+		"synthetic_choice_character",
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		33,
+	)
+	await _await_settled(request)
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	var main := _clip_presenter._active.get("animation_player") as AnimationPlayer
+	main.pause()
+	var choice_record: Dictionary = (
+		_audio_presenter._presentation_clip_audio.get(
+			"choice_players_by_cue", {}) as Dictionary).get(0, {})
+	var selected_player := choice_record.get("player") as AudioStreamPlayer
+	assert_not_null(selected_player)
+	var committed_state: int = int(authority.capture_snapshot().get("state"))
+	_runtime.set_setting("character_voice_enabled", {"guide": false})
+	assert_true((
+		_audio_presenter._presentation_clip_audio.get(
+			"choice_players_by_cue", {}) as Dictionary).is_empty(),
+		"disable retires the untriggered selected cue immediately",
+	)
+	_runtime.set_setting("character_voice_enabled", {"guide": true})
+	main.seek(0.1, true)
+	_clip_presenter._process(0.0)
+	assert_true((
+		_audio_presenter._presentation_clip_audio.get(
+			"choice_players_by_cue", {}) as Dictionary).is_empty(),
+		"the selected cue becomes a permanent no-op without reselection",
+	)
+	assert_true(not is_instance_valid(selected_player)
+		or selected_player.is_queued_for_deletion())
+	assert_eq(authority.capture_snapshot().get("state"), committed_state)
+	SignalBus.presentation_clip_finish_requested.emit(_active_request_id())
+
+
+func test_triggered_character_choice_follows_live_disable_and_reenable_gain() -> void:
+	_runtime.set_setting("character_voice_enabled", {"guide": true})
+	_runtime.set_setting("character_voice_volume", {"guide": 1.0})
+	var request := _submit(
+		"synthetic_choice_character",
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		41,
+	)
+	await _await_settled(request)
+	var main := _clip_presenter._active.get("animation_player") as AnimationPlayer
+	main.pause()
+	var selected: Dictionary = (
+		_audio_presenter._presentation_clip_audio.get(
+			"choice_players_by_cue", {}) as Dictionary).get(0, {})
+	var player := selected.get("player") as AudioStreamPlayer
+	main.seek(0.1, true)
+	_clip_presenter._process(0.0)
+	assert_true(player.playing)
+	_runtime.set_setting("character_voice_enabled", {"guide": false})
+	assert_true((
+		_audio_presenter._presentation_clip_audio.get(
+			"choice_players_by_cue", {}) as Dictionary).has(0),
+		"an already-triggered playback remains under live gain ownership",
+	)
+	assert_eq(player.volume_db, -80.0)
+	_runtime.set_setting("character_voice_enabled", {"guide": true})
+	assert_true(player.playing)
+	assert_eq(player.volume_db, 0.0)
+	SignalBus.presentation_clip_finish_requested.emit(_active_request_id())
+
+
+func test_post_selection_setting_reentry_never_changes_selection_or_draws_twice() -> void:
+	_runtime.set_setting("character_voice_enabled", {"guide": true})
+	var authority: PresentationClipAudioChoiceAuthority = (
+		_runtime.presentation_clip_audio_choice_authority)
+	var mutate_on_visual_publish := func(_animation: StringName) -> void:
+		_runtime.set_setting("character_voice_enabled", {"guide": false})
+	var connect_reentry := func(_request: PresentationClipOperationRequest) -> void:
+		if _clip_presenter._claimed.is_empty():
+			return
+		var main := _clip_presenter._claimed.get(
+			"animation_player") as AnimationPlayer
+		if main != null:
+			main.animation_started.connect(
+				mutate_on_visual_publish, CONNECT_ONE_SHOT)
+	SignalBus.presentation_clip_publish_readiness_requested.connect(connect_reentry)
+	var request := _submit(
+		"synthetic_choice_character",
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		34,
+	)
+	SignalBus.presentation_clip_publish_readiness_requested.disconnect(connect_reentry)
+	await _await_settled(request)
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	var selected: Dictionary = (
+		_audio_presenter._presentation_clip_audio.get(
+			"choice_players_by_cue", {}) as Dictionary).get(0, {})
+	assert_true(selected.is_empty(),
+		"publication-time disable retires the sealed cue instead of reselecting")
+	assert_eq(authority.capture_snapshot().get("state"), 820607)
+	var main := _clip_presenter._active.get("animation_player") as AnimationPlayer
+	main.pause()
+	main.seek(0.1, true)
+	_clip_presenter._process(0.0)
+	assert_true((
+		_audio_presenter._presentation_clip_audio.get(
+			"choice_players_by_cue", {}) as Dictionary).is_empty())
+	assert_eq(authority.capture_snapshot().get("state"), 820607)
+	SignalBus.presentation_clip_finish_requested.emit(_active_request_id())
+
+
+func test_publication_abort_restores_rng_last_choice_and_active_a_atomically() -> void:
+	var authority: PresentationClipAudioChoiceAuthority = (
+		_runtime.presentation_clip_audio_choice_authority)
+	var a := _submit(
+		"synthetic_choice", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 35)
+	await _await_settled(a)
+	assert_eq(a.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	var before: Dictionary = authority.capture_snapshot()
+	var old_request_id := _active_request_id()
+	var retired_capability: RefCounted = (
+		_audio_presenter._presentation_clip_participant_capability)
+	var unregistered := [false]
+	var external_lifecycle_results: Array[bool] = []
+	var retire_on_visual_publish := func(_animation: StringName) -> void:
+		_runtime.save_manager.quick_save()
+		external_lifecycle_results.append(authority.restore_snapshot({
+			"version": 1,
+			"initialized": true,
+			"initial_seed": 99,
+			"state": 99,
+			"last_choices": {},
+		}))
+		external_lifecycle_results.append(authority.start_fresh_run())
+		external_lifecycle_results.append(authority.clear_to_unstarted())
+		unregistered[0] = (
+			_runtime._unregister_presentation_clip_composition_participant(
+				_audio_presenter,
+				retired_capability,
+				PresentationClipOperationRequest.ROLE_AUDIO,
+			))
+	var connect_abort := func(_request: PresentationClipOperationRequest) -> void:
+		if _clip_presenter._claimed.is_empty():
+			return
+		var main := _clip_presenter._claimed.get(
+			"animation_player") as AnimationPlayer
+		if main != null:
+			main.animation_started.connect(
+				retire_on_visual_publish, CONNECT_ONE_SHOT)
+	SignalBus.presentation_clip_publish_readiness_requested.connect(connect_abort)
+	var b := _submit(
+		"synthetic_choice", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 36)
+	assert_push_error(SOURCE_PATH + ":36")
+	SignalBus.presentation_clip_publish_readiness_requested.disconnect(connect_abort)
+	if unregistered[0]:
+		_audio_presenter._presentation_clip_participant_capability = (
+			_runtime._register_presentation_clip_audio_participant(_audio_presenter))
+	assert_true(unregistered[0])
+	assert_not_null(_audio_presenter._presentation_clip_participant_capability,
+		"the test restores the exact Runtime-owned audio binding")
+	await _await_settled(b)
+	assert_ne(b.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(external_lifecycle_results, [false, false, false],
+		"external restore/start/clear cannot steal an active transaction")
+	var captured_during_publish: Variant = (
+		_runtime.save_manager.read_quick_save_data())
+	assert_true(captured_during_publish is Dictionary)
+	if captured_during_publish is Dictionary:
+		assert_eq(
+			_canonical_saved_choice_snapshot(captured_during_publish.get(
+				PresentationClipAudioChoiceAuthority.PROVIDER_ID, null)),
+			before,
+			"synchronous save exposes only the last whole-quorum published state",
+		)
+	assert_eq(authority.capture_snapshot(), before,
+		"failed publication restores RNG and last-choice state")
+	assert_eq(_active_request_id(), old_request_id,
+		"failed B publication leaves the previously published A intact")
+	SignalBus.presentation_clip_finish_requested.emit(old_request_id)
+	_assert_clip_projection_retired("choice publication abort cleanup")
+
+
+func test_corrupt_private_choice_record_fails_closed_before_rng_or_publication() -> void:
+	var authority: PresentationClipAudioChoiceAuthority = (
+		_runtime.presentation_clip_audio_choice_authority)
+	var before: Dictionary = authority.capture_snapshot()
+	var corrupt_record := func(_request: PresentationClipOperationRequest) -> void:
+		_audio_presenter._presentation_clip_claimed[
+			"choice_candidates_by_cue"] = {}
+	SignalBus.presentation_clip_publish_readiness_requested.connect(
+		corrupt_record, CONNECT_ONE_SHOT)
+	var request := _submit(
+		"synthetic_choice", PresentationBatchRequest.Policy.JOIN, 42)
+	await _await_settled(request)
+	assert_push_error(
+		SOURCE_PATH + ":42] presentation clip request rejected: "
+		+ "audio-choice private candidate map has the wrong cue count")
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	assert_eq(authority.capture_snapshot(), before)
+	assert_eq(_receipts.size(), 0)
+	assert_true(_audio_presenter._presentation_clip_claimed.is_empty())
+	assert_true(_audio_presenter._presentation_clip_audio.is_empty())
+
+
+func test_type_disguised_private_choice_record_cannot_reach_selection() -> void:
+	var authority: PresentationClipAudioChoiceAuthority = (
+		_runtime.presentation_clip_audio_choice_authority)
+	var before: Dictionary = authority.capture_snapshot()
+	var disguise_record := func(_request: PresentationClipOperationRequest) -> void:
+		var records: Array = (
+			_audio_presenter._presentation_clip_claimed.get(
+				"choice_candidates_by_cue", {}) as Dictionary).get(0, [])
+		if records.is_empty() or not records[0] is Dictionary:
+			return
+		(records[0] as Dictionary)["id"] = 1
+		(records[0] as Dictionary)["authored_enabled"] = 1
+	SignalBus.presentation_clip_publish_readiness_requested.connect(
+		disguise_record, CONNECT_ONE_SHOT)
+	var request := _submit(
+		"synthetic_choice", PresentationBatchRequest.Policy.JOIN, 49)
+	await _await_settled(request)
+	assert_push_error(
+		SOURCE_PATH + ":49] presentation clip request rejected: "
+		+ CLIP_ROOT + "synthetic_choice.tres cues[0] candidates[0] id 'first' "
+		+ "authored at res://synthetic/audio_choice_definition.stla:10: "
+		+ "private preflight record changed before commit")
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	assert_eq(authority.capture_snapshot(), before)
+	assert_eq(_receipts.size(), 0)
+	assert_true(_audio_presenter._presentation_clip_claimed.is_empty())
+	assert_true(_audio_presenter._presentation_clip_audio.is_empty())
+
+
+func test_audio_abort_reports_authority_failure_and_releases_claimed_b() -> void:
+	_audio_presenter._presentation_clip_claimed = {"players": []}
+	_audio_presenter._presentation_clip_transaction = {
+		"request_key": 9901,
+		"previous": {},
+		"committed": false,
+		"choice_authority_held": true,
+	}
+	var aborted := _audio_presenter._abort_presentation_clip_audio_transaction(9901)
+	assert_push_error(
+		"AudioPresenter: failed to restore presentation-clip audio-choice "
+		+ "authority during transaction abort")
+	assert_false(aborted)
+	assert_true(_audio_presenter._presentation_clip_transaction.is_empty())
+	assert_true(_audio_presenter._presentation_clip_claimed.is_empty(),
+		"authority failure never leaves a claimed B projection live")
+
+
+func test_malformed_authoritative_choice_settings_fail_before_rng_or_player() -> void:
+	var authority: PresentationClipAudioChoiceAuthority = (
+		_runtime.presentation_clip_audio_choice_authority)
+	var before: Dictionary = authority.capture_snapshot()
+	_runtime.set_setting("character_voice_enabled", {"guide": "false"})
+	var invalid_enabled := _submit(
+		"synthetic_choice_character", PresentationBatchRequest.Policy.JOIN, 43)
+	await _await_settled(invalid_enabled)
+	assert_push_error(
+		SOURCE_PATH + ":43] presentation clip request rejected: audio participant: "
+		+ CLIP_ROOT + "synthetic_choice_character.tres cues[0] candidates[0] "
+		+ "id 'guide' authored at res://synthetic/audio_choice_definition.stla:30: "
+		+ "authoritative character_voice_enabled['guide'] must be a bool")
+	assert_eq(invalid_enabled.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	_runtime.set_setting("character_voice_enabled", {"guide": true})
+	_runtime.set_setting("character_voice_volume", {"guide": NAN})
+	var invalid_volume := _submit(
+		"synthetic_choice_character", PresentationBatchRequest.Policy.JOIN, 44)
+	await _await_settled(invalid_volume)
+	assert_push_error(
+		SOURCE_PATH + ":44] presentation clip request rejected: audio participant: "
+		+ CLIP_ROOT + "synthetic_choice_character.tres cues[0] candidates[0] "
+		+ "id 'guide' authored at res://synthetic/audio_choice_definition.stla:30: "
+		+ "authoritative character_voice_volume['guide'] must be a finite number")
+	assert_eq(invalid_volume.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	_runtime.set_setting("character_voice_volume", {})
+	_runtime.settings_manager.settings.system_se_volume = NAN
+	var invalid_disabled := _submit(
+		"synthetic_choice_all_disabled", PresentationBatchRequest.Policy.JOIN, 45)
+	await _await_settled(invalid_disabled)
+	assert_push_error(
+		SOURCE_PATH + ":45] presentation clip request rejected: audio participant: "
+		+ CLIP_ROOT + "synthetic_choice_all_disabled.tres cues[0] candidates[0] "
+		+ "id 'disabled' authored at res://synthetic/audio_choice_definition.stla:20: "
+		+ "authoritative setting 'system_se_volume' must be a finite number")
+	assert_eq(invalid_disabled.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	_runtime.settings_manager.settings.system_se_volume = 1.0
+	_runtime.set_setting("character_voice_enabled", {"guide": true})
+	var invalidate_during_readiness := func(
+		_request: PresentationClipOperationRequest,
+	) -> void:
+		_runtime.settings_manager.settings.character_voice_enabled = {
+			"guide": "late-invalid",
+		}
+	SignalBus.presentation_clip_publish_readiness_requested.connect(
+		invalidate_during_readiness, CONNECT_ONE_SHOT)
+	var invalid_reentry := _submit(
+		"synthetic_choice_character", PresentationBatchRequest.Policy.JOIN, 46)
+	await _await_settled(invalid_reentry)
+	assert_push_error(
+		SOURCE_PATH + ":46] presentation clip request rejected: "
+		+ CLIP_ROOT + "synthetic_choice_character.tres cues[0] candidates[0] "
+		+ "id 'guide' authored at res://synthetic/audio_choice_definition.stla:30: "
+		+ "authoritative character_voice_enabled['guide'] must be a bool")
+	assert_eq(invalid_reentry.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	assert_eq(authority.capture_snapshot(), before)
+	assert_true(_audio_presenter._presentation_clip_audio.is_empty())
+	assert_true(_audio_presenter._presentation_clip_claimed.is_empty())
 
 
 func test_real_presenter_owns_explicit_clip_and_sealed_under_surfaces() -> void:
@@ -1378,9 +1894,29 @@ func test_public_quick_save_load_replaces_the_active_clip_generation() -> void:
 	))
 	var retired_context: ScenarioContext = _runtime.engine.context
 	var retired_request_id := _active_request_id()
-	var retired_root := _active_scene_root()
+	var retired_root_ref: WeakRef = weakref(_active_scene_root())
 	_pause_active_main_clock()
+	var saved_choice_state: Dictionary = (
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot())
 	_runtime.quick_save()
+	SignalBus.presentation_clip_finish_requested.emit(retired_request_id)
+	assert_true(await wait_until(
+		func() -> bool:
+			return _active_request_id() == 0 and retired_root_ref.get_ref() == null,
+		1.0,
+		"the saved JOIN retires cleanly before the RNG disturbance",
+	))
+	_assert_clip_projection_retired("quick-save pre-disturbance retirement")
+	_context = _runtime.engine.context
+	var intervening_choice := _submit(
+		"synthetic_choice", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 159)
+	await _await_settled(intervening_choice)
+	assert_eq(intervening_choice.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_ne(
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot(),
+		saved_choice_state,
+		"a later published choice advances the live authority after quick-save",
+	)
 
 	assert_true(await _runtime.quick_load())
 	assert_true(await wait_until(
@@ -1393,16 +1929,72 @@ func test_public_quick_save_load_replaces_the_active_clip_generation() -> void:
 		1.0,
 		"quick-load replays the saved command under a fresh typed owner",
 	))
-	assert_false(is_instance_valid(retired_root),
+	assert_null(retired_root_ref.get_ref(),
 		"quick-load retires the old visual projection before replay")
 	assert_false(_dialogue._presentation_clip_suppression.is_empty(),
 		"the replayed public clip owns its sealed dialogue suppression")
+	assert_eq(
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot(),
+		saved_choice_state,
+		"quick-load atomically restores the saved RNG and last-choice state",
+	)
+	assert_eq(
+		_runtime.flowchart_state.initial_snapshot.get(
+			PresentationClipAudioChoiceAuthority.PROVIDER_ID, {}),
+		PresentationClipAudioChoiceAuthority.initial_playthrough_snapshot(
+			saved_choice_state),
+		"load rebuilds the unvisited branch from the saved playthrough seed",
+	)
 	SignalBus.presentation_clip_finish_requested.emit(_active_request_id())
 	_assert_clip_projection_retired("quick-load terminal")
 
 
+func test_auto_seed_load_rebuilds_initial_checkpoint_from_saved_playthrough() -> void:
+	var authority: PresentationClipAudioChoiceAuthority = (
+		_runtime.presentation_clip_audio_choice_authority)
+	var entropy_calls := [0]
+	authority._configured_seed = 0
+	authority._entropy_source = func() -> PackedByteArray:
+		entropy_calls[0] += 1
+		return PackedByteArray([
+			0, 0, 0, 0, 0, 0, 0,
+			5 if entropy_calls[0] == 1 else 9,
+		])
+	await _runtime.start_scenario(SOURCE_PATH)
+	assert_eq(entropy_calls[0], 1)
+	assert_true(authority.hold(8801))
+	assert_true(bool(authority.commit(8801, [{
+		"clip_asset": "synthetic_choice",
+		"cue_ordinal": 0,
+		"eligible_ids": ["first", "second"],
+		"repeat_policy": "no_repeat",
+	}]).get("ok", false)))
+	assert_true(authority.complete(8801))
+	var saved_choice_state: Dictionary = authority.capture_snapshot()
+	assert_eq(saved_choice_state.get("initial_seed"), 6)
+	assert_ne(saved_choice_state.get("state"), 6)
+	assert_false((saved_choice_state.get("last_choices", {}) as Dictionary).is_empty())
+	_pause_active_main_clock()
+	_runtime.quick_save()
+	assert_true(await _runtime.quick_load())
+	assert_eq(entropy_calls[0], 1,
+		"load restores the saved playthrough and never consumes unrelated entropy")
+	assert_eq(authority.capture_snapshot(), saved_choice_state)
+	assert_eq(
+		_runtime.flowchart_state.initial_snapshot.get(
+			PresentationClipAudioChoiceAuthority.PROVIDER_ID, {}),
+		PresentationClipAudioChoiceAuthority.initial_playthrough_snapshot(
+			saved_choice_state),
+		"unvisited flowchart branches retain the saved auto-seed playthrough",
+	)
+	SignalBus.presentation_clip_finish_requested.emit(_active_request_id())
+	_assert_clip_projection_retired("auto-seed quick-load terminal")
+
+
 func test_public_backlog_rollback_retires_clip_before_restored_context_runs() -> void:
 	var snapshot: Dictionary = _runtime._capture_rollback_snapshot()
+	var saved_choice_state: Dictionary = snapshot[
+		PresentationClipAudioChoiceAuthority.PROVIDER_ID]
 	_runtime.backlog_manager.add_entry(
 		"Narrator",
 		[{"text": "before clip", "voice_layers": []}],
@@ -1412,8 +2004,13 @@ func test_public_backlog_rollback_retires_clip_before_restored_context_runs() ->
 		"presentation-clip-before",
 	)
 	var request := _submit(
-		"synthetic_particle_clip", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 121)
+		"synthetic_choice", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 121)
 	await _await_settled(request)
+	assert_ne(
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot(),
+		saved_choice_state,
+		"published choice advances the authority before rollback",
+	)
 	var retired_context: ScenarioContext = _runtime.engine.context
 	var retired_root := _active_scene_root()
 	_pause_active_main_clock()
@@ -1429,13 +2026,23 @@ func test_public_backlog_rollback_retires_clip_before_restored_context_runs() ->
 		"backlog rollback installs the captured context after retiring the clip",
 	))
 	assert_false(is_instance_valid(retired_root))
+	assert_eq(
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot(),
+		saved_choice_state,
+		"backlog rollback restores the coherent authority checkpoint",
+	)
 	_assert_clip_projection_retired("backlog rollback")
 
 
 func test_public_scenario_restart_retires_old_clip_before_new_owner() -> void:
 	var request := _submit(
-		"synthetic_particle_clip", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 131)
+		"synthetic_choice", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 131)
 	await _await_settled(request)
+	assert_ne(
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot().get("state"),
+		17,
+		"the old playthrough has consumed a choice before restart",
+	)
 	var retired_context: ScenarioContext = _runtime.engine.context
 	var retired_request_id := _active_request_id()
 	var retired_root := _active_scene_root()
@@ -1453,14 +2060,29 @@ func test_public_scenario_restart_retires_old_clip_before_new_owner() -> void:
 		"scenario restart installs a fresh clip owner",
 	))
 	assert_false(is_instance_valid(retired_root))
+	assert_eq(
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot(),
+		{
+			"version": 1,
+			"initialized": true,
+			"initial_seed": 17,
+			"state": 17,
+			"last_choices": {},
+		},
+		"scenario restart begins a fresh deterministic authority run",
+	)
 	SignalBus.presentation_clip_finish_requested.emit(_active_request_id())
 	_assert_clip_projection_retired("scenario restart terminal")
 
 
 func test_public_return_to_title_retires_clip_without_late_projection() -> void:
+	_runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	assert_eq(_runtime.game_state.current_state, GameStateMachine.State.PLAYING)
 	var request := _submit(
-		"synthetic_particle_clip", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 141)
+		"synthetic_choice", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 141)
 	await _await_settled(request)
+	var autosaved_choice_state: Dictionary = (
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot())
 	var retired_root := _active_scene_root()
 	var retired_generation := int(_clip_presenter._active.get("generation", 0))
 	_pause_active_main_clock()
@@ -1494,11 +2116,31 @@ func test_public_return_to_title_retires_clip_without_late_projection() -> void:
 	assert_gt(_clip_presenter._generation, retired_generation,
 		"title replacement retires the old clip generation exactly once")
 	assert_eq(_runtime.game_state.current_state, GameStateMachine.State.TITLE)
+	var autosave_data: Variant = _runtime.save_manager.read_auto_save_data()
+	assert_true(autosave_data is Dictionary)
+	if autosave_data is Dictionary:
+		assert_eq(
+			_canonical_saved_choice_snapshot(autosave_data.get(
+				PresentationClipAudioChoiceAuthority.PROVIDER_ID, null)),
+			autosaved_choice_state,
+			"return-to-title autosaves the committed authority before clearing it",
+		)
+	assert_eq(
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot(),
+		{
+			"version": 1,
+			"initialized": false,
+			"initial_seed": 0,
+			"state": 0,
+			"last_choices": {},
+		},
+		"confirmed title entry clears authority without acquiring new entropy",
+	)
 
 
 func test_public_game_scene_replacement_retires_then_replays_clip() -> void:
 	var request := _submit(
-		"synthetic_particle_clip", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 151)
+		"synthetic_choice", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 151)
 	await _await_settled(request)
 	var retired_context: ScenarioContext = _runtime.engine.context
 	var retired_request_id := _active_request_id()
@@ -1535,5 +2177,36 @@ func test_public_game_scene_replacement_retires_then_replays_clip() -> void:
 	assert_not_null(_dialogue._presentation_clip_participant_capability)
 	assert_gt(int(_clip_presenter._active.get("generation", 0)), retired_generation,
 		"the accepted game replacement owns a fresh clip generation")
+	assert_eq(
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot(),
+		{
+			"version": 1,
+			"initialized": true,
+			"initial_seed": 17,
+			"state": 17,
+			"last_choices": {},
+		},
+		"start-game scene replacement is a fresh playthrough, not state carry-over",
+	)
 	SignalBus.presentation_clip_finish_requested.emit(_active_request_id())
 	_assert_clip_projection_retired("game-scene replacement terminal")
+
+
+func test_same_scenario_participant_replacement_preserves_choice_state() -> void:
+	var request := _submit(
+		"synthetic_choice", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 161)
+	await _await_settled(request)
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	_pause_active_main_clock()
+	var committed_choice_state: Dictionary = (
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot())
+	var outgoing_dialogue_id := await _replace_scene_owned_dialogue_fixture()
+	assert_ne(_dialogue.get_instance_id(), outgoing_dialogue_id)
+	assert_not_null(_dialogue._presentation_clip_participant_capability)
+	assert_eq(
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot(),
+		committed_choice_state,
+		"same-scenario participant replacement does not start or restore a run",
+	)
+	SignalBus.presentation_clip_finish_requested.emit(_active_request_id())
+	_assert_clip_projection_retired("same-scenario participant replacement")

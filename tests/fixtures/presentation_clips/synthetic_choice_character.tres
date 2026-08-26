@@ -1,0 +1,39 @@
+[gd_resource type="Resource" script_class="PresentationClipDefinition" load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://addons/stella/core/data/presentation_clip_definition.gd" id="1_definition"]
+[ext_resource type="PackedScene" path="res://tests/fixtures/presentation_clips/synthetic_clip.tscn" id="2_scene"]
+[ext_resource type="Script" path="res://addons/stella/core/data/presentation_clip_audio_choice_cue.gd" id="3_choice"]
+[ext_resource type="Script" path="res://addons/stella/core/data/presentation_clip_audio_choice_candidate.gd" id="4_candidate"]
+[ext_resource type="Script" path="res://addons/stella/core/data/presentation_clip_cue.gd" id="5_cue"]
+
+[sub_resource type="Resource" id="Candidate_guide"]
+script = ExtResource("4_candidate")
+id = &"guide"
+asset = "synthetic_loop_region"
+authored_enabled = true
+character = "guide"
+authored_source_path = "res://synthetic/audio_choice_definition.stla"
+authored_source_line = 30
+
+[sub_resource type="Resource" id="ChoiceCue"]
+script = ExtResource("3_choice")
+offset_seconds = 0.1
+authored_source_path = "res://synthetic/audio_choice_definition.stla"
+authored_source_line = 29
+selection_policy = &"uniform"
+repeat_policy = &"allow_repeat"
+candidates = Array[ExtResource("4_candidate")]([SubResource("Candidate_guide")])
+
+[resource]
+script = ExtResource("1_definition")
+scene = ExtResource("2_scene")
+animation_player_path = NodePath("AnimationPlayer")
+animation_name = &"clip"
+entry_transition = &"cut"
+entry_duration = 0.0
+exit_transition = &"cut"
+exit_duration = 0.0
+suppress_dialogue_surface = false
+suppress_quick_menu = false
+skippable = true
+cues = Array[ExtResource("5_cue")]([SubResource("ChoiceCue")])

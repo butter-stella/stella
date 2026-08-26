@@ -119,6 +119,27 @@ func test_jump_from_backlog_returns_to_target_position():
 	await _stop_engine()
 
 
+func test_invalid_audio_choice_snapshot_cannot_move_backlog_cursor() -> void:
+	_setup_scenario(2)
+	var invalid: Dictionary = _runtime._capture_rollback_snapshot()
+	invalid.erase(PresentationClipAudioChoiceAuthority.PROVIDER_ID)
+	_runtime.backlog_manager.add_entry(
+		"narrator", [{"text": "invalid", "voice_layers": []}], 77,
+		func() -> Dictionary: return invalid)
+	var before_context: ScenarioContext = _runtime.engine.context
+	var before_authority: Dictionary = (
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot())
+	assert_eq(_runtime.backlog_manager.get_cursor(), 0)
+	assert_false(_runtime.jump_from_backlog(0))
+	assert_eq(_runtime.backlog_manager.get_cursor(), 0,
+		"mandatory provider validation precedes cursor mutation")
+	assert_eq(_runtime.backlog_manager.get_entries().size(), 1)
+	assert_same(_runtime.engine.context, before_context)
+	assert_eq(
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot(),
+		before_authority)
+
+
 func test_walking_known_path_after_jump_only_advances_cursor():
 	_setup_scenario(6)
 	_runtime.engine.run()
