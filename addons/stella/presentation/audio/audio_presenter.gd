@@ -392,6 +392,11 @@ func _to_db(linear: float) -> float:
 func _on_settings_changed(key: String, _value: Variant):
 	if key in ["master_volume", "bgm_volume", "se_volume", "voice_volume",
 			"system_se_volume", "character_voice_volume", "character_voice_enabled"]:
+		if key == "character_voice_enabled":
+			_retire_untriggered_disabled_presentation_clip_choices(
+				_presentation_clip_audio)
+			_retire_untriggered_disabled_presentation_clip_choices(
+				_presentation_clip_claimed)
 		_apply_volumes(key)
 
 
@@ -3083,9 +3088,74 @@ func _on_presentation_clip_validate_requested(
 			"clip definition is unavailable",
 		)
 		return
+	var audio_choice_work_error := definition.bounded_audio_choice_work_error()
+	if not audio_choice_work_error.is_empty():
+		SignalBus.reject_presentation_clip_request(
+			request,
+			self,
+			_presentation_clip_participant_capability,
+			PresentationClipOperationRequest.ROLE_AUDIO,
+			audio_choice_work_error,
+		)
+		return
 	var players: Array[AudioStreamPlayer] = []
 	var players_by_cue: Dictionary = {}
+	var choice_candidates_by_cue: Dictionary = {}
 	for cue_index in range(definition.cues.size()):
+		if definition.cues[cue_index] is PresentationClipAudioChoiceCue:
+			var choice_cue := (
+				definition.cues[cue_index] as PresentationClipAudioChoiceCue)
+			var candidate_records: Array = []
+			for candidate_index in range(choice_cue.candidates.size()):
+				var candidate := choice_cue.candidates[candidate_index]
+				var settings_error := _presentation_clip_choice_settings_error(candidate)
+				if not settings_error.is_empty():
+					_release_detached_clip_players(players)
+					SignalBus.reject_presentation_clip_request(
+						request,
+						self,
+						_presentation_clip_participant_capability,
+						PresentationClipOperationRequest.ROLE_AUDIO,
+						_presentation_clip_choice_diagnostic(
+							definition,
+							cue_index,
+							candidate_index,
+							candidate,
+							settings_error,
+						),
+					)
+					return
+				var stream := _load_audio(
+					StellaRuntime.se_path if candidate.character.is_empty()
+					else StellaRuntime.voice_path,
+					candidate.asset,
+					["ogg", "wav", "mp3"],
+				)
+				if stream == null:
+					_release_detached_clip_players(players)
+					SignalBus.reject_presentation_clip_request(
+						request,
+						self,
+						_presentation_clip_participant_capability,
+						PresentationClipOperationRequest.ROLE_AUDIO,
+						_presentation_clip_choice_diagnostic(
+							definition,
+							cue_index,
+							candidate_index,
+							candidate,
+							"asset '%s' could not be resolved" % candidate.asset,
+						),
+					)
+					return
+				candidate_records.append({
+					"id": String(candidate.id),
+					"asset": candidate.asset,
+					"authored_enabled": candidate.authored_enabled,
+					"character": candidate.character,
+					"stream": stream,
+				})
+			choice_candidates_by_cue[cue_index] = candidate_records
+			continue
 		if not definition.cues[cue_index] is PresentationClipAudioCue:
 			continue
 		var cue := definition.cues[cue_index] as PresentationClipAudioCue
@@ -3123,6 +3193,7 @@ func _on_presentation_clip_validate_requested(
 		"definition": definition,
 		"players": players,
 		"players_by_cue": players_by_cue,
+		"choice_candidates_by_cue": choice_candidates_by_cue,
 		"definition_fingerprint": definition.semantic_fingerprint(),
 	}
 	SignalBus.validate_presentation_clip_request(
@@ -3182,6 +3253,15 @@ func _on_presentation_clip_apply_readiness_requested(
 		var player := player_value as AudioStreamPlayer
 		if player == null or not is_instance_valid(player) or player.is_inside_tree():
 			return
+	var choice_validation_error := _presentation_clip_choice_records_error(
+		definition, plan.get("choice_candidates_by_cue", {}))
+	if not choice_validation_error.is_empty():
+		SignalBus.fail_presentation_clip_apply(
+			request, self, _presentation_clip_participant_capability,
+			PresentationClipOperationRequest.ROLE_AUDIO,
+			choice_validation_error,
+		)
+		return
 	SignalBus.mark_presentation_clip_apply_ready(
 		request,
 		self,
@@ -3218,6 +3298,16 @@ func _on_presentation_clip_apply_requested(
 			"audio definition fingerprint changed during claim",
 		)
 		return
+	var choice_validation_error := _presentation_clip_choice_records_error(
+		definition, plan.get("choice_candidates_by_cue", {}))
+	if not choice_validation_error.is_empty():
+		_release_detached_clip_players(plan.get("players", []))
+		SignalBus.fail_presentation_clip_apply(
+			request, self, _presentation_clip_participant_capability,
+			PresentationClipOperationRequest.ROLE_AUDIO,
+			choice_validation_error,
+		)
+		return
 	var players: Array = plan.get("players", [])
 	for player_value: Variant in players:
 		add_child(player_value as AudioStreamPlayer)
@@ -3227,6 +3317,9 @@ func _on_presentation_clip_apply_requested(
 		"definition": plan.get("definition"),
 		"players": players,
 		"players_by_cue": (plan.get("players_by_cue", {}) as Dictionary).duplicate(),
+		"choice_candidates_by_cue": (
+			(plan.get("choice_candidates_by_cue", {}) as Dictionary).duplicate(true)),
+		"choice_players_by_cue": {},
 		"definition_fingerprint": plan.get("definition_fingerprint", ""),
 	}
 	_apply_presentation_clip_record_volumes(_presentation_clip_claimed)
@@ -3301,15 +3394,64 @@ func _run_presentation_clip_transaction_phase(
 					"audio sealed definition changed before transaction hold",
 				)
 				return false
+			var choice_plan_result := _presentation_clip_choice_plan_result(
+				request, _presentation_clip_claimed)
+			if not bool(choice_plan_result.get("ok", false)):
+				SignalBus.fail_presentation_clip_apply(
+					request, self, _presentation_clip_participant_capability,
+					PresentationClipOperationRequest.ROLE_AUDIO,
+					String(choice_plan_result.get(
+						"error", "audio-choice private plan is invalid")),
+				)
+				return false
+			var choice_plans: Array = choice_plan_result.get("plans", [])
+			var choice_authority_held := false
+			if not choice_plans.is_empty():
+				var authority := StellaRuntime.presentation_clip_audio_choice_authority
+				if authority == null or not authority.hold(request_key):
+					SignalBus.fail_presentation_clip_apply(
+						request, self, _presentation_clip_participant_capability,
+						PresentationClipOperationRequest.ROLE_AUDIO,
+						"Runtime audio-choice authority could not hold the clip transaction",
+					)
+					return false
+				choice_authority_held = true
 			_presentation_clip_transaction = {
 				"request_key": request_key,
 				"previous": _presentation_clip_audio,
 				"committed": false,
+				"choice_plans": choice_plans,
+				"choice_authority_held": choice_authority_held,
 			}
 			return true
 		&"commit":
 			if not _presentation_clip_audio_transaction_is_current(request_key):
 				return false
+			if bool(_presentation_clip_transaction.get(
+				"choice_authority_held", false)):
+				var choice_result := (
+					StellaRuntime.presentation_clip_audio_choice_authority.commit(
+						request_key,
+						_presentation_clip_transaction.get("choice_plans", []),
+					))
+				if not bool(choice_result.get("ok", false)):
+					SignalBus.fail_presentation_clip_apply(
+						request, self, _presentation_clip_participant_capability,
+						PresentationClipOperationRequest.ROLE_AUDIO,
+						String(choice_result.get(
+							"error", "audio-choice selection failed")),
+					)
+					return false
+				if not _install_selected_presentation_clip_choice_players(
+					_presentation_clip_claimed,
+					choice_result.get("selections", {}),
+				):
+					SignalBus.fail_presentation_clip_apply(
+						request, self, _presentation_clip_participant_capability,
+						PresentationClipOperationRequest.ROLE_AUDIO,
+						"sealed audio-choice selection no longer matched its preflight",
+					)
+					return false
 			_presentation_clip_audio = _presentation_clip_claimed
 			_presentation_clip_claimed = {}
 			_presentation_clip_transaction["committed"] = true
@@ -3334,6 +3476,13 @@ func _run_presentation_clip_transaction_phase(
 				return false
 			var previous: Dictionary = _presentation_clip_transaction.get(
 				"previous", {})
+			if (
+				bool(_presentation_clip_transaction.get(
+					"choice_authority_held", false))
+				and not StellaRuntime.presentation_clip_audio_choice_authority.complete(
+					request_key)
+			):
+				return false
 			_presentation_clip_transaction.clear()
 			_release_presentation_clip_audio_record(previous)
 			return true
@@ -3367,6 +3516,302 @@ func _presentation_clip_audio_transaction_is_current(request_key: int) -> bool:
 	)
 
 
+func _presentation_clip_choice_plan_result(
+	request: PresentationClipOperationRequest,
+	record: Dictionary,
+) -> Dictionary:
+	var plans: Array = []
+	var definition: PresentationClipDefinition = record.get("definition")
+	if definition == null:
+		return {"ok": false, "plans": [], "error": "choice definition is missing"}
+	var candidates_by_cue: Dictionary = record.get(
+		"choice_candidates_by_cue", {})
+	var choice_ordinals: Array[int] = []
+	for cue_index in range(definition.cues.size()):
+		if definition.cues[cue_index] is PresentationClipAudioChoiceCue:
+			choice_ordinals.append(cue_index)
+	if candidates_by_cue.size() != choice_ordinals.size():
+		return {
+			"ok": false,
+			"plans": [],
+			"error": "audio-choice private candidate map has the wrong cue count",
+		}
+	for cue_index: int in choice_ordinals:
+		if not candidates_by_cue.has(cue_index):
+			return {
+				"ok": false,
+				"plans": [],
+				"error": "audio-choice private candidate map is missing cues[%d]" % cue_index,
+			}
+		var cue := definition.cues[cue_index] as PresentationClipAudioChoiceCue
+		var records_value: Variant = candidates_by_cue[cue_index]
+		if not records_value is Array or (records_value as Array).size() != cue.candidates.size():
+			return {
+				"ok": false,
+				"plans": [],
+				"error": "audio-choice private candidate count changed for cues[%d]" % cue_index,
+			}
+		var eligible_ids: Array = []
+		for candidate_index in range(cue.candidates.size()):
+			var candidate_resource := cue.candidates[candidate_index]
+			var candidate_value: Variant = (records_value as Array)[candidate_index]
+			if (
+				candidate_resource == null
+				or not _presentation_clip_choice_record_matches(
+					candidate_resource, candidate_value)
+			):
+				return {
+					"ok": false,
+					"plans": [],
+					"error": _presentation_clip_choice_diagnostic(
+						definition, cue_index, candidate_index, candidate_resource,
+						"private preflight record changed before commit"),
+				}
+			var candidate: Dictionary = candidate_value
+			var settings_error := _presentation_clip_choice_settings_error(
+				candidate_resource)
+			if not settings_error.is_empty():
+				return {
+					"ok": false,
+					"plans": [],
+					"error": _presentation_clip_choice_diagnostic(
+						definition, cue_index, candidate_index, candidate_resource,
+						settings_error),
+				}
+			var character: String = candidate["character"]
+			if (
+				candidate["authored_enabled"] == true
+				and (
+					character.is_empty()
+					or _is_voice_character_enabled(character)
+				)
+			):
+				eligible_ids.append(candidate["id"])
+		plans.append({
+			"clip_asset": request.get_asset(),
+			"cue_ordinal": cue_index,
+			"eligible_ids": eligible_ids,
+			"repeat_policy": String(cue.repeat_policy),
+		})
+	return {"ok": true, "plans": plans, "error": ""}
+
+
+func _install_selected_presentation_clip_choice_players(
+	record: Dictionary,
+	selections: Dictionary,
+) -> bool:
+	var candidates_by_cue: Dictionary = record.get(
+		"choice_candidates_by_cue", {})
+	var installed: Dictionary = {}
+	for cue_index_value: Variant in selections:
+		var cue_index := int(cue_index_value)
+		var selected_id := String(selections[cue_index_value])
+		var selected: Dictionary = {}
+		for candidate_value: Variant in candidates_by_cue.get(cue_index, []):
+			if (
+				candidate_value is Dictionary
+				and String((candidate_value as Dictionary).get("id", ""))
+					== selected_id
+			):
+				selected = candidate_value as Dictionary
+				break
+		if selected.is_empty() or not selected.get("stream") is AudioStream:
+			_release_detached_clip_players(record.get("players", []))
+			return false
+		var player := AudioStreamPlayer.new()
+		player.name = "PresentationClipAudioChoice%d" % cue_index
+		player.bus = &"Master"
+		player.stream = selected.get("stream") as AudioStream
+		add_child(player)
+		(record.get("players", []) as Array).append(player)
+		installed[cue_index] = {
+			"id": selected_id,
+			"asset": String(selected.get("asset", "")),
+			"character": String(selected.get("character", "")),
+			"player": player,
+			"triggered": false,
+		}
+	record["choice_players_by_cue"] = installed
+	_apply_presentation_clip_record_volumes(record)
+	return true
+
+
+func _release_presentation_clip_choice_player(
+	record: Dictionary,
+	cue_index: int,
+) -> void:
+	var choices: Dictionary = record.get("choice_players_by_cue", {})
+	var choice_record: Dictionary = choices.get(cue_index, {})
+	if choice_record.is_empty():
+		return
+	choices.erase(cue_index)
+	record["choice_players_by_cue"] = choices
+	var player := choice_record.get("player") as AudioStreamPlayer
+	var players: Array = record.get("players", [])
+	players.erase(player)
+	_release_detached_clip_players([player])
+
+
+func _retire_untriggered_disabled_presentation_clip_choices(
+	record: Dictionary,
+) -> void:
+	if record.is_empty():
+		return
+	var retire_ordinals: Array[int] = []
+	for cue_index_value: Variant in (
+		record.get("choice_players_by_cue", {}) as Dictionary):
+		var choice_record: Dictionary = (
+			record.get("choice_players_by_cue", {}) as Dictionary).get(
+				cue_index_value, {})
+		if bool(choice_record.get("triggered", false)):
+			continue
+		var character := String(choice_record.get("character", ""))
+		if character.is_empty():
+			continue
+		var enabled_value: Variant = StellaRuntime.get_setting(
+			"character_voice_enabled")
+		if (
+			enabled_value is Dictionary
+			and (enabled_value as Dictionary).has(character)
+			and (enabled_value as Dictionary)[character] is bool
+			and not bool((enabled_value as Dictionary)[character])
+		):
+			retire_ordinals.append(int(cue_index_value))
+	for cue_index: int in retire_ordinals:
+		_release_presentation_clip_choice_player(record, cue_index)
+
+
+func _presentation_clip_choice_records_error(
+	definition: PresentationClipDefinition,
+	candidates_by_cue_value: Variant,
+) -> String:
+	if not candidates_by_cue_value is Dictionary:
+		return "audio-choice private candidate map must be a Dictionary"
+	var candidates_by_cue: Dictionary = candidates_by_cue_value
+	var choice_cue_count := 0
+	for cue_value: PresentationClipCue in definition.cues:
+		if cue_value is PresentationClipAudioChoiceCue:
+			choice_cue_count += 1
+	if candidates_by_cue.size() != choice_cue_count:
+		return "audio-choice private candidate map has the wrong cue count"
+	for cue_index in range(definition.cues.size()):
+		if not definition.cues[cue_index] is PresentationClipAudioChoiceCue:
+			continue
+		var cue := definition.cues[cue_index] as PresentationClipAudioChoiceCue
+		if not candidates_by_cue.has(cue_index):
+			return "audio-choice private candidate map is missing cues[%d]" % cue_index
+		var records_value: Variant = candidates_by_cue[cue_index]
+		if not records_value is Array or (records_value as Array).size() != cue.candidates.size():
+			return "audio-choice private candidate count changed for cues[%d]" % cue_index
+		for candidate_index in range(cue.candidates.size()):
+			var candidate := cue.candidates[candidate_index]
+			if candidate == null:
+				return _presentation_clip_choice_diagnostic(
+					definition, cue_index, candidate_index, candidate,
+					"candidate is null")
+			var record_value: Variant = (records_value as Array)[candidate_index]
+			if not record_value is Dictionary:
+				return _presentation_clip_choice_diagnostic(
+					definition, cue_index, candidate_index, candidate,
+					"private preflight record is missing")
+			if not _presentation_clip_choice_record_matches(candidate, record_value):
+				return _presentation_clip_choice_diagnostic(
+					definition, cue_index, candidate_index, candidate,
+					"private preflight record changed before apply")
+			var settings_error := _presentation_clip_choice_settings_error(candidate)
+			if not settings_error.is_empty():
+				return _presentation_clip_choice_diagnostic(
+					definition, cue_index, candidate_index, candidate, settings_error)
+	return ""
+
+
+func _presentation_clip_choice_record_matches(
+	candidate: PresentationClipAudioChoiceCandidate,
+	record_value: Variant,
+) -> bool:
+	if candidate == null or not record_value is Dictionary:
+		return false
+	var record := record_value as Dictionary
+	return (
+		record.size() == 5
+		and record.get("id") is String
+		and record["id"] == String(candidate.id)
+		and record.get("asset") is String
+		and record["asset"] == candidate.asset
+		and record.get("authored_enabled") is bool
+		and record["authored_enabled"] == candidate.authored_enabled
+		and record.get("character") is String
+		and record["character"] == candidate.character
+		and record.get("stream") is AudioStream
+	)
+
+
+func _presentation_clip_choice_settings_error(
+	candidate: PresentationClipAudioChoiceCandidate,
+) -> String:
+	if candidate == null:
+		return "candidate is null"
+	var required_volume_keys := ["master_volume"]
+	if candidate.character.is_empty():
+		required_volume_keys.append("system_se_volume")
+	else:
+		required_volume_keys.append("voice_volume")
+	for key: String in required_volume_keys:
+		var value: Variant = StellaRuntime.get_setting(key)
+		if not (value is int or value is float) or not is_finite(float(value)):
+			return "authoritative setting '%s' must be a finite number" % key
+	if candidate.character.is_empty():
+		return ""
+	var enabled_value: Variant = StellaRuntime.get_setting("character_voice_enabled")
+	if not enabled_value is Dictionary:
+		return "authoritative setting 'character_voice_enabled' must be a Dictionary"
+	var enabled: Dictionary = enabled_value
+	if enabled.has(candidate.character) and not enabled[candidate.character] is bool:
+		return (
+			"authoritative character_voice_enabled['%s'] must be a bool"
+			% candidate.character)
+	var volumes_value: Variant = StellaRuntime.get_setting("character_voice_volume")
+	if not volumes_value is Dictionary:
+		return "authoritative setting 'character_voice_volume' must be a Dictionary"
+	var volumes: Dictionary = volumes_value
+	if volumes.has(candidate.character):
+		var volume: Variant = volumes[candidate.character]
+		if not (volume is int or volume is float) or not is_finite(float(volume)):
+			return (
+				"authoritative character_voice_volume['%s'] must be a finite number"
+				% candidate.character)
+	return ""
+
+
+func _presentation_clip_choice_diagnostic(
+	definition: PresentationClipDefinition,
+	cue_index: int,
+	candidate_index: int,
+	candidate: PresentationClipAudioChoiceCandidate,
+	detail: String,
+) -> String:
+	var definition_path := definition.resource_path
+	if definition_path.is_empty():
+		definition_path = "<embedded PresentationClipDefinition>"
+	var provenance := " authored at <unavailable>"
+	if (
+		candidate != null
+		and not candidate.authored_source_path.is_empty()
+		and candidate.authored_source_line > 0
+	):
+		provenance = " authored at %s:%d" % [
+			candidate.authored_source_path, candidate.authored_source_line,
+		]
+	return "%s cues[%d] candidates[%d] id '%s'%s: %s" % [
+		definition_path,
+		cue_index,
+		candidate_index,
+		String(candidate.id) if candidate != null else "<null>",
+		provenance,
+		detail,
+	]
+
+
 func _abort_presentation_clip_audio_transaction(request_key: int = 0) -> bool:
 	if _presentation_clip_transaction.is_empty():
 		return true
@@ -3377,13 +3822,22 @@ func _abort_presentation_clip_audio_transaction(request_key: int = 0) -> bool:
 		return false
 	var transaction := _presentation_clip_transaction
 	_presentation_clip_transaction = {}
+	var authority_restored := true
+	if bool(transaction.get("choice_authority_held", false)):
+		authority_restored = (
+			StellaRuntime.presentation_clip_audio_choice_authority.abort(
+				int(transaction.get("request_key", 0))))
 	if bool(transaction.get("committed", false)):
 		var rejected := _presentation_clip_audio
 		_presentation_clip_audio = transaction.get("previous", {})
 		_release_presentation_clip_audio_record(rejected)
 	else:
 		_release_presentation_clip_claimed()
-	return true
+	if not authority_restored:
+		push_error(
+			"AudioPresenter: failed to restore presentation-clip audio-choice "
+			+ "authority during transaction abort")
+	return authority_restored
 
 
 func _on_presentation_clip_audio_cue_requested(
@@ -3405,9 +3859,22 @@ func _on_presentation_clip_audio_cue_requested(
 		return
 	var players_by_cue: Dictionary = _presentation_clip_audio.get(
 		"players_by_cue", {})
-	if not players_by_cue.has(cue_index):
-		return
-	var player := players_by_cue[cue_index] as AudioStreamPlayer
+	var player := players_by_cue.get(cue_index) as AudioStreamPlayer
+	if player == null:
+		var choice_players: Dictionary = _presentation_clip_audio.get(
+			"choice_players_by_cue", {})
+		var choice_record: Dictionary = choice_players.get(cue_index, {})
+		if choice_record.is_empty():
+			return
+		var character := String(choice_record.get("character", ""))
+		if not character.is_empty() and not _is_voice_character_enabled(character):
+			_release_presentation_clip_choice_player(
+				_presentation_clip_audio, cue_index)
+			return
+		choice_record["triggered"] = true
+		choice_players[cue_index] = choice_record
+		_presentation_clip_audio["choice_players_by_cue"] = choice_players
+		player = choice_record.get("player") as AudioStreamPlayer
 	if player != null and is_instance_valid(player):
 		player.play()
 
@@ -3525,6 +3992,18 @@ func _apply_presentation_clip_record_volumes(record: Dictionary) -> void:
 			player.volume_db = (
 				(definition.cues[cue_index] as PresentationClipAudioCue).volume_db
 				+ settings_db)
+	for choice_value: Variant in (
+		record.get("choice_players_by_cue", {}) as Dictionary).values():
+		if not choice_value is Dictionary:
+			continue
+		var choice_record: Dictionary = choice_value
+		var player := choice_record.get("player") as AudioStreamPlayer
+		if player == null or not is_instance_valid(player):
+			continue
+		var character := String(choice_record.get("character", ""))
+		player.volume_db = (
+			_get_voice_target_db_for_character(character)
+			if not character.is_empty() else settings_db)
 
 
 # ─── System SE ───

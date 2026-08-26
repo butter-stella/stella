@@ -1249,14 +1249,21 @@ func _round_trip_context_through_save_file(context: ScenarioContext) -> Dictiona
 	save_manager.save_dir = "user://test_cross_profile_nvl_save/"
 	const SLOT := 154
 	save_manager.delete_save(SLOT)
+	var choice_authority := PresentationClipAudioChoiceAuthority.new(17)
+	assert_true(choice_authority.start_fresh_run())
+	var expected_choice_snapshot: Dictionary = choice_authority.capture_snapshot()
 	save_manager.register_provider(context)
+	save_manager.register_provider(choice_authority)
 	save_manager.save(SLOT)
 	assert_true(save_manager.has_save(SLOT),
 		"the regression must exercise SaveManager's JSON file boundary")
+	assert_true(choice_authority.clear_to_unstarted())
 
 	var restored := ScenarioContext.new(context.scenario_data)
 	save_manager.register_provider(restored)
 	assert_true(save_manager.load_save(SLOT))
+	assert_eq(choice_authority.capture_snapshot(), expected_choice_snapshot,
+		"current save restore includes the mandatory audio-choice authority")
 	save_manager.delete_save(SLOT)
 	return restored.capture_snapshot()
 

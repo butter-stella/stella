@@ -37,6 +37,7 @@ var game_state: GameStateMachine
 var unlock_manager: UnlockManager
 var presentation_state: PresentationState
 var presentation_director: PresentationDirector
+var presentation_clip_audio_choice_authority: PresentationClipAudioChoiceAuthority
 var character_config_loader: CharacterConfigLoader
 ## Issue #97: flowchart subsystem
 var flowchart_state: FlowchartState
@@ -54,6 +55,7 @@ var voice_dsp_path: String = "res://audio/voice_dsp/"
 var presentation_clips_path: String = "res://presentation/clips/"
 var presentation_clip_resource_budget_bytes: int = 512 * 1024 * 1024
 var presentation_clip_max_viewport_pixels: int = 3840 * 2160
+var presentation_clip_audio_choice_seed: int = 0
 
 ## Scene paths
 var title_scene_path: String = ""
@@ -446,6 +448,9 @@ func _ready():
 	unlock_manager = UnlockManager.new()
 	presentation_state = PresentationState.new()
 	presentation_state.connect_signals()
+	presentation_clip_audio_choice_authority = (
+		PresentationClipAudioChoiceAuthority.new(
+			presentation_clip_audio_choice_seed))
 	presentation_director = PresentationDirector.new(
 		presentation_state,
 		func() -> bool: return skip_controller.is_active,
@@ -467,6 +472,7 @@ func _ready():
 	save_manager.register_provider(read_flags)
 	save_manager.register_provider(unlock_manager)
 	save_manager.register_provider(presentation_state)
+	save_manager.register_provider(presentation_clip_audio_choice_authority)
 	# Flowchart state is per-save but the instance is a singleton on StellaRuntime
 	# (unlike engine.context / variable_store which are recreated each scenario load).
 	# Register once here; SaveManager deduplicates by provider_id.
@@ -590,6 +596,11 @@ func _apply_config() -> void:
 		config.presentation_clip_resource_budget_bytes)
 	presentation_clip_max_viewport_pixels = (
 		config.presentation_clip_max_viewport_pixels)
+	presentation_clip_audio_choice_seed = (
+		config.presentation_clip_audio_choice_seed)
+	if presentation_clip_audio_choice_authority != null:
+		presentation_clip_audio_choice_authority.set_configured_seed(
+			presentation_clip_audio_choice_seed)
 
 	if config.title_scene != "":
 		title_scene_path = config.title_scene
@@ -2149,8 +2160,12 @@ func _return_to_title_transaction(navigation: int) -> void:
 		push_error("StellaRuntime: failed to enter the built-in title scene")
 		_finish_navigation(navigation)
 		return
-
 	if not _cancel_active_gameplay(navigation):
+		return
+	if not presentation_clip_audio_choice_authority.clear_to_unstarted():
+		push_error(
+			"StellaRuntime: presentation-clip audio-choice transaction remained active "
+			+ "after gameplay retirement")
 		return
 	var expected_context := engine.context if engine != null else null
 	SignalBus.reset_loop_se_presentation()
@@ -2245,6 +2260,9 @@ func _start_preparsed_scenario(
 ) -> bool:
 	if not _owns_navigation(navigation):
 		return false
+	if not presentation_clip_audio_choice_authority.start_fresh_run():
+		push_error("StellaRuntime: presentation-clip audio-choice seed initialization failed")
+		return false
 	_install_scenario(scenario_data, scenario_path)
 	var expected_context := engine.context if engine != null else null
 	if not _owns_navigation_context(navigation, expected_context):
@@ -2311,6 +2329,8 @@ func _parse_scenario(scenario_path: String) -> ScenarioData:
 func _prepare_scenario(scenario_path: String) -> bool:
 	var data := _parse_scenario(scenario_path)
 	if data == null:
+		return false
+	if not presentation_clip_audio_choice_authority.start_fresh_run():
 		return false
 	_install_scenario(data, scenario_path)
 	return true
@@ -2381,6 +2401,16 @@ func _load_preparsed_scenario_and_restore(
 ) -> bool:
 	if not _owns_navigation(navigation):
 		return false
+	var saved_choice_initial := (
+		PresentationClipAudioChoiceAuthority.initial_playthrough_snapshot(
+			save_data.get(PresentationClipAudioChoiceAuthority.PROVIDER_ID, {})))
+	if saved_choice_initial.is_empty():
+		return false
+	if not presentation_clip_audio_choice_authority.restore_snapshot(
+		saved_choice_initial):
+		push_error(
+			"StellaRuntime: presentation-clip audio-choice initial checkpoint restore failed")
+		return false
 	_install_scenario(scenario_data, scenario_path)
 	var expected_context := engine.context if engine != null else null
 	if not _owns_navigation_context(navigation, expected_context):
@@ -2390,7 +2420,10 @@ func _load_preparsed_scenario_and_restore(
 	# activation, but the stale run can no longer report normal scenario_ended.
 	if not _reset_presentation(navigation, expected_context, true):
 		return false
-	save_manager.restore_data(save_data)
+	if not save_manager.restore_data(save_data):
+		return false
+	flowchart_state.initial_snapshot[
+		PresentationClipAudioChoiceAuthority.PROVIDER_ID] = saved_choice_initial
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
 	presentation_state.apply_to_presenters(
@@ -2857,6 +2890,9 @@ func _capture_runtime_checkpoint() -> Dictionary:
 			)
 	if presentation_state:
 		snap["presentation_state"] = _capture_effective_presentation_snapshot()
+	if presentation_clip_audio_choice_authority:
+		snap[PresentationClipAudioChoiceAuthority.PROVIDER_ID] = (
+			presentation_clip_audio_choice_authority.capture_snapshot())
 	return snap
 
 
@@ -3771,6 +3807,11 @@ func _restore_runtime_from_snapshot(
 ) -> bool:
 	if engine == null or engine.context == null:
 		return false
+	var raw_choice_snapshot: Variant = snap.get(
+		PresentationClipAudioChoiceAuthority.PROVIDER_ID, null)
+	if not PresentationClipAudioChoiceAuthority.validate_playthrough_snapshot(
+		raw_choice_snapshot):
+		return false
 	var retained_context := engine.context
 	var raw_presentation: Variant = snap.get("presentation_state", {})
 	if not raw_presentation is Dictionary:
@@ -3860,6 +3901,9 @@ func _restore_runtime_from_snapshot(
 	if not _owns_navigation_context(navigation, new_ctx):
 		_release_retired_choice_boundary_token(retired_choice_session)
 		return false
+	if not presentation_clip_audio_choice_authority.restore_snapshot(
+		raw_choice_snapshot as Dictionary):
+		return false
 	SignalBus.reset_chapter_indicator_presentation()
 	if not _owns_navigation_context(navigation, new_ctx):
 		_release_retired_choice_boundary_token(retired_choice_session)
@@ -3908,8 +3952,12 @@ func _restore_runtime_from_snapshot(
 func jump_from_backlog(index: int) -> bool:
 	if engine == null or engine.context == null:
 		return false
-	var info = backlog_manager.jump_to(index)
+	var info = backlog_manager.peek_jump(index)
 	if info.is_empty():
+		return false
+	if not _rollback_snapshot_has_valid_audio_choice(info.get("snapshot")):
+		return false
+	if not backlog_manager.commit_jump(index):
 		return false
 	_restore_runtime_from_snapshot(info["snapshot"])
 	return true
@@ -3943,8 +3991,12 @@ func jump_to_previous_choice() -> bool:
 	var cur_uid: int = -1
 	if cur_cmd != null:
 		cur_uid = cur_cmd.uid
-	var info = choice_history_manager.pop_previous(cur_uid)
+	var info = choice_history_manager.peek_previous(cur_uid)
 	if info.is_empty():
+		return false
+	if not _rollback_snapshot_has_valid_audio_choice(info.get("snapshot")):
+		return false
+	if not choice_history_manager.commit_previous(cur_uid):
 		return false
 	_restore_runtime_from_snapshot(info["snapshot"])
 	return true
@@ -3978,6 +4030,8 @@ func jump_from_flowchart(chapter_id: String) -> bool:
 	# Get the rollback snapshot for this chapter (visited → their entry snapshot;
 	# unvisited → initial_snapshot from the start of the scenario).
 	var snap = flowchart_state.get_snapshot_for_chapter(chapter_id)
+	if not _rollback_snapshot_has_valid_audio_choice(snap):
+		return false
 
 	# Update flowchart line (truncate or reset).
 	flowchart_state.jump_to(chapter_id)
@@ -3988,6 +4042,15 @@ func jump_from_flowchart(chapter_id: String) -> bool:
 	# chapter entry scene.
 	_restore_runtime_from_snapshot(snap, entry_scene_id)
 	return true
+
+
+func _rollback_snapshot_has_valid_audio_choice(raw_snapshot: Variant) -> bool:
+	return (
+		raw_snapshot is Dictionary
+		and PresentationClipAudioChoiceAuthority.validate_playthrough_snapshot(
+			(raw_snapshot as Dictionary).get(
+				PresentationClipAudioChoiceAuthority.PROVIDER_ID, null))
+	)
 
 
 # ─── Facade API: Settings ───

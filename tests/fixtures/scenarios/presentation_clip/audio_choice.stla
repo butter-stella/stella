@@ -1,0 +1,3 @@
+@chapter audio_choice "Audio choice"
+@scene start
+@presentation_clip synthetic_choice

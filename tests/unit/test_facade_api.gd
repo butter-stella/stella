@@ -116,7 +116,11 @@ func _assert_reduced_snapshot_families_validate(
 	var raw_dict: Dictionary = raw_data
 	assert_true(raw_dict.has("scenario_context"),
 		"%s reduced validation must include scenario_context" % label)
-	var base := {"scenario_context": raw_dict.get("scenario_context")}
+	var base := {
+		"scenario_context": raw_dict.get("scenario_context"),
+		"presentation_clip_audio_choice": raw_dict.get(
+			"presentation_clip_audio_choice", {}),
+	}
 	assert_true(runtime.save_manager.validate_data_for_scenario(base, parsed_config),
 		"%s reduced validation should accept scenario_context" % label)
 	for family: String in [

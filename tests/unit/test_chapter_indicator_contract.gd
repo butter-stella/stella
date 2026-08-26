@@ -326,12 +326,20 @@ func test_save_validation_rejects_non_boolean_visibility_atomically() -> void:
 	var manager := SaveManager.new()
 	assert_true(manager.validate_data_for_scenario({
 		"scenario_context": valid_snapshot,
+		"presentation_clip_audio_choice": {
+			"version": 1, "initialized": true,
+			"initial_seed": 17, "state": 17, "last_choices": {},
+		},
 	}, data), "the synthetic control snapshot must be valid")
 
 	var malformed := valid_snapshot.duplicate(true)
 	malformed["chapter_indicator_visible"] = "true"
 	assert_false(manager.validate_data_for_scenario({
 		"scenario_context": malformed,
+		"presentation_clip_audio_choice": {
+			"version": 1, "initialized": true,
+			"initial_seed": 17, "state": 17, "last_choices": {},
+		},
 	}, data), "present non-bool visibility must fail preflight")
 	assert_eq(context.capture_snapshot(), valid_snapshot,
 		"side-effect-free validation cannot partially mutate the live context")

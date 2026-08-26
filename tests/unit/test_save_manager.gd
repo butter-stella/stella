@@ -103,6 +103,13 @@ func _make_valid_save_snapshot() -> Dictionary:
 			"current_path": [],
 			"chapter_snapshots": {},
 		},
+		"presentation_clip_audio_choice": {
+			"version": 1,
+			"initialized": true,
+			"initial_seed": 17,
+			"state": 17,
+			"last_choices": {},
+		},
 		"timestamp": 1.0,
 	}
 

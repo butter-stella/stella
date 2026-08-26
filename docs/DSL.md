@@ -382,6 +382,23 @@ Script、embedded Script、binary 或 malformed dependency；isolated definition
 `TIME` shader 和越界 track target。Importer 只写 Stella canonical definition 和可选 cue
 provenance，不把源 macro/格式名称加入 DSL。
 
+需要在运行时从一组音频中选择时，scenario 行仍然只有上面的 logical definition ID；choice
+不会增加 DSL 参数。definition 的同一个 ordered `cues` 数组可放入 typed
+`PresentationClipAudioChoiceCue`：`selection_policy=uniform`，以及明确的
+`repeat_policy=allow_repeat|no_repeat`。每个 ordered candidate 只保存 stable ID、logical
+asset、authored enabled、可选 character binding 与 provenance；空 character 使用 system-SE
+设置域，非空 character 使用 voice/character 设置域。既有单 asset
+`PresentationClipAudioCue` 仍是最短 resource form。
+
+每个 choice 最多 32 candidates，整个 definition 最多 256；所有 candidate（包括 authored
+disabled 与当前 character disabled）都会在任何 live mutation 前完成 detached resource / format
+preflight。publication 时的 eligibility 只由 authored enabled 与 authoritative
+`character_voice_enabled` 决定；volume 为 0 只使已选 player 静音，不会改变选择或 RNG 序列。
+唯一 Runtime-owned RNG authority 在 whole quorum 已可发布后按 cue ordinal 每个 eligible choice
+exact 消耗一个值；0 eligible 不消耗。`no_repeat` 只以同 logical clip asset + cue ordinal 的
+last candidate ID 为边界；选择在 publish 后封存，cue 到点不会重新抽取。项目不得使用全局
+rand、`AudioStreamRandomizer`、预混或 importer 预选。
+
 粒子 layer 仍是 definition 内的数据，不增加 DSL 参数。它明确选择 `rate`（在 authored
 window 内，每次用 stable keyed seed 重新采样 interval endpoints
 `1/spawn_rate_min..1/spawn_rate_max`）或 `burst`（只在
@@ -404,6 +421,13 @@ whole-plan 由 Runtime-owned visual、DialoguePresenter 与 AudioPresenter 共�
 claim → private commit → publish；任一后置 participant 失效都释放 B 并保留已发布 A。
 Backlog 不重新派发 clip；load、rollback、restart、return-to-title 和 scene replacement
 退休旧 generation，不恢复中间 clock/tween/cue cursor。
+audio-choice authority 的 initial seed、当前 state 与 last-ID map 属于 current save/rollback
+schema；缺失或非法会在 restore mutation 前 fail-close。`[presentation_clips]
+audio_choice_seed=1..2147483646` 固定 fresh-run 序列；默认 0 只在 fresh playthrough 从 OS
+entropy 初始化一次。return-to-title 清为 unstarted 而不预取 entropy，load/rollback 恢复已存
+state，same-scenario scene replacement 保留 state。whole-quorum complete 前的 tentative selection
+不会出现在 save/rollback capture 中，且 Backlog、previous-choice 与 flowchart 都在移动各自历史
+cursor/path 前验证该 mandatory provider。
 公开 synthetic scenario
 [`tests/fixtures/scenarios/presentation_clip/lifecycle.stla`](../tests/fixtures/scenarios/presentation_clip/lifecycle.stla)
 由 CI 通过同一 parser、Director 与三个 Runtime-owned participant 实际执行。

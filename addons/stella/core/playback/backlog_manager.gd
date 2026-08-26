@@ -176,16 +176,29 @@ func get_cursor() -> int:
 ##
 ## Returns {} if index is invalid or the entry has no snapshot.
 func jump_to(index: int) -> Dictionary:
+	var info := peek_jump(index)
+	if info.is_empty() or not commit_jump(index):
+		return {}
+	return info
+
+
+func peek_jump(index: int) -> Dictionary:
 	if index < 0 or index >= _entries.size():
 		return {}
 	var entry = _entries[index]
 	if entry.get("snapshot") == null:
 		return {}
-	_cursor = index - 1
 	return {
 		"snapshot": entry["snapshot"],
 		"command_uid": entry["command_uid"],
 	}
+
+
+func commit_jump(index: int) -> bool:
+	if peek_jump(index).is_empty():
+		return false
+	_cursor = index - 1
+	return true
 
 
 func clear() -> void:

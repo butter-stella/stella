@@ -90,6 +90,7 @@ presentation_clips = "res://presentation/clips/"
 [presentation_clips]
 resource_budget_bytes = 536870912
 max_viewport_pixels = 8294400
+audio_choice_seed = 0
 
 [features]
 cg_gallery = false
@@ -459,6 +460,21 @@ instance 的 exact node count 一致；两道门还会在入树前拒绝 autopla
 的 named animation 使用 main position 确定性 seek，不自行播放第二时钟；system audio 仍由
 唯一 AudioPresenter typed ownership 预检并播放。
 
+单 asset system audio 继续使用最短 `PresentationClipAudioCue`。需要随机选择时只在
+definition 内加入 `PresentationClipAudioChoiceCue`；scenario 仍是同一行
+`@presentation_clip logical-id`。choice 只支持明确的 uniform policy 与
+allow-repeat/no-repeat policy。ordered candidate 只有 stable ID、logical asset、authored enabled、
+可选 authoritative character binding 和 source provenance；没有项目 callback、source alias、
+candidate volume 或 weight。空 character 使用 master/system-SE 设置，非空 character 使用
+master/voice/character enabled+volume 设置。volume=0 仍会照常选择并启动静音 player，因此调整
+音量不会改变内容/RNG 序列；cue 到点前 character 被禁用时该已选 cue no-op，之后不会补播或重选。
+
+所有 candidates（每 cue 最多 32、每 definition 累计最多 256）都先 detached-preflight，disabled
+也不能隐藏坏资源。whole visual/dialogue/audio quorum 可发布后，单一 Runtime-owned RNG authority
+才按 authored cue order 抽取；每个有 eligible candidate 的 choice exact 消耗一个值，即使只有
+一项；0 eligible 不消耗也不创建 player。no-repeat 只记录同 logical definition + cue ordinal 的
+last candidate ID。Skip/cancel/stale apply 在 publish 前不推进 RNG，publish 后 cue 只读取封存选择。
+
 需要粒子时也不增加 scenario 参数：在同一个 definition 的 `particle_layers` 中选择 typed
 `PresentationClipParticleLayer` 即可。`rate` 每次在 authored
 `1/spawn_rate_min..1/spawn_rate_max` interval endpoints 间重新采样，
@@ -485,6 +501,16 @@ restart/return-to-title/scene replacement 都走同一 Runtime-owned Director qu
 CI 会通过公开 synthetic scene/audio definition 实际解析并运行
 [`tests/fixtures/scenarios/presentation_clip/lifecycle.stla`](../tests/fixtures/scenarios/presentation_clip/lifecycle.stla)，
 该 fixture 不依赖任何私有来源、名称或素材。
+
+`[presentation_clips] audio_choice_seed` 接受 `0..2147483646`。默认 0 在每个 fresh new-game /
+scenario restart 用 OS entropy 初始化一次；测试和需要完全可重现内容的项目可写固定非零 seed。
+return-to-title 在 autosave 后清成 unstarted，不提前抽 entropy；load/rollback 恢复 current
+`presentation_clip_audio_choice` provider 的 version、initial seed、state 与 last-choice map。
+当前 manual/quick/auto/rollback snapshot 缺失或损坏该 provider 会在 scene/provider mutation 前
+fail-close，不从 config seed 猜测或保留 live state。clip whole-quorum complete 前的 tentative
+choice 不会被同步 save 捕获；Backlog、previous-choice、flowchart 也会先验证 provider，再移动
+cursor/history/path。load 后未访问 chapter 的 initial checkpoint 使用存档 initial seed 重建，绝不
+采用 load 过程中临时 fresh entropy。
 
 ### 清空当前对话页
 
@@ -644,6 +670,11 @@ legacy_snapshot["scenario_context"]["scenario_source_identity"] = (
 在游戏内读档、快读或从 Backlog/选项/流程图回退时，Runtime 会先把 engine context 所有权转交给恢复后的 context，再清理旧画面和阻塞命令。旧对话的取消不会触发自然 `scenario_ended`，恢复后的 context 始终是最终执行 owner；自定义 Presenter 仍只需遵守上文的 request `advance()` / `abort()` 契约。
 
 JOIN 动画进行中可以存档。存档记录已原子提交的 final canonical Stage target、loop-SE 的 `{asset, loop, volume, position}`、BGM 的 `{asset, cue, loop, position, status, stem_mix, volume}`（stopped 为 `{}`；single-stream 的 `stem_mix={}`）与 scenario cursor；operation、policy、request/batch、receipt、token、generation、Tween、barrier、fade progress 与 outgoing player 都不入档。恢复时先 cancel old generation，再 reset + atomic cut canonical target，最后在 same cursor 重新派发。BGM pause fade 存档会采样保存瞬间 cursor，但恢复直接是稳定 paused；crossfade 存档只保存 incoming target/current incoming cursor，mix fade 保存已提交的 final mix。这是有意的 cut projection，不恢复 Tween progress。loop-SE/BGM 的 same target 仍须通过 AudioPresenter/resource preflight。旧版 String `bgm` 或缺少 `stem_mix` 的旧六字段 BGM 存档不是当前版本公共 schema，generic read 与 scenario-aware load 都在任何 provider mutation 前 fail-close；宿主若需要迁移已确认版本的 single-stream 旧档，应在自己的版本化迁移事务中补入 `stem_mix={}`，Stella Runtime 不保留 legacy 分支。
+
+presentation-clip audio choice 另保存 Runtime-owned RNG authority 的完整 current snapshot。active clip
+的 player、timeline、cue cursor 仍不入档并在 load/rollback 边界退休；selection 前快照重新派发会
+得到同一选择，selection 后快照保留已推进 state/last ID。当前存档必须含该 versioned provider，
+不存在 presence-based legacy fallback。
 
 ### 播放控制
 

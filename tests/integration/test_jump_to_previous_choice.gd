@@ -246,6 +246,26 @@ func test_jump_returns_false_before_any_choice():
 	await _stop_engine()
 
 
+func test_invalid_audio_choice_snapshot_cannot_pop_choice_history() -> void:
+	_setup(_build_two_choice_scenario())
+	var valid: Dictionary = _runtime._capture_rollback_snapshot()
+	var invalid: Dictionary = valid.duplicate(true)
+	invalid[PresentationClipAudioChoiceAuthority.PROVIDER_ID] = {"version": 2}
+	_runtime.choice_history_manager.record(10, func() -> Dictionary: return valid)
+	_runtime.choice_history_manager.record(20, func() -> Dictionary: return invalid)
+	var before_context: ScenarioContext = _runtime.engine.context
+	var before_authority: Dictionary = (
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot())
+	assert_eq(_runtime.choice_history_manager.size(), 2)
+	assert_false(_runtime.jump_to_previous_choice())
+	assert_eq(_runtime.choice_history_manager.size(), 2,
+		"mandatory provider validation precedes destructive history pop")
+	assert_same(_runtime.engine.context, before_context)
+	assert_eq(
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot(),
+		before_authority)
+
+
 # ─── Variable rollback ───
 
 func test_jump_rolls_back_variable_set_between_choices():

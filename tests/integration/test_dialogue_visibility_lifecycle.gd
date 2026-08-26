@@ -519,6 +519,8 @@ func _read_save_with_lifecycle_diagnostics(
 	var raw_dictionary: Dictionary = raw_saved
 	var base_snapshot := {
 		"scenario_context": raw_dictionary.get("scenario_context", {}),
+		"presentation_clip_audio_choice": raw_dictionary.get(
+			"presentation_clip_audio_choice", {}),
 	}
 	assert_false(
 		_runtime.save_manager.validate_data_for_scenario(

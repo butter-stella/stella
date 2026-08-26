@@ -40,8 +40,7 @@ func load_save(slot_id: int, scenario_data: ScenarioData = null) -> bool:
 	var data: Variant = read_save_data(slot_id, scenario_data)
 	if data == null:
 		return false
-	restore_data(data)
-	return true
+	return restore_data(data)
 
 
 ## Parse a manual save without mutating registered providers. Runtime scene
@@ -103,8 +102,7 @@ func quick_load(scenario_data: ScenarioData = null) -> bool:
 	var data: Variant = read_quick_save_data(scenario_data)
 	if data == null:
 		return false
-	restore_data(data)
-	return true
+	return restore_data(data)
 
 
 func read_quick_save_data(scenario_data: ScenarioData = null) -> Variant:
@@ -145,8 +143,7 @@ func auto_load(scenario_data: ScenarioData = null) -> bool:
 	var data: Variant = read_auto_save_data(scenario_data)
 	if data == null:
 		return false
-	restore_data(data)
-	return true
+	return restore_data(data)
 
 
 func read_auto_save_data(scenario_data: ScenarioData = null) -> Variant:
@@ -215,11 +212,31 @@ func _read_metadata(path: String) -> Dictionary:
 ## Apply an already parsed save snapshot. The caller owns validation and may
 ## keep this data across an asynchronous scene transition without reopening a
 ## file whose contents could change mid-transaction.
-func restore_data(data: Dictionary) -> void:
+func restore_data(data: Dictionary) -> bool:
+	var choice_provider: Variant = null
+	for provider in _providers:
+		if provider.get_provider_id() == PresentationClipAudioChoiceAuthority.PROVIDER_ID:
+			choice_provider = provider
+			break
+	if choice_provider != null and (
+		not data.has(PresentationClipAudioChoiceAuthority.PROVIDER_ID)
+		or not PresentationClipAudioChoiceAuthority.validate_playthrough_snapshot(
+			data[PresentationClipAudioChoiceAuthority.PROVIDER_ID])
+	):
+		return false
+	# The choice authority is the only provider with a fallible external restore:
+	# reject an in-flight whole-quorum transaction before any other provider can
+	# observe mutation from this load.
+	if choice_provider != null and not choice_provider.restore_snapshot(
+		data[PresentationClipAudioChoiceAuthority.PROVIDER_ID]):
+		return false
 	for provider in _providers:
 		var id = provider.get_provider_id()
+		if id == PresentationClipAudioChoiceAuthority.PROVIDER_ID:
+			continue
 		if data.has(id):
 			provider.restore_snapshot(data[id])
+	return true
 
 
 func _read_data(path: String, scenario_data: ScenarioData = null) -> Variant:
@@ -247,6 +264,13 @@ func _read_data(path: String, scenario_data: ScenarioData = null) -> Variant:
 		and not _presentation_snapshot_is_valid(data["presentation_state"])
 	):
 		return null
+	if data.has("scenario_context") or data.has("presentation_state"):
+		if (
+			not data.has(PresentationClipAudioChoiceAuthority.PROVIDER_ID)
+			or not PresentationClipAudioChoiceAuthority.validate_playthrough_snapshot(
+				data[PresentationClipAudioChoiceAuthority.PROVIDER_ID])
+		):
+			return null
 	if scenario_data != null and not validate_data_for_scenario(data, scenario_data):
 		return null
 	return data
@@ -264,6 +288,12 @@ func validate_data_for_scenario(
 		return false
 	var data: Dictionary = raw_data
 	if not data.has("scenario_context"):
+		return false
+	if (
+		not data.has(PresentationClipAudioChoiceAuthority.PROVIDER_ID)
+		or not PresentationClipAudioChoiceAuthority.validate_playthrough_snapshot(
+			data[PresentationClipAudioChoiceAuthority.PROVIDER_ID])
+	):
 		return false
 	if not _scenario_snapshot_is_valid(data["scenario_context"], scenario_data):
 		return false
@@ -662,6 +692,12 @@ func _rollback_snapshot_is_valid(
 	if not raw_snapshot is Dictionary:
 		return false
 	var snapshot: Dictionary = raw_snapshot
+	if (
+		not snapshot.has(PresentationClipAudioChoiceAuthority.PROVIDER_ID)
+		or not PresentationClipAudioChoiceAuthority.validate_playthrough_snapshot(
+			snapshot[PresentationClipAudioChoiceAuthority.PROVIDER_ID])
+	):
+		return false
 	if (
 		snapshot.has("scenario_context")
 		and not _scenario_snapshot_is_valid(
