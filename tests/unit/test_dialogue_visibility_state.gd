@@ -94,6 +94,7 @@ func _snapshot_with_dialogue(
 		"loop_se_channels": {},
 		"dialogue_visibility": visibility.duplicate(true),
 		"dialogue_content": content.duplicate(true),
+		"dialogue_avatar": DialogueAvatarState.default_state(),
 	}
 
 
@@ -394,7 +395,7 @@ func test_presentation_state_default_snapshot_has_exact_dialogue_projection() ->
 	var state := PresentationState.new()
 	var snapshot := state.capture_snapshot()
 	assert_eq(_sorted_keys(snapshot), [
-		"bg", "bgm", "dialogue_content", "dialogue_visibility",
+		"bg", "bgm", "dialogue_avatar", "dialogue_content", "dialogue_visibility",
 		"loop_se_channels", "stage_layers",
 	])
 	_assert_dialogue_defaults(snapshot)
@@ -561,6 +562,16 @@ func test_record_dialogue_content_captures_text_only_and_final_expression() -> v
 			"voice": "must_not_persist",
 			"expression": "",
 			"stage": [{"action": "clear"}],
+			"presentation_ops": [{
+				"kind": "dialogue_avatar",
+				"payload": {
+					"action": "show",
+					"properties": {"asset": "stage:redraw_source"},
+					"transition": "fade",
+					"duration": 0.3,
+				},
+			}],
+			"presentation_operation_lines": [27],
 		}],
 		"adv",
 		{},
@@ -577,7 +588,8 @@ func test_record_dialogue_content_captures_text_only_and_final_expression() -> v
 	assert_eq(content.get("profile_name"), "message")
 	var serialized := JSON.stringify(content)
 	for forbidden: String in [
-		"voice", "stage", "activation", "token", "tween", "generation",
+		"voice", "stage", "presentation_ops", "presentation_operation_lines",
+		"dialogue_avatar", "activation", "token", "tween", "generation",
 	]:
 		assert_false(forbidden in serialized,
 			"stable projection excludes transient field '%s'" % forbidden)

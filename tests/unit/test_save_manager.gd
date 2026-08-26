@@ -110,6 +110,8 @@ func _make_valid_dialogue_save_snapshot(mode: String = "adv") -> Dictionary:
 		"surface": false,
 		"quick_menu": true,
 	}
+	snapshot["presentation_state"]["dialogue_avatar"] = (
+		DialogueAvatarState.default_state())
 	var content := {
 		"version": 2,
 		"active": true,
@@ -607,6 +609,24 @@ func test_dialogue_visibility_schema_is_exact_and_never_truthy_coerced() -> void
 		)
 		assert_false(_manager.validate_data_for_scenario(snapshot, scenario),
 			"invalid visibility is rejected atomically: %s" % str(invalid_visibility))
+
+
+func test_dialogue_avatar_schema_is_exact_and_migrates_as_one_dialogue_envelope() -> void:
+	var scenario := _make_validation_scenario()
+	var valid := _make_valid_dialogue_save_snapshot()
+	assert_true(_manager.validate_data_for_scenario(valid, scenario))
+	var missing := valid.duplicate(true)
+	missing["presentation_state"].erase("dialogue_avatar")
+	assert_false(_manager.validate_data_for_scenario(missing, scenario),
+		"visibility/content snapshots without the new stable avatar are rejected")
+	var partial_legacy := valid.duplicate(true)
+	partial_legacy["presentation_state"].erase("dialogue_visibility")
+	partial_legacy["presentation_state"].erase("dialogue_content")
+	assert_false(_manager.validate_data_for_scenario(partial_legacy, scenario),
+		"avatar cannot be smuggled outside the exact dialogue envelope")
+	var malformed := valid.duplicate(true)
+	malformed["presentation_state"]["dialogue_avatar"]["position"] = [0.0]
+	assert_false(_manager.validate_data_for_scenario(malformed, scenario))
 
 
 func test_dialogue_content_exact_schema_rejects_transient_or_malformed_data() -> void:

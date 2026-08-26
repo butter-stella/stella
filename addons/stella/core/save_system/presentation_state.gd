@@ -7,6 +7,7 @@ var current_bgm: Dictionary = {}
 var loop_se_channels: Dictionary = {}
 var dialogue_visibility: Dictionary = DialogueVisibilityState.default_state()
 var dialogue_content: Dictionary = _inactive_dialogue_content()
+var dialogue_avatar: Dictionary = DialogueAvatarState.default_state()
 
 var _connected: bool = false
 
@@ -20,6 +21,10 @@ func connect_signals() -> void:
 		return
 	SignalBus.bg_changed.connect(_on_bg_changed)
 	SignalBus.stage_operations_requested.connect(_on_stage_operations)
+	SignalBus.dialogue_avatar_operation_committed.connect(
+		_on_dialogue_avatar_operation_committed)
+	SignalBus.dialogue_avatar_presenter_registered.connect(
+		_on_dialogue_avatar_presenter_registered)
 	SignalBus.bgm_operation_committed.connect(_on_bgm_operation_committed)
 	SignalBus.bgm_position_committed.connect(_on_bgm_position_committed)
 	SignalBus.bgm_natural_stop_committed.connect(_on_bgm_natural_stop_committed)
@@ -39,6 +44,10 @@ func disconnect_signals() -> void:
 		return
 	SignalBus.bg_changed.disconnect(_on_bg_changed)
 	SignalBus.stage_operations_requested.disconnect(_on_stage_operations)
+	SignalBus.dialogue_avatar_operation_committed.disconnect(
+		_on_dialogue_avatar_operation_committed)
+	SignalBus.dialogue_avatar_presenter_registered.disconnect(
+		_on_dialogue_avatar_presenter_registered)
 	SignalBus.bgm_operation_committed.disconnect(_on_bgm_operation_committed)
 	SignalBus.bgm_position_committed.disconnect(_on_bgm_position_committed)
 	SignalBus.bgm_natural_stop_committed.disconnect(_on_bgm_natural_stop_committed)
@@ -60,6 +69,7 @@ func clear() -> void:
 	loop_se_channels.clear()
 	dialogue_visibility = DialogueVisibilityState.default_state()
 	dialogue_content = _inactive_dialogue_content()
+	dialogue_avatar = DialogueAvatarState.default_state()
 
 
 func capture_snapshot() -> Dictionary:
@@ -76,6 +86,7 @@ func capture_snapshot() -> Dictionary:
 		"loop_se_channels": captured_loop_se,
 		"dialogue_visibility": dialogue_visibility.duplicate(true),
 		"dialogue_content": dialogue_content.duplicate(true),
+		"dialogue_avatar": dialogue_avatar.duplicate(true),
 	}
 
 
@@ -134,6 +145,14 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 		)
 		dialogue_visibility = DialogueVisibilityState.default_state()
 		dialogue_content = _inactive_dialogue_content()
+	var restored_avatar: Variant = snapshot.get(
+		"dialogue_avatar", DialogueAvatarState.default_state())
+	if DialogueAvatarState.validate_snapshot_state(restored_avatar, false):
+		dialogue_avatar = (restored_avatar as Dictionary).duplicate(true)
+	else:
+		push_warning(
+			"PresentationState: invalid dialogue_avatar snapshot; resetting avatar")
+		dialogue_avatar = DialogueAvatarState.default_state()
 
 
 func record_dialogue_content(
@@ -218,6 +237,7 @@ func apply_to_presenters(runtime_binding: Dictionary = {}) -> void:
 				runtime_binding.duplicate(true),
 			)
 		SignalBus.reset_and_apply_stage_state(stage_layers)
+		SignalBus.reset_and_apply_dialogue_avatar_state(dialogue_avatar)
 		SignalBus.reset_and_apply_loop_se_state(loop_se_channels)
 		SignalBus.reset_and_apply_bgm_state(current_bgm)
 		SignalBus.bg_changed.emit(current_bg, "none", 0.0)
@@ -232,6 +252,22 @@ func _on_stage_operations(operations: Array, _force_cut: bool) -> void:
 	if not SignalBus.is_current_stage_operation_valid():
 		return
 	stage_layers = StageLayerState.reduce(stage_layers, operations)
+
+
+func _on_dialogue_avatar_operation_committed(
+	operation: DialogueAvatarPresentationOperation,
+) -> void:
+	if operation == null or not SignalBus.is_current_dialogue_avatar_operation_valid():
+		return
+	var payload := operation.get_payload()
+	if not DialogueAvatarState.operation_is_supported(dialogue_avatar, payload):
+		return
+	dialogue_avatar = DialogueAvatarState.reduce(
+		dialogue_avatar, [payload], false)
+
+
+func _on_dialogue_avatar_presenter_registered() -> void:
+	SignalBus.reset_and_apply_dialogue_avatar_state(dialogue_avatar)
 
 
 func _on_bgm_operation_committed(

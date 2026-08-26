@@ -8,6 +8,8 @@ signal _owned_stage_operation_finished(request_id: int, delivered: bool)
 
 const DialogueClearOperationRequest = preload(
 	"res://addons/stella/core/data/dialogue_clear_operation_request.gd")
+const DialogueAvatarOperationRequest = preload(
+	"res://addons/stella/core/data/dialogue_avatar_operation_request.gd")
 const DEFAULT_NVL_ENTRY_PREFIX := ""
 const DEFAULT_NVL_ENTRY_SEPARATOR := "\n"
 const _CHARACTER_MAP_SENTINEL := "\u2060"
@@ -173,6 +175,16 @@ var _dialogue_visibility_effective_signatures: Dictionary = {
 }
 var _dialogue_visibility_active: Dictionary = {}
 var _dialogue_clear_participant_capability: RefCounted
+var _dialogue_avatar_participant_capability: RefCounted
+var _addressable_avatar_sprite: Sprite2D
+var _addressable_avatar_outgoing: Sprite2D
+var _addressable_avatar_state: Dictionary = DialogueAvatarState.default_state()
+var _dialogue_avatar_request_plans: Dictionary = {}
+var _dialogue_avatar_tween: Tween
+var _dialogue_avatar_token_serial: int = 0
+var _dialogue_avatar_generation: int = 1
+var _dialogue_avatar_active_receipt: Dictionary = {}
+const _DIALOGUE_AVATAR_TEXTURE_EXTENSIONS := [".png", ".jpg", ".jpeg", ".webp", ".svg"]
 
 # A configured wait glyph is presentation-only. It is created lazily so
 # projects that do not opt in keep the exact legacy scene tree and visuals.
@@ -313,6 +325,20 @@ func _ready():
 		_on_dialogue_clear_accept_requested)
 	SignalBus.dialogue_clear_apply_requested.connect(
 		_on_dialogue_clear_apply_requested)
+	SignalBus.dialogue_avatar_validate_requested.connect(
+		_on_dialogue_avatar_validate_requested)
+	SignalBus.dialogue_avatar_accept_requested.connect(
+		_on_dialogue_avatar_accept_requested)
+	SignalBus.dialogue_avatar_apply_readiness_requested.connect(
+		_on_dialogue_avatar_apply_readiness_requested)
+	SignalBus.dialogue_avatar_apply_requested.connect(
+		_on_dialogue_avatar_apply_requested)
+	SignalBus.dialogue_avatar_visuals_reset_requested.connect(
+		_on_dialogue_avatar_visuals_reset_requested)
+	SignalBus.dialogue_avatar_state_apply_requested.connect(
+		_on_dialogue_avatar_state_apply_requested)
+	SignalBus.dialogue_avatar_transition_receipts_finish_requested.connect(
+		_on_dialogue_avatar_transition_receipts_finish_requested)
 	if SignalBus.has_signal(&"dialogue_visibility_state_apply_requested"):
 		(SignalBus.get(&"dialogue_visibility_state_apply_requested") as Signal).connect(
 			_on_dialogue_visibility_state_apply_requested
@@ -334,6 +360,17 @@ func _ready():
 	_avatar_container = get_node_or_null("%AvatarContainer")
 	if _avatar_container:
 		_avatar_texture = _avatar_container.get_node_or_null("AvatarTexture")
+		_addressable_avatar_sprite = Sprite2D.new()
+		_addressable_avatar_sprite.name = "AddressableAvatar"
+		_addressable_avatar_sprite.centered = false
+		_addressable_avatar_sprite.visible = false
+		_avatar_container.add_child(_addressable_avatar_sprite)
+	_dialogue_avatar_participant_capability = (
+		StellaRuntime._register_dialogue_avatar_presenter(self))
+	if _dialogue_avatar_participant_capability == null:
+		push_error(
+			"DialoguePresenter could not join the internal avatar registry")
+		return
 	_dialogue_bg = get_node_or_null("DialogueBg") as Control
 	_text_area = get_node_or_null("HBox/TextArea")
 	_text_rect_target = _resolve_text_rect_target()
@@ -707,6 +744,11 @@ func _exit_tree() -> void:
 	StellaRuntime._unregister_dialogue_clear_presenter(
 		self, _dialogue_clear_participant_capability)
 	_dialogue_clear_participant_capability = null
+	_retire_addressable_avatar_transition(&"cancelled")
+	StellaRuntime._unregister_dialogue_avatar_presenter(
+		self, _dialogue_avatar_participant_capability)
+	_dialogue_avatar_participant_capability = null
+	_dialogue_avatar_request_plans.clear()
 	_request_lifecycle_boundary(_LIFECYCLE_EXIT)
 
 
@@ -811,8 +853,8 @@ func _on_dialogue_voice_segment_replay_requested(
 			"voice_dsp": String(selection.get("preset", "")),
 			"voice_dsp_line": int(
 				(segment_value as Dictionary).get("voice_dsp_line", 0)),
-			"stage_ops": [],
-			"stage_operation_lines": [],
+			"presentation_ops": [],
+			"presentation_operation_lines": [],
 		})
 	_request_voice_replay(character, canonical_segments, false)
 
@@ -2730,18 +2772,18 @@ func _apply_segment_presentation(
 	# may wait behind unrelated work and must stay guarded for its real raw-signal
 	# delivery window.
 	var dispatch_gen := _dialogue_gen
-	var stage_ops = segment.get("stage_ops", [])
+	var presentation_ops = segment.get("presentation_ops", [])
 	var request_id := 0
-	if stage_ops is Array and not stage_ops.is_empty():
+	if presentation_ops is Array and not presentation_ops.is_empty():
 		var director: PresentationDirector = StellaRuntime.presentation_director
 		if director == null:
 			push_error(
-				"DialoguePresenter: segment Stage cue requires the Runtime Director")
+				"DialoguePresenter: segment presentation cue requires the Runtime Director")
 			return 0
 		var reservation := director.reserve_request()
 		if reservation == null:
 			push_error(
-				"DialoguePresenter: segment Stage request could not be reserved")
+				"DialoguePresenter: segment presentation request could not be reserved")
 			return 0
 		request_id = reservation.get_request_id()
 		_stage_operation_request_owners[request_id] = {
@@ -2756,13 +2798,14 @@ func _apply_segment_presentation(
 		var abandon_reservation := func() -> void:
 			director.abandon_request_reservation(reservation)
 			_on_stage_operation_request_finished(request_id, false)
-		var operation_lines_value: Variant = segment.get("stage_operation_lines")
+		var operation_lines_value: Variant = segment.get(
+			"presentation_operation_lines")
 		if (
 			not operation_lines_value is Array
-			or (operation_lines_value as Array).size() != stage_ops.size()
+			or (operation_lines_value as Array).size() != presentation_ops.size()
 		):
 			push_error(
-				"DialoguePresenter: segment Stage source-line sidecar is malformed")
+				"DialoguePresenter: segment presentation source-line sidecar is malformed")
 			abandon_reservation.call()
 			return request_id
 		var context: ScenarioContext = (
@@ -2773,33 +2816,66 @@ func _apply_segment_presentation(
 			source_path = context.scenario_data.source_path
 			scenario_id = context.scenario_data.id
 		var typed_operations: Array[PresentationOperation] = []
-		for operation_index in range(stage_ops.size()):
+		var avatar_simulated := (
+			StellaRuntime.presentation_state.dialogue_avatar.duplicate(true))
+		for operation_index in range(presentation_ops.size()):
 			var line_value: Variant = (operation_lines_value as Array)[operation_index]
 			if not line_value is int or int(line_value) <= 0:
 				push_error(
-					"DialoguePresenter: segment Stage source line is malformed")
+					"DialoguePresenter: segment presentation source line is malformed")
 				abandon_reservation.call()
 				return request_id
-			var operation_value: Variant = stage_ops[operation_index]
+			var operation_value: Variant = presentation_ops[operation_index]
 			if not operation_value is Dictionary:
 				push_error(
-					"DialoguePresenter: segment Stage operation is malformed")
+					"DialoguePresenter: segment presentation operation is malformed")
 				abandon_reservation.call()
 				return request_id
-			typed_operations.append(StagePresentationOperation.new(
-				(operation_value as Dictionary).duplicate(true),
-				{
-					"source_path": source_path,
-					"scenario_id": scenario_id,
-					"line": int(line_value),
-				},
-			))
+			var envelope: Dictionary = operation_value
+			var envelope_keys := envelope.keys()
+			envelope_keys.sort()
+			if envelope_keys != ["kind", "payload"] or not envelope["payload"] is Dictionary:
+				push_error(
+					"DialoguePresenter: segment presentation envelope is malformed")
+				abandon_reservation.call()
+				return request_id
+			var operation_source := {
+				"source_path": source_path,
+				"scenario_id": scenario_id,
+				"line": int(line_value),
+			}
+			var payload: Dictionary = (envelope["payload"] as Dictionary).duplicate(true)
+			match String(envelope["kind"]):
+				"stage":
+					typed_operations.append(StagePresentationOperation.new(
+						payload, operation_source))
+				"dialogue_avatar":
+					if not DialogueAvatarState.operation_is_supported(
+						avatar_simulated, payload):
+						push_error(
+							"DialoguePresenter: segment dialogue avatar action is invalid for current state")
+						abandon_reservation.call()
+						return request_id
+					typed_operations.append(DialogueAvatarPresentationOperation.new(
+						payload,
+						avatar_simulated,
+						DialogueAvatarState.reduce(
+							avatar_simulated, [payload], false),
+						operation_source,
+					))
+					avatar_simulated = DialogueAvatarState.reduce(
+						avatar_simulated, [payload], false)
+				_:
+					push_error(
+						"DialoguePresenter: segment presentation kind is unsupported")
+					abandon_reservation.call()
+					return request_id
 		if (
 			context == null
 			or not context.is_runtime_owner_current()
 		):
 			push_error(
-				"DialoguePresenter: segment Stage cue requires the current Runtime Director")
+				"DialoguePresenter: segment presentation cue requires the current Runtime Director")
 			abandon_reservation.call()
 			return request_id
 		var source := typed_operations[0].get_source()
@@ -2821,10 +2897,10 @@ func _apply_segment_presentation(
 				typed_request.get_outcome()
 					== PresentationBatchRequest.Outcome.COMPLETED,
 			)
-	elif stage_ops is Array:
+	elif presentation_ops is Array:
 		_mark_segment_presentation_dispatched(segment_index, segment_count)
 	else:
-		push_warning("DialoguePresenter: segment stage_ops must be an Array")
+		push_warning("DialoguePresenter: segment presentation_ops must be an Array")
 	return request_id
 
 
@@ -3024,22 +3100,24 @@ func _apply_final_segment_presentation(
 		return
 	var finalization_gen := _dialogue_gen
 	_finalization_in_progress = true
-	var remaining_stage_ops: Array = []
-	var remaining_stage_operation_lines: Array = []
+	var remaining_presentation_ops: Array = []
+	var remaining_presentation_operation_lines: Array = []
 	for index in range(segments.size()):
 		var segment = segments[index]
 		if not segment is Dictionary:
 			continue
-		var segment_stage_ops = segment.get("stage_ops", [])
-		var segment_stage_lines = segment.get("stage_operation_lines", [])
+		var segment_presentation_ops = segment.get("presentation_ops", [])
+		var segment_presentation_lines = segment.get(
+			"presentation_operation_lines", [])
 		if (
 			index >= _next_stage_segment_index
-			and segment_stage_ops is Array
+			and segment_presentation_ops is Array
 		):
-			remaining_stage_ops.append_array(segment_stage_ops.duplicate(true))
-			if segment_stage_lines is Array:
-				remaining_stage_operation_lines.append_array(
-					segment_stage_lines.duplicate())
+			remaining_presentation_ops.append_array(
+				segment_presentation_ops.duplicate(true))
+			if segment_presentation_lines is Array:
+				remaining_presentation_operation_lines.append_array(
+					segment_presentation_lines.duplicate())
 
 	# Commit the logical finalization before emitting either operation batch.
 	# Synchronous callbacks now observe a completed cursor and an empty shared
@@ -3051,8 +3129,8 @@ func _apply_final_segment_presentation(
 	_segment_presentation_complete = true
 
 	_apply_segment_presentation({
-		"stage_ops": remaining_stage_ops,
-		"stage_operation_lines": remaining_stage_operation_lines,
+		"presentation_ops": remaining_presentation_ops,
+		"presentation_operation_lines": remaining_presentation_operation_lines,
 	}, force_cut)
 	if finalization_gen != _dialogue_gen:
 		_abort_final_segment_presentation()
@@ -4108,6 +4186,370 @@ func _on_dialogue_clear_apply_requested(
 		request, self, _dialogue_clear_participant_capability)
 
 
+func _on_dialogue_avatar_validate_requested(
+	request: DialogueAvatarOperationRequest,
+) -> void:
+	if request == null or not request.is_target(self):
+		return
+	var operation := request.get_operation()
+	if (
+		operation == null
+		or operation.get_channel() != &"dialogue:avatar"
+		or not DialogueAvatarState.validate_operation(
+			operation.get_payload(), false)
+		or (
+			request.get_chain_index() == 0
+			and operation.get_before_state() != _addressable_avatar_state
+		)
+		or operation.get_target_state() != request.get_target_state()
+		or not DialogueAvatarState.validate_snapshot_state(
+			request.get_target_state(), false)
+		or _avatar_container == null
+		or _addressable_avatar_sprite == null
+		or not is_instance_valid(_addressable_avatar_sprite)
+	):
+		SignalBus.reject_dialogue_avatar_request(
+			request,
+			self,
+			_dialogue_avatar_participant_capability,
+			"DialoguePresenter avatar binding or canonical before-state is invalid",
+		)
+		return
+	var target := request.get_target_state()
+	var texture: Texture2D
+	if bool(target.get("present", false)):
+		texture = _resolve_addressable_avatar_texture(target)
+		if texture == null:
+			SignalBus.reject_dialogue_avatar_request(
+				request,
+				self,
+				_dialogue_avatar_participant_capability,
+				"avatar asset could not be resolved as Texture2D",
+			)
+			return
+	var plan_id := request.get_instance_id()
+	_dialogue_avatar_request_plans[plan_id] = {
+		"request": weakref(request),
+		"target": target.duplicate(true),
+		"texture": texture,
+	}
+	request.settled.connect(
+		func(_success: bool, _cancelled: bool) -> void:
+			_dialogue_avatar_request_plans.erase(plan_id),
+		CONNECT_ONE_SHOT,
+	)
+	SignalBus.validate_dialogue_avatar_request(
+		request, self, _dialogue_avatar_participant_capability)
+
+
+func _on_dialogue_avatar_accept_requested(
+	request: DialogueAvatarOperationRequest,
+) -> void:
+	if request == null or not request.is_target(self):
+		return
+	if not _dialogue_avatar_request_plans.has(request.get_instance_id()):
+		return
+	SignalBus.accept_dialogue_avatar_request(
+		request, self, _dialogue_avatar_participant_capability)
+
+
+func _on_dialogue_avatar_apply_readiness_requested(
+	request: DialogueAvatarOperationRequest,
+) -> void:
+	if request == null or not request.is_target(self):
+		return
+	var plan: Dictionary = _dialogue_avatar_request_plans.get(
+		request.get_instance_id(), {})
+	if (
+		plan.is_empty()
+		or (plan.get("request") as WeakRef).get_ref() != request
+		or plan.get("target", {}) != request.get_target_state()
+		or request.get_operation().get_before_state() != _addressable_avatar_state
+		or _avatar_container == null
+		or _addressable_avatar_sprite == null
+		or not is_instance_valid(_addressable_avatar_sprite)
+		or (
+			bool(request.get_target_state().get("present", false))
+			and not plan.get("texture") is Texture2D
+		)
+	):
+		return
+	SignalBus.mark_dialogue_avatar_apply_ready(
+		request, self, _dialogue_avatar_participant_capability)
+
+
+func _on_dialogue_avatar_apply_requested(
+	request: DialogueAvatarOperationRequest,
+) -> void:
+	if request == null or not request.is_target(self):
+		return
+	var plan: Dictionary = _dialogue_avatar_request_plans.get(
+		request.get_instance_id(), {})
+	if plan.is_empty():
+		return
+	# Claim the sealed private plan before mutation. Readiness already proved all
+	# captured Presenter plans, so the remainder of this method is infallible.
+	if not SignalBus.acknowledge_dialogue_avatar_apply(
+		request, self, _dialogue_avatar_participant_capability):
+		return
+	var operation := request.get_operation()
+	var target: Dictionary = plan["target"]
+	var texture: Texture2D = plan.get("texture") as Texture2D
+	var effective_cut := (
+		request.get_force_cut()
+		or String(operation.get_payload().get("transition", "cut")) == "cut"
+		or float(operation.get_payload().get("duration", 0.0)) <= 0.0
+	)
+	_retire_addressable_avatar_transition(&"superseded")
+	_dialogue_avatar_generation += 1
+	if effective_cut:
+		_apply_addressable_avatar_target(target, texture)
+		return
+	_start_addressable_avatar_fade(
+		target,
+		texture,
+		float(operation.get_payload()["duration"]),
+		request.get_request_id(),
+	)
+
+
+func _on_dialogue_avatar_visuals_reset_requested(_epoch: int) -> void:
+	_retire_addressable_avatar_transition(&"cancelled")
+	_dialogue_avatar_generation += 1
+	_apply_addressable_avatar_target(
+		DialogueAvatarState.default_state(), null)
+
+
+func _on_dialogue_avatar_state_apply_requested(
+	state: Dictionary,
+	_epoch: int,
+) -> void:
+	if not DialogueAvatarState.validate_snapshot_state(state, false):
+		return
+	var texture: Texture2D
+	if bool(state.get("present", false)):
+		texture = _resolve_addressable_avatar_texture(state)
+		if texture == null:
+			push_error("DialoguePresenter: restored dialogue avatar asset is unavailable")
+			return
+	_retire_addressable_avatar_transition(&"cancelled")
+	_dialogue_avatar_generation += 1
+	_apply_addressable_avatar_target(state, texture)
+
+
+func _on_dialogue_avatar_transition_receipts_finish_requested(
+	records: Array,
+) -> void:
+	if _dialogue_avatar_active_receipt.is_empty():
+		return
+	for record_value: Variant in records:
+		if not record_value is Dictionary:
+			continue
+		var record: Dictionary = record_value
+		if (
+			int(record.get("presenter_instance_id", -1)) == get_instance_id()
+			and int(record.get("token", -1))
+				== int(_dialogue_avatar_active_receipt.get("token", -2))
+			and int(record.get("operation_request_id", -1))
+				== int(_dialogue_avatar_active_receipt.get(
+					"operation_request_id", -2))
+			and int(record.get("generation", -1))
+				== int(_dialogue_avatar_active_receipt.get("generation", -2))
+		):
+			_complete_addressable_avatar_transition(&"completed")
+			return
+
+
+func _start_addressable_avatar_fade(
+	target: Dictionary,
+	texture: Texture2D,
+	duration: float,
+	request_id: int,
+) -> void:
+	var before := _addressable_avatar_state.duplicate(true)
+	var before_texture := _addressable_avatar_sprite.texture
+	if bool(before.get("present", false)) and bool(before.get("visible", false)):
+		_addressable_avatar_outgoing = Sprite2D.new()
+		_addressable_avatar_outgoing.name = "AddressableAvatarOutgoing"
+		_addressable_avatar_outgoing.centered = false
+		_avatar_container.add_child(_addressable_avatar_outgoing)
+		_configure_addressable_avatar_sprite(
+			_addressable_avatar_outgoing, before, before_texture)
+	var target_visible := bool(target.get("present", false)) and bool(
+		target.get("visible", false))
+	_apply_addressable_avatar_target(target, texture)
+	if target_visible:
+		var start_modulate := _addressable_avatar_sprite.modulate
+		start_modulate.a = 0.0
+		_addressable_avatar_sprite.modulate = start_modulate
+		_addressable_avatar_sprite.visible = true
+		_avatar_container.visible = true
+	_dialogue_avatar_token_serial += 1
+	_dialogue_avatar_active_receipt = {
+		"presenter_instance_id": get_instance_id(),
+		"token": _dialogue_avatar_token_serial,
+		"operation_request_id": request_id,
+		"generation": _dialogue_avatar_generation,
+		"target": target.duplicate(true),
+		"texture": texture,
+	}
+	_dialogue_avatar_tween = create_tween().set_parallel(true)
+	if _addressable_avatar_outgoing != null:
+		_dialogue_avatar_tween.tween_property(
+			_addressable_avatar_outgoing, "modulate:a", 0.0, duration)
+	if target_visible:
+		_dialogue_avatar_tween.tween_property(
+			_addressable_avatar_sprite,
+			"modulate:a",
+			float(target.get("opacity", 1.0)),
+			duration,
+		)
+	var terminal_identity := _dialogue_avatar_active_receipt.duplicate(true)
+	_dialogue_avatar_tween.finished.connect(func() -> void:
+		if _dialogue_avatar_active_receipt == terminal_identity:
+			_complete_addressable_avatar_transition(&"completed"),
+		CONNECT_ONE_SHOT,
+	)
+	SignalBus.dialogue_avatar_transition_receipt_started.emit(
+		get_instance_id(),
+		_dialogue_avatar_token_serial,
+		request_id,
+		_dialogue_avatar_generation,
+	)
+
+
+func _complete_addressable_avatar_transition(outcome: StringName) -> void:
+	if _dialogue_avatar_active_receipt.is_empty():
+		return
+	var record := _dialogue_avatar_active_receipt.duplicate(true)
+	var target: Dictionary = record.get(
+		"target", DialogueAvatarState.default_state())
+	var texture: Texture2D = record.get("texture") as Texture2D
+	if _dialogue_avatar_tween != null and _dialogue_avatar_tween.is_valid():
+		_dialogue_avatar_tween.kill()
+	_dialogue_avatar_tween = null
+	_apply_addressable_avatar_target(target, texture)
+	_free_addressable_avatar_outgoing()
+	_dialogue_avatar_active_receipt.clear()
+	SignalBus.dialogue_avatar_transition_terminal.emit(
+		get_instance_id(),
+		int(record.get("token", -1)),
+		int(record.get("operation_request_id", -1)),
+		int(record.get("generation", -1)),
+		outcome,
+	)
+
+
+func _retire_addressable_avatar_transition(outcome: StringName) -> void:
+	if _dialogue_avatar_active_receipt.is_empty():
+		if _dialogue_avatar_tween != null and _dialogue_avatar_tween.is_valid():
+			_dialogue_avatar_tween.kill()
+		_dialogue_avatar_tween = null
+		_free_addressable_avatar_outgoing()
+		return
+	_complete_addressable_avatar_transition(outcome)
+
+
+func _free_addressable_avatar_outgoing() -> void:
+	if (
+		_addressable_avatar_outgoing != null
+		and is_instance_valid(_addressable_avatar_outgoing)
+	):
+		_addressable_avatar_outgoing.queue_free()
+	_addressable_avatar_outgoing = null
+
+
+func _apply_addressable_avatar_target(
+	state: Dictionary,
+	texture: Texture2D,
+) -> void:
+	_addressable_avatar_state = state.duplicate(true)
+	if _addressable_avatar_sprite == null or not is_instance_valid(
+		_addressable_avatar_sprite):
+		return
+	_configure_addressable_avatar_sprite(
+		_addressable_avatar_sprite, _addressable_avatar_state, texture)
+	var owns_avatar := bool(_addressable_avatar_state.get("present", false))
+	if _avatar_texture != null:
+		_avatar_texture.visible = not owns_avatar
+	if owns_avatar:
+		_avatar_container.visible = bool(_addressable_avatar_state["visible"])
+	elif not _current_character.is_empty():
+		_update_avatar(
+			_current_character, _current_avatar_expression, _current_mode)
+	else:
+		_avatar_container.visible = false
+	_update_dialogue_visibility_node_baseline(_avatar_container)
+
+
+func _configure_addressable_avatar_sprite(
+	sprite: Sprite2D,
+	state: Dictionary,
+	texture: Texture2D,
+) -> void:
+	var present := bool(state.get("present", false))
+	sprite.texture = texture if present else null
+	sprite.position = _avatar_pair(state.get("position", [0.0, 0.0]))
+	sprite.offset = -_avatar_pair(state.get("origin", [0.0, 0.0]))
+	sprite.scale = _avatar_pair(state.get("scale", [1.0, 1.0]))
+	sprite.rotation = float(state.get("rotation", 0.0))
+	sprite.z_index = int(state.get("z_index", 0))
+	var avatar_modulate := Color.WHITE
+	avatar_modulate.a = float(state.get("opacity", 1.0))
+	sprite.modulate = avatar_modulate
+	sprite.visible = present and bool(state.get("visible", false))
+
+
+func _resolve_addressable_avatar_texture(state: Dictionary) -> Texture2D:
+	var source_kind := String(state.get("source_kind", ""))
+	if source_kind == "asset":
+		return _load_dialogue_avatar_texture(String(state.get("asset", "")))
+	if source_kind != "character":
+		return null
+	var character := String(state.get("character", ""))
+	var expression := String(state.get("expression", ""))
+	var config := _config_loader.get_config(character)
+	var asset_stem := config.resolve_avatar_asset(expression)
+	var texture := _load_dialogue_avatar_texture(
+		"character:%s/%s" % [character, asset_stem])
+	if texture == null or not config.has_avatar_rect():
+		return texture
+	var atlas := AtlasTexture.new()
+	atlas.atlas = texture
+	atlas.region = config.avatar_rect
+	return atlas
+
+
+func _load_dialogue_avatar_texture(asset_id: String) -> Texture2D:
+	var path := asset_id
+	if asset_id.begins_with("background:"):
+		path = StellaRuntime.backgrounds_path + asset_id.trim_prefix("background:")
+	elif asset_id.begins_with("character:"):
+		path = StellaRuntime.characters_path + asset_id.trim_prefix("character:")
+	elif asset_id.begins_with("stage:"):
+		path = StellaRuntime.stage_assets_path + asset_id.trim_prefix("stage:")
+	elif not asset_id.begins_with("res://"):
+		return null
+	if ResourceLoader.exists(path):
+		return ResourceLoader.load(
+			path, "Texture2D", ResourceLoader.CACHE_MODE_REUSE) as Texture2D
+	if not path.get_extension().is_empty():
+		return null
+	for extension: String in _DIALOGUE_AVATAR_TEXTURE_EXTENSIONS:
+		var candidate := path + extension
+		if ResourceLoader.exists(candidate):
+			return ResourceLoader.load(
+				candidate,
+				"Texture2D",
+				ResourceLoader.CACHE_MODE_REUSE,
+			) as Texture2D
+	return null
+
+
+func _avatar_pair(value: Variant) -> Vector2:
+	return Vector2(float(value[0]), float(value[1]))
+
+
 func _apply_dialogue_clear(
 	operation: DialogueClearPresentationOperation,
 ) -> bool:
@@ -4954,6 +5396,15 @@ func _apply_hide_dialogue_boundary(revision: int) -> void:
 
 func _update_avatar(character: String, expression: String, mode: String) -> void:
 	if _avatar_container == null or _avatar_texture == null:
+		return
+	if bool(_addressable_avatar_state.get("present", false)):
+		_current_character = character if mode == "adv" else ""
+		_current_avatar_expression = expression if mode == "adv" else ""
+		_avatar_texture.texture = null
+		_avatar_texture.visible = false
+		_avatar_container.visible = bool(
+			_addressable_avatar_state.get("visible", false))
+		_update_dialogue_visibility_node_baseline(_avatar_container)
 		return
 
 	# Only show avatar in ADV mode when a character is speaking

@@ -6,6 +6,8 @@ const ChapterIndicatorRequest = preload(
 	"res://addons/stella/core/data/chapter_indicator_request.gd")
 const DialogueClearOperationRequest = preload(
 	"res://addons/stella/core/data/dialogue_clear_operation_request.gd")
+const DialogueAvatarOperationRequest = preload(
+	"res://addons/stella/core/data/dialogue_avatar_operation_request.gd")
 const LoopSeOperationRequestType = preload(
 	"res://addons/stella/core/data/loop_se_operation_request.gd")
 const LoopSeStateCaptureRequestType = preload(
@@ -28,9 +30,9 @@ signal dialogue_advance_committed(activation_id: int)
 ## callback or depending on a concrete Presenter node.
 signal dialogue_backlog_effects_resolved(request: DialogueRequest, effect_names: Array)
 ## Unified dialogue signal — both normal and @combine dialogues flow through here.
-## segments: Array of {text: String, voice: String, stage_ops: Array}
+## segments: Array of {text: String, voice: String, presentation_ops: Array}
 ## A normal single-line dialogue has segments.size() == 1. A @combine block has
-## multiple segments; voices and named-stage cues advance at segment boundaries.
+## multiple segments; voices and typed Stage/avatar cues advance at segment boundaries.
 ## Inline [expr:expression] markers belong only to the text/avatar timeline. Either
 ## way, the dialogue is one unit for advance/skip/backlog.
 signal show_dialogue(character: String, segments: Array, mode: String)
@@ -1116,6 +1118,246 @@ func _dialogue_clear_participant_snapshot() -> Array[Dictionary]:
 		})
 	return result
 
+# Addressable dialogue-avatar presentation
+signal dialogue_avatar_validate_requested(request: DialogueAvatarOperationRequest)
+signal dialogue_avatar_accept_requested(request: DialogueAvatarOperationRequest)
+signal dialogue_avatar_apply_readiness_requested(request: DialogueAvatarOperationRequest)
+signal dialogue_avatar_apply_requested(request: DialogueAvatarOperationRequest)
+signal dialogue_avatar_operation_committed(
+	operation: DialogueAvatarPresentationOperation)
+signal dialogue_avatar_presenter_registered()
+signal dialogue_avatar_visuals_reset_requested(epoch: int)
+signal dialogue_avatar_state_apply_requested(state: Dictionary, epoch: int)
+signal dialogue_avatar_transition_receipt_started(
+	presenter_instance_id: int,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+)
+signal dialogue_avatar_transition_terminal(
+	presenter_instance_id: int,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+	outcome: StringName,
+)
+signal dialogue_avatar_transition_receipts_finish_requested(transitions: Array)
+
+var _dispatching_dialogue_avatar_request: DialogueAvatarOperationRequest
+var _applying_dialogue_avatar_request: DialogueAvatarOperationRequest
+var _dialogue_avatar_participant_authority := RefCounted.new()
+var _dialogue_avatar_registrar_authority: Object
+var _dialogue_avatar_participants: Dictionary = {}
+var _dialogue_avatar_epoch: int = 0
+var _dialogue_avatar_epoch_stack: Array[int] = []
+
+
+func configure_dialogue_avatar_registrar(authority: Object) -> bool:
+	if authority == null:
+		return false
+	if _dialogue_avatar_registrar_authority == null:
+		_dialogue_avatar_registrar_authority = authority
+	return _dialogue_avatar_registrar_authority == authority
+
+
+func register_dialogue_avatar_presenter(
+	presenter: Object,
+	registrar_authority: Object,
+) -> RefCounted:
+	if (
+		registrar_authority != _dialogue_avatar_registrar_authority
+		or presenter == null
+		or not is_instance_valid(presenter)
+		or not presenter is Node
+		or (presenter as Node).is_queued_for_deletion()
+	):
+		return null
+	var presenter_id := presenter.get_instance_id()
+	var existing: Dictionary = _dialogue_avatar_participants.get(presenter_id, {})
+	if not existing.is_empty():
+		var existing_presenter: Object = (
+			(existing.get("presenter") as WeakRef).get_ref())
+		if existing_presenter == presenter:
+			return existing.get("capability") as RefCounted
+	var capability := RefCounted.new()
+	_dialogue_avatar_participants[presenter_id] = {
+		"presenter": weakref(presenter),
+		"capability": capability,
+	}
+	dialogue_avatar_presenter_registered.emit()
+	return capability
+
+
+func unregister_dialogue_avatar_presenter(
+	presenter: Object,
+	capability: RefCounted,
+	registrar_authority: Object,
+) -> void:
+	if (
+		registrar_authority != _dialogue_avatar_registrar_authority
+		or presenter == null
+		or not is_instance_valid(presenter)
+	):
+		return
+	if _dialogue_avatar_participant_is_current(presenter, capability):
+		_dialogue_avatar_participants.erase(presenter.get_instance_id())
+
+
+func reject_dialogue_avatar_request(
+	request: DialogueAvatarOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	error: String,
+) -> bool:
+	if not _dialogue_avatar_request_target_is_current(
+		request, presenter, capability, false):
+		return false
+	return request._reject(error, _dialogue_avatar_participant_authority)
+
+
+func validate_dialogue_avatar_request(
+	request: DialogueAvatarOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _dialogue_avatar_request_target_is_current(
+		request, presenter, capability, false):
+		return false
+	return request._validate(presenter, _dialogue_avatar_participant_authority)
+
+
+func accept_dialogue_avatar_request(
+	request: DialogueAvatarOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _dialogue_avatar_request_target_is_current(
+		request, presenter, capability, false):
+		return false
+	return request._accept(presenter, _dialogue_avatar_participant_authority)
+
+
+func mark_dialogue_avatar_apply_ready(
+	request: DialogueAvatarOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _dialogue_avatar_request_target_is_current(
+		request, presenter, capability, true):
+		return false
+	return request._ready(presenter, _dialogue_avatar_participant_authority)
+
+
+func acknowledge_dialogue_avatar_apply(
+	request: DialogueAvatarOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _dialogue_avatar_request_target_is_current(
+		request, presenter, capability, true):
+		return false
+	return request._apply(presenter, _dialogue_avatar_participant_authority)
+
+
+func _dialogue_avatar_request_target_is_current(
+	request: DialogueAvatarOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	applying: bool,
+) -> bool:
+	return (
+		request != null
+		and request == (
+			_applying_dialogue_avatar_request
+			if applying else _dispatching_dialogue_avatar_request)
+		and _dialogue_avatar_participant_is_current(presenter, capability)
+		and request.is_target(presenter)
+	)
+
+
+func _dialogue_avatar_participant_is_current(
+	presenter: Object,
+	capability: Object,
+) -> bool:
+	if (
+		presenter == null
+		or capability == null
+		or not is_instance_valid(presenter)
+		or not presenter is Node
+		or (presenter as Node).is_queued_for_deletion()
+	):
+		return false
+	var entry: Dictionary = _dialogue_avatar_participants.get(
+		presenter.get_instance_id(), {})
+	if entry.is_empty() or entry.get("capability") != capability:
+		return false
+	return (entry.get("presenter") as WeakRef).get_ref() == presenter
+
+
+func _dialogue_avatar_participant_snapshot() -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	for presenter_id: int in _dialogue_avatar_participants.keys():
+		var entry: Dictionary = _dialogue_avatar_participants[presenter_id]
+		var weak_presenter: WeakRef = entry.get("presenter")
+		var presenter: Object = (
+			weak_presenter.get_ref() if weak_presenter != null else null)
+		var capability: Object = entry.get("capability")
+		if not _dialogue_avatar_participant_is_current(presenter, capability):
+			_dialogue_avatar_participants.erase(presenter_id)
+			continue
+		result.append({"presenter": presenter, "capability": capability})
+	return result
+
+
+func current_dialogue_avatar_epoch() -> int:
+	return _dialogue_avatar_epoch
+
+
+func is_current_dialogue_avatar_operation_valid() -> bool:
+	return (
+		_dialogue_avatar_epoch_stack.is_empty()
+		or _dialogue_avatar_epoch_stack.back() == _dialogue_avatar_epoch
+	)
+
+
+func reset_dialogue_avatar_visuals() -> void:
+	_reset_dialogue_avatar_projection(DialogueAvatarState.default_state(), false)
+
+
+func reset_and_apply_dialogue_avatar_state(state: Dictionary) -> void:
+	_reset_dialogue_avatar_projection(state.duplicate(true), true)
+
+
+func _reset_dialogue_avatar_projection(state: Dictionary, apply_state: bool) -> void:
+	_mark_presentation_projection_retirement_started()
+	_dialogue_avatar_epoch += 1
+	var reset_epoch := _dialogue_avatar_epoch
+	var retained: Array[Dictionary] = []
+	var cancelled: Array[Dictionary] = []
+	for request: Dictionary in _presentation_operation_queue:
+		if _request_belongs_to_retained_projection(request):
+			request["avatar_epoch"] = reset_epoch
+			retained.append(request)
+			continue
+		var has_avatar := false
+		for operation_value: Variant in request.get("operations", []):
+			if operation_value is DialogueAvatarPresentationOperation:
+				has_avatar = true
+				break
+		if has_avatar:
+			cancelled.append(request)
+		else:
+			retained.append(request)
+	_presentation_operation_queue = retained
+	for request: Dictionary in cancelled:
+		presentation_operation_request_finished.emit(
+			int(request.get("request_id", 0)), false)
+	dialogue_avatar_visuals_reset_requested.emit(reset_epoch)
+	if apply_state and reset_epoch == _dialogue_avatar_epoch:
+		dialogue_avatar_state_apply_requested.emit(state.duplicate(true), reset_epoch)
+	if not _presentation_unified_draining and _stage_reset_depth == 0:
+		_drain_all_presentation_operation_queues()
+
 # Persistent named loop-SE channels
 ## A loop operation is validated and accepted by the single Runtime-owned
 ## AudioPresenter before any child of a mixed presentation batch is applied.
@@ -1956,6 +2198,14 @@ func emit_presentation_operations(
 				and not StageLayerState.validate_operation(payload, true))
 			or (operation is DialogueVisibilityPresentationOperation
 				and not DialogueVisibilityState.validate_operation(payload, true))
+			or (operation is DialogueAvatarPresentationOperation
+				and (
+					not DialogueAvatarState.validate_operation(payload, true)
+					or not DialogueAvatarState.validate_snapshot_state(
+						operation.get_before_state(), true)
+					or not DialogueAvatarState.validate_snapshot_state(
+						operation.get_target_state(), true)
+				))
 			or (operation is DialogueClearPresentationOperation
 				and (
 					payload.keys() != ["scope"]
@@ -1966,6 +2216,7 @@ func emit_presentation_operations(
 			or (operation is BgmPresentationOperation
 				and not BgmChannelState.validate_operation(payload, true))
 			or not operation is StagePresentationOperation
+				and not operation is DialogueAvatarPresentationOperation
 				and not operation is DialogueVisibilityPresentationOperation
 				and not operation is DialogueClearPresentationOperation
 				and not operation is ChapterIndicatorPresentationOperation
@@ -1982,6 +2233,7 @@ func emit_presentation_operations(
 		"on_dispatch_started": on_dispatch_started,
 		"stage_epoch": _stage_operation_epoch,
 		"visibility_epoch": _dialogue_visibility_epoch,
+		"avatar_epoch": _dialogue_avatar_epoch,
 		"chapter_epoch": _chapter_indicator_epoch,
 		"loop_se_epoch": _loop_se_epoch,
 		"bgm_epoch": _bgm_epoch,
@@ -2198,6 +2450,7 @@ func _drain_presentation_operation_queue_once() -> void:
 	var request_id := int(request.get("request_id", 0))
 	var stage_epoch := int(request.get("stage_epoch", 0))
 	var visibility_epoch := int(request.get("visibility_epoch", 0))
+	var avatar_epoch := int(request.get("avatar_epoch", 0))
 	var chapter_epoch := int(request.get("chapter_epoch", 0))
 	var loop_se_epoch := int(request.get("loop_se_epoch", 0))
 	var bgm_epoch := int(request.get("bgm_epoch", 0))
@@ -2209,12 +2462,15 @@ func _drain_presentation_operation_queue_once() -> void:
 		"on_dispatch_started", Callable())
 	var uses_stage := false
 	var uses_dialogue_visibility := false
+	var uses_dialogue_avatar := false
 	var uses_chapter_indicator := false
 	var uses_loop_se := false
 	var uses_bgm := false
 	for operation_value: Variant in operations:
 		if operation_value is StagePresentationOperation:
 			uses_stage = true
+		elif operation_value is DialogueAvatarPresentationOperation:
+			uses_dialogue_avatar = true
 		elif operation_value is DialogueVisibilityPresentationOperation:
 			uses_dialogue_visibility = true
 		elif operation_value is DialogueClearPresentationOperation:
@@ -2229,17 +2485,24 @@ func _drain_presentation_operation_queue_once() -> void:
 	_stage_operation_epoch_stack.append(stage_epoch)
 	_dialogue_visibility_dispatch_stack.append(request_id)
 	_dialogue_visibility_epoch_stack.append(visibility_epoch)
+	_dialogue_avatar_epoch_stack.append(avatar_epoch)
 	_loop_se_epoch_stack.append(loop_se_epoch)
 	_bgm_epoch_stack.append(bgm_epoch)
 	if dispatch_started_callback.is_valid():
 		dispatch_started_callback.call()
 	var dialogue_clear_requests: Dictionary = {}
+	var dialogue_avatar_requests: Dictionary = {}
 	var stage_requests: Dictionary = {}
 	var chapter_requests: Dictionary = {}
 	var loop_se_requests: Dictionary = {}
 	var bgm_requests: Dictionary = {}
 	var preflight_valid := true
 	var stage_runs: Array[Dictionary] = []
+	var dialogue_avatar_operation_count := 0
+	for operation_value: Variant in operations:
+		if operation_value is DialogueAvatarPresentationOperation:
+			dialogue_avatar_operation_count += 1
+	var dialogue_avatar_preflight_index := 0
 	var stage_preflight_index := 0
 	while stage_preflight_index < operations.size():
 		if not operations[stage_preflight_index] is StagePresentationOperation:
@@ -2309,7 +2572,50 @@ func _drain_presentation_operation_queue_once() -> void:
 	for operation_value: Variant in operations:
 		if not preflight_valid:
 			break
-		if operation_value is DialogueClearPresentationOperation:
+		if operation_value is DialogueAvatarPresentationOperation:
+			var operation: DialogueAvatarPresentationOperation = operation_value
+			var avatar_request := DialogueAvatarOperationRequest.new(
+				operation, operation.get_target_state(), force_cut)
+			avatar_request._bind_authority(
+				_dialogue_avatar_participant_authority,
+				_dialogue_avatar_participant_is_current,
+			)
+			avatar_request._bind_preflight_chain(
+				dialogue_avatar_preflight_index,
+				dialogue_avatar_operation_count,
+				_dialogue_avatar_participant_authority,
+			)
+			dialogue_avatar_preflight_index += 1
+			for participant: Dictionary in _dialogue_avatar_participant_snapshot():
+				avatar_request._snapshot_presenter(
+					participant.get("presenter"),
+					participant.get("capability"),
+					_dialogue_avatar_participant_authority,
+				)
+			dialogue_avatar_requests[operation.get_instance_id()] = avatar_request
+			_dispatching_dialogue_avatar_request = avatar_request
+			dialogue_avatar_validate_requested.emit(avatar_request)
+			if (
+				avatar_epoch != _dialogue_avatar_epoch
+				or not avatar_request._seal_validation(
+					request_id, _dialogue_avatar_participant_authority)
+			):
+				_report_dialogue_avatar_rejection(
+					operation.get_source(), avatar_request.get_validation_errors())
+				preflight_valid = false
+				break
+			dialogue_avatar_accept_requested.emit(avatar_request)
+			if (
+				not avatar_request.all_presenters_accepted()
+				or not avatar_request.presenters_are_live()
+			):
+				_report_dialogue_avatar_rejection(
+					operation.get_source(),
+					["a sealed DialoguePresenter did not accept the captured binding"],
+				)
+				preflight_valid = false
+				break
+		elif operation_value is DialogueClearPresentationOperation:
 			var operation: DialogueClearPresentationOperation = operation_value
 			var clear_request := DialogueClearOperationRequest.new(operation)
 			clear_request._bind_authority(
@@ -2454,6 +2760,7 @@ func _drain_presentation_operation_queue_once() -> void:
 				break
 			bgm_requests[operation.get_instance_id()] = bgm_request
 	_dispatching_stage_request = null
+	_dispatching_dialogue_avatar_request = null
 	_dispatching_dialogue_clear_request = null
 	_dispatching_chapter_indicator_request = null
 	_dispatching_loop_se_request = null
@@ -2461,11 +2768,13 @@ func _drain_presentation_operation_queue_once() -> void:
 	var epochs_valid := _presentation_operation_epochs_are_current(
 		stage_epoch,
 		visibility_epoch,
+		avatar_epoch,
 		chapter_epoch,
 		loop_se_epoch,
 		bgm_epoch,
 		uses_stage,
 		uses_dialogue_visibility,
+		uses_dialogue_avatar,
 		uses_chapter_indicator,
 		uses_loop_se,
 		uses_bgm,
@@ -2477,6 +2786,9 @@ func _drain_presentation_operation_queue_once() -> void:
 		for clear_request_value: Variant in dialogue_clear_requests.values():
 			(clear_request_value as DialogueClearOperationRequest)._finish(
 				false, false, _dialogue_clear_participant_authority)
+		for avatar_request_value: Variant in dialogue_avatar_requests.values():
+			(avatar_request_value as DialogueAvatarOperationRequest)._finish(
+				false, false, _dialogue_avatar_participant_authority)
 		for chapter_request_value: Variant in chapter_requests.values():
 			(chapter_request_value as ChapterIndicatorRequest)._finish(
 				false, false, _chapter_indicator_participant_authority)
@@ -2488,6 +2800,7 @@ func _drain_presentation_operation_queue_once() -> void:
 				false, false, _bgm_participant_authority)
 		_bgm_epoch_stack.pop_back()
 		_loop_se_epoch_stack.pop_back()
+		_dialogue_avatar_epoch_stack.pop_back()
 		_dialogue_visibility_epoch_stack.pop_back()
 		_dialogue_visibility_dispatch_stack.pop_back()
 		_stage_operation_epoch_stack.pop_back()
@@ -2572,6 +2885,33 @@ func _drain_presentation_operation_queue_once() -> void:
 			# request is active, so the visual run is never applied twice.
 			stage_operations_requested.emit(stage_run, force_cut)
 			_applying_stage_request = null
+		elif operation is DialogueAvatarPresentationOperation:
+			var avatar_request: DialogueAvatarOperationRequest = (
+				dialogue_avatar_requests.get(operation.get_instance_id()))
+			_applying_dialogue_avatar_request = avatar_request
+			dialogue_avatar_apply_readiness_requested.emit(avatar_request)
+			if (
+				avatar_request == null
+				or not avatar_request.all_presenters_ready()
+				or not avatar_request.presenters_are_live()
+				or avatar_epoch != _dialogue_avatar_epoch
+			):
+				_applying_dialogue_avatar_request = null
+				delivered = false
+				break
+			if apply_started_callback.is_valid():
+				apply_started_callback.call([operation.get_channel()])
+			dialogue_avatar_apply_requested.emit(avatar_request)
+			_applying_dialogue_avatar_request = null
+			if (
+				not avatar_request.all_presenters_applied()
+				or not avatar_request.presenters_are_live()
+				or avatar_epoch != _dialogue_avatar_epoch
+			):
+				delivered = false
+				break
+			dialogue_avatar_operation_committed.emit(operation)
+			operation_index += 1
 		elif operation is DialogueVisibilityPresentationOperation:
 			var visibility_run: Array = []
 			var visibility_channels: Array[StringName] = []
@@ -2663,11 +3003,13 @@ func _drain_presentation_operation_queue_once() -> void:
 		if not _presentation_operation_epochs_are_current(
 			stage_epoch,
 			visibility_epoch,
+			avatar_epoch,
 			chapter_epoch,
 			loop_se_epoch,
 			bgm_epoch,
 			uses_stage,
 			uses_dialogue_visibility,
+			uses_dialogue_avatar,
 			uses_chapter_indicator,
 			uses_loop_se,
 			uses_bgm,
@@ -2680,6 +3022,9 @@ func _drain_presentation_operation_queue_once() -> void:
 	for clear_request_value: Variant in dialogue_clear_requests.values():
 		(clear_request_value as DialogueClearOperationRequest)._finish(
 			delivered, false, _dialogue_clear_participant_authority)
+	for avatar_request_value: Variant in dialogue_avatar_requests.values():
+		(avatar_request_value as DialogueAvatarOperationRequest)._finish(
+			delivered, false, _dialogue_avatar_participant_authority)
 	for chapter_request_value: Variant in chapter_requests.values():
 		(chapter_request_value as ChapterIndicatorRequest)._finish(
 			delivered, false, _chapter_indicator_participant_authority)
@@ -2691,6 +3036,7 @@ func _drain_presentation_operation_queue_once() -> void:
 			delivered, false, _bgm_participant_authority)
 	_bgm_epoch_stack.pop_back()
 	_loop_se_epoch_stack.pop_back()
+	_dialogue_avatar_epoch_stack.pop_back()
 	_dialogue_visibility_epoch_stack.pop_back()
 	_dialogue_visibility_dispatch_stack.pop_back()
 	_stage_operation_epoch_stack.pop_back()
@@ -2701,11 +3047,13 @@ func _drain_presentation_operation_queue_once() -> void:
 		and _presentation_operation_epochs_are_current(
 			stage_epoch,
 			visibility_epoch,
+			avatar_epoch,
 			chapter_epoch,
 			loop_se_epoch,
 			bgm_epoch,
 			uses_stage,
 			uses_dialogue_visibility,
+			uses_dialogue_avatar,
 			uses_chapter_indicator,
 			uses_loop_se,
 			uses_bgm,
@@ -2716,11 +3064,13 @@ func _drain_presentation_operation_queue_once() -> void:
 func _presentation_operation_epochs_are_current(
 	stage_epoch: int,
 	visibility_epoch: int,
+	avatar_epoch: int,
 	chapter_epoch: int,
 	loop_se_epoch: int,
 	bgm_epoch: int,
 	uses_stage: bool,
 	uses_dialogue_visibility: bool,
+	uses_dialogue_avatar: bool,
 	uses_chapter_indicator: bool,
 	uses_loop_se: bool,
 	uses_bgm: bool,
@@ -2730,6 +3080,10 @@ func _presentation_operation_epochs_are_current(
 		and (
 			not uses_dialogue_visibility
 			or visibility_epoch == _dialogue_visibility_epoch
+		)
+		and (
+			not uses_dialogue_avatar
+			or avatar_epoch == _dialogue_avatar_epoch
 		)
 		and (
 			not uses_chapter_indicator
@@ -3383,6 +3737,20 @@ func _report_chapter_indicator_rejection(
 		messages.append("request invalidated during preflight")
 	push_error(
 		"%s chapter indicator request rejected: %s"
+		% [_chapter_indicator_source_label(source), "; ".join(messages)])
+
+
+func _report_dialogue_avatar_rejection(
+	source: Dictionary,
+	errors: Array,
+) -> void:
+	var messages: Array[String] = []
+	for error_value: Variant in errors:
+		messages.append(String(error_value))
+	if messages.is_empty():
+		messages.append("request invalidated during preflight")
+	push_error(
+		"%s dialogue avatar request rejected: %s"
 		% [_chapter_indicator_source_label(source), "; ".join(messages)])
 
 

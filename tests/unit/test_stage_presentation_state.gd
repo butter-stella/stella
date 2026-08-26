@@ -162,6 +162,7 @@ func test_dialogue_projection_defaults_and_restore_are_stable() -> void:
 		"avatar_expression": "",
 		"nvl_entries": [],
 	})
+	assert_eq(snapshot.get("dialogue_avatar"), DialogueAvatarState.default_state())
 	var stable := {
 		"bg": "",
 		"stage_layers": {},
@@ -180,6 +181,19 @@ func test_dialogue_projection_defaults_and_restore_are_stable() -> void:
 			"avatar_expression": "happy",
 			"nvl_entries": [],
 		},
+		"dialogue_avatar": DialogueAvatarState.reduce(
+			DialogueAvatarState.default_state(),
+			[{
+				"action": "set",
+				"properties": {
+					"asset": "stage:bg_cafe",
+					"visible": false,
+				},
+				"transition": "cut",
+				"duration": 0.0,
+			}],
+			false,
+		),
 	}
 	state.restore_snapshot(stable)
 	assert_eq(state.capture_snapshot(), stable)

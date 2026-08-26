@@ -11,6 +11,8 @@ const DIALOGUE_VISIBILITY_REFERENCE_PATH = \
 	"res://examples/demo/scenarios/dialogue_visibility.stla"
 const DIALOGUE_CLEAR_REFERENCE_PATH = \
 	"res://examples/demo/scenarios/dialogue_clear.stla"
+const DIALOGUE_AVATAR_REFERENCE_PATH = \
+	"res://examples/demo/scenarios/dialogue_avatar.stla"
 const LOOP_SE_REFERENCE_PATH = "res://examples/demo/scenarios/loop_se.stla"
 const BGM_REFERENCE_PATH = "res://examples/demo/scenarios/bgm_lifecycle.stla"
 const BGM_RESOURCE_PATH = "res://examples/demo/audio/bgm/synthetic_bgm.tres"
@@ -257,6 +259,58 @@ func test_dialogue_clear_public_reference_uses_only_short_canonical_syntax() -> 
 					)
 	assert_eq(clear_children, 2,
 		"standalone and mixed forms compile through one canonical child")
+
+
+func test_dialogue_avatar_public_reference_compiles_one_unified_typed_schema() -> void:
+	assert_true(FileAccess.file_exists(DIALOGUE_AVATAR_REFERENCE_PATH),
+		"issue #172 publishes one redistributable reference scenario")
+	if not FileAccess.file_exists(DIALOGUE_AVATAR_REFERENCE_PATH):
+		return
+	var file := FileAccess.open(DIALOGUE_AVATAR_REFERENCE_PATH, FileAccess.READ)
+	assert_not_null(file)
+	if file == null:
+		return
+	var source := file.get_as_text()
+	file.close()
+	var data := DslParser.parse(
+		DslLexer.tokenize(source),
+		"dialogue_avatar_demo",
+		DIALOGUE_AVATAR_REFERENCE_PATH,
+	)
+	assert_eq(data.diagnostics, [], str(data.diagnostics))
+	assert_not_null(data.get_chapter("dialogue_avatar_demo"))
+	var scene := data.get_scene("dialogue_avatar_start")
+	assert_not_null(scene)
+	assert_true("@dialogue_avatar set" in source)
+	assert_true("@dialogue_avatar show transition=fade" in source)
+	assert_true("@dialogue_avatar hide transition=fade" in source)
+	assert_true("@combine" in source)
+	assert_true("@presentation_batch policy=join" in source)
+	if scene == null:
+		return
+	var avatar_children := 0
+	var combined_avatar_children := 0
+	for command_value: Variant in scene.commands:
+		var command: CommandData = command_value
+		if command.type == "presentation_batch":
+			for operation_value: Variant in command.params.get("operations", []):
+				var operation: Dictionary = operation_value
+				if String(operation.get("kind", "")) == "dialogue_avatar":
+					avatar_children += 1
+		elif command.type == "dialogue":
+			for segment_value: Variant in command.params.get("segments", []):
+				var segment: Dictionary = segment_value
+				var operations: Array = segment.get("presentation_ops", [])
+				var lines: Array = segment.get("presentation_operation_lines", [])
+				assert_eq(lines.size(), operations.size())
+				for operation_value: Variant in operations:
+					var operation: Dictionary = operation_value
+					if String(operation.get("kind", "")) == "dialogue_avatar":
+						combined_avatar_children += 1
+	assert_eq(avatar_children, 4,
+		"standalone and mixed forms compile to the same typed avatar child")
+	assert_eq(combined_avatar_children, 2,
+		"combine retains two authored avatar cues without a parallel Stage schema")
 
 
 func test_loop_se_public_reference_uses_canonical_named_channels() -> void:

@@ -294,7 +294,50 @@ Advance indicator 是可选的、按 Profile 独立配置的表现节点。`adva
 
 每条 standalone command 都是 blocking JOIN；无 Presenter 的 headless runner 同步完成。
 
-### 3.5B Dialogue page clear
+### 3.5B Addressable dialogue avatar
+
+```stla
+@dialogue_avatar show asset=character:portraits/hero.png
+@dialogue_avatar hide
+```
+
+`@dialogue_avatar` controls one stable avatar projection owned by the dialogue surface. It is
+independent from line-local `[expr:]` markers and from named Stage layers. The shortest
+`show`/`hide` forms are sufficient for ordinary use; `set` can prepare a hidden stable state
+without waiting for a later dialogue line:
+
+```stla
+@dialogue_avatar set character=hero expression=neutral visible=false position=-280,-140 origin=65056,320 scale=0.45,0.45
+@dialogue_avatar show transition=fade duration=0.3
+@dialogue_avatar set expression=smile opacity=0.85
+@dialogue_avatar remove transition=fade duration=0.25
+```
+
+The exact grammar is:
+
+- `@dialogue_avatar set <properties...> [transition=cut|fade] [duration=<seconds>]`
+- `@dialogue_avatar show [<properties...>] [transition=cut|fade] [duration=<seconds>]`
+- `@dialogue_avatar hide [transition=cut|fade] [duration=<seconds>]`
+- `@dialogue_avatar remove [transition=cut|fade] [duration=<seconds>]`
+- source is either `asset=<logical-id>` or the pair `character=<id> expression=<id>`; the two forms are mutually exclusive
+- canonical properties are `visible` (only with `set`), `position=x,y`, `origin=x,y`, `scale=x,y`, `rotation`, `z_index`, and `opacity`
+- `cut` is the default and requires `duration=0`; `fade` defaults to `duration=0.25` and crossfades old/new projections
+
+Source-format fields such as `xpos`, `ypos`, `zoom`, `showmode`, `visvalue`, `leveloffset`,
+`order`, and `zpos` are not Stella aliases. An importer must prove and translate them into the
+canonical properties above, or reject the source at its original line. Unknown, duplicate,
+non-finite, out-of-range, incomplete source, and unsupported current-state updates all
+fail-close before Presenter mutation.
+
+Standalone avatar commands lower to a one-child JOIN and always traverse the Runtime-owned
+typed Director/DialoguePresenter preflight. Click and Skip may make the effective transition a
+cut, but cannot bypass logical-resource validation. Save/load records only the sealed stable
+avatar target; Tween, receipt, generation, and line-local avatar state do not enter the snapshot.
+Backlog replay restores text and never re-dispatches avatar operations.
+The CI-compiled public reference scenario is
+[`examples/demo/scenarios/dialogue_avatar.stla`](../examples/demo/scenarios/dialogue_avatar.stla).
+
+### 3.5C Dialogue page clear
 
 ```stla
 @dialogue_clear
@@ -316,20 +359,21 @@ token、Tween 或 wall-clock wait。存档显式记录 cleared 状态，不能�
 
 #### 高级：mixed presentation batch
 
-只有需要把 chapter indicator、dialogue visibility、dialogue clear 与 Stage 操作组成同一 JOIN/FNF 边界时，才使用
+只有需要把 chapter indicator、dialogue visibility、dialogue clear、addressable dialogue avatar 与 Stage 操作组成同一 JOIN/FNF 边界时，才使用
 `@presentation_batch`：
 
 ```stla
 @presentation_batch policy=join
   @dialogue_visibility hide transition=fade duration=0.3
   @dialogue_clear
+  @dialogue_avatar set character=sakura expression=happy visible=false
   @chapter_indicator show transition=fade duration=0.3
   @stage sakura update asset=character:sakura/happy transition=move duration=0.3
   @dialogue_visibility quick_menu hide transition=fade duration=0.3
 @end
 ```
 
-`@presentation_batch` header 只接受一个严格小写的 `policy=join|fire_and_forget`。block 不能为空，合法 child 只有 canonical `@stage`、canonical `@dialogue_visibility`、canonical `@dialogue_clear`、canonical `@chapter_indicator`、canonical `@loop_se` 与 canonical `@bgm`；child 与 standalone 共用各自唯一的 parser/canonicalization。每批最多一个 dialogue-clear、chapter-indicator child 和一个 BGM child，因为它们分别共享固定 `dialogue:content`、`chapter:indicator` / `bgm:main` channel；每个 loop-SE channel 也最多出现一次。解析器保留跨 kind 的 authored child 顺序，且 `operation_lines` 与 child 一一对应；duplicate Stage layer、duplicate visibility target（省略 target 的 surface 与显式 surface 也视为重复）、duplicate clear/chapter/BGM/loop-SE target、nested batch/if/parallel/combine、scene gap、非法 child 与缺失 `@end` 都会令整块 fail-close。既有 `@stage_batch` 继续保持 Stage-only public contract，不会静默扩成 mixed alias。
+`@presentation_batch` header 只接受一个严格小写的 `policy=join|fire_and_forget`。block 不能为空，合法 child 只有 canonical `@stage`、canonical `@dialogue_avatar`、canonical `@dialogue_visibility`、canonical `@dialogue_clear`、canonical `@chapter_indicator`、canonical `@loop_se` 与 canonical `@bgm`；child 与 standalone 共用各自唯一的 parser/canonicalization。每批最多一个 dialogue-avatar、dialogue-clear、chapter-indicator child 和一个 BGM child，因为它们分别共享固定 `dialogue:avatar`、`dialogue:content`、`chapter:indicator` / `bgm:main` channel；每个 loop-SE channel 也最多出现一次。解析器保留跨 kind 的 authored child 顺序，且 `operation_lines` 与 child 一一对应；duplicate Stage layer、duplicate avatar/visibility target（省略 visibility target 的 surface 与显式 surface 也视为重复）、duplicate clear/chapter/BGM/loop-SE target、nested batch/if/parallel/combine、scene gap、非法 child 与缺失 `@end` 都会令整块 fail-close。既有 `@stage_batch` 继续保持 Stage-only public contract，不会静默扩成 mixed alias。
 
 Director 在任何 child apply 之前完成整批 typed schema/context preflight，并把 chapter Presenter binding registry 与唯一 AudioPresenter 完整 validate、seal 与 accept；任何 child 的 preflight 在其 source line 失败时都不会留下 Stage、dialogue、chapter 或 audio 的部分 mutation。apply 按 authored child 顺序跨 kind 派发，JOIN 等待 seal 后的 exact receipt union，FNF 则在 seal 后继续。普通 `@chapter_indicator`、`@dialogue_visibility` 和 `@dialogue_clear` 仍应使用简短 standalone 写法；只有真正需要这个原子边界时才使用 batch。
 
@@ -676,11 +720,12 @@ header、空 block、scene 边界或缺失 `@end` 的错误定位 opening line�
 
 ### 3.13 合并对话（@combine）
 
-一句台词在演出上是一整句，但声优录音被拆成了多段，每段之间还要切换舞台差分：
+一句台词在演出上是一整句，但声优录音被拆成了多段，每段之间还要切换舞台差分或对话框头像：
 
 ```
 @combine
 @stage sakura update face=stage:sakura/sad transition=fade duration=0.2
+@dialogue_avatar set character=sakura expression=sad visible=true transition=fade duration=0.2
 sakura「[expr:sad]我本来很开心的...」 #voice:sakura_013
 @stage rain update opacity=0.6 transition=fade duration=0.2
 @stage sakura update face=stage:sakura/surprised transition=fade duration=0.2
@@ -693,21 +738,27 @@ sakura「[expr:sad]我数学肯定完蛋了。」 #voice:sakura_019
 **语义：**
 
 - 块内所有 dialogue 行合并为**一句对话**，玩家视角上打字机从头连续打到尾
-- 块内一个或多个 `@stage` 都绑定到紧随其后的 segment
-- 每个 segment 的舞台批次先提交，再播放该段语音
+- 块内一个或多个 `@stage` / `@dialogue_avatar` 按 authored 顺序绑定到紧随其后的 segment
+- 每个 segment 的统一 typed presentation batch 先提交，再播放该段语音
 - 方括号表情标记随打字机更新对话框头像，不会写入舞台层
 - 语音按顺序排队：第 1 段播完 → 应用下一段舞台批次 → 第 2 段立即接上 → ...
-- 左键点击：整句结束，所有 segment 的舞台操作按原顺序归约后一次 cut 到最终态
+- 左键点击：整句结束，所有 segment 的 Stage/avatar 操作按原顺序归约后一次 typed force-cut 到最终态；资源 preflight 仍不可跳过
 - 快进模式：整段作为一句跳过
 - Backlog：记为一条
 
 **限制：**
 
-- 块内只允许 `@stage` 和 dialogue 行（角色名必须一致，或全为旁白）
-- `@stage` 后必须有 dialogue segment 承接
+- 块内只允许 `@stage`、`@dialogue_avatar` 和 dialogue 行（角色名必须一致，或全为旁白）
+- presentation operation 后必须有 dialogue segment 承接
 - 其它指令（如 `@bg`、`@effect`）不允许出现在块内
 - 跟随当前 NVL / overlay 模式及其命名 Profile
 - 在 NVL 中整个块算一条记录，`entry_prefix` 只添加一次
+
+每个 segment 内部只有一个 `presentation_ops` 列表和一个等长、全为正整数的
+`presentation_operation_lines` sidecar；Stage 与 avatar 不使用各自的平行字段。Presenter
+在对应 voice 之前把每项构造成 source-located typed operation，提交给唯一 Runtime-owned
+Director。sidecar 缺失、长度不符、行号非法、资源不可解析或后续操作对当前稳定状态无效，
+都会在 authored line 原子失败，不会先应用 earlier child 或卡住 voice queue。
 
 ### 3.14 等待
 

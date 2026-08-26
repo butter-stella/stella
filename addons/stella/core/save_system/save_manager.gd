@@ -470,7 +470,11 @@ func _presentation_snapshot_is_valid(
 		return false
 	var has_dialogue_visibility := snapshot.has("dialogue_visibility")
 	var has_dialogue_content := snapshot.has("dialogue_content")
-	if has_dialogue_visibility != has_dialogue_content:
+	var has_dialogue_avatar := snapshot.has("dialogue_avatar")
+	if (
+		has_dialogue_visibility != has_dialogue_content
+		or has_dialogue_avatar != has_dialogue_visibility
+	):
 		return false
 	if has_dialogue_visibility:
 		if not DialogueVisibilityState.validate_snapshot_state(
@@ -489,6 +493,11 @@ func _presentation_snapshot_is_valid(
 				snapshot["dialogue_content"] as Dictionary,
 				scenario_data,
 			)
+		):
+			return false
+		if not DialogueAvatarState.validate_snapshot_state(
+			snapshot["dialogue_avatar"],
+			false,
 		):
 			return false
 	return true

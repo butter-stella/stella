@@ -1,0 +1,25 @@
+// Public synthetic reference for the canonical addressable dialogue avatar.
+
+@chapter dialogue_avatar_demo "Addressable dialogue avatar"
+
+@scene dialogue_avatar_start
+@dialogue_avatar set asset=background:bg_black.png visible=false position=120,80 origin=0,0 scale=0.45,0.45
+「The stable avatar exists while remaining independently hidden.」
+@dialogue_avatar show transition=fade duration=0.3
+「Show and hide use the fixed dialogue:avatar channel.」
+
+@combine
+@dialogue_avatar set asset=background:bg_cafe.png transition=fade duration=0.3
+「A typed avatar cue is dispatched once at this voice segment boundary.」
+@dialogue_avatar hide transition=fade duration=0.2
+「The next cue retains its own authored source line and duration.」
+@end
+
+@presentation_batch policy=join
+  @stage reference show asset=background:bg_black.png fit=contain transition=cut duration=0
+  @dialogue_avatar show transition=fade duration=0.2
+  @dialogue_visibility hide transition=fade duration=0.2
+@end
+@dialogue_visibility show
+@dialogue_avatar remove
+「Stage, dialogue surface, and avatar remain independently addressable.」

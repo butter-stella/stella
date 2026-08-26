@@ -78,7 +78,7 @@ func test_scenario_context_snapshot_round_trips_authored_nvl_page_entries():
 	ctx.record_nvl_page_entry(10, "alice", [{
 		"text": "[b]First[/b]",
 		"voice": "voice_1",
-		"stage_ops": [{"type": "show", "position": Vector2(3, 4)}],
+		"presentation_ops": [{"type": "show", "position": Vector2(3, 4)}],
 	}])
 	ctx.current_command_index = 5
 	ctx.current_dialogue_profile_name = "second"
