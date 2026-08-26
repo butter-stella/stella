@@ -1,0 +1,60 @@
+[gd_resource type="Resource" script_class="PresentationClipDefinition" load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://addons/stella/core/data/presentation_clip_definition.gd" id="1_definition"]
+[ext_resource type="PackedScene" path="res://tests/fixtures/presentation_clips/synthetic_particle_clip.tscn" id="2_scene"]
+[ext_resource type="Script" path="res://addons/stella/core/data/presentation_clip_particle_layer.gd" id="3_particle"]
+[ext_resource type="Texture2D" path="res://tests/fixtures/presentation_clips/particle_dot.svg" id="4_dot"]
+
+[sub_resource type="Resource" id="Particle_teardown_cut"]
+script = ExtResource("3_particle")
+id = &"tail_cut"
+texture = ExtResource("4_dot")
+texture_filter = &"nearest"
+mask_mode = &"none"
+mask_filter = &"nearest"
+blend_mode = &"add"
+z_index = 10
+color = Color(1, 0.5, 0.25, 1)
+origin = Vector2(4, 4)
+emission_mode = &"rate"
+emission_start_seconds = 0.7
+emission_end_seconds = 1.0
+spawn_rate_min = 10.0
+spawn_rate_max = 10.0
+burst_count_min = 0
+burst_count_max = 0
+lifetime_seconds = 0.5
+maximum_live_particles = 5
+teardown_policy = &"cut"
+seed = 205
+spawn_rect = Rect2(28, 28, 0, 0)
+projection_bounds = Rect2(0, 0, 64, 64)
+offset_motion_keys = PackedVector3Array(0, 0, 0, 1, 0, 0)
+scaled_motion_keys = PackedVector3Array(0, 0, 0, 1, 0, -4)
+opacity_keys = PackedVector2Array(0, 1, 1, 1)
+scale_keys = PackedVector2Array(0, 1, 1, 1)
+rotation_keys = PackedVector2Array(0, 0, 1, 0)
+motion_scale_min = 1.0
+motion_scale_max = 1.0
+initial_scale_min = 1.0
+initial_scale_max = 1.0
+initial_rotation_min = 0.0
+initial_rotation_max = 0.0
+authored_source_path = "res://tests/fixtures/scenarios/presentation_clip/particle_teardown.stla"
+authored_source_line = 4
+
+[resource]
+script = ExtResource("1_definition")
+scene = ExtResource("2_scene")
+animation_player_path = NodePath("AnimationPlayer")
+animation_name = &"clip"
+logical_viewport_size = Vector2i(64, 64)
+fit_mode = &"contain"
+entry_transition = &"cut"
+entry_duration = 0.0
+exit_transition = &"turn"
+exit_duration = 0.2
+suppress_dialogue_surface = true
+suppress_quick_menu = true
+skippable = true
+particle_layers = Array[ExtResource("3_particle")]([SubResource("Particle_teardown_cut")])

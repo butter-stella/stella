@@ -1,4 +1,4 @@
 @chapter presentation_clip_lifecycle "Presentation clip lifecycle"
 @scene start
-@presentation_clip synthetic_particle_clip
+@presentation_clip synthetic_particle_teardown_clip
 narrator「clip complete」

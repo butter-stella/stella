@@ -9,6 +9,7 @@ const BLEND_MODES := [&"mix", &"add", &"sub", &"mul"]
 const MASK_MODES := [&"none", &"alpha", &"inverse_alpha"]
 const EMISSION_MODES := [&"rate", &"burst"]
 const FILTER_MODES := [&"nearest", &"linear"]
+const TEARDOWN_POLICIES := [&"fully_contained", &"cut"]
 const MAX_KEYS_PER_CURVE := 64
 const MAX_LIVE_PARTICLES := 256
 const MAX_SPAWN_EVENTS := 8192
@@ -33,6 +34,7 @@ const MAX_SPAWN_EVENTS := 8192
 @export_range(0, MAX_LIVE_PARTICLES, 1) var burst_count_max: int = 0
 @export_range(0.001, 120.0, 0.001, "or_greater") var lifetime_seconds: float = 1.0
 @export_range(1, MAX_LIVE_PARTICLES, 1) var maximum_live_particles: int = 1
+@export var teardown_policy: StringName = &"fully_contained"
 @export_range(0, 2147483647, 1) var seed: int = 0
 @export var spawn_rect: Rect2
 @export var projection_bounds: Rect2
@@ -155,6 +157,8 @@ func validation_errors() -> PackedStringArray:
 		errors.append("lifetime_seconds must be finite and in (0,120]")
 	if maximum_live_particles < 1 or maximum_live_particles > MAX_LIVE_PARTICLES:
 		errors.append("maximum_live_particles must be in 1..256")
+	if teardown_policy not in TEARDOWN_POLICIES:
+		errors.append("teardown_policy must be fully_contained or cut")
 	if seed < 0 or seed > 2147483647:
 		errors.append("seed must be in 0..2147483647")
 	var event_count := maximum_spawn_event_count()

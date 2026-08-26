@@ -413,6 +413,12 @@ linear，mask 明确为 alpha/inverse-alpha，blend 明确为 mix/add/sub/mul。
 GPUParticles/CPUParticles、第二 clock、Timer 或项目 Script。texture source 是 closed static
 data contract：只接受 imported compressed/ImageTexture，以及递归静态的Atlas/Canvas wrapper；
 ViewportTexture、CameraTexture、Texture2DRD、Animated/Noise/External/placeholder texture均拒绝。
+每层 resource 的 `teardown_policy` 只允许 `fully_contained|cut`，默认
+`fully_contained` 会 fail-close 任何 last spawn+lifetime 越过 bounded main 的 schedule；只有源格式
+明确在对象销毁时截断 live particles 时才写 `cut`。所有 spawn 仍必须位于 bounded main；cut 不缩短 lifetime 或提前停止 emission，main
+结束时由同一 Presenter owner 同步清空 fixed pool；Skip、cancel、replacement、load/rollback、restart
+和 scene replacement 共用该幂等 teardown，旧 seek/callback 不能复活粒子。该字段只存在于 typed
+definition，不增加 scenario DSL 参数。
 
 `entry_transition` / `exit_transition` 只接受 `cut` 或内建 exact 64×64 tile `turn`；turn
 tile count 按实际 target pixel size 计算，支持非 64 整除边界。Skip 只 cut
