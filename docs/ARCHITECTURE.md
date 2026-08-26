@@ -869,6 +869,11 @@ stella/
 
 ### 运行测试
 
+`addons/gut` 的 CLI runner 与 editor GUI 共享同一 vendored package，但 headless
+import 不会构造 editor GUI。字体、PNG 和 SVG 的文本资源引用只保留 canonical
+`res://` path，不提交项目本地生成的 import UID；因此全新 consumer materialization
+可以一次完成 import，随后直接运行 GUT，不需要重启或改写同步后的 addon。
+
 ```bash
 godot --audio-driver Dummy --headless --import
 STELLA_DISABLE_LOCAL_CONFIG=1 godot --audio-driver Dummy \
