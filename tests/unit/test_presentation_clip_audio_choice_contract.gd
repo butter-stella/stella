@@ -151,6 +151,7 @@ func _current_save_snapshot() -> Dictionary:
 			"dialogue_visibility": DialogueVisibilityState.default_state(),
 			"dialogue_content": PresentationState._inactive_dialogue_content(),
 			"dialogue_avatar": DialogueAvatarState.default_state(),
+			"movie": {},
 		},
 		"presentation_clip_audio_choice": _valid_authority_snapshot(),
 		"timestamp": 1.0,

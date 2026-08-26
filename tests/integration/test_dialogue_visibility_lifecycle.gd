@@ -2515,6 +2515,7 @@ func test_h_retained_visual_apply_is_a_side_effect_free_content_and_gate_cut() -
 		},
 		"dialogue_content": stable_content,
 		"dialogue_avatar": DialogueAvatarState.default_state(),
+		"movie": {},
 	})
 	SignalBus.hide_dialogue.emit()
 	var dialogue_count := _dialogue_requests.size()
@@ -2610,6 +2611,7 @@ func test_h_nvl_visual_cut_restores_each_entry_with_its_own_profile() -> void:
 		"dialogue_visibility": {"surface": true, "quick_menu": true},
 		"dialogue_content": content,
 		"dialogue_avatar": DialogueAvatarState.default_state(),
+		"movie": {},
 	})
 	assert_true(_runtime._apply_retained_presentation(context))
 	assert_eq(_dialogue_presenter.get("_nvl_render_source"),

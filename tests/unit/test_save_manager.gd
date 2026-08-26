@@ -89,6 +89,7 @@ func _make_valid_save_snapshot() -> Dictionary:
 			"bg": "",
 			"stage_layers": {},
 			"bgm": {},
+			"movie": {},
 			"dialogue_visibility": DialogueVisibilityState.default_state(),
 			"dialogue_content": PresentationState._inactive_dialogue_content(),
 			"dialogue_avatar": DialogueAvatarState.default_state(),
@@ -614,6 +615,14 @@ func test_current_save_without_complete_dialogue_projection_fails_close() -> voi
 	missing["presentation_state"].erase("dialogue_avatar")
 	assert_false(_manager.validate_data_for_scenario(missing, scenario),
 		"the current unversioned schema has no all-fields-missing fallback")
+
+
+func test_current_save_without_movie_field_fails_close() -> void:
+	var scenario := _make_validation_scenario()
+	var missing := _make_valid_save_snapshot()
+	missing["presentation_state"].erase("movie")
+	assert_false(_manager.validate_data_for_scenario(missing, scenario),
+		"the current schema cannot silently reinterpret a pre-movie snapshot")
 
 
 func test_loop_se_snapshot_schema_is_exact_and_old_saves_default_empty() -> void:

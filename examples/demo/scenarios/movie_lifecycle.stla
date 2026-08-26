@@ -1,0 +1,9 @@
+// Native movie reference: shortest JOIN play, explicit FNF loop, and stop.
+@chapter movie_reference "Native movie reference"
+@scene start
+@movie synthetic_movie
+「普通播放默认等待电影自然完成，也可由中央 story input 跳过。」
+@movie synthetic_movie loop=true policy=fire_and_forget
+「循环电影不会阻塞剧情。」
+@movie stop
+「stop 精确退休循环 projection。」

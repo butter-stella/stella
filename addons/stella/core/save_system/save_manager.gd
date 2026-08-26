@@ -23,12 +23,11 @@ func get_provider_count() -> int:
 
 
 func save(slot_id: int) -> void:
+	var captured: Variant = _capture_save_data()
+	if captured == null:
+		return
 	_ensure_dir()
-
-	var data: Dictionary = {}
-	for provider in _providers:
-		data[provider.get_provider_id()] = provider.capture_snapshot()
-	data["timestamp"] = Time.get_unix_time_from_system()
+	var data: Dictionary = captured
 
 	var path = save_dir + "save_%d.json" % slot_id
 	var file = FileAccess.open(path, FileAccess.WRITE)
@@ -86,11 +85,11 @@ func get_save_list() -> Array:
 ## --- Quick Save (separate from manual slots) ---
 
 func quick_save() -> void:
+	var captured: Variant = _capture_save_data()
+	if captured == null:
+		return
 	_ensure_dir()
-	var data: Dictionary = {}
-	for provider in _providers:
-		data[provider.get_provider_id()] = provider.capture_snapshot()
-	data["timestamp"] = Time.get_unix_time_from_system()
+	var data: Dictionary = captured
 
 	var path = save_dir + "quicksave.json"
 	var file = FileAccess.open(path, FileAccess.WRITE)
@@ -127,16 +126,28 @@ func get_quick_save_metadata() -> Dictionary:
 ## --- Auto Save (triggered on game interruption) ---
 
 func auto_save() -> void:
+	var captured: Variant = _capture_save_data()
+	if captured == null:
+		return
 	_ensure_dir()
-	var data: Dictionary = {}
-	for provider in _providers:
-		data[provider.get_provider_id()] = provider.capture_snapshot()
-	data["timestamp"] = Time.get_unix_time_from_system()
+	var data: Dictionary = captured
 
 	var path = save_dir + "autosave.json"
 	var file = FileAccess.open(path, FileAccess.WRITE)
 	if file:
 		file.store_string(JSON.stringify(data))
+
+
+func _capture_save_data() -> Variant:
+	if not SignalBus.movie_save_boundary_is_stable():
+		push_warning(
+			"SaveManager: save rejected during an unresolved native movie terminal boundary")
+		return null
+	var data: Dictionary = {}
+	for provider in _providers:
+		data[provider.get_provider_id()] = provider.capture_snapshot()
+	data["timestamp"] = Time.get_unix_time_from_system()
+	return data
 
 
 func auto_load(scenario_data: ScenarioData = null) -> bool:
@@ -514,6 +525,11 @@ func _presentation_snapshot_is_valid(
 	if (
 		snapshot.has("bgm")
 		and not BgmChannelState.validate_snapshot_state(snapshot["bgm"], false)
+	):
+		return false
+	if (
+		not snapshot.has("movie")
+		or not MovieChannelState.validate_snapshot_state(snapshot["movie"], false)
 	):
 		return false
 	if snapshot.has("stage_layers"):

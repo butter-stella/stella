@@ -100,6 +100,7 @@ func test_snapshot_without_stage_layers_restores_empty_stage() -> void:
 	state.restore_snapshot({
 		"bg": "",
 		"bgm": {},
+		"movie": {},
 		"dialogue_visibility": DialogueVisibilityState.default_state(),
 		"dialogue_content": PresentationState._inactive_dialogue_content(),
 		"dialogue_avatar": DialogueAvatarState.default_state(),
@@ -178,6 +179,7 @@ func test_dialogue_projection_defaults_and_restore_are_stable() -> void:
 		"bg": "",
 		"stage_layers": {},
 		"bgm": {},
+		"movie": {},
 		"loop_se_channels": {},
 		"dialogue_visibility": {"surface": false, "quick_menu": true},
 		"dialogue_content": {

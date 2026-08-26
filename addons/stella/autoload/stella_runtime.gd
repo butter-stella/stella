@@ -38,6 +38,7 @@ var unlock_manager: UnlockManager
 var presentation_state: PresentationState
 var presentation_director: PresentationDirector
 var presentation_clip_audio_choice_authority: PresentationClipAudioChoiceAuthority
+var movie_presenter: MoviePresenter
 var character_config_loader: CharacterConfigLoader
 ## Issue #97: flowchart subsystem
 var flowchart_state: FlowchartState
@@ -53,6 +54,7 @@ var se_path: String = "res://audio/se/"
 var voice_path: String = "res://audio/voice/"
 var voice_dsp_path: String = "res://audio/voice_dsp/"
 var presentation_clips_path: String = "res://presentation/clips/"
+var movies_path: String = "res://video/movies/"
 var presentation_clip_resource_budget_bytes: int = 512 * 1024 * 1024
 var presentation_clip_max_viewport_pixels: int = 3840 * 2160
 var presentation_clip_audio_choice_seed: int = 0
@@ -109,6 +111,7 @@ var _chapter_indicator_registrar_authority := RefCounted.new()
 var _loop_se_registrar_authority := RefCounted.new()
 var _bgm_registrar_authority := RefCounted.new()
 var _presentation_clip_registrar_authority := RefCounted.new()
+var _movie_registrar_authority := RefCounted.new()
 var _quit_requested := false
 var _quit_exit_code := 0
 var _quit_completion_started := false
@@ -148,6 +151,8 @@ func _init() -> void:
 	if not SignalBus.configure_presentation_clip_registrar(
 		_presentation_clip_registrar_authority):
 		push_error("StellaRuntime: presentation-clip registrar authority conflict")
+	if not SignalBus.configure_movie_registrar(_movie_registrar_authority):
+		push_error("StellaRuntime: movie registrar authority conflict")
 
 
 ## Composition-owned admission keeps the cross-layer Bus free of concrete
@@ -311,6 +316,7 @@ func _register_presentation_clip_presenter(presenter: Object) -> RefCounted:
 		_presentation_clip_registrar_authority,
 		Callable(presenter, "_run_presentation_clip_transaction_phase"),
 		Callable(presenter, "_claim_active_input_finish"),
+		Callable(presenter, "_has_active_projection"),
 	)
 
 
@@ -320,6 +326,36 @@ func _unregister_presentation_clip_presenter(
 ) -> bool:
 	return SignalBus.unregister_presentation_clip_presenter(
 		presenter, capability, _presentation_clip_registrar_authority)
+
+
+func _register_movie_presenter(presenter: Object) -> RefCounted:
+	if not presenter is MoviePresenter:
+		return null
+	var capability := SignalBus.register_movie_presenter(
+		presenter,
+		_movie_registrar_authority,
+		Callable(presenter, "_claim_active_input_finish"),
+		Callable(presenter, "_has_active_projection"),
+		Callable(presenter, "_discard_recovery_state"),
+		Callable(presenter, "_apply_restore_state"),
+		Callable(presenter, "_prepare_rollback_state"),
+		Callable(presenter, "_apply_rollback_state"),
+		Callable(presenter, "_release_rollback_plan"),
+	)
+	if capability != null:
+		movie_presenter = presenter
+	return capability
+
+
+func _unregister_movie_presenter(
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	var removed := SignalBus.unregister_movie_presenter(
+		presenter, capability, _movie_registrar_authority)
+	if removed and movie_presenter == presenter:
+		movie_presenter = null
+	return removed
 
 
 func _notification(what: int) -> void:
@@ -356,6 +392,7 @@ func _complete_graceful_quit() -> void:
 	if _quit_completion_started:
 		return
 	_quit_completion_started = true
+	SignalBus.reset_movie_presentation()
 	if not await _await_runtime_audio_quiesce():
 		_fail_graceful_quit(
 			"StellaRuntime: AudioPresenter did not acknowledge graceful shutdown")
@@ -463,6 +500,11 @@ func _ready():
 		Callable(presentation_director, "consume_active_presentation_clip_input"),
 	):
 		push_error("StellaRuntime: presentation-clip input authority conflict")
+	if not SignalBus.configure_movie_input_boundary(
+		_movie_registrar_authority,
+		Callable(presentation_director, "consume_active_movie_input"),
+	):
+		push_error("StellaRuntime: movie input authority conflict")
 	skip_controller.active_changed.connect(
 		presentation_director.on_skip_active_changed)
 	character_config_loader = CharacterConfigLoader.new()
@@ -490,6 +532,9 @@ func _ready():
 	var clip_node := PresentationClipPresenter.new()
 	clip_node.name = "PresentationClipPresenter"
 	add_child(clip_node)
+	movie_presenter = MoviePresenter.new()
+	movie_presenter.name = "MoviePresenter"
+	add_child(movie_presenter)
 
 	registry = CommandRegistry.new()
 	engine = ScenarioEngine.new()
@@ -594,6 +639,7 @@ func _apply_config() -> void:
 	voice_path = config.voice_path
 	voice_dsp_path = config.voice_dsp_path
 	presentation_clips_path = config.presentation_clips_path
+	movies_path = config.movies_path
 	presentation_clip_resource_budget_bytes = (
 		config.presentation_clip_resource_budget_bytes)
 	presentation_clip_max_viewport_pixels = (
@@ -652,7 +698,7 @@ func _register_wait_handler() -> void:
 	registry.register(WaitHandler.new(
 		skip_controller,
 		Callable(presentation_director,
-			"current_skip_activation_was_claimed_by_clip"),
+			"current_skip_activation_was_claimed_by_presentation"),
 	))
 
 
@@ -772,33 +818,43 @@ func load_game(slot_id: int, scenario_path: String = "", game_scene_path: String
 	var save_data: Variant = save_manager.read_save_data(slot_id, scenario_data)
 	if save_data == null:
 		return false
+	var movie_restore_ticket := _prepare_movie_restore_from_save(save_data)
+	if movie_restore_ticket <= 0:
+		return false
 	var destination := _load_navigation_scene(game_scene_path, "game")
 	if destination.is_empty():
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 
 	var navigation := _begin_navigation("load_game", true)
 	if not _owns_navigation(navigation):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	if not await _enter_scene_and_confirm(
 		destination,
 		navigation,
 		"game",
 	):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		_finish_navigation(navigation)
 		return false
 	if not _owns_navigation(navigation):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	if not _cancel_active_gameplay(navigation):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	_close_current_overlay()
 	if not _owns_navigation(navigation):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	_last_scenario_path = scenario_path
 	game_state.transition_to(GameStateMachine.State.PLAYING)
 	if not _owns_navigation(navigation):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	if not _load_preparsed_scenario_and_restore(
-		scenario_data, scenario_path, save_data, navigation):
+		scenario_data, scenario_path, save_data, navigation, movie_restore_ticket):
 		return false
 	_finish_navigation(navigation)
 	return true
@@ -818,6 +874,9 @@ func continue_from_save(slot_id: int) -> bool:
 	var save_data: Variant = save_manager.read_save_data(slot_id, scenario_data)
 	if save_data == null:
 		return false
+	var movie_restore_ticket := _prepare_movie_restore_from_save(save_data)
+	if movie_restore_ticket <= 0:
+		return false
 
 	# Determine if we're on the title screen (directly or via overlay opened from title)
 	var needs_game_scene := (
@@ -829,9 +888,11 @@ func continue_from_save(slot_id: int) -> bool:
 	if needs_game_scene:
 		destination = _load_navigation_scene(_get_game_scene_path(), "game")
 		if destination.is_empty():
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			return false
 	var navigation := _begin_navigation("continue_from_save", needs_game_scene)
 	if not _owns_navigation(navigation):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 
 	if needs_game_scene:
@@ -843,24 +904,30 @@ func continue_from_save(slot_id: int) -> bool:
 			navigation,
 			"game",
 		):
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			_finish_navigation(navigation)
 			return false
 		if not _owns_navigation(navigation):
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			return false
 		if not _cancel_active_gameplay(navigation):
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			return false
 		_close_current_overlay()
 		if not _owns_navigation(navigation):
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			return false
 		_last_scenario_path = scenario_path
 		game_state.transition_to(GameStateMachine.State.PLAYING)
 		if not _owns_navigation(navigation):
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			return false
 		if not _load_preparsed_scenario_and_restore(
 			scenario_data,
 			scenario_path,
 			save_data,
 			navigation,
+			movie_restore_ticket,
 		):
 			return false
 		_finish_navigation(navigation)
@@ -868,19 +935,101 @@ func continue_from_save(slot_id: int) -> bool:
 
 	# In-game: reload in place
 	if not _cancel_active_gameplay(navigation):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	_close_current_overlay()
 	if not _owns_navigation(navigation):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	_last_scenario_path = scenario_path
 	game_state.transition_to(GameStateMachine.State.PLAYING)
 	if not _owns_navigation(navigation):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	if not _load_preparsed_scenario_and_restore(
-		scenario_data, scenario_path, save_data, navigation):
+		scenario_data, scenario_path, save_data, navigation, movie_restore_ticket):
 		return false
 	_finish_navigation(navigation)
 	return true
+
+
+func _prepare_movie_restore_from_save(save_data: Dictionary) -> int:
+	var raw_presentation: Variant = save_data.get("presentation_state", {})
+	if not raw_presentation is Dictionary:
+		return 0
+	return _prepare_movie_restore_from_presentation(raw_presentation as Dictionary)
+
+
+func _prepare_movie_restore_from_presentation(snapshot: Dictionary) -> int:
+	if not snapshot.has("movie"):
+		push_error("StellaRuntime: current presentation snapshot is missing movie state")
+		return 0
+	var state: Variant = snapshot["movie"]
+	if not MovieChannelState.validate_snapshot_state(state, false):
+		push_error("StellaRuntime: invalid movie restore state")
+		return 0
+	if movie_presenter == null or not is_instance_valid(movie_presenter):
+		push_error("StellaRuntime: MoviePresenter is unavailable for restore preflight")
+		return 0
+	var ticket := movie_presenter.prepare_restore_state(
+		(state as Dictionary).duplicate(true))
+	if ticket <= 0:
+		push_error(
+			"StellaRuntime: movie resource changed or cannot satisfy saved playback state")
+		return 0
+	return ticket
+
+
+func _arm_prepared_movie_restore(ticket: int, state: Dictionary) -> bool:
+	if ticket <= 0 or movie_presenter == null or not is_instance_valid(movie_presenter):
+		return false
+	if state.is_empty():
+		return movie_presenter.discard_restore_state(ticket)
+	return movie_presenter.arm_restore_state(ticket, state)
+
+
+func _discard_prepared_movie_restore(ticket: int) -> void:
+	if (
+		ticket > 0
+		and movie_presenter != null
+		and is_instance_valid(movie_presenter)
+	):
+		movie_presenter.discard_restore_state(ticket)
+
+
+func _adopt_restored_movie(context: ScenarioContext) -> bool:
+	if presentation_state == null or presentation_state.current_movie.is_empty():
+		return true
+	if context == null or not context.is_runtime_owner_current():
+		return false
+	if presentation_director.has_active_movie_owner(context):
+		return true
+	var state := presentation_state.current_movie
+	var payload := {
+		"action": "play",
+		"asset": String(state["asset"]),
+		"loop": bool(state["loop"]),
+		"skippable": bool(state["skippable"]),
+	}
+	var source := {
+		"source_path": (
+			context.scenario_data.source_path
+			if context.scenario_data != null else ""),
+		"scenario_id": (
+			context.scenario_data.id if context.scenario_data != null else ""),
+		"line": 0,
+	}
+	var request := presentation_director.submit(
+		[MoviePresentationOperation.new(payload, source)],
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		context,
+		source,
+	)
+	return (
+		request != null
+		and request.is_settled()
+		and request.get_outcome() == PresentationBatchRequest.Outcome.COMPLETED
+	)
 
 
 ## Begin one Runtime-owned navigation transaction. A later facade call always
@@ -977,12 +1126,16 @@ func _acquire_navigation_runtime_ownership(
 		return false
 	if not reset_presentation:
 		return true
+	var projection_was_already_reset := (
+		_navigation_presentation_reset_generation == navigation)
 	_navigation_presentation_reset_generation = navigation
 	# Publish the cancellation fact to the transferable suspension record before
 	# reset emits. A nested deferred navigation may synchronously fail and recover
 	# inside that signal; it must fresh-run rather than revive any cancelled
 	# blocking presentation Handler.
 	var suspended_context := _navigation_run_suspension_context
+	if reversible and presentation_state != null and not projection_was_already_reset:
+		presentation_state.current_movie = SignalBus.capture_movie_state()
 	var had_blocking_waiter := (
 		presentation_director != null
 		and presentation_director.has_blocking_waiter(suspended_context)
@@ -1011,6 +1164,7 @@ func _acquire_navigation_runtime_ownership(
 	if not _navigation_reset_owner_survived(navigation, expected_context):
 		return false
 	SignalBus.reset_presentation_clip()
+	SignalBus.reset_movie_presentation(reversible)
 	if not _navigation_reset_owner_survived(navigation, expected_context):
 		return false
 	SignalBus.reset_chapter_indicator_presentation()
@@ -1495,7 +1649,22 @@ func _finish_navigation(generation: int) -> void:
 			if presentation_state != null
 			else {}
 		)
+		var restored_movie := SignalBus.reset_and_apply_movie_state(
+			presentation_state.current_movie
+			if presentation_state != null
+			else {}
+		)
+		if restored_movie:
+			_adopt_restored_movie(engine.context if engine != null else null)
+		else:
+			push_error(
+				"StellaRuntime: rejected navigation movie recovery apply failed")
 		_apply_chapter_presentation(engine.context if engine != null else null)
+	elif presentation_was_reset:
+		# Winning navigation never consumes the reversible physical recovery lease.
+		# Release it at the transaction commit boundary so a long movie resource is
+		# not pinned after title/new-game replacement.
+		SignalBus.discard_movie_recovery_state()
 
 
 func _finish_navigation_after_scene_slot(
@@ -2499,6 +2668,7 @@ func _start_preparsed_scenario(
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
 	SignalBus.reset_presentation_clip()
+	SignalBus.reset_movie_presentation()
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
 	SignalBus.reset_chapter_indicator_presentation()
@@ -2618,6 +2788,7 @@ func _install_scenario(
 		"bg": "",
 		"stage_layers": {},
 		"bgm": {},
+		"movie": {},
 		"loop_se_channels": {},
 		"dialogue_visibility": {
 			"surface": true,
@@ -2640,38 +2811,53 @@ func _load_preparsed_scenario_and_restore(
 	scenario_path: String,
 	save_data: Dictionary,
 	navigation: int,
+	movie_restore_ticket: int,
 ) -> bool:
-	if not _owns_navigation(navigation):
+	if movie_restore_ticket <= 0 or not _owns_navigation(navigation):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	var saved_choice_initial := (
 		PresentationClipAudioChoiceAuthority.initial_playthrough_snapshot(
 			save_data.get(PresentationClipAudioChoiceAuthority.PROVIDER_ID, {})))
 	if saved_choice_initial.is_empty():
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	if not presentation_clip_audio_choice_authority.restore_snapshot(
 		saved_choice_initial):
 		push_error(
 			"StellaRuntime: presentation-clip audio-choice initial checkpoint restore failed")
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	_install_scenario(scenario_data, scenario_path)
 	var expected_context := engine.context if engine != null else null
 	if not _owns_navigation_context(navigation, expected_context):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	# Installing the replacement context first transfers engine ownership away
 	# from an active dialogue. The following hard HIDE may abort its Presenter
 	# activation, but the stale run can no longer report normal scenario_ended.
 	if not _reset_presentation(navigation, expected_context, true):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	if not save_manager.restore_data(save_data):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	flowchart_state.initial_snapshot[
 		PresentationClipAudioChoiceAuthority.PROVIDER_ID] = saved_choice_initial
 	if not _owns_navigation_context(navigation, expected_context):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
-	presentation_state.apply_to_presenters(
+	if not _arm_prepared_movie_restore(
+		movie_restore_ticket, presentation_state.current_movie):
+		_discard_prepared_movie_restore(movie_restore_ticket)
+		return false
+	if not presentation_state.apply_to_presenters(
 		_runtime_dialogue_visibility_binding(expected_context)
-	)
+	):
+		return false
 	if not _owns_navigation_context(navigation, expected_context):
+		return false
+	if not _adopt_restored_movie(expected_context):
 		return false
 	if not _apply_chapter_presentation(expected_context):
 		return false
@@ -2689,8 +2875,16 @@ func _load_scenario_and_restore(scenario_path: String, slot_id: int) -> bool:
 	var save_data: Variant = save_manager.read_save_data(slot_id, scenario_data)
 	if save_data == null:
 		return false
+	var movie_restore_ticket := _prepare_movie_restore_from_save(save_data)
+	if movie_restore_ticket <= 0:
+		return false
 	return _load_preparsed_scenario_and_restore(
-		scenario_data, scenario_path, save_data, _navigation_generation)
+		scenario_data,
+		scenario_path,
+		save_data,
+		_navigation_generation,
+		movie_restore_ticket,
+	)
 
 
 ## Check if we're on the title screen — either directly or via an overlay opened from title.
@@ -2737,6 +2931,7 @@ func _reset_presentation(
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
 	SignalBus.reset_presentation_clip()
+	SignalBus.reset_movie_presentation()
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
 	SignalBus.reset_chapter_indicator_presentation()
@@ -2911,9 +3106,16 @@ func _apply_retained_presentation(context: ScenarioContext) -> bool:
 	var expected_context := engine.context if engine != null else null
 	if context != expected_context:
 		return false
-	presentation_state.apply_to_presenters(
+	if not presentation_state.apply_to_presenters(
 		_runtime_dialogue_visibility_binding(context)
-	)
+	):
+		return false
+	if (
+		presentation_state != null
+		and not presentation_state.current_movie.is_empty()
+		and not _adopt_restored_movie(context)
+	):
+		return false
 	if (
 		navigation != _navigation_generation
 		or (engine.context if engine != null else null) != expected_context
@@ -3274,11 +3476,20 @@ func _refresh_current_flowchart_chapter_snapshot_for_save() -> void:
 
 # ─── Facade API: Save/Load ───
 
+func _movie_save_admitted() -> bool:
+	if SignalBus.movie_save_boundary_is_stable():
+		return true
+	push_warning(
+		"SaveManager: save rejected during an unresolved native movie terminal boundary")
+	return false
+
 ## Quick save (separate from manual save slots).
 func quick_save() -> void:
 	if _is_recollection_context_active():
 		push_warning(
 			"StellaRuntime: quick save is unavailable during recollection playback")
+		return
+	if not _movie_save_admitted():
 		return
 	_refresh_current_flowchart_chapter_snapshot_for_save()
 	save_manager.quick_save()
@@ -3298,6 +3509,9 @@ func quick_load() -> bool:
 	var save_data: Variant = save_manager.read_quick_save_data(scenario_data)
 	if save_data == null:
 		return false
+	var movie_restore_ticket := _prepare_movie_restore_from_save(save_data)
+	if movie_restore_ticket <= 0:
+		return false
 
 	var needs_game_scene := (
 		_is_on_title_screen()
@@ -3308,9 +3522,11 @@ func quick_load() -> bool:
 	if needs_game_scene:
 		destination = _load_navigation_scene(_get_game_scene_path(), "game")
 		if destination.is_empty():
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			return false
 	var navigation := _begin_navigation("quick_load", needs_game_scene)
 	if not _owns_navigation(navigation):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 
 	# From title or while superseding another scene request, explicitly assert
@@ -3321,24 +3537,30 @@ func quick_load() -> bool:
 			navigation,
 			"game",
 		):
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			_finish_navigation(navigation)
 			return false
 		if not _owns_navigation(navigation):
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			return false
 		if not _cancel_active_gameplay(navigation):
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			return false
 		_close_current_overlay()
 		if not _owns_navigation(navigation):
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			return false
 		_last_scenario_path = scenario_path
 		game_state.transition_to(GameStateMachine.State.PLAYING)
 		if not _owns_navigation(navigation):
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			return false
 		if not _load_preparsed_scenario_and_restore(
 			scenario_data,
 			scenario_path,
 			save_data,
 			navigation,
+			movie_restore_ticket,
 		):
 			return false
 		_finish_navigation(navigation)
@@ -3346,10 +3568,11 @@ func quick_load() -> bool:
 
 	# In-game: reload in place
 	if not _cancel_active_gameplay(navigation):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	_last_scenario_path = scenario_path
 	if not _load_preparsed_scenario_and_restore(
-		scenario_data, scenario_path, save_data, navigation):
+		scenario_data, scenario_path, save_data, navigation, movie_restore_ticket):
 		return false
 	_finish_navigation(navigation)
 	return true
@@ -3372,6 +3595,8 @@ func auto_save() -> void:
 	if _is_recollection_context_active():
 		push_warning(
 			"StellaRuntime: auto save is unavailable during recollection playback")
+		return
+	if not _movie_save_admitted():
 		return
 	_refresh_current_flowchart_chapter_snapshot_for_save()
 	save_manager.auto_save()
@@ -3410,6 +3635,9 @@ func continue_game() -> bool:
 	var save_data: Variant = _read_continue_data(continue_type, scenario_data)
 	if save_data == null:
 		return false
+	var movie_restore_ticket := _prepare_movie_restore_from_save(save_data)
+	if movie_restore_ticket <= 0:
+		return false
 
 	var needs_game_scene := (
 		_is_on_title_screen()
@@ -3420,9 +3648,11 @@ func continue_game() -> bool:
 	if needs_game_scene:
 		destination = _load_navigation_scene(_get_game_scene_path(), "game")
 		if destination.is_empty():
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			return false
 	var navigation := _begin_navigation("continue_game", needs_game_scene)
 	if not _owns_navigation(navigation):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 
 	# From title or while superseding another scene request, explicitly assert
@@ -3433,24 +3663,30 @@ func continue_game() -> bool:
 			navigation,
 			"game",
 		):
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			_finish_navigation(navigation)
 			return false
 		if not _owns_navigation(navigation):
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			return false
 		if not _cancel_active_gameplay(navigation):
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			return false
 		_close_current_overlay()
 		if not _owns_navigation(navigation):
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			return false
 		_last_scenario_path = scenario_path
 		game_state.transition_to(GameStateMachine.State.PLAYING)
 		if not _owns_navigation(navigation):
+			_discard_prepared_movie_restore(movie_restore_ticket)
 			return false
 		if not _load_preparsed_scenario_and_restore(
 			scenario_data,
 			scenario_path,
 			save_data,
 			navigation,
+			movie_restore_ticket,
 		):
 			return false
 		_finish_navigation(navigation)
@@ -3458,10 +3694,11 @@ func continue_game() -> bool:
 
 	# In-game: reload in place
 	if not _cancel_active_gameplay(navigation):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	_last_scenario_path = scenario_path
 	if not _load_preparsed_scenario_and_restore(
-		scenario_data, scenario_path, save_data, navigation):
+		scenario_data, scenario_path, save_data, navigation, movie_restore_ticket):
 		return false
 	_finish_navigation(navigation)
 	return true
@@ -3492,6 +3729,8 @@ func save(slot_id: int) -> void:
 	if _is_recollection_context_active():
 		push_warning(
 			"StellaRuntime: manual save is unavailable during recollection playback")
+		return
+	if not _movie_save_admitted():
 		return
 	_refresh_current_flowchart_chapter_snapshot_for_save()
 	save_manager.save(slot_id)
@@ -4091,33 +4330,44 @@ func _restore_runtime_from_snapshot(
 		)
 	):
 		return false
+	var movie_restore_ticket := _prepare_movie_restore_from_presentation(
+		presentation_snapshot)
+	if movie_restore_ticket <= 0:
+		return false
 	# Every rollback facade invocation owns a distinct generation. A synchronous
 	# state/reset listener may start another rollback; only that newest call may
 	# build, install, or run a replacement Context.
 	var navigation := _begin_navigation("rollback", true)
 	if not _owns_navigation_context(navigation, retained_context):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	# The facade has already accepted a validated snapshot, but its destructive
 	# continuation must wait for the exact accepted SceneTree receipt. This keeps
 	# restored SHOW events in the winning scene instead of publishing headlessly
 	# from a choice-hide callback during destination _ready().
 	if not await _await_navigation_scene_slot(navigation):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	if not _owns_navigation_context(navigation, retained_context):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	if not _acquire_navigation_runtime_ownership(
 		navigation,
 		false,
 		true,
 	):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	if not _owns_navigation_context(navigation, retained_context):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	_close_current_overlay()
 	if not _owns_navigation_context(navigation, retained_context):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	game_state.transition_to(GameStateMachine.State.PLAYING)
 	if not _owns_navigation_context(navigation, retained_context):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 
 	var scenario_data = retained_context.scenario_data
@@ -4140,6 +4390,7 @@ func _restore_runtime_from_snapshot(
 	if chapter_at_capture != "" and flowchart_state != null:
 		flowchart_state.jump_to(chapter_at_capture)
 	if not _owns_navigation_context(navigation, retained_context):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 
 	save_manager.register_provider(new_ctx)
@@ -4148,49 +4399,67 @@ func _restore_runtime_from_snapshot(
 	var retired_choice_session := _begin_choice_hard_boundary()
 	engine.replace_context(new_ctx)
 	if not _owns_navigation_context(navigation, new_ctx):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		_release_retired_choice_boundary_token(retired_choice_session)
 		return false
 	_notify_retired_engine_abort_connections(retired_abort_connections)
 	if not _owns_navigation_context(navigation, new_ctx):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		_release_retired_choice_boundary_token(retired_choice_session)
 		return false
 
 	SignalBus.reset_stage_visuals()
 	if not _owns_navigation_context(navigation, new_ctx):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		_release_retired_choice_boundary_token(retired_choice_session)
 		return false
 	SignalBus.reset_presentation_clip()
+	SignalBus.reset_movie_presentation()
 	if not _owns_navigation_context(navigation, new_ctx):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		_release_retired_choice_boundary_token(retired_choice_session)
 		return false
 	if not presentation_clip_audio_choice_authority.restore_snapshot(
 		raw_choice_snapshot as Dictionary):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	SignalBus.reset_chapter_indicator_presentation()
 	if not _owns_navigation_context(navigation, new_ctx):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		_release_retired_choice_boundary_token(retired_choice_session)
 		return false
 	presentation_state.current_bgm.clear()
 	SignalBus.reset_bgm_presentation()
 	if not _owns_navigation_context(navigation, new_ctx):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		_release_retired_choice_boundary_token(retired_choice_session)
 		return false
 	SignalBus.hide_dialogue.emit()
 	if not _owns_navigation_context(navigation, new_ctx):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		_release_retired_choice_boundary_token(retired_choice_session)
 		return false
 	_finish_choice_hard_boundary(true)
 	if not _owns_navigation_context(navigation, new_ctx):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	SignalBus.fade_requested.emit("in", 0.0)
 	if not _owns_navigation_context(navigation, new_ctx):
+		_discard_prepared_movie_restore(movie_restore_ticket)
 		return false
 	presentation_state.clear()
 	presentation_state.restore_snapshot(presentation_snapshot)
-	presentation_state.apply_to_presenters(
+	if not _arm_prepared_movie_restore(
+		movie_restore_ticket, presentation_state.current_movie):
+		_discard_prepared_movie_restore(movie_restore_ticket)
+		return false
+	if not presentation_state.apply_to_presenters(
 		_runtime_dialogue_visibility_binding(new_ctx)
-	)
+	):
+		return false
 	if not _owns_navigation_context(navigation, new_ctx):
+		return false
+	if not _adopt_restored_movie(new_ctx):
 		return false
 	if not _apply_chapter_presentation(new_ctx):
 		return false

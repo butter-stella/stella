@@ -52,6 +52,18 @@ func _build_ui():
 		StellaRuntime.set_setting("voice_volume", val / 100.0)
 	)
 
+	# Movie volume is independent from BGM and is consumed live by the one
+	# Runtime-owned VideoStreamPlayer.
+	_add_slider("电影音量", StellaRuntime.get_setting("movie_volume") * 100, 0, 100, func(val):
+		StellaRuntime.set_setting("movie_volume", val / 100.0)
+	)
+	_add_toggle("右键跳过电影", StellaRuntime.get_setting("movie_right_click_skip"), func(toggled):
+		StellaRuntime.set_setting("movie_right_click_skip", toggled)
+	)
+	_add_toggle("快进模式跳过电影", StellaRuntime.get_setting("movie_skip_on_skip"), func(toggled):
+		StellaRuntime.set_setting("movie_skip_on_skip", toggled)
+	)
+
 	# Auto play click interrupt
 	_add_toggle("左键打断自动模式", StellaRuntime.get_setting("auto_play_click_interrupt"), func(toggled):
 		StellaRuntime.set_setting("auto_play_click_interrupt", toggled)

@@ -4,6 +4,7 @@ class_name PresentationState extends RefCounted
 var current_bg: String = ""
 var stage_layers: Dictionary = {}
 var current_bgm: Dictionary = {}
+var current_movie: Dictionary = {}
 var loop_se_channels: Dictionary = {}
 var dialogue_visibility: Dictionary = DialogueVisibilityState.default_state()
 var dialogue_content: Dictionary = _inactive_dialogue_content()
@@ -29,6 +30,8 @@ func connect_signals() -> void:
 	SignalBus.bgm_position_committed.connect(_on_bgm_position_committed)
 	SignalBus.bgm_natural_stop_committed.connect(_on_bgm_natural_stop_committed)
 	SignalBus.bgm_presenter_registered.connect(_on_bgm_presenter_registered)
+	SignalBus.movie_operation_committed.connect(_on_movie_operation_committed)
+	SignalBus.movie_completion_committed.connect(_on_movie_completion_committed)
 	SignalBus.loop_se_operation_committed.connect(_on_loop_se_operation_committed)
 	SignalBus.loop_se_positions_committed.connect(_on_loop_se_positions_committed)
 	SignalBus.loop_se_presenter_registered.connect(_on_loop_se_presenter_registered)
@@ -52,6 +55,8 @@ func disconnect_signals() -> void:
 	SignalBus.bgm_position_committed.disconnect(_on_bgm_position_committed)
 	SignalBus.bgm_natural_stop_committed.disconnect(_on_bgm_natural_stop_committed)
 	SignalBus.bgm_presenter_registered.disconnect(_on_bgm_presenter_registered)
+	SignalBus.movie_operation_committed.disconnect(_on_movie_operation_committed)
+	SignalBus.movie_completion_committed.disconnect(_on_movie_completion_committed)
 	SignalBus.loop_se_operation_committed.disconnect(_on_loop_se_operation_committed)
 	SignalBus.loop_se_positions_committed.disconnect(_on_loop_se_positions_committed)
 	SignalBus.loop_se_presenter_registered.disconnect(_on_loop_se_presenter_registered)
@@ -66,6 +71,7 @@ func clear() -> void:
 	current_bg = ""
 	stage_layers.clear()
 	current_bgm.clear()
+	current_movie.clear()
 	loop_se_channels.clear()
 	dialogue_visibility = DialogueVisibilityState.default_state()
 	dialogue_content = _inactive_dialogue_content()
@@ -79,10 +85,12 @@ func capture_snapshot() -> Dictionary:
 		loop_se_channels,
 		SignalBus.capture_loop_se_positions(),
 	)
+	var captured_movie := SignalBus.capture_movie_state()
 	return {
 		"bg": current_bg,
 		"stage_layers": stage_layers.duplicate(true),
 		"bgm": captured_bgm,
+		"movie": captured_movie,
 		"loop_se_channels": captured_loop_se,
 		"dialogue_visibility": dialogue_visibility.duplicate(true),
 		"dialogue_content": dialogue_content.duplicate(true),
@@ -92,12 +100,13 @@ func capture_snapshot() -> Dictionary:
 
 func restore_snapshot(snapshot: Dictionary) -> void:
 	if (
-		not snapshot.has("dialogue_visibility")
+		not snapshot.has("movie")
+		or not snapshot.has("dialogue_visibility")
 		or not snapshot.has("dialogue_content")
 		or not snapshot.has("dialogue_avatar")
 	):
 		push_warning(
-			"PresentationState: current snapshot requires the complete dialogue_visibility/dialogue_content/dialogue_avatar envelope"
+			"PresentationState: current snapshot requires movie and the complete dialogue_visibility/dialogue_content/dialogue_avatar envelope"
 		)
 		return
 	current_bg = String(snapshot.get("bg", ""))
@@ -107,6 +116,12 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 		current_bgm = (restored_bgm as Dictionary).duplicate(true)
 	else:
 		push_warning("PresentationState: invalid BGM snapshot; using stopped state")
+	current_movie.clear()
+	var restored_movie: Variant = snapshot["movie"]
+	if MovieChannelState.validate_snapshot_state(restored_movie, false):
+		current_movie = (restored_movie as Dictionary).duplicate(true)
+	else:
+		push_warning("PresentationState: invalid movie snapshot; using stopped state")
 	loop_se_channels.clear()
 	var restored_loop_se: Variant = snapshot.get("loop_se_channels", {})
 	if LoopSeChannelState.validate_channels(restored_loop_se, false):
@@ -229,7 +244,8 @@ static func cleared_dialogue_content(context: ScenarioContext) -> Dictionary:
 	}
 
 
-func apply_to_presenters(runtime_binding: Dictionary = {}) -> void:
+func apply_to_presenters(runtime_binding: Dictionary = {}) -> bool:
+	var movie_applied := [false]
 	SignalBus.run_presentation_projection(func() -> void:
 		SignalBus.reset_dialogue_visibility_visuals()
 		if SignalBus.has_signal(&"dialogue_visibility_state_apply_requested"):
@@ -242,8 +258,10 @@ func apply_to_presenters(runtime_binding: Dictionary = {}) -> void:
 		SignalBus.reset_and_apply_dialogue_avatar_state(dialogue_avatar)
 		SignalBus.reset_and_apply_loop_se_state(loop_se_channels)
 		SignalBus.reset_and_apply_bgm_state(current_bgm)
+		movie_applied[0] = SignalBus.reset_and_apply_movie_state(current_movie)
 		SignalBus.bg_changed.emit(current_bg, "none", 0.0)
 	)
+	return bool(movie_applied[0])
 
 
 func _on_bg_changed(asset: String, _transition: String, _duration: float) -> void:
@@ -295,6 +313,23 @@ func _on_bgm_natural_stop_committed() -> void:
 
 func _on_bgm_presenter_registered() -> void:
 	SignalBus.reset_and_apply_bgm_state(current_bgm)
+
+
+func _on_movie_operation_committed(
+	operation: MoviePresentationOperation,
+	state: Dictionary,
+) -> void:
+	if (
+		operation == null
+		or not SignalBus.is_current_movie_operation_valid()
+		or not MovieChannelState.validate_snapshot_state(state, true)
+	):
+		return
+	current_movie = state.duplicate(true)
+
+
+func _on_movie_completion_committed() -> void:
+	current_movie.clear()
 
 
 func _on_loop_se_operation_committed(operation: LoopSePresentationOperation) -> void:

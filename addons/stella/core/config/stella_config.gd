@@ -26,6 +26,7 @@ const _CONFIG_SCHEMA := {
 		"presentation_clips": {
 			"property": "presentation_clips_path", "type": TYPE_STRING,
 		},
+		"movies": {"property": "movies_path", "type": TYPE_STRING},
 	},
 	"presentation_clips": {
 		"resource_budget_bytes": {
@@ -162,6 +163,7 @@ var se_path: String = "res://audio/se/"
 var voice_path: String = "res://audio/voice/"
 var voice_dsp_path: String = "res://audio/voice_dsp/"
 var presentation_clips_path: String = "res://presentation/clips/"
+var movies_path: String = "res://video/movies/"
 var presentation_clip_resource_budget_bytes: int = 512 * 1024 * 1024
 var presentation_clip_max_viewport_pixels: int = 3840 * 2160
 var presentation_clip_audio_choice_seed: int = 0
@@ -276,6 +278,7 @@ func reset() -> void:
 	voice_path = "res://audio/voice/"
 	voice_dsp_path = "res://audio/voice_dsp/"
 	presentation_clips_path = "res://presentation/clips/"
+	movies_path = "res://video/movies/"
 	presentation_clip_resource_budget_bytes = 512 * 1024 * 1024
 	presentation_clip_max_viewport_pixels = 3840 * 2160
 	presentation_clip_audio_choice_seed = 0

@@ -657,6 +657,15 @@ func test_active_shake_coverage_recomputes_on_resize_and_disconnects_on_stop() -
 
 # --- Flash: explicit host when configured; configurable fallback otherwise ---
 
+func test_default_flash_layer_uses_authoritative_shared_presentation_order() -> void:
+	assert_eq(_effects.flash_canvas_layer, PresentationLayerOrder.SCREEN_FLASH)
+	assert_gt(
+		_effects.flash_canvas_layer,
+		PresentationLayerOrder.FULLSCREEN_MEDIA,
+		"screen flash remains deterministically above the full-screen media surface",
+	)
+
+
 func test_flash_fallback_canvas_uses_configured_layer_and_max_z_index() -> void:
 	_effects.flash_canvas_layer = 27
 	SignalBus.effect_requested.emit("flash", {"duration": 0.1})

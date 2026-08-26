@@ -121,6 +121,12 @@ transition generation，不会把同一输入重放给下一条 Dialogue 或 cli
 
 active presentation clip 是 story input 的最前 modal owner；它在 choice、soft-hidden UI、Button/Slider、Skip/Auto 与 typewriter 之前 claim 上述输入，但非 PLAYING 仍不处理 story advance。没有 active clip 时维持既有优先级：choice 与 GUI control 按原 owner处理，soft-hidden UI 先恢复，Skip/Auto 左键 policy 再先于普通推进。成功进入 normal path 后，无论是 typed dialogue advance、Presentation JOIN、可跳过 timed wait 还是 `@wait click` 都会 `set_input_as_handled()`。左键、Space、Enter、Ctrl 与手柄 A 进入同一个 advance dispatch serial；#133 的可重绑输入系统仍是后续工作。
 
+## Movie modal input
+
+活动 `movie:main` 是 presentation clip 同级的最前 fullscreen modal owner。普通左键、Space、Enter、手柄 A 完成 `skippable=true` 的电影；右键和 persistent/Ctrl Skip 分别再受 `movie_right_click_skip`、`movie_skip_on_skip` 控制。`skippable=false` 或关闭对应策略时仍消费该 edge，但不结束电影、不触发 choice、typewriter、下一条 dialogue 或任何下层 owner。Ctrl intent 的 press/hold/release 仍由中央 controller记录，MoviePresenter 不实现 `_input`，同一 physical edge 不能泄漏到新 owner。Auto 不结束电影。
+
+完成、显式 `@movie stop`、movie replacement、navigation、shutdown 与迟到 native callback 都经 Director exact receipt/generation；Skip 已 active 时是否结束新 movie只由 setting与skippable共同决定。默认产品策略是右键可跳、Skip mode 不自动跳，因此两个设置分别默认为 true/false；普通 advance 可跳同样是 Stella 的通用产品选择。
+
 ## Timed wait 与一次推进边界
 
 `@wait <seconds> skippable=true` 复用上述普通 advance 信号，不在 InputHandler 里建立私有 timer 或第二套输入路由。WaitHandler 安装时记录当前 advance serial；只有更新的 serial 可以赢得 timer/input/cancellation race，所以同一 physical input 的兼容 signal tail 无法结束同步开始的下一条 wait。timer 先到、输入先到、Skip 激活或 context cancellation 都会原子退休其余 listener。`skippable=false`（默认）不连接 advance/Skip，只等待 timer 或 engine cancellation；Auto 不生成这类 owner completion。

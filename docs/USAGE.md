@@ -86,6 +86,7 @@ se = "res://audio/se/"
 voice = "res://audio/voice/"
 voice_dsp = "res://audio/voice_dsp/"
 presentation_clips = "res://presentation/clips/"
+movies = "res://video/movies/"
 
 [presentation_clips]
 resource_budget_bytes = 536870912
@@ -546,6 +547,23 @@ fail-close，不从 config seed 猜测或保留 live state。clip whole-quorum c
 choice 不会被同步 save 捕获；Backlog、previous-choice、flowchart 也会先验证 provider，再移动
 cursor/history/path。load 后未访问 chapter 的 initial checkpoint 使用存档 initial seed 重建，绝不
 采用 load 过程中临时 fresh entropy。
+
+### Native movie
+
+项目先把可发布的视频离线转为 Godot 4.6 原生 Ogg Theora/Vorbis `.ogv`，放在 `[paths] movies` 根目录，以 logical ID 引用：
+
+```stla
+@movie opening
+@movie copyright skippable=false
+@movie ambience loop=true policy=fire_and_forget
+@movie stop
+```
+
+普通播放默认非循环、可跳过且 JOIN，因此最常见写法没有附加参数。`skippable=false` 会消费 story input 但不结束电影；右键和 persistent Skip 是否结束可跳过电影分别由 `movie_right_click_skip`（默认 true）与 `movie_skip_on_skip`（默认 false）设置决定，普通 advance 可跳是 Stella 的产品默认。Presenter 不自行监听 raw input。
+
+电影占用固定 full-screen media layer 90，screen flash 为 100；它与 presentation clip 互斥，双方在资源加载和 receipt 之前拒绝冲突。音量只计算一次 `master_volume * movie_volume`。活动电影 snapshot 保存真实 native cursor；资源/长度改变、`position >= length`、native 已停止但 terminal 尚未提交、seek 失败或完成边界竞态均 fail-close，不会从零伪恢复。接近末尾但仍严格小于 length 的有效 cursor 可以精确恢复。Runtime-owned Presenter 跨 game scene 常驻；新 movie 替换旧 movie，title/new-game/shutdown 则 exact 退休资源与 receipt。
+
+Stella 不内置 ffmpeg，不支持原作 MP4/WMV、帧序列、stage-background 或预渲染兼容。importer 应在构建阶段生成单个 `.ogv`，PCK/export 必须显式收集该 native resource。
 
 ### 清空当前对话页
 
