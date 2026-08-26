@@ -233,6 +233,25 @@ func test_jump_from_flowchart_to_nonexistent_chapter_returns_false():
 	await _stop_engine()
 
 
+func test_invalid_audio_choice_snapshot_cannot_rewrite_flowchart_path() -> void:
+	var data = _build_two_chapter_scenario()
+	_setup_scenario(data)
+	_runtime.flowchart_state.current_path = ["prologue", "ch1"]
+	var invalid: Dictionary = _runtime._capture_rollback_snapshot()
+	invalid.erase(PresentationClipAudioChoiceAuthority.PROVIDER_ID)
+	_runtime.flowchart_state.chapter_snapshots["prologue"] = invalid
+	var before_context: ScenarioContext = _runtime.engine.context
+	var before_authority: Dictionary = (
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot())
+	assert_false(_runtime.jump_from_flowchart("prologue"))
+	assert_eq(_runtime.flowchart_state.current_path, ["prologue", "ch1"],
+		"mandatory provider validation precedes path truncation")
+	assert_same(_runtime.engine.context, before_context)
+	assert_eq(
+		_runtime.presentation_clip_audio_choice_authority.capture_snapshot(),
+		before_authority)
+
+
 # ─── _prepare_scenario clears flowchart state ───
 
 func test_prepare_scenario_clears_flowchart_state():

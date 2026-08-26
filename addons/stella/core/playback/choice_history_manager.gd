@@ -75,6 +75,14 @@ func has_previous(current_cmd_uid: int) -> bool:
 ## frame — probably not what the player expects. Rare in practice; refine
 ## once @call is used with choices inside called scenes.
 func pop_previous(current_cmd_uid: int) -> Dictionary:
+	var info := peek_previous(current_cmd_uid)
+	if info.is_empty() or not commit_previous(current_cmd_uid):
+		return {}
+	info.erase("target_index")
+	return info
+
+
+func peek_previous(current_cmd_uid: int) -> Dictionary:
 	var target_idx := -1
 	for i in range(_entries.size() - 1, -1, -1):
 		if _entries[i]["command_uid"] != current_cmd_uid:
@@ -90,8 +98,15 @@ func pop_previous(current_cmd_uid: int) -> Dictionary:
 		# record() implies we should handle the null case without side
 		# effects.
 		return {}
-	_entries.resize(target_idx)
-	return {"snapshot": snap}
+	return {"snapshot": snap, "target_index": target_idx}
+
+
+func commit_previous(current_cmd_uid: int) -> bool:
+	var info := peek_previous(current_cmd_uid)
+	if info.is_empty():
+		return false
+	_entries.resize(int(info["target_index"]))
+	return true
 
 
 func clear() -> void:

@@ -10,6 +10,7 @@ const MAX_CUES := 96
 const MAX_SCENE_NODES := 512
 const MAX_PARTICLE_LAYERS := 16
 const MAX_TOTAL_LIVE_PARTICLES := 1024
+const MAX_TOTAL_AUDIO_CHOICE_CANDIDATES := 256
 const TRANSITIONS := [&"cut", &"turn"]
 const FIT_MODES := [&"contain", &"cover", &"stretch"]
 
@@ -59,6 +60,10 @@ static func is_logical_id(value: String) -> bool:
 
 func validation_errors() -> PackedStringArray:
 	var errors := PackedStringArray()
+	var audio_choice_work_error := bounded_audio_choice_work_error()
+	if not audio_choice_work_error.is_empty():
+		errors.append(audio_choice_work_error)
+		return errors
 	if scene == null:
 		errors.append("scene must be a PackedScene")
 	if animation_player_path.is_empty():
@@ -73,8 +78,6 @@ func validation_errors() -> PackedStringArray:
 		"entry", entry_transition, entry_duration, errors)
 	_validate_transition(
 		"exit", exit_transition, exit_duration, errors)
-	if cues.size() > MAX_CUES:
-		errors.append("cues exceeds the 96-cue limit")
 	if particle_layers.size() > MAX_PARTICLE_LAYERS:
 		errors.append(_particle_validation_diagnostic(
 			MAX_PARTICLE_LAYERS,
@@ -159,6 +162,11 @@ func validation_errors() -> PackedStringArray:
 			):
 				errors.append(
 					"cues[%d].volume_db must be finite and in -80..24" % index)
+		elif cue is PresentationClipAudioChoiceCue:
+			var choice_cue := cue as PresentationClipAudioChoiceCue
+			for detail: String in choice_cue.validation_errors():
+				errors.append(_audio_choice_validation_diagnostic(
+					index, choice_cue, detail))
 		elif cue is PresentationClipStateCue:
 			var state_cue := cue as PresentationClipStateCue
 			if state_cue.animation_player_path.is_empty():
@@ -168,7 +176,8 @@ func validation_errors() -> PackedStringArray:
 				errors.append("cues[%d].animation_name must not be empty" % index)
 		else:
 			errors.append(
-				"cues[%d] must be an exact state or system-audio cue" % index)
+				"cues[%d] must be an exact state, system-audio, or audio-choice cue"
+				% index)
 		_validate_cue_provenance(
 			"cues[%d]" % index,
 			cue.authored_source_path,
@@ -176,6 +185,56 @@ func validation_errors() -> PackedStringArray:
 			errors,
 		)
 	return errors
+
+
+func bounded_audio_choice_work_error() -> String:
+	if cues.size() > MAX_CUES:
+		return "cues exceeds the 96-cue limit"
+	var total_candidates := 0
+	for cue_index in range(cues.size()):
+		var cue := cues[cue_index]
+		if not cue is PresentationClipAudioChoiceCue:
+			continue
+		var choice_cue := cue as PresentationClipAudioChoiceCue
+		var candidate_count := choice_cue.candidates.size()
+		if candidate_count < 1:
+			return _audio_choice_validation_diagnostic(
+				cue_index,
+				choice_cue,
+				"candidates must contain 1..32 authored candidates",
+			)
+		if candidate_count > PresentationClipAudioChoiceCue.MAX_CANDIDATES:
+			return _audio_choice_validation_diagnostic(
+				cue_index,
+				choice_cue,
+				"candidates exceeds the 32-candidate work cap",
+			)
+		total_candidates += candidate_count
+		if total_candidates > MAX_TOTAL_AUDIO_CHOICE_CANDIDATES:
+			return _audio_choice_validation_diagnostic(
+				cue_index,
+				choice_cue,
+				"definition exceeds the 256 total audio-choice candidate work cap",
+			)
+	return ""
+
+
+func _audio_choice_validation_diagnostic(
+	cue_index: int,
+	cue: PresentationClipAudioChoiceCue,
+	detail: String,
+) -> String:
+	var definition_path := resource_path
+	if definition_path.is_empty():
+		definition_path = "<embedded PresentationClipDefinition>"
+	var provenance := " authored at <unavailable>"
+	if not cue.authored_source_path.is_empty() and cue.authored_source_line > 0:
+		provenance = " authored at %s:%d" % [
+			cue.authored_source_path, cue.authored_source_line,
+		]
+	return "%s cues[%d]%s: %s" % [
+		definition_path, cue_index, provenance, detail,
+	]
 
 
 func _particle_validation_diagnostic(
@@ -202,12 +261,15 @@ func _particle_validation_diagnostic(
 
 func has_audio_cues() -> bool:
 	for cue: PresentationClipCue in cues:
-		if cue is PresentationClipAudioCue:
+		if cue is PresentationClipAudioCue or cue is PresentationClipAudioChoiceCue:
 			return true
 	return false
 
 
 func canonical_value_snapshot() -> Dictionary:
+	var audio_choice_work_error := bounded_audio_choice_work_error()
+	if not audio_choice_work_error.is_empty():
+		return {"invalid_audio_choice_work": audio_choice_work_error}
 	var ordered_cues: Array = []
 	for cue_index in range(cues.size()):
 		var cue := cues[cue_index]
@@ -225,6 +287,12 @@ func canonical_value_snapshot() -> Dictionary:
 			cue_value["kind"] = "system_audio"
 			cue_value["asset"] = audio_cue.asset
 			cue_value["volume_db"] = audio_cue.volume_db
+		elif cue is PresentationClipAudioChoiceCue:
+			var choice_cue := cue as PresentationClipAudioChoiceCue
+			cue_value["kind"] = "audio_choice"
+			cue_value["selection_policy"] = String(choice_cue.selection_policy)
+			cue_value["repeat_policy"] = String(choice_cue.repeat_policy)
+			cue_value["candidates"] = choice_cue.canonical_candidates_snapshot()
 		elif cue is PresentationClipStateCue:
 			var state_cue := cue as PresentationClipStateCue
 			cue_value["kind"] = "state"
@@ -311,6 +379,11 @@ func _validate_cue_provenance(
 
 
 func semantic_fingerprint() -> String:
+	var audio_choice_work_error := bounded_audio_choice_work_error()
+	if not audio_choice_work_error.is_empty():
+		return JSON.stringify({
+			"invalid_audio_choice_work": audio_choice_work_error,
+		}).sha256_text()
 	var visited: Dictionary = {}
 	return JSON.stringify(_fingerprint_variant(self, visited)).sha256_text()
 

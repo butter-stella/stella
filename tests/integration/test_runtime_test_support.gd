@@ -225,6 +225,7 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 	assert_eq(provider_ids, [
 		"flowchart_state",
 		"flowchart_visited",
+		"presentation_clip_audio_choice",
 		"presentation_state",
 		"read_flags",
 		"unlocks",
@@ -232,6 +233,13 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 	assert_same(providers_by_id["read_flags"], _runtime.read_flags)
 	assert_same(providers_by_id["unlocks"], _runtime.unlock_manager)
 	assert_same(providers_by_id["presentation_state"], _runtime.presentation_state)
+	assert_same(
+		providers_by_id["presentation_clip_audio_choice"],
+		_runtime.presentation_clip_audio_choice_authority)
+	assert_true(
+		PresentationClipAudioChoiceAuthority.validate_playthrough_snapshot(
+			_runtime.presentation_clip_audio_choice_authority.capture_snapshot()),
+		"direct-engine fixtures receive one deterministic current-schema run")
 	assert_same(providers_by_id["flowchart_state"], _runtime.flowchart_state)
 	assert_same(providers_by_id["flowchart_visited"], _runtime.flowchart_visited)
 

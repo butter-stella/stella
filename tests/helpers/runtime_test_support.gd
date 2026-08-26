@@ -81,6 +81,27 @@ static func reset_for_test(runtime: Node, tree: SceneTree) -> void:
 	runtime.save_manager.register_provider(runtime.read_flags)
 	runtime.save_manager.register_provider(runtime.unlock_manager)
 	runtime.save_manager.register_provider(runtime.presentation_state)
+	# Direct-engine integration fixtures bypass StellaRuntime.start_game(), but
+	# their rollback checkpoints still exercise the current strict provider
+	# schema. Install one deterministic playthrough baseline without consuming
+	# Runtime entropy, and keep the authority registered on the rebuilt manager.
+	var choice_authority: PresentationClipAudioChoiceAuthority = (
+		runtime.presentation_clip_audio_choice_authority)
+	if not choice_authority.clear_to_unstarted():
+		push_error(
+			"RuntimeTestSupport: presentation-clip audio-choice transaction survived reset")
+		return
+	if not choice_authority.restore_snapshot({
+		"version": PresentationClipAudioChoiceAuthority.SNAPSHOT_VERSION,
+		"initialized": true,
+		"initial_seed": 1,
+		"state": 1,
+		"last_choices": {},
+	}):
+		push_error(
+			"RuntimeTestSupport: failed to install deterministic audio-choice baseline")
+		return
+	runtime.save_manager.register_provider(choice_authority)
 	runtime.save_manager.register_provider(runtime.flowchart_state)
 	runtime.save_manager.register_provider(runtime.flowchart_visited)
 
