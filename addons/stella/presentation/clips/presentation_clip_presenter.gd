@@ -1,8 +1,8 @@
 ## Runtime-owned projector for one declarative animated presentation clip.
 ##
 ## AnimationPlayer owns authored timeline time. This presenter only observes
-## its position to dispatch already-preflighted ordered audio cues; it never
-## reconstructs authored time with SceneTree timers or wall-clock polling.
+## its position to dispatch already-preflighted ordered cues and project sealed
+## particle work; it never reconstructs authored time with timers or polling.
 class_name PresentationClipPresenter extends CanvasLayer
 
 const TURN_SHADER_PATH := (
@@ -15,16 +15,36 @@ const STATE_CUE_SCRIPT_PATH := (
 	"res://addons/stella/core/data/presentation_clip_state_cue.gd")
 const AUDIO_CUE_SCRIPT_PATH := (
 	"res://addons/stella/core/data/presentation_clip_audio_cue.gd")
+const PARTICLE_LAYER_SCRIPT_PATH := (
+	"res://addons/stella/core/data/presentation_clip_particle_layer.gd")
+const PARTICLE_MIX_SHADER := preload(
+	"res://addons/stella/presentation/clips/shaders/presentation_clip_particle_mix.gdshader")
+const PARTICLE_ADD_SHADER := preload(
+	"res://addons/stella/presentation/clips/shaders/presentation_clip_particle_add.gdshader")
+const PARTICLE_SUB_SHADER := preload(
+	"res://addons/stella/presentation/clips/shaders/presentation_clip_particle_sub.gdshader")
+const PARTICLE_MUL_SHADER := preload(
+	"res://addons/stella/presentation/clips/shaders/presentation_clip_particle_mul.gdshader")
 const ALLOWED_DEFINITION_SCRIPTS := [
 	DEFINITION_SCRIPT_PATH,
 	CUE_SCRIPT_PATH,
 	STATE_CUE_SCRIPT_PATH,
 	AUDIO_CUE_SCRIPT_PATH,
+	PARTICLE_LAYER_SCRIPT_PATH,
 ]
 const MAX_DEPENDENCY_DEPTH := 128
 const MAX_DEPENDENCY_RESOURCES := 1024
 const MAX_SCENE_STATE_DEPTH := 128
 const MAX_SCENE_STATE_WORK := PresentationClipDefinition.MAX_SCENE_NODES * 4
+## Sealed event payload uses six PackedFloat64Array channels (48 bytes/event).
+## MultiMesh 2D transform + vertex color is 12 floats (48 bytes/instance).
+## Both reserve 64 bytes for alignment. Each layer additionally reserves 64 KiB
+## for its six packed-array headers, one MultiMesh, one CanvasItem, and material.
+const PARTICLE_EVENT_RESERVATION_BYTES := 64
+const PARTICLE_INSTANCE_RESERVATION_BYTES := 64
+const PARTICLE_LAYER_OWNER_RESERVATION_BYTES := 65536
+const PARTICLE_CURVE_KEY_BYTES := 16
+const PARTICLE_HASH_DENOMINATOR := 2147483648.0
 
 var _participant_capability: RefCounted
 var _prepared_plans: Dictionary = {}
@@ -223,6 +243,16 @@ func _on_apply_requested(request: PresentationClipOperationRequest) -> void:
 		plan.get("viewport_size", Vector2i.ZERO),
 		definition.fit_mode,
 	)
+	var particle_root := Node2D.new()
+	particle_root.name = "PresentationClipParticles"
+	visual_group.add_child(particle_root)
+	var particle_projections := _install_particle_projections(
+		plan.get("particle_schedules", []),
+		particle_root,
+		definition.logical_viewport_size,
+		plan.get("viewport_size", Vector2i.ZERO),
+		definition.fit_mode,
+	)
 	var material := ShaderMaterial.new()
 	material.shader = load(TURN_SHADER_PATH) as Shader
 	material.set_shader_parameter("clip_texture", clip_viewport.get_texture())
@@ -243,6 +273,8 @@ func _on_apply_requested(request: PresentationClipOperationRequest) -> void:
 		"input_blocker": input_blocker,
 		"clip_viewport": clip_viewport,
 		"visual_group": visual_group,
+		"particle_root": particle_root,
+		"particle_projections": particle_projections,
 		"projector": projector,
 		"under_texture": plan.get("under_texture"),
 		"material": material,
@@ -406,11 +438,14 @@ func _prepare_active_publication(request: PresentationClipOperationRequest) -> v
 func _complete_active_publication(request: PresentationClipOperationRequest) -> void:
 	if _active.is_empty():
 		return
-	(_active["input_blocker"] as Control).visible = true
 	var definition: PresentationClipDefinition = _active["definition"]
 	var animation_player: AnimationPlayer = _active["animation_player"]
 	var request_id := request.get_request_id()
 	var generation := int(_active["generation"])
+	_project_active_particles(animation_player.current_animation_position)
+	if not _active_identity_is_current(request_id, generation):
+		return
+	(_active["input_blocker"] as Control).visible = true
 	if request.get_force_cut() and definition.skippable:
 		_dispatch_due_cues(
 			animation_player.get_animation(definition.animation_name).length,
@@ -474,6 +509,9 @@ func _process(_delta: float) -> void:
 	if not _active_identity_is_current(request_id, generation):
 		return
 	_project_active_state_cues(player.current_animation_position)
+	if not _active_identity_is_current(request_id, generation):
+		return
+	_project_active_particles(player.current_animation_position)
 
 
 func _on_animation_finished(
@@ -491,6 +529,10 @@ func _on_animation_finished(
 	if not _active_identity_is_current(request_id, generation):
 		return
 	_project_active_state_cues(
+		(_active["animation_player"] as AnimationPlayer).current_animation_length)
+	if not _active_identity_is_current(request_id, generation):
+		return
+	_project_active_particles(
 		(_active["animation_player"] as AnimationPlayer).current_animation_length)
 	if not _active_identity_is_current(request_id, generation):
 		return
@@ -622,6 +664,200 @@ func _project_state_record(projection: Dictionary, position: float) -> void:
 	player.seek(local_position, true)
 
 
+func _install_particle_projections(
+	schedule_values: Variant,
+	particle_root: Node2D,
+	logical_size: Vector2i,
+	target_size: Vector2i,
+	fit_mode: StringName,
+) -> Array[Dictionary]:
+	var projections: Array[Dictionary] = []
+	var fit := _clip_fit_transform(logical_size, target_size, fit_mode)
+	var schedule_array: Array = schedule_values as Array
+	for schedule_value: Variant in schedule_array:
+		var schedule := (schedule_value as Dictionary).duplicate(true)
+		var material := ShaderMaterial.new()
+		material.shader = _particle_shader_for(
+			StringName(schedule.get("blend_mode", &"mix")))
+		var mask_mode := StringName(schedule.get("mask_mode", &"none"))
+		material.set_shader_parameter("use_mask", mask_mode != &"none")
+		material.set_shader_parameter("inverse_mask", mask_mode == &"inverse_alpha")
+		material.set_shader_parameter(
+			"linear_mask", schedule.get("mask_filter", &"linear") == &"linear")
+		material.set_shader_parameter(
+			"mask_texture_nearest", schedule.get("mask_texture"))
+		material.set_shader_parameter(
+			"mask_texture_linear", schedule.get("mask_texture"))
+		var mask_rect: Rect2 = schedule.get("mask_rect", Rect2())
+		material.set_shader_parameter("mask_rect", Vector4(
+			mask_rect.position.x,
+			mask_rect.position.y,
+			mask_rect.size.x,
+			mask_rect.size.y,
+		))
+		material.set_shader_parameter("target_size", Vector2(target_size))
+		material.set_shader_parameter("fit_scale", fit.get("scale", Vector2.ONE))
+		material.set_shader_parameter("fit_offset", fit.get("offset", Vector2.ZERO))
+		var texture := schedule.get("texture") as Texture2D
+		var quad := QuadMesh.new()
+		quad.size = Vector2(texture.get_size())
+		var multimesh := MultiMesh.new()
+		multimesh.transform_format = MultiMesh.TRANSFORM_2D
+		multimesh.use_colors = true
+		multimesh.mesh = quad
+		multimesh.instance_count = int(schedule.get("maximum_live_particles", 0))
+		multimesh.visible_instance_count = 0
+		var instance := MultiMeshInstance2D.new()
+		instance.name = "ParticleLayer_%s" % String(schedule.get("id", "layer"))
+		instance.multimesh = multimesh
+		instance.texture = texture
+		instance.z_as_relative = false
+		instance.z_index = int(schedule.get("z_index", 0))
+		instance.material = material
+		instance.texture_filter = (
+			CanvasItem.TEXTURE_FILTER_LINEAR
+			if schedule.get("texture_filter", &"linear") == &"linear"
+			else CanvasItem.TEXTURE_FILTER_NEAREST
+		)
+		particle_root.add_child(instance)
+		schedule["instance"] = instance
+		schedule["multimesh"] = multimesh
+		projections.append(schedule)
+	return projections
+
+
+func _particle_shader_for(blend_mode: StringName) -> Shader:
+	match blend_mode:
+		&"add":
+			return PARTICLE_ADD_SHADER
+		&"sub":
+			return PARTICLE_SUB_SHADER
+		&"mul":
+			return PARTICLE_MUL_SHADER
+	return PARTICLE_MIX_SHADER
+
+
+func _project_active_particles(position: float) -> void:
+	if _active.is_empty():
+		return
+	for projection_value: Variant in (
+		_active.get("particle_projections", []) as Array):
+		_project_particle_layer(projection_value as Dictionary, position)
+
+
+func _project_particle_layer(projection: Dictionary, position: float) -> void:
+	var multimesh := projection.get("multimesh") as MultiMesh
+	if multimesh == null:
+		return
+	var spawn_times: PackedFloat64Array = projection.get(
+		"spawn_times", PackedFloat64Array())
+	var lifetime_seconds := float(projection.get("lifetime_seconds", 0.0))
+	var first_alive := _upper_bound_particle_spawn_times(
+		spawn_times, position - lifetime_seconds + 0.000001)
+	var after_last_alive := _upper_bound_particle_spawn_times(
+		spawn_times, position + 0.000001)
+	var visible_count := mini(
+		after_last_alive - first_alive,
+		int(projection.get("maximum_live_particles", 0)),
+	)
+	var spawn_x: PackedFloat64Array = projection.get(
+		"spawn_x", PackedFloat64Array())
+	var spawn_y: PackedFloat64Array = projection.get(
+		"spawn_y", PackedFloat64Array())
+	var motion_scales: PackedFloat64Array = projection.get(
+		"motion_scales", PackedFloat64Array())
+	var initial_scales: PackedFloat64Array = projection.get(
+		"initial_scales", PackedFloat64Array())
+	var initial_rotations: PackedFloat64Array = projection.get(
+		"initial_rotations", PackedFloat64Array())
+	var texture := projection.get("texture") as Texture2D
+	var texture_center := Vector2(texture.get_size()) * 0.5
+	var origin: Vector2 = projection.get("origin", Vector2.ZERO)
+	var authored_color: Color = projection.get("color", Color.WHITE)
+	for slot_index in range(visible_count):
+		var event_index := first_alive + slot_index
+		var spawn_time := spawn_times[event_index]
+		var normalized_life := clampf(
+			(position - spawn_time) / lifetime_seconds, 0.0, 1.0)
+		var offset_motion := _sample_particle_motion(
+			projection.get("offset_motion_keys", PackedVector3Array()),
+			normalized_life,
+		)
+		var scaled_motion := _sample_particle_motion(
+			projection.get("scaled_motion_keys", PackedVector3Array()),
+			normalized_life,
+		)
+		var opacity := _sample_particle_scalar(
+			projection.get("opacity_keys", PackedVector2Array()), normalized_life)
+		var scale_value := _sample_particle_scalar(
+			projection.get("scale_keys", PackedVector2Array()), normalized_life)
+		var rotation_value := _sample_particle_scalar(
+			projection.get("rotation_keys", PackedVector2Array()), normalized_life)
+		var scale_factor := initial_scales[event_index] * scale_value
+		var rotation := initial_rotations[event_index] + rotation_value
+		var position_value := Vector2(
+			spawn_x[event_index], spawn_y[event_index]) + (
+			offset_motion + scaled_motion * motion_scales[event_index])
+		var pivot_offset := (texture_center - origin) * scale_factor
+		var transform := Transform2D(
+			rotation,
+			Vector2.ONE * scale_factor,
+			0.0,
+			position_value + pivot_offset.rotated(rotation),
+		)
+		multimesh.set_instance_transform_2d(slot_index, transform)
+		multimesh.set_instance_color(slot_index, Color(
+			authored_color.r,
+			authored_color.g,
+			authored_color.b,
+			authored_color.a * opacity,
+		))
+	multimesh.visible_instance_count = visible_count
+	var instance := projection.get("instance") as MultiMeshInstance2D
+	if instance != null and is_instance_valid(instance):
+		instance.visible = visible_count > 0
+
+
+func _upper_bound_particle_spawn_times(
+	spawn_times: PackedFloat64Array,
+	value: float,
+) -> int:
+	var low := 0
+	var high := spawn_times.size()
+	while low < high:
+		var middle := low + int((high - low) / 2)
+		if spawn_times[middle] <= value:
+			low = middle + 1
+		else:
+			high = middle
+	return low
+
+
+func _sample_particle_motion(keys: PackedVector3Array, t: float) -> Vector2:
+	if keys.is_empty():
+		return Vector2.ZERO
+	for key_index in range(1, keys.size()):
+		var right := keys[key_index]
+		if t <= right.x:
+			var left := keys[key_index - 1]
+			var weight := inverse_lerp(left.x, right.x, t)
+			return Vector2(left.y, left.z).lerp(
+				Vector2(right.y, right.z), weight)
+	var last := keys[keys.size() - 1]
+	return Vector2(last.y, last.z)
+
+
+func _sample_particle_scalar(keys: PackedVector2Array, t: float) -> float:
+	if keys.is_empty():
+		return 0.0
+	for key_index in range(1, keys.size()):
+		var right := keys[key_index]
+		if t <= right.x:
+			var left := keys[key_index - 1]
+			return lerpf(left.y, right.y, inverse_lerp(left.x, right.x, t))
+	return keys[keys.size() - 1].y
+
+
 func _on_finish_requested(request_id: int) -> void:
 	_finish_active_input_request(request_id)
 
@@ -743,7 +979,9 @@ func _prepare_plan(definition: PresentationClipDefinition) -> Dictionary:
 	if not _definition_resource_scripts_are_exact(definition):
 		return {
 			"valid": false,
-			"error": "clip definition and cues must use exact Stella Resource scripts",
+			"error": (
+				"clip definition, cues, and particle layers must use exact Stella "
+				+ "Resource scripts"),
 		}
 	if (
 		not definition.resource_path.is_empty()
@@ -870,6 +1108,14 @@ func _prepare_plan(definition: PresentationClipDefinition) -> Dictionary:
 					definition, "cues", cue_index, cue,
 					state_animation_error),
 			}
+	var particle_result := _seal_particle_schedules(definition, animation.length)
+	if not bool(particle_result.get("valid", false)):
+		scene_root.free()
+		return {
+			"valid": false,
+			"error": String(particle_result.get(
+				"error", "particle schedule could not be sealed")),
+		}
 	var actual_viewport_size := _preflight_viewport_size()
 	var actual_viewport_pixels := (
 		actual_viewport_size.x * actual_viewport_size.y)
@@ -885,9 +1131,24 @@ func _prepare_plan(definition: PresentationClipDefinition) -> Dictionary:
 			"valid": false,
 			"error": "clip logical or target viewport exceeds the configured pixel budget",
 		}
-	var texture_bytes := _estimate_scene_texture_bytes(scene_root)
+	var visited_resources: Dictionary = {}
+	var texture_bytes := _estimate_variant_texture_bytes(
+		scene_root, visited_resources)
+	texture_bytes += _estimate_variant_texture_bytes(
+		definition.particle_layers, visited_resources)
 	var transition_surface_bytes := actual_viewport_pixels * 4 * 2
-	var resource_bytes := texture_bytes + transition_surface_bytes
+	var particle_event_bytes := int(particle_result.get("event_bytes", 0))
+	var particle_instance_bytes := int(particle_result.get("instance_bytes", 0))
+	var particle_layer_owner_bytes := int(particle_result.get("layer_owner_bytes", 0))
+	var particle_curve_bytes := int(particle_result.get("curve_bytes", 0))
+	var resource_bytes := (
+		texture_bytes
+		+ transition_surface_bytes
+		+ particle_event_bytes
+		+ particle_instance_bytes
+		+ particle_layer_owner_bytes
+		+ particle_curve_bytes
+	)
 	if (
 		resource_bytes <= 0
 		or resource_bytes > StellaRuntime.presentation_clip_resource_budget_bytes
@@ -898,7 +1159,7 @@ func _prepare_plan(definition: PresentationClipDefinition) -> Dictionary:
 		return {
 			"valid": false,
 			"error": (
-				"clip texture and transition surfaces exceed the configured resource budget"),
+				"clip textures, transition surfaces, and particle work exceed the configured resource budget"),
 		}
 	_reserved_resource_bytes += resource_bytes
 	return {
@@ -908,8 +1169,252 @@ func _prepare_plan(definition: PresentationClipDefinition) -> Dictionary:
 		"animation_player": animation_player,
 		"definition_fingerprint": definition.semantic_fingerprint(),
 		"viewport_size": actual_viewport_size,
+		"particle_schedules": particle_result.get("schedules", []),
+		"particle_event_bytes": particle_event_bytes,
+		"particle_instance_bytes": particle_instance_bytes,
+		"particle_layer_owner_bytes": particle_layer_owner_bytes,
+		"particle_curve_bytes": particle_curve_bytes,
 		"resource_bytes": resource_bytes,
 	}
+
+
+func _seal_particle_schedules(
+	definition: PresentationClipDefinition,
+	animation_length: float,
+) -> Dictionary:
+	var schedules: Array[Dictionary] = []
+	var total_events := 0
+	var total_instances := 0
+	var total_curve_keys := 0
+	for layer_index in range(definition.particle_layers.size()):
+		var layer: PresentationClipParticleLayer = definition.particle_layers[layer_index]
+		var projected_rect := _particle_projected_rect(layer)
+		if not layer.projection_bounds.encloses(projected_rect):
+			return {
+				"valid": false,
+				"error": _particle_diagnostic(
+					definition, layer_index, layer,
+					"projection_bounds do not enclose the conservative particle extent"),
+			}
+		var event_arrays := _seal_particle_event_arrays(layer, layer_index)
+		var spawn_times: PackedFloat64Array = event_arrays.get(
+			"spawn_times", PackedFloat64Array())
+		if spawn_times.is_empty():
+			return {
+				"valid": false,
+				"error": _particle_diagnostic(
+					definition, layer_index, layer,
+					"emission schedule resolves to no spawn events"),
+			}
+		if spawn_times.size() > PresentationClipParticleLayer.MAX_SPAWN_EVENTS:
+			return {
+				"valid": false,
+				"error": _particle_diagnostic(
+					definition, layer_index, layer,
+					"sealed emission schedule exceeds the 8192-event limit"),
+			}
+		if (
+			spawn_times[spawn_times.size() - 1] + layer.lifetime_seconds
+			> animation_length + 0.000001
+		):
+			return {
+				"valid": false,
+				"error": _particle_diagnostic(
+					definition, layer_index, layer,
+					"last sealed spawn plus lifetime exceeds the bounded main animation"),
+			}
+		var maximum_live := _maximum_simultaneous_particle_events(
+			spawn_times, layer.lifetime_seconds)
+		if maximum_live > layer.maximum_live_particles:
+			return {
+				"valid": false,
+				"error": _particle_diagnostic(
+					definition, layer_index, layer,
+					"sealed schedule exceeds maximum_live_particles"),
+			}
+		var curve_key_count := (
+			layer.offset_motion_keys.size()
+			+ layer.scaled_motion_keys.size()
+			+ layer.opacity_keys.size()
+			+ layer.scale_keys.size()
+			+ layer.rotation_keys.size()
+		)
+		schedules.append({
+			"ordinal": layer_index,
+			"id": layer.id,
+			"texture": layer.texture,
+			"texture_filter": layer.texture_filter,
+			"mask_texture": layer.mask_texture,
+			"mask_filter": layer.mask_filter,
+			"mask_rect": layer.mask_rect,
+			"mask_mode": layer.mask_mode,
+			"blend_mode": layer.blend_mode,
+			"z_index": layer.z_index,
+			"color": layer.color,
+			"origin": layer.origin,
+			"lifetime_seconds": layer.lifetime_seconds,
+			"maximum_live_particles": layer.maximum_live_particles,
+			"projection_bounds": layer.projection_bounds,
+			"offset_motion_keys": layer.offset_motion_keys.duplicate(),
+			"scaled_motion_keys": layer.scaled_motion_keys.duplicate(),
+			"opacity_keys": layer.opacity_keys.duplicate(),
+			"scale_keys": layer.scale_keys.duplicate(),
+			"rotation_keys": layer.rotation_keys.duplicate(),
+			"spawn_times": spawn_times,
+			"spawn_x": event_arrays.get("spawn_x", PackedFloat64Array()),
+			"spawn_y": event_arrays.get("spawn_y", PackedFloat64Array()),
+			"motion_scales": event_arrays.get(
+				"motion_scales", PackedFloat64Array()),
+			"initial_scales": event_arrays.get(
+				"initial_scales", PackedFloat64Array()),
+			"initial_rotations": event_arrays.get(
+				"initial_rotations", PackedFloat64Array()),
+		})
+		total_events += spawn_times.size()
+		total_instances += layer.maximum_live_particles
+		total_curve_keys += curve_key_count
+	return {
+		"valid": true,
+		"schedules": schedules,
+		"event_bytes": total_events * PARTICLE_EVENT_RESERVATION_BYTES,
+		"instance_bytes": total_instances * PARTICLE_INSTANCE_RESERVATION_BYTES,
+		"layer_owner_bytes": (
+			schedules.size() * PARTICLE_LAYER_OWNER_RESERVATION_BYTES),
+		"curve_bytes": total_curve_keys * PARTICLE_CURVE_KEY_BYTES,
+	}
+
+
+func _seal_particle_event_arrays(
+	layer: PresentationClipParticleLayer,
+	layer_ordinal: int,
+) -> Dictionary:
+	var spawn_times := PackedFloat64Array()
+	if layer.emission_mode == &"burst":
+		var count_range := layer.burst_count_max - layer.burst_count_min + 1
+		var burst_count := layer.burst_count_min + mini(
+			count_range - 1,
+			int(floor(_particle_unit(layer.seed, layer_ordinal, 0, 0) * count_range)),
+		)
+		for _ordinal in range(burst_count):
+			spawn_times.append(layer.emission_start_seconds)
+	else:
+		var spawn_time := layer.emission_start_seconds
+		for ordinal in range(PresentationClipParticleLayer.MAX_SPAWN_EVENTS):
+			var interval_seconds := lerpf(
+				1.0 / layer.spawn_rate_min,
+				1.0 / layer.spawn_rate_max,
+				_particle_unit(layer.seed, layer_ordinal, ordinal, 0),
+			)
+			spawn_time += interval_seconds
+			if spawn_time > layer.emission_end_seconds + 0.000001:
+				break
+			spawn_times.append(spawn_time)
+	var spawn_x := PackedFloat64Array()
+	var spawn_y := PackedFloat64Array()
+	var motion_scales := PackedFloat64Array()
+	var initial_scales := PackedFloat64Array()
+	var initial_rotations := PackedFloat64Array()
+	for ordinal in range(spawn_times.size()):
+		var spawn_position := layer.spawn_rect.position + Vector2(
+			layer.spawn_rect.size.x * _particle_unit(
+				layer.seed, layer_ordinal, ordinal, 1),
+			layer.spawn_rect.size.y * _particle_unit(
+				layer.seed, layer_ordinal, ordinal, 2),
+		)
+		spawn_x.append(spawn_position.x)
+		spawn_y.append(spawn_position.y)
+		motion_scales.append(lerpf(
+				layer.motion_scale_min,
+				layer.motion_scale_max,
+				_particle_unit(layer.seed, layer_ordinal, ordinal, 3),
+			))
+		initial_scales.append(lerpf(
+				layer.initial_scale_min,
+				layer.initial_scale_max,
+				_particle_unit(layer.seed, layer_ordinal, ordinal, 4),
+			))
+		initial_rotations.append(lerpf(
+				layer.initial_rotation_min,
+				layer.initial_rotation_max,
+				_particle_unit(layer.seed, layer_ordinal, ordinal, 5),
+			))
+	return {
+		"spawn_times": spawn_times,
+		"spawn_x": spawn_x,
+		"spawn_y": spawn_y,
+		"motion_scales": motion_scales,
+		"initial_scales": initial_scales,
+		"initial_rotations": initial_rotations,
+	}
+
+
+func _particle_unit(
+	seed: int,
+	layer_ordinal: int,
+	spawn_ordinal: int,
+	channel: int,
+) -> float:
+	var value := seed & 0x7fffffff
+	for component: int in [layer_ordinal + 1, spawn_ordinal + 1, channel + 1]:
+		value = int((value * 1103515245 + component * 12345 + 1013904223)
+			& 0x7fffffff)
+	return float(value) / PARTICLE_HASH_DENOMINATOR
+
+
+func _maximum_simultaneous_particle_events(
+	spawn_times: PackedFloat64Array,
+	lifetime_seconds: float,
+) -> int:
+	var left := 0
+	var maximum_live := 0
+	for right in range(spawn_times.size()):
+		var spawn_time := spawn_times[right]
+		while (
+			left <= right
+			and spawn_times[left] + lifetime_seconds
+				<= spawn_time + 0.000001
+		):
+			left += 1
+		maximum_live = maxi(maximum_live, right - left + 1)
+	return maximum_live
+
+
+func _particle_projected_rect(layer: PresentationClipParticleLayer) -> Rect2:
+	var offset_motion_min := Vector2(INF, INF)
+	var offset_motion_max := Vector2(-INF, -INF)
+	for key: Vector3 in layer.offset_motion_keys:
+		var authored_motion := Vector2(key.y, key.z)
+		offset_motion_min = offset_motion_min.min(authored_motion)
+		offset_motion_max = offset_motion_max.max(authored_motion)
+	var scaled_motion_min := Vector2(INF, INF)
+	var scaled_motion_max := Vector2(-INF, -INF)
+	for key: Vector3 in layer.scaled_motion_keys:
+		var authored_motion := Vector2(key.y, key.z)
+		for motion_scale: float in [layer.motion_scale_min, layer.motion_scale_max]:
+			var scaled := authored_motion * motion_scale
+			scaled_motion_min = scaled_motion_min.min(scaled)
+			scaled_motion_max = scaled_motion_max.max(scaled)
+	var center_min := (
+		layer.spawn_rect.position + offset_motion_min + scaled_motion_min)
+	var center_max := (
+		layer.spawn_rect.end + offset_motion_max + scaled_motion_max)
+	var texture_size := Vector2(layer.texture.get_size())
+	var corner_radius := 0.0
+	for corner: Vector2 in [
+		-layer.origin,
+		Vector2(texture_size.x, 0.0) - layer.origin,
+		Vector2(0.0, texture_size.y) - layer.origin,
+		texture_size - layer.origin,
+	]:
+		corner_radius = maxf(corner_radius, corner.length())
+	var curve_scale_max := 0.0
+	for key: Vector2 in layer.scale_keys:
+		curve_scale_max = maxf(curve_scale_max, key.y)
+	var radius := corner_radius * layer.initial_scale_max * curve_scale_max
+	return Rect2(
+		center_min - Vector2.ONE * radius,
+		(center_max - center_min) + Vector2.ONE * radius * 2.0,
+	)
 
 
 func _plan_is_installable(plan: Dictionary) -> bool:
@@ -1012,7 +1517,8 @@ func _resolve_definition_result(asset: String) -> Dictionary:
 				return {
 					"definition": null,
 					"error": (
-						"clip logical id '%s' at '%s' must use exact Stella definition and cue Resource scripts"
+						("clip logical id '%s' at '%s' must use exact Stella definition, "
+						+ "cue, and particle-layer Resource scripts")
 						% [asset, path]),
 				}
 			return {"definition": resource, "error": ""}
@@ -1136,6 +1642,8 @@ func _definition_resource_scripts_are_exact(
 	):
 		return false
 	for cue: PresentationClipCue in definition.cues:
+		if cue == null:
+			continue
 		var expected_script_path := ""
 		if cue is PresentationClipAudioCue:
 			expected_script_path = AUDIO_CUE_SCRIPT_PATH
@@ -1144,9 +1652,16 @@ func _definition_resource_scripts_are_exact(
 		else:
 			return false
 		if (
-			cue == null
-			or cue.get_script() == null
+			cue.get_script() == null
 			or cue.get_script().resource_path != expected_script_path
+		):
+			return false
+	for layer: PresentationClipParticleLayer in definition.particle_layers:
+		if layer == null:
+			continue
+		if (
+			layer.get_script() == null
+			or layer.get_script().resource_path != PARTICLE_LAYER_SCRIPT_PATH
 		):
 			return false
 	return true
@@ -1171,6 +1686,15 @@ func _cue_diagnostic(
 	return "%s %s[%d]%s: %s" % [
 		definition_path, field, index, provenance, detail,
 	]
+
+
+func _particle_diagnostic(
+	definition: PresentationClipDefinition,
+	index: int,
+	layer: PresentationClipParticleLayer,
+	detail: String,
+) -> String:
+	return definition._particle_validation_diagnostic(index, layer, detail)
 
 
 func _validate_packed_scene_state(
@@ -1379,6 +1903,16 @@ func _apply_clip_fit(
 	target_size: Vector2i,
 	fit_mode: StringName,
 ) -> void:
+	var fit := _clip_fit_transform(logical_size, target_size, fit_mode)
+	visual_group.scale = fit.get("scale", Vector2.ONE)
+	visual_group.position = fit.get("offset", Vector2.ZERO)
+
+
+func _clip_fit_transform(
+	logical_size: Vector2i,
+	target_size: Vector2i,
+	fit_mode: StringName,
+) -> Dictionary:
 	var scale_value := Vector2(
 		float(target_size.x) / float(logical_size.x),
 		float(target_size.y) / float(logical_size.y),
@@ -1390,9 +1924,11 @@ func _apply_clip_fit(
 			else maxf(scale_value.x, scale_value.y)
 		)
 		scale_value = Vector2.ONE * uniform
-	visual_group.scale = scale_value
-	visual_group.position = (
-		Vector2(target_size) - Vector2(logical_size) * scale_value) * 0.5
+	return {
+		"scale": scale_value,
+		"offset": (
+			Vector2(target_size) - Vector2(logical_size) * scale_value) * 0.5,
+	}
 
 
 func _preflight_viewport_size() -> Vector2i:

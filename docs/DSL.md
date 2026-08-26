@@ -371,7 +371,8 @@ FNF 在 whole-plan seal 后继续剧情。重复/未知参数、非 canonical lo
 
 logical definition 是 `PresentationClipDefinition .tres`，内部持有 `.tscn`、唯一 main
 AnimationPlayer、logical viewport/fit、entry/exit transition、可选 dialogue surface /
-quick-menu suppression，以及一份按作者顺序排列的 state/system-audio cue 数组。同 offset
+quick-menu suppression、一份按作者顺序排列的 state/system-audio cue 数组，以及可选的
+ordered typed particle layers。同 offset
 不会按 kind、ID 或角色重排。state cue 的 named animation 由 main clock 的
 `main_position - cue.offset` 确定性投影；pending audio 在 Skip/cut 时取消，不会补放。
 definition 与 scene 只接受 data-only text Resource。文本/依赖图门在首次 load 前拒绝项目
@@ -380,6 +381,21 @@ Script、embedded Script、binary 或 malformed dependency；isolated definition
 入树的 detached instance 上拒绝 autoplay、audio/video node、第二动画时钟、AnimatedTexture、
 `TIME` shader 和越界 track target。Importer 只写 Stella canonical definition 和可选 cue
 provenance，不把源 macro/格式名称加入 DSL。
+
+粒子 layer 仍是 definition 内的数据，不增加 DSL 参数。它明确选择 `rate`（在 authored
+window 内，每次用 stable keyed seed 重新采样 interval endpoints
+`1/spawn_rate_min..1/spawn_rate_max`）或 `burst`（只在
+`emission_start_seconds` 一次采样 `burst_count_min/max`，因此 end 必须等于 start）。每个
+spawn ordinal 的位置、单一 motion scalar、初始 scale/rotation 都使用互相独立的 stable
+channel；unscaled `offset_motion_keys` 与乘共享 scalar 的 `scaled_motion_keys` 都使用 logical
+pixels（x 向右、y 向下），两者相加，rotation 使用弧度。因只有 scaled curve 乘同一个
+scalar，任意 authored direction 与独立 local wiggle 都保持不变。`texture_filter` /
+`mask_filter` 明确为 nearest 或
+linear，mask 明确为 alpha/inverse-alpha，blend 明确为 mix/add/sub/mul。Presenter 在 claim
+前封存全部 packed schedule；运行时只对 main position 做 seekable projection，绝不放行
+GPUParticles/CPUParticles、第二 clock、Timer 或项目 Script。texture source 是 closed static
+data contract：只接受 imported compressed/ImageTexture，以及递归静态的Atlas/Canvas wrapper；
+ViewportTexture、CameraTexture、Texture2DRD、Animated/Noise/External/placeholder texture均拒绝。
 
 `entry_transition` / `exit_transition` 只接受 `cut` 或内建 exact 64×64 tile `turn`；turn
 tile count 按实际 target pixel size 计算，支持非 64 整除边界。Skip 只 cut
