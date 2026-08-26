@@ -142,14 +142,13 @@ func _update_entry_text(
 	for seg in segments:
 		full_text += DialogueTextNormalizer.to_plain_text(
 			String(seg.get("text", "")), registered_effect_registry)
-		var voice := String(seg.get("voice", ""))
-		if not voice.is_empty():
-			voices.append(voice)
-			voice_segments.append({
-				"voice": voice,
-				"voice_dsp": String(seg.get("voice_dsp", "")),
-				"voice_dsp_line": int(seg.get("voice_dsp_line", 0)),
-			})
+		var layers_value: Variant = seg.get("voice_layers", [])
+		if layers_value is Array and not (layers_value as Array).is_empty():
+			var layers: Array = (layers_value as Array).duplicate(true)
+			for layer_value: Variant in layers:
+				if layer_value is Dictionary:
+					voices.append(String((layer_value as Dictionary).get("asset", "")))
+			voice_segments.append({"voice_layers": layers})
 	entry["text"] = full_text
 	entry["voices"] = voices
 	entry["voice_segments"] = voice_segments

@@ -218,7 +218,14 @@ func test_dialogue_activation_advance_wins_over_late_abort() -> void:
 # --- BacklogManager ---
 
 func _seg(text: String, voice: String = "") -> Dictionary:
-	return {"text": text, "voice": voice}
+	return {
+		"text": text,
+		"voice_layers": (
+			[] if voice.is_empty() else [{
+				"id": "main", "asset": voice, "character": "",
+				"dsp": "", "line": 0,
+			}]),
+	}
 
 
 func test_backlog_add_entry():

@@ -11,7 +11,14 @@ func before_each():
 
 
 func _segs(text: String, voice: String = "") -> Array:
-	return [{"text": text, "voice": voice}]
+	return [{
+		"text": text,
+		"voice_layers": (
+			[] if voice.is_empty() else [{
+				"id": "main", "asset": voice, "character": "",
+				"dsp": "", "line": 0,
+			}]),
+	}]
 
 
 # A test snapshot factory: returns a unique dict each call so we can verify
@@ -64,20 +71,20 @@ func test_enrichment_can_arrive_before_canonical_entry_capture() -> void:
 func test_add_entry_strips_inline_effect_markers():
 	# {wait:N} / {speed:fast} are typewriter directives — they should NOT
 	# leak into the backlog history text.
-	var segs = [{"text": "你好{wait:500}世界{speed:30}！", "voice": ""}]
+	var segs = [{"text": "你好{wait:500}世界{speed:30}！", "voice_layers": []}]
 	_mgr.add_entry("a", segs, 0, func(): return {})
 	assert_eq(_mgr.get_entries()[0]["text"], "你好世界！")
 
 
 func test_add_entry_strips_expression_markers():
 	# [expr:expression] single-word brackets should be stripped too.
-	var segs = [{"text": "嗨[expr:smile]，最近好吗？[expr:sad]", "voice": ""}]
+	var segs = [{"text": "嗨[expr:smile]，最近好吗？[expr:sad]", "voice_layers": []}]
 	_mgr.add_entry("a", segs, 0, func(): return {})
 	assert_eq(_mgr.get_entries()[0]["text"], "嗨，最近好吗？")
 
 
 func test_add_entry_preserves_unknown_brackets_as_literal_text():
-	var segs = [{"text": "[note]重要[/note]文本", "voice": ""}]
+	var segs = [{"text": "[note]重要[/note]文本", "voice_layers": []}]
 	_mgr.add_entry("a", segs, 0, func(): return {})
 	assert_eq(_mgr.get_entries()[0]["text"], "[note]重要[/note]文本")
 
@@ -191,16 +198,16 @@ func test_add_entry_strips_only_registered_custom_bbcode_effects():
 
 func test_add_entry_concatenates_combine_segments():
 	var segs = [
-		{"text": "foo", "voice": "v1", "voice_dsp": "radio", "voice_dsp_line": 7},
-		{"text": "bar", "voice": "v2", "voice_dsp": "echo", "voice_dsp_line": 8},
+		{"text": "foo", "voice_layers": [{"id": "main", "asset": "v1", "character": "a", "dsp": "radio", "line": 7}]},
+		{"text": "bar", "voice_layers": [{"id": "main", "asset": "v2", "character": "a", "dsp": "echo", "line": 8}]},
 	]
 	_mgr.add_entry("a", segs, 0, func(): return {})
 	var e = _mgr.get_entries()[0]
 	assert_eq(e["text"], "foobar")
 	assert_eq(e["voices"], ["v1", "v2"])
 	assert_eq_deep(e["voice_segments"], [
-		{"voice": "v1", "voice_dsp": "radio", "voice_dsp_line": 7},
-		{"voice": "v2", "voice_dsp": "echo", "voice_dsp_line": 8},
+		{"voice_layers": [{"id": "main", "asset": "v1", "character": "a", "dsp": "radio", "line": 7}]},
+		{"voice_layers": [{"id": "main", "asset": "v2", "character": "a", "dsp": "echo", "line": 8}]},
 	])
 
 

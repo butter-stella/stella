@@ -105,6 +105,9 @@ sakura「你好，初次见面。」 #voice:sakura_001
 // 为这一条语音选择有序 DSP preset；没有 #voice_dsp 时保持普通干声
 sakura「电话里的声音。」 #voice:sakura_001 #voice_dsp:telephone
 
+// 同一段需要多条独立语音同时开始时，按作者顺序声明 addressable layers
+ensemble「大家同时喊了出来。」 #voice_layer:lead(character=sakura,asset=sakura_001,dsp=telephone) #voice_layer:reply(character=senpai,asset=senpai_001)
+
 // 句内头像表情提示
 sakura「我本来很开心的...[expr:surprised]但是听到这个消息...[expr:cry]呜呜...」
 
@@ -125,12 +128,27 @@ sakura「那个人就是..{wait:500}{speed:30}你吗？」
 `{speed:30}` 把后续每字间隔设为 30ms。未知标签、非数字或负数会产生
 warning，并按普通文本显示。
 
-`#voice_dsp:<preset>` 只能与同一行的 `#voice:<asset>` 一起使用。preset 是
+普通作者仍只需写最短的 `#voice:<asset>`；`#voice_dsp:<preset>` 只能与同一行的
+`#voice:<asset>` 一起使用，两项先后顺序不影响结果。preset 是
 相对于 `[paths] voice_dsp` 的 Stella 逻辑资源 ID，例如 `telephone` 会解析为
 `res://audio/voice_dsp/telephone.tres`（或 `.res`）。空值、重复 metadata、未知
 metadata、绝对路径、`res://` / `user://` 和包含 `.` / `..` 的路径都会在带
 source line 的 parser 边界 fail-close。`@combine` 中每个对话 segment 独立选择
 preset；Backlog 重播保留各 segment 的选择和顺序，普通语音不会继承上一条链。
+
+只有确实需要同一 segment 并行发声时才使用重复的
+`#voice_layer:<id>(character=<character>,asset=<asset>[,dsp=<preset>])`。一组最多
+8 层，layer id 在组内唯一；数组顺序就是 authored start/event/backlog 顺序，不按
+角色或 ID 排序。shorthand 与 explicit layer 不可混用，参数缺失、重复、未知或非法
+资源 ID 都在该对话源码行 fail-close。Parser 只在边界把普通 `#voice` lower 为一个
+`main` layer；下游只有统一的 ordered `voice_layers` group contract。
+
+每组先对全部 layer（包括当前角色设置为 disabled 的 layer）完成 stream、DSP schema
+和 private bus preflight，然后才原子替换旧组。enabled members 在同一个 AudioServer
+mix window 启动，各自拥有 player、DSP chain 与 tail；一层自然结束不会截断其余层，
+组完成以最后一个 enabled member 的 tail 为准。全部 disabled 时同步完成且不创建
+遗留 owner。Auto、Skip、点击、替换、load/rollback/restart、scene replacement 和
+Backlog replay 都操作这一个 group token，不会预混、串行化或用 wall-clock 猜完成。
 
 DSP preset 是 `VoiceDspChainDefinition` Resource，`effects` 按数组顺序执行，
 `tail_seconds` 声明最后一个有声 sample 后仍需保留物理效果链的最长尾音。当前

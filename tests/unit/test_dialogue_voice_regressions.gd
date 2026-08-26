@@ -220,6 +220,43 @@ func test_replaced_queue_cannot_complete_its_successor() -> void:
 	assert_true(dialogue._voice_event_waiters.is_empty())
 
 
+func test_simultaneous_group_progress_uses_max_member_and_finishes_as_a_group() -> void:
+	var dialogue := _game_scene.get_node("UILayer/DialoguePanel") as Control
+	var queue := _configure_owned_queue(dialogue)
+	dialogue._playback_total_duration = 5.0
+	dialogue._playback_played_duration = 1.0
+	dialogue._playback_is_dialogue = true
+	dialogue._playback_voice_token = 401
+	var progress: Array = []
+	var on_progress := func(position: float, duration: float):
+		progress.append([position, duration])
+	SignalBus.dialogue_voice_progress.connect(on_progress)
+
+	dialogue._on_voice_playback_event(VoicePlaybackEvent.started(
+		"lead", "narration_001", 401, Callable(), false, "lead", false))
+	dialogue._on_voice_playback_event(VoicePlaybackEvent.started(
+		"reply", "narration_002", 401, Callable(), false, "reply", false))
+	dialogue._on_voice_playback_event(VoicePlaybackEvent.progress(
+		0.4, 2.0, 401, Callable(), false, "lead", "lead", "narration_001", false))
+	dialogue._on_voice_playback_event(VoicePlaybackEvent.progress(
+		1.2, 3.0, 401, Callable(), false, "reply", "reply", "narration_002", false))
+	dialogue._on_voice_playback_event(VoicePlaybackEvent.layer_finished(
+		"lead", "narration_001", 401, "lead"))
+
+	assert_eq(progress, [[1.4, 5.0], [2.2, 5.0]],
+		"a segment advances by the furthest live member while authored segments sum")
+	assert_true(dialogue._voice_playing,
+		"one member terminal cannot finish the simultaneous group")
+	assert_eq(dialogue._voice_layer_progress.size(), 2)
+
+	dialogue._on_voice_playback_event(VoicePlaybackEvent.finished(401))
+	assert_false(dialogue._voice_playing)
+	assert_true(dialogue._voice_layer_progress.is_empty())
+	assert_eq(dialogue._playback_voice_token, -1)
+	assert_eq(dialogue._playback_owner_dialogue_gen, queue["dialogue_gen"])
+	SignalBus.dialogue_voice_progress.disconnect(on_progress)
+
+
 func test_voice_handler_enters_the_typed_request_path() -> void:
 	var typed_requests: Array[VoicePlaybackRequest] = []
 	var compatibility_events: Array = []
@@ -233,6 +270,7 @@ func test_voice_handler_enters_the_typed_request_path() -> void:
 	command.params = {"asset": "missing_typed_fixture"}
 
 	await VoiceHandler.new().execute(command, null)
+	assert_push_error("missing_typed_fixture")
 
 	assert_eq(typed_requests.size(), 1)
 	assert_eq(typed_requests[0].get_asset(), "missing_typed_fixture")
@@ -253,7 +291,7 @@ func test_logical_voice_finishes_once_on_advance_show_and_hide() -> void:
 	assert_eq(finished[0], 1, "advance closes the current logical voice")
 
 	_open_logical_voice_session(dialogue)
-	SignalBus.show_dialogue.emit("", [{"text": "replacement", "voice": ""}], "adv")
+	SignalBus.show_dialogue.emit("", [{"text": "replacement", "voice_layers": []}], "adv")
 	assert_eq(finished[0], 2, "direct SHOW closes the replaced logical voice")
 
 	_open_logical_voice_session(dialogue)
@@ -273,7 +311,7 @@ func test_toolbar_and_backlog_replay_logical_event_order() -> void:
 	var on_finished: Callable = func(): events.append("finish")
 	SignalBus.dialogue_voice_started.connect(on_started)
 	SignalBus.dialogue_voice_finished.connect(on_finished)
-	dialogue._dialogue_segments = [{"text": "", "voice": "narration_001"}]
+	dialogue._dialogue_segments = [{"text": "", "voice_layers": [{"id": "main", "asset": "narration_001", "character": "", "dsp": "", "line": 0}]}]
 	dialogue._dialogue_voice_character = ""
 
 	_open_logical_voice_session(dialogue)
@@ -314,7 +352,7 @@ func test_backlog_replay_from_voice_started_does_not_strand_show() -> void:
 	var expected_dialogue_gen: int = dialogue._dialogue_gen + 1
 	SignalBus.show_dialogue.emit("", [{
 		"text": "Original SHOW remains live",
-		"voice": "narration_001",
+		"voice_layers": [{"id": "main", "asset": "narration_001", "character": "", "dsp": "", "line": 0}],
 	}], "adv")
 	SignalBus.dialogue_voice_started.disconnect(on_started)
 	await get_tree().process_frame
@@ -350,9 +388,9 @@ func test_backlog_replay_from_voice_started_does_not_strand_show() -> void:
 func test_combine_voice_replay_restarts_from_first_segment():
 	# Setup: play a combined dialogue, let the queue run, then click replay
 	var segments = [
-		{"text": "一", "voice": "sakura_013"},
-		{"text": "二", "voice": "sakura_018"},
-		{"text": "三", "voice": "sakura_019"},
+		{"text": "一", "voice_layers": [{"id": "main", "asset": "sakura_013", "character": "", "dsp": "", "line": 0}]},
+		{"text": "二", "voice_layers": [{"id": "main", "asset": "sakura_018", "character": "", "dsp": "", "line": 0}]},
+		{"text": "三", "voice_layers": [{"id": "main", "asset": "sakura_019", "character": "", "dsp": "", "line": 0}]},
 	]
 
 	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
@@ -377,7 +415,7 @@ func test_single_segment_dialogue_stores_one_segment():
 	# (size 1) so the unified replay path works.
 	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
 	SignalBus.show_dialogue.emit("sakura",
-		[{"text": "hello", "voice": "v1"}], "adv")
+		[{"text": "hello", "voice_layers": [{"id": "main", "asset": "sakura_011", "character": "sakura", "dsp": "", "line": 0}]}], "adv")
 	await get_tree().process_frame
 	assert_eq(dialogue._dialogue_segments.size(), 1,
 		"single-segment dialogue should snapshot a 1-element segments array")
@@ -386,8 +424,8 @@ func test_single_segment_dialogue_stores_one_segment():
 func test_combine_with_empty_voices_does_not_hang():
 	# All segments have empty voice — queue should drain synchronously without hanging
 	var segments = [
-		{"text": "一", "voice": ""},
-		{"text": "二", "voice": ""},
+		{"text": "一", "voice_layers": []},
+		{"text": "二", "voice_layers": []},
 	]
 	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
 	SignalBus.show_dialogue.emit("sakura", segments, "adv")
@@ -404,9 +442,9 @@ func test_dialogue_voice_progress_emits_with_total_duration():
 	SignalBus.dialogue_voice_started.connect(func(d): started_payloads.append(d))
 
 	var segments = [
-		{"text": "一", "voice": "sakura_013"},
-		{"text": "二", "voice": "sakura_018"},
-		{"text": "三", "voice": "sakura_019"},
+		{"text": "一", "voice_layers": [{"id": "main", "asset": "sakura_013", "character": "", "dsp": "", "line": 0}]},
+		{"text": "二", "voice_layers": [{"id": "main", "asset": "sakura_018", "character": "", "dsp": "", "line": 0}]},
+		{"text": "三", "voice_layers": [{"id": "main", "asset": "sakura_019", "character": "", "dsp": "", "line": 0}]},
 	]
 	SignalBus.show_dialogue.emit("sakura", segments, "adv")
 	await get_tree().process_frame
@@ -449,8 +487,8 @@ func test_voice_replay_re_emits_dialogue_voice_started():
 	# dialogue_voice_started, so the demo progress bar stayed hidden.
 	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
 	var segments = [
-		{"text": "一", "voice": "sakura_013"},
-		{"text": "二", "voice": "sakura_018"},
+		{"text": "一", "voice_layers": [{"id": "main", "asset": "sakura_013", "character": "", "dsp": "", "line": 0}]},
+		{"text": "二", "voice_layers": [{"id": "main", "asset": "sakura_018", "character": "", "dsp": "", "line": 0}]},
 	]
 	SignalBus.show_dialogue.emit("sakura", segments, "adv")
 	await get_tree().process_frame
@@ -470,9 +508,9 @@ func test_dialogue_voice_finished_waits_for_last_segment():
 	var original_voice_path := StellaRuntime.voice_path
 	StellaRuntime.voice_path = "res://examples/demo/audio/voice/"
 	var segments = [
-		{"text": "一", "voice": "narration_001", "expression": ""},
-		{"text": "二", "voice": "narration_002", "expression": ""},
-		{"text": "三", "voice": "narration_003", "expression": ""},
+		{"text": "一", "voice_layers": [{"id": "main", "asset": "narration_001", "character": "", "dsp": "", "line": 0}], "expression": ""},
+		{"text": "二", "voice_layers": [{"id": "main", "asset": "narration_002", "character": "", "dsp": "", "line": 0}], "expression": ""},
+		{"text": "三", "voice_layers": [{"id": "main", "asset": "narration_003", "character": "", "dsp": "", "line": 0}], "expression": ""},
 	]
 
 	var finished_count := [0]
@@ -531,7 +569,7 @@ func test_reset_presentation_clears_backlog():
 	# so the previous run's entries leaked into the loaded game.
 	StellaRuntime.backlog_manager.clear()
 	StellaRuntime.backlog_manager.add_entry(
-		"sakura", [{"text": "old run", "voice": ""}]
+		"sakura", [{"text": "old run", "voice_layers": []}]
 	)
 	assert_eq(StellaRuntime.backlog_manager.get_entries().size(), 1,
 		"sanity: entry was added")
@@ -562,8 +600,8 @@ func test_replay_button_visible_when_only_later_segment_has_voice():
 		add_child_autoqfree(dialogue._voice_replay_btn)
 
 	var segments = [
-		{"text": "一", "voice": ""},
-		{"text": "二", "voice": "sakura_018"},
+		{"text": "一", "voice_layers": []},
+		{"text": "二", "voice_layers": [{"id": "main", "asset": "sakura_018", "character": "", "dsp": "", "line": 0}]},
 	]
 	SignalBus.show_dialogue.emit("sakura", segments, "adv")
 	await get_tree().process_frame
@@ -598,8 +636,8 @@ func test_backlog_replay_does_not_corrupt_dialogue_state():
 
 	# Set up a "current dialogue" with two segments (the toolbar replay target)
 	var dialogue_segments = [
-		{"text": "current一", "voice": "sakura_011"},
-		{"text": "current二", "voice": "sakura_012"},
+		{"text": "current一", "voice_layers": [{"id": "main", "asset": "sakura_011", "character": "", "dsp": "", "line": 0}]},
+		{"text": "current二", "voice_layers": [{"id": "main", "asset": "sakura_012", "character": "", "dsp": "", "line": 0}]},
 	]
 	SignalBus.show_dialogue.emit("sakura", dialogue_segments, "adv")
 	await get_tree().process_frame
@@ -615,7 +653,8 @@ func test_backlog_replay_does_not_corrupt_dialogue_state():
 	# _dialogue_segments must still be the original 2 — not the backlog's 3
 	assert_eq(dialogue._dialogue_segments.size(), 2,
 		"backlog replay must NOT overwrite _dialogue_segments")
-	assert_eq(dialogue._dialogue_segments[0]["voice"], "sakura_011",
+	assert_eq(dialogue._dialogue_segments[0]["voice_layers"][0]["asset"],
+		"sakura_011",
 		"first segment should still be the current dialogue's, not the backlog's")
 
 	# Now press the toolbar 重听 button — it must replay the CURRENT dialogue's
@@ -710,7 +749,7 @@ func test_single_segment_dialogue_emits_voice_play_exactly_once():
 	SignalBus.voice_play.connect(conn)
 
 	SignalBus.show_dialogue.emit("sakura",
-		[{"text": "hi", "voice": "sakura_011"}], "adv")
+		[{"text": "hi", "voice_layers": [{"id": "main", "asset": "sakura_011", "character": "", "dsp": "", "line": 0}]}], "adv")
 	await get_tree().process_frame
 
 	SignalBus.voice_play.disconnect(conn)

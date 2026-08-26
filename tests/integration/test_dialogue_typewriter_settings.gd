@@ -166,7 +166,7 @@ func test_queued_request_snapshots_settings_only_when_it_becomes_active() -> voi
 
 	SignalBus.emit_show_dialogue("", [{
 		"text": "retiring",
-		"voice": "",
+		"voice_layers": [],
 		"presentation_ops": [{
 			"kind": "stage",
 			"payload": {
@@ -339,7 +339,7 @@ func _show_text(text: String, mode: String = "adv") -> void:
 
 
 func _segment(text: String) -> Dictionary:
-	return {"text": text, "voice": "", "presentation_ops": []}
+	return {"text": text, "voice_layers": [], "presentation_ops": []}
 
 
 func _wait_until_ready(timeout: float, message: String) -> bool:

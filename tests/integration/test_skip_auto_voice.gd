@@ -46,7 +46,7 @@ func test_skip_mode_suppresses_voice_play():
 	StellaRuntime.skip_controller.is_active = true
 	assert_true(StellaRuntime.is_skipping())
 
-	_bus.show_dialogue.emit("sakura", [{"text": "Hello", "voice": "sakura_001"}], "adv")
+	_bus.show_dialogue.emit("sakura", [{"text": "Hello", "voice_layers": [{"id": "main", "asset": "sakura_001", "character": "sakura", "dsp": "", "line": 0}]}], "adv")
 	await get_tree().create_timer(0.2).timeout
 
 	assert_eq(voice_received.size(), 0, "voice should NOT play during skip mode")
@@ -78,9 +78,11 @@ func test_missing_combine_voices_do_not_block_auto_wait_voice() -> void:
 	_bus.advance_requested.connect(on_advance)
 
 	_bus.show_dialogue.emit("sakura", [
-		{"text": "一", "voice": "missing_voice_one", "expression": ""},
-		{"text": "二", "voice": "missing_voice_two", "expression": ""},
+		{"text": "一", "voice_layers": [{"id": "main", "asset": "missing_voice_one", "character": "sakura", "dsp": "", "line": 0}], "expression": ""},
+		{"text": "二", "voice_layers": [{"id": "main", "asset": "missing_voice_two", "character": "sakura", "dsp": "", "line": 0}], "expression": ""},
 	], "adv")
+	assert_push_error("missing_voice_one")
+	assert_push_error("missing_voice_two")
 	var advanced: bool = await wait_until(
 		func(): return advance_count[0] == 1,
 		0.6,
@@ -114,8 +116,8 @@ func test_muted_combine_voices_do_not_block_auto_wait_voice() -> void:
 	_bus.advance_requested.connect(on_advance)
 
 	_bus.show_dialogue.emit("sakura", [
-		{"text": "一", "voice": "narration_001", "expression": ""},
-		{"text": "二", "voice": "narration_002", "expression": ""},
+		{"text": "一", "voice_layers": [{"id": "main", "asset": "narration_001", "character": "sakura", "dsp": "", "line": 0}], "expression": ""},
+		{"text": "二", "voice_layers": [{"id": "main", "asset": "narration_002", "character": "sakura", "dsp": "", "line": 0}], "expression": ""},
 	], "adv")
 	var advanced: bool = await wait_until(
 		func(): return advance_count[0] == 1,
@@ -142,14 +144,14 @@ func test_muted_replacement_does_not_leave_old_voice_waiting_forever() -> void:
 	StellaRuntime.set_setting("auto_play_delay", 0.01)
 
 	_bus.show_dialogue.emit("sakura", [{
-		"text": "A", "voice": "narration_001", "expression": "",
+		"text": "A", "voice_layers": [{"id": "main", "asset": "narration_001", "character": "sakura", "dsp": "", "line": 0}], "expression": "",
 	}], "adv")
 	assert_true(audio_presenter._voice_player.playing)
 	assert_true(dialogue._voice_playing)
 
 	StellaRuntime.set_setting("character_voice_enabled", {"sakura": false})
 	_bus.show_dialogue.emit("sakura", [{
-		"text": "B", "voice": "narration_002", "expression": "",
+		"text": "B", "voice_layers": [{"id": "main", "asset": "narration_002", "character": "sakura", "dsp": "", "line": 0}], "expression": "",
 	}], "adv")
 	var replacement_ready: bool = await wait_until(
 		func(): return dialogue._dialogue_ready,
@@ -188,7 +190,7 @@ func test_old_voice_finished_tail_cannot_complete_replacement_auto_wait() -> voi
 			return
 		did_replace[0] = true
 		_bus.show_dialogue.emit("sakura", [{
-			"text": "B", "voice": "narration_002", "expression": "",
+			"text": "B", "voice_layers": [{"id": "main", "asset": "narration_002", "character": "sakura", "dsp": "", "line": 0}], "expression": "",
 		}], "adv")
 	# Connect before the replacement game scene so this extension can start a new
 	# playback before DialoguePresenter receives the old signal's ordinary tail.
@@ -209,7 +211,7 @@ func test_old_voice_finished_tail_cannot_complete_replacement_auto_wait() -> voi
 	_bus.advance_requested.connect(on_advance)
 
 	_bus.show_dialogue.emit("sakura", [{
-		"text": "A", "voice": "narration_001", "expression": "",
+		"text": "A", "voice_layers": [{"id": "main", "asset": "narration_001", "character": "sakura", "dsp": "", "line": 0}], "expression": "",
 	}], "adv")
 	assert_true(audio_presenter._voice_player.playing)
 	# Model the real AudioStreamPlayer.finished callback. Its early listener starts
@@ -249,7 +251,7 @@ func test_raw_voice_started_from_replaced_finish_wins_over_owned_request() -> vo
 	StellaRuntime.voice_path = "res://examples/demo/audio/voice/"
 	dialogue._char_interval = 0.0
 	_bus.show_dialogue.emit("sakura", [{
-		"text": "A", "voice": "narration_001", "expression": "",
+		"text": "A", "voice_layers": [{"id": "main", "asset": "narration_001", "character": "sakura", "dsp": "", "line": 0}], "expression": "",
 	}], "adv")
 	assert_true(audio_presenter._voice_player.playing)
 	var did_start_raw := [false]
@@ -263,7 +265,7 @@ func test_raw_voice_started_from_replaced_finish_wins_over_owned_request() -> vo
 	# B stops A before loading its own clip. The FINISHED extension starts raw C
 	# synchronously; the suspended B request must notice Audio's newer revision.
 	_bus.show_dialogue.emit("sakura", [{
-		"text": "B", "voice": "narration_002", "expression": "",
+		"text": "B", "voice_layers": [{"id": "main", "asset": "narration_002", "character": "sakura", "dsp": "", "line": 0}], "expression": "",
 	}], "adv")
 	_bus.voice_finished.disconnect(on_replaced_finish)
 	assert_true(did_start_raw[0])
@@ -292,7 +294,7 @@ func test_raw_voice_finished_cannot_complete_an_owned_queue() -> void:
 	StellaRuntime.voice_path = "res://examples/demo/audio/voice/"
 	dialogue._char_interval = 0.0
 	_bus.show_dialogue.emit("sakura", [{
-		"text": "raw", "voice": "narration_001", "expression": "",
+		"text": "raw", "voice_layers": [{"id": "main", "asset": "narration_001", "character": "sakura", "dsp": "", "line": 0}], "expression": "",
 	}], "adv")
 	assert_true(dialogue._playback_queue_active)
 	assert_true(dialogue._voice_playing)
@@ -328,7 +330,7 @@ func test_synchronous_owned_finish_during_start_does_not_strand_queue() -> void:
 	_bus.voice_started.connect(on_started)
 
 	_bus.show_dialogue.emit("sakura", [{
-		"text": "sync owned", "voice": "narration_001", "expression": "",
+		"text": "sync owned", "voice_layers": [{"id": "main", "asset": "narration_001", "character": "sakura", "dsp": "", "line": 0}], "expression": "",
 	}], "adv")
 	_bus.voice_started.disconnect(on_started)
 	assert_true(did_finish[0])
@@ -358,7 +360,7 @@ func test_synchronous_raw_finish_during_start_does_not_complete_owned_queue() ->
 	_bus.voice_started.connect(on_started)
 
 	_bus.show_dialogue.emit("sakura", [{
-		"text": "sync raw", "voice": "narration_001", "expression": "",
+		"text": "sync raw", "voice_layers": [{"id": "main", "asset": "narration_001", "character": "sakura", "dsp": "", "line": 0}], "expression": "",
 	}], "adv")
 	_bus.voice_started.disconnect(on_started)
 	assert_true(did_finish[0])
@@ -386,7 +388,7 @@ func test_old_voice_started_tail_cannot_revive_a_muted_replacement() -> void:
 		StellaRuntime.set_setting(
 			"character_voice_enabled", {"sakura": false})
 		_bus.show_dialogue.emit("sakura", [{
-			"text": "B", "voice": "narration_002", "expression": "",
+			"text": "B", "voice_layers": [{"id": "main", "asset": "narration_002", "character": "sakura", "dsp": "", "line": 0}], "expression": "",
 		}], "adv")
 	# The replacement Presenter connects after this extension, so the old native
 	# START tail reaches it only after the nested muted SHOW has completed.
@@ -402,7 +404,7 @@ func test_old_voice_started_tail_cannot_revive_a_muted_replacement() -> void:
 	_bus.advance_requested.connect(on_advance)
 
 	_bus.show_dialogue.emit("sakura", [{
-		"text": "A", "voice": "narration_001", "expression": "",
+		"text": "A", "voice_layers": [{"id": "main", "asset": "narration_001", "character": "sakura", "dsp": "", "line": 0}], "expression": "",
 	}], "adv")
 	_bus.voice_started.disconnect(on_voice_started_early)
 	assert_true(did_replace[0])
@@ -419,7 +421,7 @@ func test_old_voice_started_tail_cannot_revive_a_muted_replacement() -> void:
 	_bus.advance_requested.disconnect(on_advance)
 
 
-func test_voice_play_ack_uses_audio_acceptance_after_early_mute() -> void:
+func test_voice_group_accepts_early_all_disabled_decision_and_drains_auto() -> void:
 	var dialogue = get_tree().root.find_child("DialoguePanel", true, false)
 	var audio_presenter := StellaRuntime.get_node_or_null("AudioPresenter")
 	assert_not_null(dialogue)
@@ -436,8 +438,9 @@ func test_voice_play_ack_uses_audio_acceptance_after_early_mute() -> void:
 	if not _bus.voice_playback_requested.is_connected(audio_callback):
 		return
 	# Put the mutating extension before AudioPresenter. Presenter has already
-	# precomputed the clip duration, but Audio must acknowledge the final muted
-	# decision synchronously instead of leaving the queue waiting for FINISHED.
+	# precomputed the clip duration, but Audio must validate the stream and then
+	# synchronously complete the accepted all-disabled group instead of leaving
+	# the queue waiting for a physical FINISHED event.
 	_bus.voice_playback_requested.disconnect(audio_callback)
 	var did_mute := [false]
 	var mute_before_audio := func(_request: VoicePlaybackRequest):
@@ -454,14 +457,14 @@ func test_voice_play_ack_uses_audio_acceptance_after_early_mute() -> void:
 	_bus.advance_requested.connect(on_advance)
 
 	_bus.show_dialogue.emit("sakura", [{
-		"text": "TOCTOU", "voice": "narration_001", "expression": "",
+		"text": "TOCTOU", "voice_layers": [{"id": "main", "asset": "narration_001", "character": "sakura", "dsp": "", "line": 0}], "expression": "",
 	}], "adv")
 	_bus.voice_playback_requested.disconnect(mute_before_audio)
 	assert_true(did_mute[0])
 	var advanced: bool = await wait_until(
 		func(): return advance_count[0] == 1,
 		0.6,
-		"AudioPresenter rejection drains auto wait despite preflight success",
+		"an accepted all-disabled group drains auto wait synchronously",
 	)
 	assert_true(advanced)
 	assert_false(audio_presenter._voice_player.playing)
@@ -544,7 +547,7 @@ func test_dialogue_gen_increments_on_show_dialogue():
 		return
 
 	var gen_before = dialogue._dialogue_gen
-	_bus.show_dialogue.emit("sakura", [{"text": "Hello", "voice": ""}], "adv")
+	_bus.show_dialogue.emit("sakura", [{"text": "Hello", "voice_layers": []}], "adv")
 	await get_tree().process_frame
 
 	assert_gt(dialogue._dialogue_gen, gen_before, "_dialogue_gen should increment on each show_dialogue")
@@ -557,11 +560,11 @@ func test_dialogue_gen_changes_on_successive_dialogues():
 		pending("DialoguePanel not available in test scene")
 		return
 
-	_bus.show_dialogue.emit("sakura", [{"text": "First", "voice": ""}], "adv")
+	_bus.show_dialogue.emit("sakura", [{"text": "First", "voice_layers": []}], "adv")
 	await get_tree().process_frame
 	var gen1 = dialogue._dialogue_gen
 
-	_bus.show_dialogue.emit("sakura", [{"text": "Second", "voice": ""}], "adv")
+	_bus.show_dialogue.emit("sakura", [{"text": "Second", "voice_layers": []}], "adv")
 	await get_tree().process_frame
 	var gen2 = dialogue._dialogue_gen
 

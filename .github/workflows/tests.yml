@@ -24,7 +24,7 @@ jobs:
           use-dotnet: false
 
       - name: Import project
-        run: godot --headless --import 2>&1
+        run: godot --audio-driver Dummy --headless --import 2>&1
         timeout-minutes: 2
 
       - name: Check clean shutdown
@@ -35,7 +35,7 @@ jobs:
           # Godot 4.6.1 raw --quit-after stops its audio driver before stopped
           # playbacks receive another mix (godotengine/godot#76745, #122742).
           # Exercise Stella's real public graceful boundary with active title BGM.
-          STELLA_DISABLE_LOCAL_CONFIG=1 godot --headless --path . \
+          STELLA_DISABLE_LOCAL_CONFIG=1 godot --audio-driver Dummy --headless --path . \
             res://tests/fixtures/startup/graceful_shutdown_probe.tscn \
             >"$log_file" 2>&1 || godot_status=$?
           cat "$log_file"
@@ -100,7 +100,7 @@ jobs:
 
           startup_status=0
           STELLA_STARTUP_PROBE_MARKER="$marker" \
-            godot --headless --path . --quit-after 60 \
+            godot --audio-driver Dummy --headless --path . --quit-after 60 \
             >"$startup_log" 2>&1 || startup_status=$?
           cat "$startup_log"
           if (( startup_status != 0 )); then
@@ -122,7 +122,7 @@ jobs:
           STELLA_EXPORT_PROBE_MODE="source-fallback" \
             STELLA_EXPORT_PROBE_EXPECTED_TITLE="Stella Demo" \
             STELLA_EXPORT_PROBE_MARKER="$marker" \
-            godot --headless --path . --quit-after 60 \
+            godot --audio-driver Dummy --headless --path . --quit-after 60 \
             res://tests/fixtures/pck_smoke/export_probe_host.tscn \
             >"$fallback_log" 2>&1 || fallback_status=$?
           cat "$fallback_log"
@@ -145,7 +145,7 @@ jobs:
           STELLA_EXPORT_PROBE_MODE="source-fallback" \
             STELLA_EXPORT_PROBE_EXPECTED_TITLE="Stella Demo" \
             STELLA_EXPORT_PROBE_MARKER="$marker" \
-            godot --headless --path . --quit-after 60 \
+            godot --audio-driver Dummy --headless --path . --quit-after 60 \
             res://tests/fixtures/pck_smoke/export_probe_host.tscn \
             >"$fallback_log" 2>&1 || recursive_status=$?
           cat "$fallback_log"
@@ -168,7 +168,7 @@ jobs:
           STELLA_EXPORT_PROBE_MODE="source-fallback" \
             STELLA_EXPORT_PROBE_EXPECTED_TITLE="Stella Demo" \
             STELLA_EXPORT_PROBE_MARKER="$marker" \
-            godot --headless --path . --quit-after 60 \
+            godot --audio-driver Dummy --headless --path . --quit-after 60 \
             res://tests/fixtures/pck_smoke/export_probe_host.tscn \
             >"$fallback_log" 2>&1 || nested_recursive_status=$?
           cat "$fallback_log"
@@ -190,7 +190,7 @@ jobs:
           degraded_status=0
           STELLA_EXPORT_PROBE_MODE="degraded-title-fallback" \
             STELLA_EXPORT_PROBE_MARKER="$marker" \
-            godot --headless --path . --quit-after 600 \
+            godot --audio-driver Dummy --headless --path . --quit-after 600 \
             res://tests/fixtures/pck_smoke/export_probe_host.tscn \
             >"$fallback_log" 2>&1 || degraded_status=$?
           cat "$fallback_log"
@@ -210,7 +210,7 @@ jobs:
           ready_return_status=0
           STELLA_EXPORT_PROBE_MODE="ready-return" \
             STELLA_EXPORT_PROBE_MARKER="$marker" \
-            godot --headless --path . --quit-after 60 \
+            godot --audio-driver Dummy --headless --path . --quit-after 60 \
             res://tests/fixtures/pck_smoke/export_probe_host.tscn \
             >"$fallback_log" 2>&1 || ready_return_status=$?
           cat "$fallback_log"
@@ -226,7 +226,7 @@ jobs:
           navigation_status=0
           STELLA_EXPORT_PROBE_MODE="navigation-interleaving" \
             STELLA_EXPORT_PROBE_MARKER="$marker" \
-            godot --headless --path . --quit-after 600 \
+            godot --audio-driver Dummy --headless --path . --quit-after 600 \
             res://tests/fixtures/pck_smoke/export_probe_host.tscn \
             >"$fallback_log" 2>&1 || navigation_status=$?
           cat "$fallback_log"
@@ -267,7 +267,7 @@ jobs:
 
           probe_status=0
           STELLA_CUSTOM_MAIN_PROBE_MARKER="$marker" \
-            godot --headless --path . --quit-after 60 \
+            godot --audio-driver Dummy --headless --path . --quit-after 60 \
             res://tests/fixtures/startup/custom_main.tscn \
             >"$probe_log" 2>&1 || probe_status=$?
           cat "$probe_log"
@@ -333,7 +333,7 @@ jobs:
           xvfb xauth mesa-vulkan-drivers
 
       - name: Import project
-        run: godot --headless --import 2>&1
+        run: godot --audio-driver Dummy --headless --import 2>&1
         timeout-minutes: 2
 
       - name: Verify Lavapipe ICD

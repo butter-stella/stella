@@ -77,14 +77,20 @@ func test_scenario_context_snapshot_round_trips_authored_nvl_page_entries():
 	ctx.current_dialogue_profile_name = "first"
 	ctx.record_nvl_page_entry(10, "alice", [{
 		"text": "[b]First[/b]",
-		"voice": "voice_1",
+		"voice_layers": [{
+			"id": "main", "asset": "voice_1", "character": "alice",
+			"dsp": "", "line": 0,
+		}],
 		"presentation_ops": [{"type": "show", "position": Vector2(3, 4)}],
 	}])
 	ctx.current_command_index = 5
 	ctx.current_dialogue_profile_name = "second"
 	ctx.record_nvl_page_entry(11, "bob", [{
 		"text": "Second",
-		"voice": "voice_2",
+		"voice_layers": [{
+			"id": "main", "asset": "voice_2", "character": "bob",
+			"dsp": "", "line": 0,
+		}],
 	}])
 
 	var snapshot := ctx.capture_snapshot()
@@ -98,14 +104,20 @@ func test_scenario_context_snapshot_round_trips_authored_nvl_page_entries():
 		"command_index": 4,
 		"profile_name": "first",
 		"character": "alice",
-		"segments": [{"text": "[b]First[/b]", "voice": "voice_1"}],
+		"segments": [{"text": "[b]First[/b]", "voice_layers": [{
+			"id": "main", "asset": "voice_1", "character": "alice",
+			"dsp": "", "line": 0,
+		}]}],
 	}, {
 		"command_uid": 11,
 		"scene_index": 1,
 		"command_index": 5,
 		"profile_name": "second",
 		"character": "bob",
-		"segments": [{"text": "Second", "voice": "voice_2"}],
+		"segments": [{"text": "Second", "voice_layers": [{
+			"id": "main", "asset": "voice_2", "character": "bob",
+			"dsp": "", "line": 0,
+		}]}],
 	}])
 	assert_false(restored.nvl_page_entries[0].has("presentation_profile"),
 		"save data stores only the stable profile name")
@@ -118,14 +130,20 @@ func test_scenario_context_snapshot_round_trips_authored_nvl_page_entries():
 	restored.current_dialogue_profile_name = "second"
 	var replayed := restored.record_nvl_page_entry(11, "bob", [{
 		"text": "Second",
-		"voice": "voice_2",
+		"voice_layers": [{
+			"id": "main", "asset": "voice_2", "character": "bob",
+			"dsp": "", "line": 0,
+		}],
 	}])
 	assert_eq(replayed.size(), 2,
 		"the current command re-executed by restore must not duplicate the page tail")
 	restored.current_dialogue_profile_name = "third"
 	var live_append := restored.record_nvl_page_entry(12, "carol", [{
 		"text": "Third",
-		"voice": "voice_3",
+		"voice_layers": [{
+			"id": "main", "asset": "voice_3", "character": "carol",
+			"dsp": "", "line": 0,
+		}],
 	}])
 	assert_true(live_append.is_empty(),
 		"ordinary NVL playback stays on the incremental hot path")
