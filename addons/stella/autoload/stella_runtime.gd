@@ -99,6 +99,7 @@ var _emitting_chapter_id := ""
 var _emitting_chapter_title := ""
 var _stage_registrar_authority := RefCounted.new()
 var _dialogue_clear_registrar_authority := RefCounted.new()
+var _dialogue_avatar_registrar_authority := RefCounted.new()
 var _chapter_indicator_registrar_authority := RefCounted.new()
 var _loop_se_registrar_authority := RefCounted.new()
 var _bgm_registrar_authority := RefCounted.new()
@@ -126,6 +127,9 @@ func _init() -> void:
 	if not SignalBus.configure_dialogue_clear_registrar(
 		_dialogue_clear_registrar_authority):
 		push_error("StellaRuntime: dialogue clear registrar authority conflict")
+	if not SignalBus.configure_dialogue_avatar_registrar(
+		_dialogue_avatar_registrar_authority):
+		push_error("StellaRuntime: dialogue avatar registrar authority conflict")
 	if not SignalBus.configure_chapter_indicator_registrar(
 		_chapter_indicator_registrar_authority):
 		push_error("StellaRuntime: chapter indicator registrar authority conflict")
@@ -178,6 +182,28 @@ func _unregister_dialogue_clear_presenter(
 		presenter,
 		capability,
 		_dialogue_clear_registrar_authority,
+	)
+
+
+func _register_dialogue_avatar_presenter(presenter: Object) -> RefCounted:
+	if (
+		presenter == null
+		or not presenter is Control
+		or presenter.get_script() != DIALOGUE_PRESENTER_SCRIPT
+	):
+		return null
+	return SignalBus.register_dialogue_avatar_presenter(
+		presenter, _dialogue_avatar_registrar_authority)
+
+
+func _unregister_dialogue_avatar_presenter(
+	presenter: Object,
+	capability: RefCounted,
+) -> void:
+	SignalBus.unregister_dialogue_avatar_presenter(
+		presenter,
+		capability,
+		_dialogue_avatar_registrar_authority,
 	)
 
 
@@ -2242,6 +2268,7 @@ func _install_scenario(data: ScenarioData, scenario_path: String) -> void:
 			"quick_menu": true,
 		},
 		"dialogue_content": PresentationState._inactive_dialogue_content(),
+		"dialogue_avatar": DialogueAvatarState.default_state(),
 	}
 	flowchart_state.initial_snapshot = initial_snapshot
 	# Context ownership is canonical; notify only the pre-transfer abort audience

@@ -89,6 +89,9 @@ func _make_valid_save_snapshot() -> Dictionary:
 			"bg": "",
 			"stage_layers": {},
 			"bgm": {},
+			"dialogue_visibility": DialogueVisibilityState.default_state(),
+			"dialogue_content": PresentationState._inactive_dialogue_content(),
+			"dialogue_avatar": DialogueAvatarState.default_state(),
 		},
 		"read_flags": {"save_validation:start:0": true},
 		"unlocks": {"cg": ["safe"]},
@@ -110,6 +113,8 @@ func _make_valid_dialogue_save_snapshot(mode: String = "adv") -> Dictionary:
 		"surface": false,
 		"quick_menu": true,
 	}
+	snapshot["presentation_state"]["dialogue_avatar"] = (
+		DialogueAvatarState.default_state())
 	var content := {
 		"version": 2,
 		"active": true,
@@ -496,13 +501,14 @@ func test_explicit_cleared_dialogue_projection_round_trips_without_text_inferenc
 		"schema v2 has no old-shape or empty-text inference branch")
 
 
-func test_save_without_dialogue_projection_remains_a_valid_old_save() -> void:
+func test_current_save_without_complete_dialogue_projection_fails_close() -> void:
 	var scenario := _make_validation_scenario()
-	var old_save := _make_valid_save_snapshot()
-	assert_false(old_save["presentation_state"].has("dialogue_visibility"))
-	assert_false(old_save["presentation_state"].has("dialogue_content"))
-	assert_true(_manager.validate_data_for_scenario(old_save, scenario),
-		"missing issue #166 fields use read-time defaults without rewriting disk")
+	var missing := _make_valid_save_snapshot()
+	missing["presentation_state"].erase("dialogue_visibility")
+	missing["presentation_state"].erase("dialogue_content")
+	missing["presentation_state"].erase("dialogue_avatar")
+	assert_false(_manager.validate_data_for_scenario(missing, scenario),
+		"the current unversioned schema has no all-fields-missing fallback")
 
 
 func test_loop_se_snapshot_schema_is_exact_and_old_saves_default_empty() -> void:
@@ -607,6 +613,24 @@ func test_dialogue_visibility_schema_is_exact_and_never_truthy_coerced() -> void
 		)
 		assert_false(_manager.validate_data_for_scenario(snapshot, scenario),
 			"invalid visibility is rejected atomically: %s" % str(invalid_visibility))
+
+
+func test_dialogue_avatar_schema_is_exact_and_migrates_as_one_dialogue_envelope() -> void:
+	var scenario := _make_validation_scenario()
+	var valid := _make_valid_dialogue_save_snapshot()
+	assert_true(_manager.validate_data_for_scenario(valid, scenario))
+	var missing := valid.duplicate(true)
+	missing["presentation_state"].erase("dialogue_avatar")
+	assert_false(_manager.validate_data_for_scenario(missing, scenario),
+		"visibility/content snapshots without the new stable avatar are rejected")
+	var partial_legacy := valid.duplicate(true)
+	partial_legacy["presentation_state"].erase("dialogue_visibility")
+	partial_legacy["presentation_state"].erase("dialogue_content")
+	assert_false(_manager.validate_data_for_scenario(partial_legacy, scenario),
+		"avatar cannot be smuggled outside the exact dialogue envelope")
+	var malformed := valid.duplicate(true)
+	malformed["presentation_state"]["dialogue_avatar"]["position"] = [0.0]
+	assert_false(_manager.validate_data_for_scenario(malformed, scenario))
 
 
 func test_dialogue_content_exact_schema_rejects_transient_or_malformed_data() -> void:

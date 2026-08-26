@@ -167,15 +167,18 @@ func test_queued_request_snapshots_settings_only_when_it_becomes_active() -> voi
 	SignalBus.emit_show_dialogue("", [{
 		"text": "retiring",
 		"voice": "",
-		"stage_ops": [{
-			"action": "show",
-			"id": "timing_queue_probe",
-			"properties": {"asset": "stage:redraw_source"},
-			"transition": "cut",
-			"transition_params": {},
-			"duration": 0.0,
+		"presentation_ops": [{
+			"kind": "stage",
+			"payload": {
+				"action": "show",
+				"id": "timing_queue_probe",
+				"properties": {"asset": "stage:redraw_source"},
+				"transition": "cut",
+				"transition_params": {},
+				"duration": 0.0,
+			},
 		}],
-		"stage_operation_lines": [145],
+		"presentation_operation_lines": [145],
 	}], "adv")
 	assert_true(replacement_requested[0],
 		"replacement SHOW is requested inside the owned stage dispatch")
@@ -336,7 +339,7 @@ func _show_text(text: String, mode: String = "adv") -> void:
 
 
 func _segment(text: String) -> Dictionary:
-	return {"text": text, "voice": "", "stage_ops": []}
+	return {"text": text, "voice": "", "presentation_ops": []}
 
 
 func _wait_until_ready(timeout: float, message: String) -> bool:

@@ -428,13 +428,13 @@ sakura「二」 #voice:v2
 @end""")
 	var segments: Array = data.scenes[0].commands[0].params["segments"]
 	assert_eq(segments.size(), 2)
-	assert_eq(segments[0]["stage_ops"].size(), 1)
-	assert_eq(segments[0]["stage_ops"][0]["id"], "hero")
-	assert_eq(segments[1]["stage_ops"].size(), 2)
-	assert_eq(segments[1]["stage_ops"][0]["id"], "event")
-	assert_eq(segments[1]["stage_ops"][1]["properties"]["face"], "stage:happy")
-	assert_eq(segments[0]["stage_operation_lines"], [4])
-	assert_eq(segments[1]["stage_operation_lines"], [6, 7])
+	assert_eq(segments[0]["presentation_ops"].size(), 1)
+	assert_eq(segments[0]["presentation_ops"][0]["payload"]["id"], "hero")
+	assert_eq(segments[1]["presentation_ops"].size(), 2)
+	assert_eq(segments[1]["presentation_ops"][0]["payload"]["id"], "event")
+	assert_eq(segments[1]["presentation_ops"][1]["payload"]["properties"]["face"], "stage:happy")
+	assert_eq(segments[0]["presentation_operation_lines"], [4])
+	assert_eq(segments[1]["presentation_operation_lines"], [6, 7])
 	assert_eq(
 		data.scenes[0].commands.size(),
 		1,
@@ -442,7 +442,7 @@ sakura「二」 #voice:v2
 	)
 
 
-func test_combine_ignores_non_stage_directives_and_keeps_stage_only_schema():
+func test_combine_ignores_non_presentation_directives_and_keeps_typed_schema():
 	var data := _parse("""@chapter test
 @scene start
 @combine
@@ -453,8 +453,9 @@ sakura「一」
 	var segments: Array = data.scenes[0].commands[0].params["segments"]
 	assert_eq(segments.size(), 1)
 	assert_false(segments[0].has("expression"))
-	assert_eq(segments[0]["stage_ops"].size(), 1)
-	assert_true(_has_diagnostic(data, "warning", "only @stage is allowed"))
+	assert_eq(segments[0]["presentation_ops"].size(), 1)
+	assert_true(_has_diagnostic(
+		data, "warning", "only @stage and @dialogue_avatar are allowed"))
 
 
 func test_combine_rejects_monologue_without_rebinding_its_stage_cues():
@@ -468,7 +469,7 @@ sakura「下一段。」
 	var segments: Array = data.scenes[0].commands[0].params["segments"]
 	assert_eq(segments.size(), 1)
 	assert_eq(segments[0]["text"], "下一段。")
-	assert_true(segments[0]["stage_ops"].is_empty())
+	assert_true(segments[0]["presentation_ops"].is_empty())
 	assert_true(_has_diagnostic(data, "warning", "monologue is not allowed"))
 
 
@@ -489,7 +490,7 @@ func test_combine_stage_cues_keep_compiled_dialogue_profile():
 		"profile_name": "novel",
 	}])
 	assert_eq(data.dialogue_profiles["novel"]["line_spacing"], 8)
-	assert_eq(command.params["segments"][0]["stage_ops"].size(), 1)
+	assert_eq(command.params["segments"][0]["presentation_ops"].size(), 1)
 
 
 func test_combine_reports_stage_cue_without_following_segment():

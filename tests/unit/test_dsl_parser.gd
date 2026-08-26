@@ -671,9 +671,10 @@ sakura「第一句。」 #voice:v1
 	assert_eq(segments.size(), 1)
 	assert_eq(segments[0]["text"], "第一句。")
 	assert_eq(segments[0]["voice"], "v1")
-	assert_eq(segments[0]["stage_ops"].size(), 1)
-	assert_eq(segments[0]["stage_ops"][0]["id"], "sakura")
-	assert_eq(segments[0]["stage_operation_lines"], [3])
+	assert_eq(segments[0]["presentation_ops"].size(), 1)
+	assert_eq(segments[0]["presentation_ops"][0]["kind"], "stage")
+	assert_eq(segments[0]["presentation_ops"][0]["payload"]["id"], "sakura")
+	assert_eq(segments[0]["presentation_operation_lines"], [3])
 
 
 func test_combine_multiple_segments():
@@ -693,16 +694,16 @@ sakura「第三句。」 #voice:v3
 	assert_eq(segments.size(), 3)
 	assert_eq(segments[0]["text"], "第一句。")
 	assert_eq(segments[0]["voice"], "v1")
-	assert_eq(segments[0]["stage_ops"][0]["properties"]["asset"], "character:sakura/sad")
+	assert_eq(segments[0]["presentation_ops"][0]["payload"]["properties"]["asset"], "character:sakura/sad")
 	assert_eq(segments[1]["text"], "第二句。")
 	assert_eq(segments[1]["voice"], "v2")
-	assert_eq(segments[1]["stage_ops"][0]["properties"]["asset"], "character:sakura/surprised")
+	assert_eq(segments[1]["presentation_ops"][0]["payload"]["properties"]["asset"], "character:sakura/surprised")
 	assert_eq(segments[2]["text"], "第三句。")
 	assert_eq(segments[2]["voice"], "v3")
-	assert_eq(segments[2]["stage_ops"][0]["properties"]["asset"], "character:sakura/happy")
-	assert_eq(segments[0]["stage_operation_lines"], [3])
-	assert_eq(segments[1]["stage_operation_lines"], [5])
-	assert_eq(segments[2]["stage_operation_lines"], [7])
+	assert_eq(segments[2]["presentation_ops"][0]["payload"]["properties"]["asset"], "character:sakura/happy")
+	assert_eq(segments[0]["presentation_operation_lines"], [3])
+	assert_eq(segments[1]["presentation_operation_lines"], [5])
+	assert_eq(segments[2]["presentation_operation_lines"], [7])
 
 
 func test_combine_segments_select_voice_dsp_independently():
@@ -737,7 +738,7 @@ sakura「但是听说下周要期中考...」 #voice:v2
 		"combined text should be concatenation of all segments")
 
 
-func test_combine_segment_without_stage_cue_has_empty_stage_ops():
+func test_combine_segment_without_stage_cue_has_empty_presentation_ops():
 	var data = _parse("""@scene start
 @combine
 sakura「第一句。」 #voice:v1
@@ -746,8 +747,8 @@ sakura「第二句。」 #voice:v2
 	var cmd = data.scenes[0].commands[0]
 	var segments = cmd.params.get("segments", [])
 	assert_eq(segments.size(), 2)
-	assert_true(segments[0]["stage_ops"].is_empty())
-	assert_true(segments[1]["stage_ops"].is_empty())
+	assert_true(segments[0]["presentation_ops"].is_empty())
+	assert_true(segments[1]["presentation_ops"].is_empty())
 
 
 func test_combine_only_produces_one_command():
@@ -812,7 +813,7 @@ func test_combine_rejects_effect_with_structured_warning():
 sakura「第一句。」 #voice:v1
 @end""")
 	assert_true(
-		_has_diagnostic(data, "warning", "only @stage is allowed inside @combine block; @effect was ignored"),
+		_has_diagnostic(data, "warning", "only @stage and @dialogue_avatar are allowed inside @combine block; @effect was ignored"),
 		"unsupported combine commands must be surfaced through parser diagnostics",
 	)
 	assert_eq(data.scenes[0].commands.size(), 1)
@@ -829,7 +830,7 @@ func test_combine_rejects_dialogue_mode_switch_without_mutating_mode():
 @end
 「之后。」""")
 	assert_true(
-		_has_diagnostic(data, "warning", "only @stage is allowed inside @combine block; @nvl was ignored"),
+		_has_diagnostic(data, "warning", "only @stage and @dialogue_avatar are allowed inside @combine block; @nvl was ignored"),
 		"dialogue mode switches inside combine must be rejected",
 	)
 	assert_eq(data.scenes[0].commands.size(), 2)

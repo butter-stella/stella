@@ -394,10 +394,10 @@ func test_existing_stage_parallel_and_combine_are_not_reinterpreted() -> void:
 	), ["stage_layer", "parallel", "dialogue"])
 	assert_eq(_batch_commands(data), [],
 		"#164 does not reinterpret any existing composition spelling")
-	assert_eq(commands[2].params["segments"][0]["stage_ops"].size(), 1,
+	assert_eq(commands[2].params["segments"][0]["presentation_ops"].size(), 1,
 		"@combine keeps its private segment cue semantics")
 	assert_eq(
-		commands[2].params["segments"][0]["stage_operation_lines"].size(),
+		commands[2].params["segments"][0]["presentation_operation_lines"].size(),
 		1,
 		"@combine preserves one exact authored line per private Stage cue",
 	)

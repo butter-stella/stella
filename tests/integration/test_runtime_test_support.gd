@@ -180,6 +180,7 @@ func test_reset_for_test_restores_a_clean_runtime_baseline() -> void:
 			"avatar_expression": "",
 			"nvl_entries": [],
 		},
+		"dialogue_avatar": DialogueAvatarState.default_state(),
 	})
 
 	assert_not_same(_runtime.read_flags, old_read_flags)

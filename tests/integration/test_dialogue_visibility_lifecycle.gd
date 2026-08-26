@@ -884,15 +884,18 @@ func test_issue169_clear_retires_owned_inline_stage_callback_without_finishing_t
 		[{
 			"text": "Inline cue ownership probe.",
 			"voice": "",
-			"stage_ops": [{
-				"action": "show",
-				"id": "issue169_owned_inline",
-				"properties": {"asset": "stage:redraw_source"},
-				"transition": "fade",
-				"transition_params": {},
-				"duration": 10.0,
+			"presentation_ops": [{
+				"kind": "stage",
+				"payload": {
+					"action": "show",
+					"id": "issue169_owned_inline",
+					"properties": {"asset": "stage:redraw_source"},
+					"transition": "fade",
+					"transition_params": {},
+					"duration": 10.0,
+				},
 			}],
-			"stage_operation_lines": [887],
+			"presentation_operation_lines": [887],
 		}],
 	)
 	if dialogue == null:
@@ -2370,8 +2373,8 @@ func test_f_mid_fnf_save_load_uses_canonical_checkpoint_and_same_cursor_no_work(
 		"voice": "",
 		"voice_dsp": "",
 		"voice_dsp_line": 0,
-		"stage_ops": [],
-		"stage_operation_lines": [],
+		"presentation_ops": [],
+		"presentation_operation_lines": [],
 	}]], "load fresh-dispatches the authored tail exactly once")
 	assert_true(_dialogue_requests[-1].get_activation().is_pending())
 
@@ -2511,6 +2514,7 @@ func test_h_retained_visual_apply_is_a_side_effect_free_content_and_gate_cut() -
 			"surface": false, "quick_menu": true,
 		},
 		"dialogue_content": stable_content,
+		"dialogue_avatar": DialogueAvatarState.default_state(),
 	})
 	SignalBus.hide_dialogue.emit()
 	var dialogue_count := _dialogue_requests.size()
@@ -2605,6 +2609,7 @@ func test_h_nvl_visual_cut_restores_each_entry_with_its_own_profile() -> void:
 		"bg": "", "stage_layers": {}, "bgm": {},
 		"dialogue_visibility": {"surface": true, "quick_menu": true},
 		"dialogue_content": content,
+		"dialogue_avatar": DialogueAvatarState.default_state(),
 	})
 	assert_true(_runtime._apply_retained_presentation(context))
 	assert_eq(_dialogue_presenter.get("_nvl_render_source"),

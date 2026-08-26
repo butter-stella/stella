@@ -275,22 +275,25 @@ func test_dialogue_handler_wraps_single_dialogue_stage_operations():
 	var handler = DialogueHandler.new(_read_flags)
 	var received: Array = []
 	_bus.show_dialogue.connect(func(_c, segments, _m): received.append(segments))
-	var stage_ops := [{
-		"action": "show",
-		"id": "event",
-		"properties": {"asset": "stage:flash"},
+	var presentation_ops := [{
+		"kind": "stage",
+		"payload": {
+			"action": "show",
+			"id": "event",
+			"properties": {"asset": "stage:flash"},
+		},
 	}]
 	var cmd = _build_cmd("dialogue", {
 		"text": "Cue",
-		"stage_ops": stage_ops,
+		"presentation_ops": presentation_ops,
 	})
 
 	_advance_next_dialogue()
 	await handler.execute(cmd, _context)
-	stage_ops[0]["properties"]["asset"] = "mutated"
+	presentation_ops[0]["payload"]["properties"]["asset"] = "mutated"
 
 	assert_eq(
-		received[0][0]["stage_ops"][0]["properties"]["asset"],
+		received[0][0]["presentation_ops"][0]["payload"]["properties"]["asset"],
 		"stage:flash",
 	)
 
@@ -301,8 +304,8 @@ func test_dialogue_handler_passes_segments_through():
 	_bus.show_dialogue.connect(func(_c, segs, _m): received.append(segs))
 
 	var segments = [
-		{"text": "一", "voice": "v1", "stage_ops": []},
-		{"text": "二", "voice": "v2", "stage_ops": []},
+		{"text": "一", "voice": "v1", "presentation_ops": []},
+		{"text": "二", "voice": "v2", "presentation_ops": []},
 	]
 	var cmd = _build_cmd("dialogue", {
 		"character": "sakura",
@@ -318,7 +321,7 @@ func test_dialogue_handler_passes_segments_through():
 	assert_eq(received.size(), 1)
 	assert_eq(received[0].size(), 2)
 	assert_eq(received[0][0]["voice"], "v1")
-	assert_eq(received[0][1]["stage_ops"], [])
+	assert_eq(received[0][1]["presentation_ops"], [])
 
 
 func test_dialogue_handler_scopes_compiled_presentation_without_changing_signal_shape():

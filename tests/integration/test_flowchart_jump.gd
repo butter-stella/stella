@@ -286,6 +286,7 @@ func test_prepare_scenario_clears_flowchart_state():
 				"avatar_expression": "",
 				"nvl_entries": [],
 			},
+			"dialogue_avatar": DialogueAvatarState.default_state(),
 		},
 		"initial rollback state must not inherit title or previous-run visuals",
 	)

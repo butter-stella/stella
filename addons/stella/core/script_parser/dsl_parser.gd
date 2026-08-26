@@ -12,6 +12,11 @@ const _CHAPTER_INDICATOR_TRANSITIONS := ["cut", "none", "fade"]
 const _DIALOGUE_VISIBILITY_TARGETS := ["surface", "quick_menu"]
 const _DIALOGUE_VISIBILITY_ACTIONS := ["show", "hide"]
 const _DIALOGUE_VISIBILITY_TRANSITIONS := ["cut", "fade"]
+const _DIALOGUE_AVATAR_ACTIONS := ["set", "show", "hide", "remove"]
+const _DIALOGUE_AVATAR_TRANSITIONS := ["cut", "fade"]
+const _DIALOGUE_AVATAR_PAIR_KEYS := ["position", "origin", "scale"]
+const _DIALOGUE_AVATAR_NUMBER_KEYS := ["rotation", "z_index", "opacity"]
+const _DIALOGUE_AVATAR_STRING_KEYS := ["asset", "character", "expression"]
 const _LOOP_SE_ACTIONS := ["play", "stop"]
 const _BGM_ACTIONS := ["play", "mix", "pause", "resume", "stop"]
 const _STAGE_FIT_MODES := ["native", "contain", "cover", "stretch"]
@@ -74,8 +79,8 @@ static func parse(
 	var combine_segments: Array = []
 	var combine_character: String = ""
 	var combine_character_set: bool = false
-	var combine_pending_stage_ops: Array = []
-	var combine_pending_stage_operation_lines: Array = []
+	var combine_pending_presentation_ops: Array = []
+	var combine_pending_presentation_operation_lines: Array = []
 	var combine_start_line: int = 0
 
 	# @stage_batch state. Children are accumulated as canonical Dictionary
@@ -98,6 +103,7 @@ static func parse(
 	var presentation_batch_has_dialogue_clear: bool = false
 	var presentation_batch_has_chapter_indicator: bool = false
 	var presentation_batch_has_bgm: bool = false
+	var presentation_batch_has_dialogue_avatar: bool = false
 	var presentation_batch_start_line: int = 0
 	var presentation_batch_invalid: bool = false
 	var presentation_batch_nested_depth: int = 0
@@ -131,6 +137,7 @@ static func parse(
 				presentation_batch_has_dialogue_clear = false
 				presentation_batch_has_chapter_indicator = false
 				presentation_batch_has_bgm = false
+				presentation_batch_has_dialogue_avatar = false
 				presentation_batch_start_line = 0
 				presentation_batch_invalid = false
 				presentation_batch_nested_depth = 0
@@ -219,6 +226,26 @@ static func parse(
 						presentation_batch_operations.append({
 							"kind": "dialogue_visibility",
 							"payload": payload,
+						})
+						presentation_batch_operation_lines.append(token.line)
+				elif child_name == "dialogue_avatar":
+					var avatar_child := _parse_at_command(token, data)
+					if avatar_child == null or avatar_child.type != "dialogue_avatar":
+						presentation_batch_invalid = true
+					elif presentation_batch_has_dialogue_avatar:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: duplicate dialogue avatar channel at %s"
+							% _source_location(data, token.line),
+							token.line,
+						)
+						presentation_batch_invalid = true
+					else:
+						presentation_batch_has_dialogue_avatar = true
+						presentation_batch_operations.append({
+							"kind": "dialogue_avatar",
+							"payload": avatar_child.params.duplicate(true),
 						})
 						presentation_batch_operation_lines.append(token.line)
 				elif child_name == "dialogue_clear":
@@ -339,6 +366,7 @@ static func parse(
 					presentation_batch_has_dialogue_clear = false
 					presentation_batch_has_chapter_indicator = false
 					presentation_batch_has_bgm = false
+					presentation_batch_has_dialogue_avatar = false
 					presentation_batch_start_line = 0
 					presentation_batch_invalid = false
 					presentation_batch_nested_depth = 0
@@ -356,7 +384,7 @@ static func parse(
 					_record_diagnostic(
 						data,
 						"error",
-						"DslParser: only canonical @stage, @dialogue_visibility, @dialogue_clear, @chapter_indicator, @loop_se, and @bgm children are allowed inside @presentation_batch; found @%s at %s"
+						"DslParser: only canonical @stage, @dialogue_avatar, @dialogue_visibility, @dialogue_clear, @chapter_indicator, @loop_se, and @bgm children are allowed inside @presentation_batch; found @%s at %s"
 						% [child_name, _source_location(data, token.line)],
 						token.line,
 					)
@@ -367,7 +395,7 @@ static func parse(
 				_record_diagnostic(
 					data,
 					"error",
-					"DslParser: only canonical @stage, @dialogue_visibility, @dialogue_clear, @chapter_indicator, @loop_se, and @bgm children are allowed inside @presentation_batch at %s"
+					"DslParser: only canonical @stage, @dialogue_avatar, @dialogue_visibility, @dialogue_clear, @chapter_indicator, @loop_se, and @bgm children are allowed inside @presentation_batch at %s"
 					% _source_location(data, token.line),
 					token.line,
 				)
@@ -549,8 +577,8 @@ static func parse(
 					)
 					in_combine = false
 					combine_segments.clear()
-					combine_pending_stage_ops.clear()
-					combine_pending_stage_operation_lines.clear()
+					combine_pending_presentation_ops.clear()
+					combine_pending_presentation_operation_lines.clear()
 					combine_character = ""
 					combine_character_set = false
 					combine_start_line = 0
@@ -656,6 +684,7 @@ static func parse(
 					presentation_batch_has_dialogue_clear = false
 					presentation_batch_has_chapter_indicator = false
 					presentation_batch_has_bgm = false
+					presentation_batch_has_dialogue_avatar = false
 					presentation_batch_nested_depth = 0
 					presentation_batch_invalid = false
 					var name_position := token.raw_text.find(cmd_name, 1)
@@ -714,9 +743,9 @@ static func parse(
 							token.line,
 						)
 						stage_batch_invalid = true
-				elif in_combine and cmd_name not in ["stage", "end"]:
+				elif in_combine and cmd_name not in ["stage", "dialogue_avatar", "end"]:
 					var combine_message := (
-						"DslParser: only @stage is allowed inside @combine block; @%s was ignored (line %d)"
+						"DslParser: only @stage and @dialogue_avatar are allowed inside @combine block; @%s was ignored (line %d)"
 						% [cmd_name, token.line]
 					)
 					if cmd_name in ["chapter_indicator", "loop_se", "bgm"]:
@@ -803,7 +832,7 @@ static func parse(
 						if_stack[-1]["has_else"] = true
 				elif cmd_name == "end":
 					if in_combine:
-						if not combine_pending_stage_ops.is_empty():
+						if not combine_pending_presentation_ops.is_empty():
 							_record_diagnostic(
 								data,
 								"warning",
@@ -818,8 +847,8 @@ static func parse(
 						combine_segments = []
 						combine_character = ""
 						combine_character_set = false
-						combine_pending_stage_ops = []
-						combine_pending_stage_operation_lines = []
+						combine_pending_presentation_ops = []
+						combine_pending_presentation_operation_lines = []
 						combine_start_line = 0
 						in_combine = false
 						if combine_cmd and current_scene:
@@ -894,11 +923,11 @@ static func parse(
 					combine_segments = []
 					combine_character = ""
 					combine_character_set = false
-					combine_pending_stage_ops = []
-					combine_pending_stage_operation_lines = []
+					combine_pending_presentation_ops = []
+					combine_pending_presentation_operation_lines = []
 					combine_start_line = token.line
 				else:
-					var cmd = _parse_at_command(token, data, true)
+					var cmd = _parse_at_command(token, data, not in_combine)
 					if cmd:
 						cmd.declared_line = token.line
 					if (
@@ -942,12 +971,15 @@ static func parse(
 						cmd = null
 					if cmd and current_scene:
 						if in_combine:
-							# Only named-stage operations reach this branch while a
-							# combine block is active; bind them to the next segment.
-							combine_pending_stage_ops.append(
-								cmd.params.duplicate(true)
-							)
-							combine_pending_stage_operation_lines.append(token.line)
+							# Typed presentation cues retain their exact authored order
+							# and source-line sidecar on the next dialogue segment.
+							var cue_kind := (
+								"stage" if cmd.type == "stage_layer" else "dialogue_avatar")
+							combine_pending_presentation_ops.append({
+								"kind": cue_kind,
+								"payload": cmd.params.duplicate(true),
+							})
+							combine_pending_presentation_operation_lines.append(token.line)
 						elif in_parallel:
 							if cmd.type in _PARALLEL_BLOCKING_COMMANDS:
 								var blocking_type: String = (
@@ -983,12 +1015,12 @@ static func parse(
 							"voice": cmd.get_string("voice", ""),
 							"voice_dsp": cmd.get_string("voice_dsp", ""),
 							"voice_dsp_line": cmd.get_int("voice_dsp_line", 0),
-							"stage_ops": combine_pending_stage_ops.duplicate(true),
-							"stage_operation_lines": (
-								combine_pending_stage_operation_lines.duplicate()),
+							"presentation_ops": combine_pending_presentation_ops.duplicate(true),
+							"presentation_operation_lines": (
+								combine_pending_presentation_operation_lines.duplicate()),
 						})
-						combine_pending_stage_ops = []
-						combine_pending_stage_operation_lines = []
+						combine_pending_presentation_ops = []
+						combine_pending_presentation_operation_lines = []
 					elif in_parallel:
 						_record_parallel_blocking_diagnostic(
 							data, "dialogue", token.line)
@@ -1015,12 +1047,12 @@ static func parse(
 							"voice": cmd.get_string("voice", ""),
 							"voice_dsp": cmd.get_string("voice_dsp", ""),
 							"voice_dsp_line": cmd.get_int("voice_dsp_line", 0),
-							"stage_ops": combine_pending_stage_ops.duplicate(true),
-							"stage_operation_lines": (
-								combine_pending_stage_operation_lines.duplicate()),
+							"presentation_ops": combine_pending_presentation_ops.duplicate(true),
+							"presentation_operation_lines": (
+								combine_pending_presentation_operation_lines.duplicate()),
 						})
-						combine_pending_stage_ops = []
-						combine_pending_stage_operation_lines = []
+						combine_pending_presentation_ops = []
+						combine_pending_presentation_operation_lines = []
 					elif in_parallel:
 						_record_parallel_blocking_diagnostic(
 							data, "dialogue", token.line)
@@ -1036,12 +1068,12 @@ static func parse(
 					_record_diagnostic(
 						data,
 						"warning",
-						"DslParser: monologue is not allowed inside @combine; it and any pending @stage cues were ignored (line %d)"
+						"DslParser: monologue is not allowed inside @combine; it and any pending presentation cues were ignored (line %d)"
 						% token.line,
 						token.line,
 					)
-					combine_pending_stage_ops.clear()
-					combine_pending_stage_operation_lines.clear()
+					combine_pending_presentation_ops.clear()
+					combine_pending_presentation_operation_lines.clear()
 				else:
 					var cmd = _parse_monologue(token, data)
 					if cmd and current_scene:
@@ -1196,7 +1228,7 @@ static func _semantic_command(
 				semantic_segments.append(segment_value)
 				continue
 			var segment := (segment_value as Dictionary).duplicate(true)
-			segment.erase("stage_operation_lines")
+			segment.erase("presentation_operation_lines")
 			segment.erase("voice_dsp_line")
 			semantic_segments.append(segment)
 		semantic_params["segments"] = semantic_segments
@@ -1492,6 +1524,13 @@ static func _parse_at_command(
 			return batch_command
 		"dialogue_visibility":
 			return _parse_dialogue_visibility_command(
+				parts,
+				token.line,
+				data,
+				lower_standalone_presentation,
+			)
+		"dialogue_avatar":
+			return _parse_dialogue_avatar_command(
 				parts,
 				token.line,
 				data,
@@ -3100,6 +3139,200 @@ static func _parse_dialogue_visibility_command(
 		batch_command.declared_line = line
 		return batch_command
 	return _make_cmd("dialogue_visibility", payload)
+
+
+static func _parse_dialogue_avatar_command(
+	parts: Array,
+	line: int,
+	data: ScenarioData,
+	lower_to_presentation_batch: bool = false,
+) -> CommandData:
+	var location := _source_location(data, line)
+	if parts.is_empty():
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @dialogue_avatar requires set|show|hide|remove at %s"
+			% location,
+			line,
+		)
+		return null
+	var action := String(parts[0])
+	if action not in _DIALOGUE_AVATAR_ACTIONS:
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: invalid @dialogue_avatar action '%s' at %s"
+			% [action, location],
+			line,
+		)
+		return null
+	var transition := "cut"
+	var duration := 0.0
+	var duration_set := false
+	var properties: Dictionary = {}
+	var seen: Dictionary = {}
+	for index in range(1, parts.size()):
+		var encoded := String(parts[index])
+		var equals_at := encoded.find("=")
+		if equals_at < 1:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: invalid @dialogue_avatar argument '%s' at %s; use key=value"
+				% [encoded, location],
+				line,
+			)
+			return null
+		var key := encoded.substr(0, equals_at).strip_edges()
+		var value := encoded.substr(equals_at + 1).strip_edges()
+		if seen.has(key):
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: duplicate @dialogue_avatar option '%s' at %s"
+				% [key, location],
+				line,
+			)
+			return null
+		seen[key] = true
+		match key:
+			"transition":
+				if value not in _DIALOGUE_AVATAR_TRANSITIONS:
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: invalid @dialogue_avatar transition '%s' at %s"
+						% [value, location],
+						line,
+					)
+					return null
+				transition = value
+			"duration":
+				if not value.is_valid_float() or not is_finite(value.to_float()) or value.to_float() < 0.0:
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @dialogue_avatar duration must be finite and non-negative at %s"
+						% location,
+						line,
+					)
+					return null
+				duration = value.to_float()
+				duration_set = true
+			_:
+				var parsed := _parse_dialogue_avatar_property(
+					key, value, line, data)
+				if not bool(parsed.get("valid", false)):
+					return null
+				properties[key] = parsed["value"]
+	if transition == "fade" and not duration_set:
+		duration = 0.25
+	if transition == "cut" and duration != 0.0:
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @dialogue_avatar cut transition requires duration=0 at %s"
+			% location,
+			line,
+		)
+		return null
+	var payload := {
+		"action": action,
+		"properties": properties,
+		"transition": transition,
+		"duration": duration,
+	}
+	if not DialogueAvatarState.validate_operation(payload, false):
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: invalid @dialogue_avatar operation at %s" % location,
+			line,
+		)
+		return null
+	if lower_to_presentation_batch:
+		var batch_command := _make_cmd("presentation_batch", {
+			"policy": "join",
+			"operations": [{
+				"kind": "dialogue_avatar",
+				"payload": payload.duplicate(true),
+			}],
+			"operation_lines": [line],
+		})
+		batch_command.declared_line = line
+		return batch_command
+	return _make_cmd("dialogue_avatar", payload)
+
+
+static func _parse_dialogue_avatar_property(
+	key: String,
+	value: String,
+	line: int,
+	data: ScenarioData,
+) -> Dictionary:
+	if key in _DIALOGUE_AVATAR_STRING_KEYS:
+		if value.is_empty() or value != value.strip_edges():
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: @dialogue_avatar %s must be a canonical non-empty logical id at %s"
+				% [key, _source_location(data, line)],
+				line,
+			)
+			return {"valid": false}
+		return {"valid": true, "value": value}
+	if key == "visible":
+		if value not in ["true", "false"]:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: @dialogue_avatar visible must be true or false at %s"
+				% _source_location(data, line),
+				line,
+			)
+			return {"valid": false}
+		return {"valid": true, "value": value == "true"}
+	if key in _DIALOGUE_AVATAR_PAIR_KEYS:
+		var pair := value.split(",", false)
+		if (
+			pair.size() != 2
+			or not _is_finite_stage_number(String(pair[0]))
+			or not _is_finite_stage_number(String(pair[1]))
+			or (
+				key == "scale"
+				and (float(pair[0]) <= 0.0 or float(pair[1]) <= 0.0)
+			)
+		):
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: invalid @dialogue_avatar %s pair at %s"
+				% [key, _source_location(data, line)],
+				line,
+			)
+			return {"valid": false}
+		return {"valid": true, "value": [float(pair[0]), float(pair[1])]}
+	if key in _DIALOGUE_AVATAR_NUMBER_KEYS:
+		if not _is_finite_stage_number(value):
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: invalid @dialogue_avatar %s at %s"
+				% [key, _source_location(data, line)],
+				line,
+			)
+			return {"valid": false}
+		var numeric: Variant = int(value) if value.is_valid_int() else float(value)
+		return {"valid": true, "value": numeric}
+	_record_diagnostic(
+		data,
+		"error",
+		"DslParser: unknown @dialogue_avatar option '%s' at %s"
+		% [key, _source_location(data, line)],
+		line,
+	)
+	return {"valid": false}
 
 
 static func _parse_dialogue_clear_command(

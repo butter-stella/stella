@@ -134,7 +134,7 @@ func test_inline_expression_updates_only_dialogue_avatar_state():
 	SignalBus.show_dialogue.emit("sakura", [{
 		"text": "[expr:angry]Hello",
 		"voice": "",
-		"stage_ops": [],
+		"presentation_ops": [],
 	}], "adv")
 	SignalBus.stage_operations_requested.disconnect(callback)
 

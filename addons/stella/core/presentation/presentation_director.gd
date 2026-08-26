@@ -12,6 +12,9 @@ const EXACT_DIALOGUE_VISIBILITY_KEYS := [
 	"action", "duration", "target", "transition",
 ]
 const EXACT_DIALOGUE_CLEAR_KEYS := ["scope"]
+const EXACT_DIALOGUE_AVATAR_KEYS := [
+	"action", "duration", "properties", "transition",
+]
 const EXACT_CHAPTER_INDICATOR_KEYS := [
 	"action", "duration", "transition",
 ]
@@ -36,6 +39,7 @@ var _retired_presentation_projection_lifecycle_id: int = 0
 var _latest_stage_owner_request_id: int = 0
 var _latest_dialogue_owner_request_ids: Dictionary = {}
 var _latest_dialogue_content_owner_request_id: int = 0
+var _latest_dialogue_avatar_owner_request_id: int = 0
 var _latest_chapter_owner_request_id: int = 0
 var _latest_loop_se_owner_request_ids: Dictionary = {}
 var _latest_bgm_owner_request_id: int = 0
@@ -68,6 +72,10 @@ func _init(
 		(SignalBus.get(&"dialogue_visibility_transition_terminal") as Signal).connect(
 			_on_dialogue_visibility_transition_terminal
 		)
+	SignalBus.dialogue_avatar_transition_receipt_started.connect(
+		_on_dialogue_avatar_transition_receipt_started)
+	SignalBus.dialogue_avatar_transition_terminal.connect(
+		_on_dialogue_avatar_transition_terminal)
 	SignalBus.chapter_indicator_transition_receipt_started.connect(
 		_on_chapter_indicator_transition_receipt_started)
 	SignalBus.chapter_indicator_transition_terminal.connect(
@@ -161,6 +169,8 @@ func submit(
 			preflight["before_visibility"] as Dictionary).duplicate(true),
 		"previous_dialogue_content": (
 			preflight["before_dialogue_content"] as Dictionary).duplicate(true),
+		"previous_dialogue_avatar": (
+			preflight["before_dialogue_avatar"] as Dictionary).duplicate(true),
 		"previous_dialogue_page": (
 			preflight["before_dialogue_page"] as Dictionary).duplicate(true),
 		"target_dialogue_content": (
@@ -168,8 +178,11 @@ func submit(
 		"dialogue_runtime_binding": (
 			preflight["dialogue_runtime_binding"] as Dictionary).duplicate(true),
 		"has_dialogue_clear": bool(preflight["has_dialogue_clear"]),
+		"has_dialogue_avatar": bool(preflight["has_dialogue_avatar"]),
 		"dialogue_clear_source": (
 			preflight.get("dialogue_clear_source", {}) as Dictionary).duplicate(true),
+		"dialogue_avatar_source": (
+			preflight.get("dialogue_avatar_source", {}) as Dictionary).duplicate(true),
 		"previous_chapter_indicator_visible": bool(
 			preflight["before_chapter_indicator_visible"]),
 		"previous_loop_se_channels": (
@@ -192,6 +205,7 @@ func submit(
 		"stage_epoch": SignalBus.current_stage_operation_epoch(),
 		"dialogue_visibility_epoch": (
 			SignalBus.current_dialogue_visibility_epoch()),
+		"dialogue_avatar_epoch": SignalBus.current_dialogue_avatar_epoch(),
 		"policy": policy,
 		"receipts": [],
 		"receipt_keys": {},
@@ -210,6 +224,7 @@ func submit(
 		"applied_stage": false,
 		"applied_dialogue_targets": {},
 		"applied_dialogue_content": false,
+		"applied_dialogue_avatar": false,
 		"applied_chapter": false,
 		"applied_loop_se_channels": {},
 		"applied_bgm": false,
@@ -334,9 +349,11 @@ func cancel_blocking_waiters(
 	var restore_dialogue_content: Dictionary = {}
 	var restore_dialogue_page: Dictionary = {}
 	var restore_dialogue_binding: Dictionary = {}
+	var restore_dialogue_avatar: Dictionary = {}
 	var has_stage_restore := false
 	var has_visibility_restore := false
 	var has_dialogue_content_restore := false
+	var has_dialogue_avatar_restore := false
 	var restore_chapter_indicator_visible := false
 	var has_chapter_indicator_restore := false
 	var restore_loop_se := (
@@ -389,6 +406,15 @@ func cancel_blocking_waiters(
 					entry.get("dialogue_runtime_binding", {}) as Dictionary
 				).duplicate(true)
 				has_dialogue_content_restore = true
+			if (
+				restore_for_replay
+				and not has_dialogue_avatar_restore
+				and bool(entry.get("has_dialogue_avatar", false))
+			):
+				restore_dialogue_avatar = (
+					entry.get("previous_dialogue_avatar", {}) as Dictionary
+				).duplicate(true)
+				has_dialogue_avatar_restore = true
 			if (
 				restore_for_replay
 				and not has_chapter_indicator_restore
@@ -447,6 +473,9 @@ func cancel_blocking_waiters(
 		if has_dialogue_content_restore:
 			_presentation_state.dialogue_content = (
 				restore_dialogue_content.duplicate(true))
+		if has_dialogue_avatar_restore:
+			_presentation_state.dialogue_avatar = (
+				restore_dialogue_avatar.duplicate(true))
 		if not restore_loop_se_targets.is_empty():
 			_presentation_state.loop_se_channels = restore_loop_se.duplicate(true)
 		if has_bgm_restore:
@@ -467,6 +496,8 @@ func cancel_blocking_waiters(
 		context.restore_dialogue_page_state(restore_dialogue_page)
 		SignalBus.apply_dialogue_content_state(
 			restore_dialogue_content, restore_dialogue_binding)
+	if restore_for_replay and has_dialogue_avatar_restore:
+		SignalBus.reset_and_apply_dialogue_avatar_state(restore_dialogue_avatar)
 	if restore_for_replay and not restore_loop_se_targets.is_empty():
 		SignalBus.apply_loop_se_targets_state(
 			restore_loop_se, restore_loop_se_targets)
@@ -572,10 +603,13 @@ func _preflight_operations(
 	var stage_typed_operations: Array[StagePresentationOperation] = []
 	var visibility_payloads: Array = []
 	var visibility_canonical_payloads: Array = []
+	var dialogue_avatar_payloads: Array = []
 	var saw_dialogue_clear := false
+	var saw_dialogue_avatar := false
 	var target_dialogue_content: Dictionary = {}
 	var dialogue_runtime_binding: Dictionary = {}
 	var dialogue_clear_source: Dictionary = {}
+	var dialogue_avatar_source: Dictionary = {}
 	var loop_se_payloads: Array = []
 	var bgm_payloads: Array = []
 	var seen_layers := {}
@@ -599,6 +633,8 @@ func _preflight_operations(
 		_presentation_state.current_bgm,
 		SignalBus.capture_bgm_position(),
 	)
+	var before_dialogue_avatar := _presentation_state.dialogue_avatar.duplicate(true)
+	var simulated_dialogue_avatar := before_dialogue_avatar.duplicate(true)
 	for operation: PresentationOperation in operations:
 		var payload := operation.get_payload() if operation != null else {}
 		var payload_keys := payload.keys()
@@ -707,6 +743,35 @@ func _preflight_operations(
 					"dialogue clear target content is not canonical", operation)
 			saw_dialogue_clear = true
 			dialogue_clear_source = operation.get_source()
+		elif operation is DialogueAvatarPresentationOperation:
+			stage_run_open = false
+			if payload_keys != EXACT_DIALOGUE_AVATAR_KEYS:
+				return _preflight_failure(
+					"dialogue avatar payload must use the canonical four-field schema",
+					operation,
+				)
+			if (
+				String(operation.get_channel()) != "dialogue:avatar"
+				or not DialogueAvatarState.validate_operation(payload, false)
+				or operation.get_before_state() != simulated_dialogue_avatar
+				or not DialogueAvatarState.operation_is_supported(
+					simulated_dialogue_avatar, payload)
+			):
+				return _preflight_failure(
+					"invalid typed dialogue avatar ownership or lifecycle",
+					operation,
+				)
+			var avatar_target := DialogueAvatarState.reduce(
+				simulated_dialogue_avatar, [payload], false)
+			if operation.get_target_state() != avatar_target:
+				return _preflight_failure(
+					"dialogue avatar target does not match canonical reduction",
+					operation,
+				)
+			simulated_dialogue_avatar = avatar_target
+			dialogue_avatar_payloads.append(payload.duplicate(true))
+			dialogue_avatar_source = operation.get_source()
+			saw_dialogue_avatar = true
 		elif operation is ChapterIndicatorPresentationOperation:
 			stage_run_open = false
 			if payload_keys != EXACT_CHAPTER_INDICATOR_KEYS:
@@ -805,20 +870,25 @@ func _preflight_operations(
 		"payloads": {
 			"stage": stage_payloads,
 			"dialogue_visibility": visibility_payloads,
+			"dialogue_avatar": dialogue_avatar_payloads,
 		},
 		"before_state": before_state,
 		"before_visibility": before_visibility,
 		"before_dialogue_content": before_dialogue_content,
+		"before_dialogue_avatar": before_dialogue_avatar,
 		"before_dialogue_page": before_dialogue_page,
 		"target_dialogue_content": target_dialogue_content,
 		"dialogue_runtime_binding": dialogue_runtime_binding,
 		"has_dialogue_clear": saw_dialogue_clear,
+		"has_dialogue_avatar": saw_dialogue_avatar,
 		"dialogue_clear_source": dialogue_clear_source,
+		"dialogue_avatar_source": dialogue_avatar_source,
 		"before_chapter_indicator_visible": context.chapter_indicator_visible,
 		"before_loop_se_channels": before_loop_se_channels,
 		"before_bgm": before_bgm,
 		"target_state": simulated,
 		"target_visibility": target_visibility,
+		"target_dialogue_avatar": simulated_dialogue_avatar,
 		"target_chapter_indicator_visible": target_chapter_indicator_visible,
 		"target_loop_se_channels": loop_se_simulated,
 		"has_chapter_indicator": saw_chapter_indicator,
@@ -838,6 +908,7 @@ func _preflight_operations(
 			and bgm_payloads.is_empty()
 			and not saw_clear
 			and not saw_dialogue_clear
+			and not saw_dialogue_avatar
 			and not saw_chapter_indicator
 		),
 	}
@@ -1138,6 +1209,65 @@ func _on_dialogue_visibility_transition_terminal(
 	_evaluate_terminal_state(operation_request_id)
 
 
+func _on_dialogue_avatar_transition_receipt_started(
+	presenter_instance_id: int,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+) -> void:
+	var entry: Dictionary = _entries.get(operation_request_id, {})
+	if (
+		entry.is_empty()
+		or bool(entry.get("sealed", false))
+		or int(entry.get("generation", -1)) != _generation
+	):
+		return
+	if presenter_instance_id <= 0 or token <= 0 or generation <= 0:
+		entry["receipt_invalid"] = true
+		return
+	var receipt := PresentationOperationReceipt.new(
+		operation_request_id,
+		presenter_instance_id,
+		&"dialogue:avatar",
+		token,
+		generation,
+	)
+	var key := _receipt_key(receipt)
+	if (entry["receipt_keys"] as Dictionary).has(key):
+		return
+	(entry["receipt_keys"] as Dictionary)[key] = true
+	(entry["receipts"] as Array).append(receipt)
+
+
+func _on_dialogue_avatar_transition_terminal(
+	presenter_instance_id: int,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+	outcome: StringName,
+) -> void:
+	if outcome not in [&"completed", &"superseded", &"cancelled"]:
+		return
+	var entry: Dictionary = _entries.get(operation_request_id, {})
+	if entry.is_empty() or int(entry.get("generation", -1)) != _generation:
+		return
+	var key := _receipt_key_parts(
+		operation_request_id,
+		presenter_instance_id,
+		&"dialogue:avatar",
+		token,
+		generation,
+	)
+	if (
+		not (entry["receipt_keys"] as Dictionary).has(key)
+		or (entry["terminal_keys"] as Dictionary).has(key)
+	):
+		return
+	(entry["terminal_keys"] as Dictionary)[key] = outcome
+	if bool(entry.get("sealed", false)):
+		_evaluate_terminal_state(operation_request_id)
+
+
 func _on_chapter_indicator_transition_receipt_started(
 	presenter_instance_id: int,
 	token: int,
@@ -1260,6 +1390,9 @@ func _on_presentation_operation_apply_started(
 			elif target == "content":
 				entry["applied_dialogue_content"] = true
 				_latest_dialogue_content_owner_request_id = request_id
+			elif target == "avatar":
+				entry["applied_dialogue_avatar"] = true
+				_latest_dialogue_avatar_owner_request_id = request_id
 		elif channel == "chapter:indicator":
 			entry["applied_chapter"] = true
 			_latest_chapter_owner_request_id = request_id
@@ -1378,6 +1511,15 @@ func _evaluate_terminal_state(request_id: int) -> void:
 				return
 			entry["settling_failure"] = true
 			var context: ScenarioContext = entry.get("context")
+			if (
+				context == null
+				or not context.is_runtime_owner_current()
+				or not _entry_dispatch_epochs_are_current(entry)
+			):
+				request._settle(
+					PresentationBatchRequest.Outcome.CANCELLED, _authority)
+				_cleanup_entry(request_id)
+				return
 			if context != null and context.is_runtime_owner_current():
 				_rollback_entry(entry)
 				_report_entry_participant_failure(entry, terminal_key)
@@ -1403,6 +1545,7 @@ func _report_entry_participant_failure(
 ) -> void:
 	if (
 		not bool(entry.get("has_dialogue_clear", false))
+		and not bool(entry.get("has_dialogue_avatar", false))
 		and not bool(entry.get("has_chapter_indicator", false))
 		and not bool(entry.get("has_loop_se_operations", false))
 		and not bool(entry.get("has_bgm_operation", false))
@@ -1430,6 +1573,8 @@ func _report_entry_participant_failure(
 			break
 	elif bool(entry.get("has_dialogue_clear", false)):
 		failure_source = entry.get("dialogue_clear_source", failure_source)
+	elif bool(entry.get("has_dialogue_avatar", false)):
+		failure_source = entry.get("dialogue_avatar_source", failure_source)
 	elif bool(entry.get("has_loop_se_operations", false)):
 		var applied_channels: Dictionary = entry.get(
 			"applied_loop_se_channels", {})
@@ -1455,6 +1600,7 @@ func _rollback_entry(entry: Dictionary) -> void:
 	var rollback_stage := _entry_owns_stage(entry)
 	var rollback_dialogue_targets := _entry_owned_dialogue_targets(entry)
 	var rollback_dialogue_content := _entry_owns_dialogue_content(entry)
+	var rollback_dialogue_avatar := _entry_owns_dialogue_avatar(entry)
 	var rollback_chapter := _entry_owns_chapter(entry)
 	var rollback_loop_se_channels := _entry_owned_loop_se_channels(entry)
 	var rollback_bgm := _entry_owns_bgm(entry)
@@ -1462,6 +1608,7 @@ func _rollback_entry(entry: Dictionary) -> void:
 		not rollback_stage
 		and rollback_dialogue_targets.is_empty()
 		and not rollback_dialogue_content
+		and not rollback_dialogue_avatar
 		and not rollback_chapter
 		and rollback_loop_se_channels.is_empty()
 		and not rollback_bgm
@@ -1473,6 +1620,8 @@ func _rollback_entry(entry: Dictionary) -> void:
 		entry.get("previous_dialogue_visibility", {}) as Dictionary).duplicate(true)
 	var previous_content := (
 		entry.get("previous_dialogue_content", {}) as Dictionary).duplicate(true)
+	var previous_avatar := (
+		entry.get("previous_dialogue_avatar", {}) as Dictionary).duplicate(true)
 	var previous_page := (
 		entry.get("previous_dialogue_page", {}) as Dictionary).duplicate(true)
 	var runtime_binding := (
@@ -1518,6 +1667,10 @@ func _rollback_entry(entry: Dictionary) -> void:
 				_presentation_state.dialogue_content = previous_content.duplicate(true)
 			SignalBus.apply_dialogue_content_state(
 				previous_content, runtime_binding)
+		if rollback_dialogue_avatar and _entry_owns_dialogue_avatar(entry):
+			if _presentation_state != null:
+				_presentation_state.dialogue_avatar = previous_avatar.duplicate(true)
+			SignalBus.reset_and_apply_dialogue_avatar_state(previous_avatar)
 		if rollback_chapter and _entry_owns_chapter(entry):
 			context.chapter_indicator_visible = previous_visible
 			SignalBus.apply_chapter_indicator_state(previous_visible)
@@ -1565,6 +1718,11 @@ func _entry_dispatch_epochs_are_current(entry: Dictionary) -> bool:
 				== SignalBus.current_dialogue_visibility_epoch()
 		)
 		and (
+			not bool(entry.get("has_dialogue_avatar", false))
+			or int(entry.get("dialogue_avatar_epoch", -1))
+				== SignalBus.current_dialogue_avatar_epoch()
+		)
+		and (
 			not bool(entry.get("has_chapter_indicator", false))
 			or int(entry.get("chapter_indicator_epoch", -1))
 				== SignalBus.current_chapter_indicator_epoch()
@@ -1587,6 +1745,7 @@ func _entry_owns_any_rollback_domain(entry: Dictionary) -> bool:
 		_entry_owns_stage(entry)
 		or not _entry_owned_dialogue_targets(entry).is_empty()
 		or _entry_owns_dialogue_content(entry)
+		or _entry_owns_dialogue_avatar(entry)
 		or _entry_owns_chapter(entry)
 		or not _entry_owned_loop_se_channels(entry).is_empty()
 		or _entry_owns_bgm(entry)
@@ -1630,6 +1789,17 @@ func _entry_owns_dialogue_content(entry: Dictionary) -> bool:
 			== _latest_dialogue_content_owner_request_id
 		and int(entry.get("dialogue_visibility_epoch", -1))
 			== SignalBus.current_dialogue_visibility_epoch()
+	)
+
+
+func _entry_owns_dialogue_avatar(entry: Dictionary) -> bool:
+	return (
+		_entry_is_current(entry)
+		and bool(entry.get("applied_dialogue_avatar", false))
+		and int(entry.get("request_id", 0))
+			== _latest_dialogue_avatar_owner_request_id
+		and int(entry.get("dialogue_avatar_epoch", -1))
+			== SignalBus.current_dialogue_avatar_epoch()
 	)
 
 
@@ -1731,6 +1901,7 @@ func _finish_join(request_id: int) -> void:
 		return
 	var stage_records: Array = []
 	var visibility_records: Array = []
+	var dialogue_avatar_records: Array = []
 	var loop_se_records: Array = []
 	var bgm_records: Array = []
 	var has_chapter_indicator_receipt := false
@@ -1741,6 +1912,13 @@ func _finish_join(request_id: int) -> void:
 			stage_records.append({
 				"presenter_instance_id": receipt.get_presenter_instance_id(),
 				"layer_id": channel.trim_prefix("stage:"),
+				"token": receipt.get_token(),
+				"operation_request_id": receipt.get_batch_id(),
+				"generation": receipt.get_generation(),
+			})
+		elif channel == "dialogue:avatar":
+			dialogue_avatar_records.append({
+				"presenter_instance_id": receipt.get_presenter_instance_id(),
 				"token": receipt.get_token(),
 				"operation_request_id": receipt.get_batch_id(),
 				"generation": receipt.get_generation(),
@@ -1776,6 +1954,9 @@ func _finish_join(request_id: int) -> void:
 		(SignalBus.get(
 			&"dialogue_visibility_transition_receipts_finish_requested"
 		) as Signal).emit(visibility_records)
+	if not dialogue_avatar_records.is_empty():
+		SignalBus.dialogue_avatar_transition_receipts_finish_requested.emit(
+			dialogue_avatar_records)
 	if has_chapter_indicator_receipt:
 		SignalBus.chapter_indicator_finish_requested.emit(request_id)
 	if not loop_se_records.is_empty():
@@ -1803,6 +1984,7 @@ func _cancel_entry(
 		entry["sealed"] = true
 	if not request.is_settled():
 		request._settle(outcome, _authority)
+	_finish_owned_dialogue_avatar_transition(entry)
 	_finish_owned_bgm_transition(entry)
 	SignalBus.cancel_stage_operation_request(request_id)
 	SignalBus.cancel_presentation_operation_request(request_id)
@@ -1828,6 +2010,7 @@ func _cancel_detached_entry(
 		entry["sealed"] = true
 	if not request.is_settled():
 		request._settle(outcome, _authority)
+	_finish_owned_dialogue_avatar_transition(entry)
 	_finish_owned_bgm_transition(entry)
 	SignalBus.cancel_stage_operation_request(request_id)
 	SignalBus.cancel_presentation_operation_request(request_id)
@@ -1838,6 +2021,24 @@ func _cancel_detached_entry(
 ## without a Director receipt. The stable target was committed atomically at
 ## apply time, so cancellation cuts that exact transition to its target. Replay
 ## cancellation projects the saved previous state before reaching this helper.
+func _finish_owned_dialogue_avatar_transition(entry: Dictionary) -> void:
+	var records: Array = []
+	for receipt_value: Variant in entry.get("receipts", []):
+		if not receipt_value is PresentationOperationReceipt:
+			continue
+		var receipt := receipt_value as PresentationOperationReceipt
+		if String(receipt.get_channel()) != "dialogue:avatar":
+			continue
+		records.append({
+			"presenter_instance_id": receipt.get_presenter_instance_id(),
+			"token": receipt.get_token(),
+			"operation_request_id": receipt.get_batch_id(),
+			"generation": receipt.get_generation(),
+		})
+	if not records.is_empty():
+		SignalBus.dialogue_avatar_transition_receipts_finish_requested.emit(records)
+
+
 func _finish_owned_bgm_transition(entry: Dictionary) -> void:
 	var records: Array = []
 	for receipt_value: Variant in entry.get("receipts", []):
