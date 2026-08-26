@@ -73,7 +73,10 @@ func test_dialogue_with_voice():
 	var data = _parse("""@scene start
 sakura「你好。」 #voice:sakura_001""")
 	var cmd = data.scenes[0].commands[0]
-	assert_eq(cmd.get_string("voice"), "sakura_001")
+	assert_eq_deep(cmd.params.get("voice_layers"), [{
+		"id": "main", "asset": "sakura_001", "character": "sakura",
+		"dsp": "", "line": 2,
+	}])
 
 
 func test_dialogue_voice_dsp_selection_is_canonical_and_source_located():
@@ -82,17 +85,27 @@ func test_dialogue_voice_dsp_selection_is_canonical_and_source_located():
 sakura「你好。」 #voice:sakura_001 #voice_dsp:remote""")
 	var cmd = data.scenes[0].commands[0]
 	assert_eq(data.diagnostics, [])
-	assert_eq(cmd.get_string("voice"), "sakura_001")
-	assert_eq(cmd.get_string("voice_dsp"), "remote")
-	assert_eq(cmd.get_int("voice_dsp_line"), 3)
+	assert_eq_deep(cmd.params.get("voice_layers"), [{
+		"id": "main", "asset": "sakura_001", "character": "sakura",
+		"dsp": "remote", "line": 3,
+	}])
+	var reversed = _parse("""@chapter test
+@scene start
+sakura「你好。」 #voice_dsp:remote #voice:sakura_001""")
+	assert_eq(reversed.diagnostics, [])
+	assert_eq_deep(
+		reversed.scenes[0].commands[0].params.get("voice_layers"),
+		cmd.params.get("voice_layers"))
 
 
 func test_dialogue_voice_dsp_metadata_fails_closed():
 	var cases := [
-		["sakura「一。」 #voice:v #voice_dsp:a #voice_dsp:b", "duplicate #voice_dsp"],
+		["sakura「一。」 #voice:v #voice_dsp:a #voice_dsp:b", "cannot be duplicated"],
 		["sakura「二。」 #voice_dsp:a", "requires #voice"],
 		["sakura「三。」 #voice:v #unknown:a", "unknown dialogue metadata"],
 		["sakura「四。」 #voice:v #voice_dsp:../a", "logical preset id"],
+		["sakura「五。」 #voice:v #voice_layer:x(character=a,asset=b)", "cannot be mixed"],
+		["sakura「六。」 #voice_layer:x(character=a,asset=b) #voice_dsp:p", "cannot be duplicated or mixed"],
 	]
 	for case_value in cases:
 		var case: Array = case_value
@@ -109,7 +122,10 @@ func test_narration():
 	assert_eq(cmd.type, "dialogue")
 	assert_eq(cmd.get_string("character"), "")
 	assert_eq(cmd.get_string("text"), "窗外下起了雨。")
-	assert_eq(cmd.get_string("voice"), "narration_001")
+	assert_eq_deep(cmd.params.get("voice_layers"), [{
+		"id": "main", "asset": "narration_001", "character": "",
+		"dsp": "", "line": 2,
+	}])
 
 
 func test_monologue():
@@ -120,7 +136,34 @@ sakura（这个人...好奇怪。） #voice:sakura_thought_001""")
 	assert_eq(cmd.get_string("character"), "sakura")
 	assert_eq(cmd.get_string("text"), "这个人...好奇怪。")
 	assert_eq(cmd.get_string("mode"), "monologue")
-	assert_eq(cmd.get_string("voice"), "sakura_thought_001")
+	assert_eq_deep(cmd.params.get("voice_layers"), [{
+		"id": "main", "asset": "sakura_thought_001", "character": "sakura",
+		"dsp": "", "line": 2,
+	}])
+
+
+func test_dialogue_voice_layers_lower_in_authored_order_and_fail_closed():
+	var data = _parse("""@chapter test
+@scene start
+ensemble「同时。」 #voice_layer:lead(character=yuma,asset=yum_001,dsp=remote) #voice_layer:reply(character=suguru,asset=sug_002)""")
+	assert_eq(data.diagnostics, [])
+	assert_eq_deep(data.scenes[0].commands[0].params.get("voice_layers"), [
+		{"id": "lead", "asset": "yum_001", "character": "yuma", "dsp": "remote", "line": 3},
+		{"id": "reply", "asset": "sug_002", "character": "suguru", "dsp": "", "line": 3},
+	])
+	var cases := [
+		["#voice_layer:lead(character=yuma)", "requires 'asset'"],
+		["#voice_layer:lead(character=yuma,asset=a,asset=b)", "duplicates parameter 'asset'"],
+		["#voice_layer:lead(character=yuma,asset=a,pan=0)", "unknown parameter 'pan'"],
+		["#voice_layer:9lead(character=yuma,asset=a)", "id is not canonical"],
+		["#voice_layer:lead(character=yuma,asset=../a)", "asset is not a Stella logical id"],
+		["#voice_layer:lead(character=yuma,asset=a) #voice_layer:lead(character=suguru,asset=b)", "duplicate #voice_layer id"],
+	]
+	for case_value: Variant in cases:
+		var case: Array = case_value
+		var invalid = _parse("@scene start\nensemble「坏。」 %s" % String(case[0]))
+		assert_true(_has_diagnostic(invalid, "error", String(case[1])))
+		assert_eq(invalid.scenes[0].commands.size(), 0)
 
 
 func test_dialogue_profile_parses_nvl_entry_affixes_as_strings():
@@ -670,7 +713,7 @@ sakura「第一句。」 #voice:v1
 	var segments = cmd.params.get("segments", [])
 	assert_eq(segments.size(), 1)
 	assert_eq(segments[0]["text"], "第一句。")
-	assert_eq(segments[0]["voice"], "v1")
+	assert_eq(segments[0]["voice_layers"][0]["asset"], "v1")
 	assert_eq(segments[0]["presentation_ops"].size(), 1)
 	assert_eq(segments[0]["presentation_ops"][0]["kind"], "stage")
 	assert_eq(segments[0]["presentation_ops"][0]["payload"]["id"], "sakura")
@@ -693,13 +736,13 @@ sakura「第三句。」 #voice:v3
 	var segments = cmd.params.get("segments", [])
 	assert_eq(segments.size(), 3)
 	assert_eq(segments[0]["text"], "第一句。")
-	assert_eq(segments[0]["voice"], "v1")
+	assert_eq(segments[0]["voice_layers"][0]["asset"], "v1")
 	assert_eq(segments[0]["presentation_ops"][0]["payload"]["properties"]["asset"], "character:sakura/sad")
 	assert_eq(segments[1]["text"], "第二句。")
-	assert_eq(segments[1]["voice"], "v2")
+	assert_eq(segments[1]["voice_layers"][0]["asset"], "v2")
 	assert_eq(segments[1]["presentation_ops"][0]["payload"]["properties"]["asset"], "character:sakura/surprised")
 	assert_eq(segments[2]["text"], "第三句。")
-	assert_eq(segments[2]["voice"], "v3")
+	assert_eq(segments[2]["voice_layers"][0]["asset"], "v3")
 	assert_eq(segments[2]["presentation_ops"][0]["payload"]["properties"]["asset"], "character:sakura/happy")
 	assert_eq(segments[0]["presentation_operation_lines"], [3])
 	assert_eq(segments[1]["presentation_operation_lines"], [5])
@@ -717,12 +760,12 @@ sakura「第三句。」 #voice:v3
 	var segments: Array = data.scenes[0].commands[0].params.get("segments", [])
 	assert_eq(data.diagnostics, [])
 	assert_eq(segments.size(), 3)
-	assert_eq(segments[0].get("voice_dsp"), "remote")
-	assert_eq(segments[0].get("voice_dsp_line"), 4)
-	assert_eq(segments[1].get("voice_dsp"), "memory")
-	assert_eq(segments[1].get("voice_dsp_line"), 5)
-	assert_eq(segments[2].get("voice_dsp"), "")
-	assert_eq(segments[2].get("voice_dsp_line"), 0)
+	assert_eq(segments[0]["voice_layers"][0]["dsp"], "remote")
+	assert_eq(segments[0]["voice_layers"][0]["line"], 4)
+	assert_eq(segments[1]["voice_layers"][0]["dsp"], "memory")
+	assert_eq(segments[1]["voice_layers"][0]["line"], 5)
+	assert_eq(segments[2]["voice_layers"][0]["dsp"], "")
+	assert_eq(segments[2]["voice_layers"][0]["line"], 6)
 
 
 func test_combine_concatenated_text_for_backlog():

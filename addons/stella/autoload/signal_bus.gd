@@ -187,7 +187,38 @@ func request_voice_playback(
 ) -> VoicePlaybackResponse:
 	var request := VoicePlaybackRequest.new(
 		asset, character, owner_validator, dsp_preset, source)
+	return _dispatch_voice_playback_request(
+		request, emit_compatibility_signal)
+
+
+## Canonical ordered multi-layer request. One accepted response/token owns the
+## whole simultaneous group; physical layer lifecycle remains typed-only.
+func request_voice_layers(
+	layers: Variant,
+	owner_validator: Callable = Callable(),
+) -> VoicePlaybackResponse:
+	var request := VoicePlaybackRequest.from_layers(layers, owner_validator)
+	# The long-standing single-voice signal remains a read-only notification for
+	# a one-member canonical group. A simultaneous group has no lossless raw view;
+	# consumers use VoicePlaybackRequest/Event and their stable layer identities.
+	var emit_single_notification := request.is_valid() and request.is_single_layer()
+	return _dispatch_voice_playback_request(request, emit_single_notification)
+
+
+func _dispatch_voice_playback_request(
+	request: VoicePlaybackRequest,
+	emit_compatibility_signal: bool,
+) -> VoicePlaybackResponse:
 	var response := VoicePlaybackResponse.new()
+	if request == null or not request.is_valid():
+		var detail := (
+			request.get_validation_error()
+			if request != null
+			else "request is null"
+		)
+		push_error("SignalBus: invalid voice playback request: %s" % detail)
+		response._resolve(false)
+		return response
 	if _runtime_audio_shutdown_started:
 		response._resolve(false)
 		return response
@@ -201,7 +232,7 @@ func request_voice_playback(
 		# nested by a later compatibility listener is a new request and must not
 		# inherit a broad call-stack suppression flag.
 		_compatibility_voice_play_echo_pending += 1
-		voice_play.emit(asset, character)
+		voice_play.emit(request.get_asset(), request.get_character())
 	_voice_request_responses.erase(request.get_instance_id())
 	return response
 
@@ -248,6 +279,8 @@ func emit_voice_playback_event(event: VoicePlaybackEvent) -> bool:
 	voice_playback_event.emit(event)
 	if not event.is_current():
 		return false
+	if not event.should_emit_compatibility_notification():
+		return event.is_current()
 	_compatibility_voice_lifecycle_echo_pending += 1
 	match kind:
 		VoicePlaybackEvent.Kind.STARTED:
@@ -256,6 +289,8 @@ func emit_voice_playback_event(event: VoicePlaybackEvent) -> bool:
 			voice_progress.emit(event.get_position(), event.get_duration())
 		VoicePlaybackEvent.Kind.FINISHED:
 			voice_finished.emit()
+		VoicePlaybackEvent.Kind.LAYER_FINISHED:
+			pass
 	return event.is_current()
 
 

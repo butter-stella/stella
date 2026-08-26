@@ -52,7 +52,7 @@ func _stop_engine() -> void:
 func test_backlog_scene_plain_button_never_exposes_dialogue_bbcode() -> void:
 	_runtime.backlog_manager.add_entry("narrator", [{
 		"text": "[b]Bold[/b][ul]Item[/ul][expr:happy]{wait:10}Done",
-		"voice": "",
+		"voice_layers": [],
 		"expression": "",
 	}], 0)
 	assert_eq(_runtime.backlog_manager.get_entry(0).get("text"),

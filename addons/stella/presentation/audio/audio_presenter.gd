@@ -19,6 +19,11 @@ var _voice_dsp_tail_timer: Timer
 var _voice_dsp_tail_seconds: float = 0.0
 var _voice_dsp_active: bool = false
 var _voice_request_owned: bool = false
+var _voice_group_raw_eligible: bool = false
+## Ordered physical members of the one active typed voice group. Dictionary
+## keys are canonical layer ids; _voice_layer_order preserves authored order.
+var _voice_layers: Dictionary = {}
+var _voice_layer_order: Array[String] = []
 var _bgm_capability: RefCounted
 var _bgm_channel: Dictionary = {}
 var _bgm_validation_cache: Dictionary = {}
@@ -159,10 +164,21 @@ func _runtime_audio_shutdown_presenter_is_idle() -> bool:
 		or not _bgm_validation_cache.is_empty()
 		or not _loop_se_validation_cache.is_empty()
 		or _voice_playback_token >= 0
+		or not _voice_layers.is_empty()
 	):
 		return false
 	if _voice_dsp_tail_timer != null and not _voice_dsp_tail_timer.is_stopped():
 		return false
+	for layer_value: Variant in _voice_layers.values():
+		if not layer_value is Dictionary:
+			return false
+		var layer: Dictionary = layer_value
+		var layer_player := layer.get("player") as AudioStreamPlayer
+		var layer_timer := layer.get("timer") as Timer
+		if layer_player != null and (layer_player.playing or layer_player.stream != null):
+			return false
+		if layer_timer != null and not layer_timer.is_stopped():
+			return false
 	var voice_dsp_bus_index := AudioServer.get_bus_index(_voice_dsp_bus_name)
 	if (
 		voice_dsp_bus_index >= 0
@@ -184,22 +200,7 @@ func _runtime_audio_shutdown_presenter_is_idle() -> bool:
 
 func _retire_voice_for_shutdown() -> void:
 	_voice_lifecycle_revision += 1
-	var finished_revision := _voice_lifecycle_revision
-	var finished_token := _voice_playback_token
-	_cancel_voice_dsp_tail()
-	_retire_fixed_audio_player(_voice_player)
-	_clear_voice_dsp_chain()
-	_voice_playback_token = -1
-	_voice_playback_revision = -1
-	_voice_started_advance_serial = -1
-	_voice_dsp_tail_seconds = 0.0
-	_voice_dsp_active = false
-	_voice_request_owned = false
-	if finished_token >= 0:
-		SignalBus.emit_voice_playback_event(VoicePlaybackEvent.finished(
-			finished_token,
-			_voice_finished_event_is_current.bind(finished_revision),
-		))
+	_retire_active_voice(_voice_lifecycle_revision)
 
 
 func _retire_fixed_audio_player(player: AudioStreamPlayer) -> void:
@@ -211,8 +212,8 @@ func _retire_fixed_audio_player(player: AudioStreamPlayer) -> void:
 
 
 func _exit_tree() -> void:
-	_cancel_voice_dsp_tail()
-	_clear_voice_dsp_chain()
+	_voice_lifecycle_revision += 1
+	_retire_voice_group_projection()
 	_release_voice_dsp_bus()
 	if _bgm_capability != null and _loop_se_capability != null:
 		if not _shutdown_quiesced:
@@ -232,13 +233,30 @@ func _exit_tree() -> void:
 
 
 func _process(_delta: float) -> void:
-	if _voice_player.playing and _voice_player.stream:
-		var pos = _voice_player.get_playback_position()
-		var dur = _voice_player.stream.get_length()
+	var entry_revision := _voice_playback_revision
+	var entry_token := _voice_playback_token
+	var entry_order: Array[String] = _voice_layer_order.duplicate()
+	for layer_id in entry_order:
+		if not _voice_playback_event_is_current(entry_revision, entry_token):
+			return
+		var layer_value: Variant = _voice_layers.get(layer_id)
+		if not layer_value is Dictionary:
+			continue
+		var layer: Dictionary = layer_value
+		var player := layer.get("player") as AudioStreamPlayer
+		if player == null or not player.playing or player.stream == null:
+			continue
 		SignalBus.emit_voice_playback_event(VoicePlaybackEvent.progress(
-			pos, dur, _voice_playback_token,
+			player.get_playback_position(),
+			player.stream.get_length(),
+			entry_token,
 			_voice_playback_event_is_current.bind(
-				_voice_playback_revision, _voice_playback_token),
+				entry_revision, entry_token),
+			false,
+			String(layer_id),
+			String(layer.get("character", "")),
+			String(layer.get("asset", "")),
+			_voice_group_raw_eligible,
 		))
 
 
@@ -263,10 +281,24 @@ func _apply_volumes(changed_key: String = ""):
 		# The player remains unity-gain. The private bus is the single effective
 		# voice gain authority so already-buffered DSP tails follow live settings.
 		_voice_player.volume_db = 0.0
-		_set_voice_dsp_bus_volume(
-			_voice_dsp_bus_name,
-			_get_voice_target_db_for_character(_current_voice_character),
-		)
+		if _voice_layers.is_empty():
+			_set_voice_dsp_bus_volume(
+				_voice_dsp_bus_name,
+				_get_voice_target_db_for_character(_current_voice_character),
+			)
+		else:
+			for layer_value: Variant in _voice_layers.values():
+				if not layer_value is Dictionary:
+					continue
+				var layer: Dictionary = layer_value
+				var layer_player := layer.get("player") as AudioStreamPlayer
+				if layer_player != null:
+					layer_player.volume_db = 0.0
+				_set_voice_dsp_bus_volume(
+					StringName(layer.get("bus_name", &"")),
+					_get_voice_target_db_for_character(
+						String(layer.get("character", ""))),
+				)
 
 	if update_all or changed_key in ["master_volume", "system_se_volume"]:
 		var sys_se_vol := _get_volume_setting("system_se_volume", 1.0)
@@ -2284,14 +2316,16 @@ func _stage_voice_dsp_chain(
 	effects_value: Variant,
 	source: Dictionary,
 	volume_db: float,
+	layer_id: String = "",
 ) -> StringName:
 	if not effects_value is Array:
-		_voice_dsp_error(source, "prepared effect chain is malformed")
+		_voice_dsp_error(source, "prepared effect chain is malformed", layer_id)
 		return &""
 	var effects: Array = effects_value
 	for effect_value: Variant in effects:
 		if not effect_value is AudioEffect:
-			_voice_dsp_error(source, "prepared effect is not an AudioEffect")
+			_voice_dsp_error(
+				source, "prepared effect is not an AudioEffect", layer_id)
 			return &""
 
 	# The detached bus is not reachable from the live voice player. Complete
@@ -2301,12 +2335,14 @@ func _stage_voice_dsp_chain(
 		"__stella_voice_dsp_%d_%d"
 			% [get_instance_id(), _voice_dsp_bus_serial])
 	if AudioServer.get_bus_index(requested_name) >= 0:
-		_voice_dsp_error(source, "private staging bus identity is ambiguous")
+		_voice_dsp_error(
+			source, "private staging bus identity is ambiguous", layer_id)
 		return &""
 	var previous_count := AudioServer.bus_count
 	AudioServer.add_bus(previous_count)
 	if AudioServer.bus_count != previous_count + 1:
-		_voice_dsp_error(source, "private staging bus could not be allocated")
+		_voice_dsp_error(
+			source, "private staging bus could not be allocated", layer_id)
 		return &""
 	AudioServer.set_bus_name(previous_count, requested_name)
 	AudioServer.set_bus_send(previous_count, &"Master")
@@ -2314,14 +2350,16 @@ func _stage_voice_dsp_chain(
 	var resolved_index := AudioServer.get_bus_index(requested_name)
 	if resolved_index != previous_count:
 		AudioServer.remove_bus(previous_count)
-		_voice_dsp_error(source, "private staging bus identity is ambiguous")
+		_voice_dsp_error(
+			source, "private staging bus identity is ambiguous", layer_id)
 		return &""
 	for effect_value: Variant in effects:
 		AudioServer.add_bus_effect(
 			resolved_index, effect_value as AudioEffect)
 	if AudioServer.get_bus_effect_count(resolved_index) != effects.size():
 		AudioServer.remove_bus(resolved_index)
-		_voice_dsp_error(source, "complete private DSP chain could not be staged")
+		_voice_dsp_error(
+			source, "complete private DSP chain could not be staged", layer_id)
 		return &""
 	return requested_name
 
@@ -2354,11 +2392,12 @@ func _release_voice_dsp_bus() -> void:
 func _prepare_voice_dsp_chain(
 	preset: String,
 	source: Dictionary,
+	layer_id: String = "",
 ) -> Dictionary:
 	if preset.is_empty():
 		return {"effects": [], "tail_seconds": 0.0}
 	if not VoiceDspChainDefinition.is_logical_preset_id(preset):
-		_voice_dsp_error(source, "preset id is not a Stella logical id")
+		_voice_dsp_error(source, "preset id is not a Stella logical id", layer_id)
 		return {}
 	var candidate_paths := [
 		StellaRuntime.voice_dsp_path.path_join("%s.tres" % preset),
@@ -2374,18 +2413,21 @@ func _prepare_voice_dsp_chain(
 			source,
 			"preset '%s' is missing or is not a VoiceDspChainDefinition"
 				% preset,
+			layer_id,
 		)
 		return {}
 	var chain := (loaded as VoiceDspChainDefinition).duplicate(
 		true) as VoiceDspChainDefinition
 	if chain == null:
-		_voice_dsp_error(source, "preset '%s' could not be detached" % preset)
+		_voice_dsp_error(
+			source, "preset '%s' could not be detached" % preset, layer_id)
 		return {}
 	var errors := chain.validation_errors()
 	if not errors.is_empty():
 		_voice_dsp_error(
 			source,
 			"preset '%s' is invalid: %s" % [preset, "; ".join(errors)],
+			layer_id,
 		)
 		return {}
 	var native_effects: Array[AudioEffect] = []
@@ -2394,15 +2436,17 @@ func _prepare_voice_dsp_chain(
 			if not _append_band_pass_effects(
 				native_effects, effect_value as VoiceDspBandPassEffect):
 				_voice_dsp_error(
-					source, "Godot band-pass primitives are unavailable")
+					source, "Godot band-pass primitives are unavailable", layer_id)
 				return {}
 		elif effect_value is VoiceDspDelayEffect:
 			if not _append_delay_effect(
 				native_effects, effect_value as VoiceDspDelayEffect):
-				_voice_dsp_error(source, "Godot delay primitive is unavailable")
+				_voice_dsp_error(
+					source, "Godot delay primitive is unavailable", layer_id)
 				return {}
 		else:
-			_voice_dsp_error(source, "preset contains an unsupported primitive")
+			_voice_dsp_error(
+				source, "preset contains an unsupported primitive", layer_id)
 			return {}
 	return {
 		"effects": native_effects,
@@ -2461,9 +2505,13 @@ func _append_delay_effect(
 
 
 func _clear_voice_dsp_chain() -> void:
-	if _voice_dsp_bus_name.is_empty():
+	_clear_voice_dsp_chain_named(_voice_dsp_bus_name)
+
+
+func _clear_voice_dsp_chain_named(bus_name: StringName) -> void:
+	if bus_name.is_empty():
 		return
-	var bus_index := AudioServer.get_bus_index(_voice_dsp_bus_name)
+	var bus_index := AudioServer.get_bus_index(bus_name)
 	if bus_index < 0:
 		return
 	for effect_index in range(
@@ -2471,7 +2519,11 @@ func _clear_voice_dsp_chain() -> void:
 		AudioServer.remove_bus_effect(bus_index, effect_index)
 
 
-func _voice_dsp_error(source: Dictionary, detail: String) -> void:
+func _voice_dsp_error(
+	source: Dictionary,
+	detail: String,
+	layer_id: String = "",
+) -> void:
 	var source_path := String(source.get("source_path", "<runtime>"))
 	if source_path.is_empty():
 		source_path = "<runtime>"
@@ -2479,7 +2531,12 @@ func _voice_dsp_error(source: Dictionary, detail: String) -> void:
 	var location := source_path
 	if line > 0:
 		location = "%s:%d" % [source_path, line]
-	push_error("AudioPresenter: voice DSP %s at %s" % [detail, location])
+	if layer_id.is_empty():
+		push_error("AudioPresenter: voice DSP %s at %s" % [detail, location])
+	else:
+		push_error(
+			"AudioPresenter: voice layer '%s' DSP %s at %s"
+				% [layer_id, detail, location])
 
 func _on_voice_playback_requested(request: VoicePlaybackRequest) -> void:
 	if not SignalBus.voice_playback_request_is_pending(request):
@@ -2487,34 +2544,59 @@ func _on_voice_playback_requested(request: VoicePlaybackRequest) -> void:
 	if _audio_admission_is_closed():
 		SignalBus.resolve_voice_playback_request(request, false)
 		return
-	var asset := request.get_asset()
-	var character := request.get_character()
 	if not request.is_current():
 		SignalBus.resolve_voice_playback_request(request, false)
 		return
-	var stream := _load_audio(StellaRuntime.voice_path, asset, ["ogg", "wav"])
-	if stream == null:
-		push_warning("AudioPresenter: Voice not found: %s" % asset)
-		SignalBus.resolve_voice_playback_request(request, false)
-		return
-	var prepared_dsp := _prepare_voice_dsp_chain(
-		request.get_dsp_preset(), request.get_source())
-	if not request.get_dsp_preset().is_empty() and prepared_dsp.is_empty():
-		SignalBus.resolve_voice_playback_request(request, false)
-		return
-	var prepared_effects: Array = prepared_dsp.get("effects", [])
-	var staged_bus := _stage_voice_dsp_chain(
-		prepared_effects,
-		request.get_source(),
-		_get_voice_target_db_for_character(character),
-	)
-	if staged_bus.is_empty():
-		SignalBus.resolve_voice_playback_request(request, false)
-		return
+	var staged_layers: Array = []
+	for layer_value: Variant in request.get_layers():
+		var layer: Dictionary = layer_value
+		var asset := String(layer.get("asset", ""))
+		var character := String(layer.get("character", ""))
+		var dsp := String(layer.get("dsp", ""))
+		var source: Dictionary = layer.get("source", {})
+		var stream := _load_audio(StellaRuntime.voice_path, asset, ["ogg", "wav"])
+		if stream == null:
+			_voice_layer_error(source, String(layer.get("id", "")),
+				"asset '%s' could not be resolved" % asset)
+			_release_staged_voice_layers(staged_layers)
+			SignalBus.resolve_voice_playback_request(request, false)
+			return
+		var layer_id := String(layer.get("id", ""))
+		var prepared_dsp := _prepare_voice_dsp_chain(dsp, source, layer_id)
+		if not dsp.is_empty() and prepared_dsp.is_empty():
+			_release_staged_voice_layers(staged_layers)
+			SignalBus.resolve_voice_playback_request(request, false)
+			return
+		var prepared_effects: Array = prepared_dsp.get("effects", [])
+		var staged_bus := _stage_voice_dsp_chain(
+			prepared_effects,
+			source,
+			_get_voice_target_db_for_character(character),
+			layer_id,
+		)
+		if staged_bus.is_empty():
+			_release_staged_voice_layers(staged_layers)
+			SignalBus.resolve_voice_playback_request(request, false)
+			return
+		staged_layers.append({
+			"id": layer_id,
+			"asset": asset,
+			"character": character,
+			"dsp": dsp,
+			"source": source.duplicate(true),
+			"stream": stream,
+			"effects": prepared_effects,
+			"bus_name": staged_bus,
+			"tail_seconds": float(prepared_dsp.get("tail_seconds", 0.0)),
+		})
+		if not request.is_current():
+			_release_staged_voice_layers(staged_layers)
+			SignalBus.resolve_voice_playback_request(request, false)
+			return
 
-	# Stream and the complete detached chain, including its private staging bus,
+	# Every stream and complete detached chain, including private staging buses,
 	# validate before the previous voice is touched. A malformed or unavailable
-	# chain can never interrupt a valid live playback and then continue as dry.
+	# member can never interrupt a valid live group or partially start siblings.
 	# Physical lifecycle ownership is AudioPresenter-local. Dialogue ownership
 	# decides whether this request may start, but later advance/hide transitions
 	# must not make its legitimate physical FINISH look stale to low-level users.
@@ -2530,77 +2612,167 @@ func _on_voice_playback_requested(request: VoicePlaybackRequest) -> void:
 	# replacement, reject this retired request without touching replacement audio.
 	if request_revision != _voice_lifecycle_revision \
 		or not request.is_current():
-		_release_voice_dsp_bus_named(staged_bus)
-		SignalBus.resolve_voice_playback_request(request, false)
-		return
-
-	# A muted replacement still retires the previous physical voice. This keeps
-	# the established queue completion boundary while DSP resource failures above
-	# remain side-effect free.
-	var char_enabled = StellaRuntime.get_setting("character_voice_enabled")
-	if char_enabled is Dictionary and not bool(char_enabled.get(character, true)):
-		_release_voice_dsp_bus_named(staged_bus)
+		_release_staged_voice_layers(staged_layers)
 		SignalBus.resolve_voice_playback_request(request, false)
 		return
 
 	# FINISHED is a synchronous public reentrancy boundary. Revalidate this exact
-	# detached bus before consuming the request or replacing the active bus.
-	var staged_bus_index := AudioServer.get_bus_index(staged_bus)
-	if (
-		staged_bus_index < 0
-		or AudioServer.get_bus_effect_count(staged_bus_index)
-			!= prepared_effects.size()
-		or not _set_voice_dsp_bus_volume(
-			staged_bus, _get_voice_target_db_for_character(character))
-	):
-		_release_voice_dsp_bus_named(staged_bus)
-		_voice_dsp_error(
-			request.get_source(), "private staged DSP chain lost authority")
-		SignalBus.resolve_voice_playback_request(request, false)
-		return
+	# detached buses before consuming the request or replacing the active group.
+	for staged_value: Variant in staged_layers:
+		var staged: Dictionary = staged_value
+		var staged_bus := StringName(staged.get("bus_name", &""))
+		var staged_bus_index := AudioServer.get_bus_index(staged_bus)
+		var staged_effects: Array = staged.get("effects", [])
+		if (
+			staged_bus_index < 0
+			or AudioServer.get_bus_effect_count(staged_bus_index)
+				!= staged_effects.size()
+			or not _set_voice_dsp_bus_volume(
+				staged_bus,
+				_get_voice_target_db_for_character(
+					String(staged.get("character", ""))))
+		):
+			_release_staged_voice_layers(staged_layers)
+			_voice_layer_error(
+				staged.get("source", {}), String(staged.get("id", "")),
+				"private staged DSP chain lost authority")
+			SignalBus.resolve_voice_playback_request(request, false)
+			return
+	# Settings never participate in resource validity. Snapshot physical projection
+	# only after every synchronous retirement/reentry and final detached-chain
+	# authority check, immediately before committing this accepted request.
+	for staged_value: Variant in staged_layers:
+		var staged: Dictionary = staged_value
+		staged["enabled"] = _is_voice_character_enabled(
+			String(staged.get("character", "")))
 
 	var playback_token := SignalBus.resolve_voice_playback_request(request, true)
 	if playback_token < 0:
-		_release_voice_dsp_bus_named(staged_bus)
+		_release_staged_voice_layers(staged_layers)
 		return
 	var previous_bus := _voice_dsp_bus_name
-	_voice_dsp_bus_name = staged_bus
-	_voice_player.bus = staged_bus
-	_current_voice_character = character
 	_voice_playback_token = playback_token
 	_voice_playback_revision = request_revision
-	_voice_dsp_tail_seconds = float(prepared_dsp.get("tail_seconds", 0.0))
-	_voice_dsp_active = not request.get_dsp_preset().is_empty()
 	_voice_request_owned = request.has_owner_validator()
-	_voice_player.volume_db = 0.0
-	_voice_player.stream = stream
+	_voice_group_raw_eligible = false
 	_voice_started_advance_serial = SignalBus.current_advance_dispatch_serial()
-	if previous_bus != staged_bus:
+	var primary_claimed := false
+	for staged_value: Variant in staged_layers:
+		var staged: Dictionary = staged_value
+		var staged_bus := StringName(staged.get("bus_name", &""))
+		if not bool(staged.get("enabled", true)):
+			_release_voice_dsp_bus_named(staged_bus)
+			continue
+		var layer_id := String(staged.get("id", ""))
+		var player: AudioStreamPlayer
+		var timer: Timer
+		var primary := not primary_claimed
+		if primary:
+			primary_claimed = true
+			player = _voice_player
+			timer = _voice_dsp_tail_timer
+			_voice_dsp_bus_name = staged_bus
+			_current_voice_character = String(staged.get("character", ""))
+			_voice_dsp_tail_seconds = float(staged.get("tail_seconds", 0.0))
+			_voice_dsp_active = not String(staged.get("dsp", "")).is_empty()
+		else:
+			player = AudioStreamPlayer.new()
+			timer = Timer.new()
+			timer.one_shot = true
+			add_child(player)
+			add_child(timer)
+			player.finished.connect(_on_voice_layer_stream_finished.bind(
+				request_revision, playback_token, layer_id))
+			timer.timeout.connect(_on_voice_layer_tail_timeout.bind(
+				request_revision, playback_token, layer_id))
+		player.bus = staged_bus
+		player.volume_db = 0.0
+		player.stream = staged.get("stream") as AudioStream
+		_voice_layers[layer_id] = {
+			"id": layer_id,
+			"asset": String(staged.get("asset", "")),
+			"character": String(staged.get("character", "")),
+			"dsp": String(staged.get("dsp", "")),
+			"source": (staged.get("source", {}) as Dictionary).duplicate(true),
+			"bus_name": staged_bus,
+			"tail_seconds": float(staged.get("tail_seconds", 0.0)),
+			"player": player,
+			"timer": timer,
+			"primary": primary,
+		}
+		_voice_layer_order.append(layer_id)
+	_voice_dsp_active = false
+	for active_value: Variant in _voice_layers.values():
+		if (
+			active_value is Dictionary
+			and not String((active_value as Dictionary).get("dsp", "")).is_empty()
+		):
+			_voice_dsp_active = true
+			break
+	if primary_claimed and previous_bus != _voice_dsp_bus_name:
 		_release_voice_dsp_bus_named(previous_bus)
-	_voice_player.play()
-	SignalBus.emit_voice_playback_event(VoicePlaybackEvent.started(
-		_current_voice_character, asset,
-		_voice_playback_token,
-		_voice_playback_event_is_current.bind(
-			_voice_playback_revision, _voice_playback_token),
-	))
+	if not primary_claimed:
+		# Every disabled layer was still resource/DSP-preflighted. The accepted
+		# group has no physical completion members and settles synchronously.
+		_finish_voice_group(request_revision, playback_token)
+		return
+	_voice_group_raw_eligible = request.is_single_layer()
+	for layer_id in _voice_layer_order:
+		var layer: Dictionary = _voice_layers[layer_id]
+		(layer.get("player") as AudioStreamPlayer).play()
+	for layer_id in _voice_layer_order:
+		if not _voice_playback_event_is_current(request_revision, playback_token):
+			return
+		var layer: Dictionary = _voice_layers[layer_id]
+		SignalBus.emit_voice_playback_event(VoicePlaybackEvent.started(
+			String(layer.get("character", "")),
+			String(layer.get("asset", "")),
+			playback_token,
+			_voice_playback_event_is_current.bind(request_revision, playback_token),
+			false,
+			layer_id,
+			_voice_group_raw_eligible,
+		))
 
 
 func _on_voice_playback_finished():
-	if _voice_playback_token < 0:
+	if _voice_playback_token < 0 or _voice_layer_order.is_empty():
 		return
-	if _voice_dsp_tail_seconds > 0.0:
-		_voice_dsp_tail_timer.start(_voice_dsp_tail_seconds)
-		return
-	_finish_voice_playback(
-		_voice_playback_revision, _voice_playback_token)
+	_on_voice_layer_stream_finished(
+		_voice_playback_revision, _voice_playback_token, _voice_layer_order[0])
 
 
 func _on_voice_dsp_tail_timeout() -> void:
-	if _voice_playback_token < 0:
+	if _voice_playback_token < 0 or _voice_layer_order.is_empty():
 		return
-	_finish_voice_playback(
-		_voice_playback_revision, _voice_playback_token)
+	_on_voice_layer_tail_timeout(
+		_voice_playback_revision, _voice_playback_token, _voice_layer_order[0])
+
+
+func _on_voice_layer_stream_finished(
+	revision: int,
+	playback_token: int,
+	layer_id: String,
+) -> void:
+	if not _voice_layer_is_current(revision, playback_token, layer_id):
+		return
+	var layer: Dictionary = _voice_layers[layer_id]
+	var tail_seconds := float(layer.get("tail_seconds", 0.0))
+	if tail_seconds > 0.0:
+		var timer := layer.get("timer") as Timer
+		if timer != null:
+			timer.start(tail_seconds)
+		return
+	_finish_voice_layer(revision, playback_token, layer_id)
+
+
+func _on_voice_layer_tail_timeout(
+	revision: int,
+	playback_token: int,
+	layer_id: String,
+) -> void:
+	if _voice_layer_is_current(revision, playback_token, layer_id):
+		_finish_voice_layer(revision, playback_token, layer_id)
 
 
 func _on_advance_requested():
@@ -2622,11 +2794,7 @@ func _on_voice_lifecycle_boundary() -> void:
 	# Unowned programmatic playback is independent from dialogue UI visibility.
 	# Preserve only its established dry physical lifecycle. A processed playback
 	# cannot continue the same token after its selected chain is removed.
-	if (
-		not _voice_request_owned
-		and not _voice_dsp_active
-		and _voice_player.playing
-	):
+	if not _voice_request_owned and _active_voice_group_is_dry_and_playing():
 		return
 	_voice_lifecycle_revision += 1
 	_retire_active_voice(_voice_lifecycle_revision)
@@ -2634,48 +2802,173 @@ func _on_voice_lifecycle_boundary() -> void:
 
 func _retire_active_voice(finished_revision: int) -> void:
 	var finished_token := _voice_playback_token
-	_cancel_voice_dsp_tail()
-	_retire_fixed_audio_player(_voice_player)
-	_clear_voice_dsp_chain()
+	var emit_raw_lifecycle := _voice_group_raw_eligible
+	_retire_voice_group_projection()
 	_voice_playback_token = -1
 	_voice_playback_revision = -1
 	_voice_started_advance_serial = -1
 	_voice_dsp_tail_seconds = 0.0
 	_voice_dsp_active = false
 	_voice_request_owned = false
+	_voice_group_raw_eligible = false
 	if finished_token >= 0:
 		SignalBus.emit_voice_playback_event(VoicePlaybackEvent.finished(
 			finished_token,
 			_voice_finished_event_is_current.bind(finished_revision),
+			false,
+			emit_raw_lifecycle,
 		))
 
 
 func _finish_voice_playback(revision: int, playback_token: int) -> void:
-	if (
-		playback_token < 0
-		or playback_token != _voice_playback_token
-		or revision != _voice_playback_revision
-		or revision != _voice_lifecycle_revision
-	):
+	if _voice_playback_event_is_current(revision, playback_token):
+		_retire_voice_group_projection()
+		_finish_voice_group(revision, playback_token)
+
+
+func _cancel_voice_dsp_tail() -> void:
+	for layer_value: Variant in _voice_layers.values():
+		if layer_value is Dictionary:
+			var timer := (layer_value as Dictionary).get("timer") as Timer
+			if timer != null:
+				timer.stop()
+	if _voice_dsp_tail_timer != null:
+		_voice_dsp_tail_timer.stop()
+
+
+func _release_staged_voice_layers(staged_layers: Array) -> void:
+	for layer_value: Variant in staged_layers:
+		if layer_value is Dictionary:
+			_release_voice_dsp_bus_named(StringName(
+				(layer_value as Dictionary).get("bus_name", &"")))
+
+
+func _retire_voice_group_projection() -> void:
+	for layer_id in _voice_layer_order.duplicate():
+		var layer_value: Variant = _voice_layers.get(layer_id)
+		if layer_value is Dictionary:
+			_release_voice_layer_projection(layer_value as Dictionary)
+	_voice_layers.clear()
+	_voice_layer_order.clear()
+
+
+func _release_voice_layer_projection(layer: Dictionary) -> void:
+	var player := layer.get("player") as AudioStreamPlayer
+	var timer := layer.get("timer") as Timer
+	var primary := bool(layer.get("primary", false))
+	if timer != null:
+		timer.stop()
+	if player != null:
+		_retire_fixed_audio_player(player)
+	var bus_name := StringName(layer.get("bus_name", &""))
+	_clear_voice_dsp_chain_named(bus_name)
+	if not primary:
+		_release_voice_dsp_bus_named(bus_name)
+		if player != null:
+			player.queue_free()
+		if timer != null:
+			timer.queue_free()
+
+
+func _finish_voice_layer(
+	revision: int,
+	playback_token: int,
+	layer_id: String,
+) -> void:
+	if not _voice_layer_is_current(revision, playback_token, layer_id):
 		return
-	_cancel_voice_dsp_tail()
-	_retire_fixed_audio_player(_voice_player)
-	_clear_voice_dsp_chain()
+	var layer: Dictionary = _voice_layers[layer_id]
+	_release_voice_layer_projection(layer)
+	_voice_layers.erase(layer_id)
+	_voice_layer_order.erase(layer_id)
+	_voice_dsp_active = false
+	for remaining_value: Variant in _voice_layers.values():
+		if (
+			remaining_value is Dictionary
+			and not String((remaining_value as Dictionary).get("dsp", "")).is_empty()
+		):
+			_voice_dsp_active = true
+			break
+	SignalBus.emit_voice_playback_event(VoicePlaybackEvent.layer_finished(
+		String(layer.get("character", "")),
+		String(layer.get("asset", "")),
+		playback_token,
+		layer_id,
+		_voice_playback_event_is_current.bind(revision, playback_token),
+	))
+	if not _voice_playback_event_is_current(revision, playback_token):
+		return
+	if _voice_layers.is_empty():
+		_finish_voice_group(revision, playback_token)
+
+
+func _finish_voice_group(revision: int, playback_token: int) -> void:
+	if not _voice_playback_event_is_current(revision, playback_token):
+		return
+	var emit_raw_lifecycle := _voice_group_raw_eligible
 	_voice_playback_token = -1
 	_voice_playback_revision = -1
 	_voice_started_advance_serial = -1
 	_voice_dsp_tail_seconds = 0.0
 	_voice_dsp_active = false
 	_voice_request_owned = false
+	_voice_group_raw_eligible = false
 	SignalBus.emit_voice_playback_event(VoicePlaybackEvent.finished(
 		playback_token,
 		_voice_finished_event_is_current.bind(revision),
+		false,
+		emit_raw_lifecycle,
 	))
 
 
-func _cancel_voice_dsp_tail() -> void:
-	if _voice_dsp_tail_timer != null:
-		_voice_dsp_tail_timer.stop()
+func _voice_layer_is_current(
+	revision: int,
+	playback_token: int,
+	layer_id: String,
+) -> bool:
+	return (
+		_voice_playback_event_is_current(revision, playback_token)
+		and _voice_layers.has(layer_id)
+	)
+
+
+func _active_voice_group_is_dry_and_playing() -> bool:
+	if _voice_layers.is_empty():
+		return false
+	for layer_value: Variant in _voice_layers.values():
+		if not layer_value is Dictionary:
+			return false
+		var layer: Dictionary = layer_value
+		var player := layer.get("player") as AudioStreamPlayer
+		if not String(layer.get("dsp", "")).is_empty() \
+			or player == null or not player.playing:
+			return false
+	return true
+
+
+func _is_voice_character_enabled(character: String) -> bool:
+	var enabled_by_character := StellaRuntime.get_setting("character_voice_enabled")
+	return not (
+		enabled_by_character is Dictionary
+		and not bool((enabled_by_character as Dictionary).get(character, true))
+	)
+
+
+func _voice_layer_error(
+	source: Dictionary,
+	layer_id: String,
+	detail: String,
+) -> void:
+	var source_path := String(source.get("source_path", "<runtime>"))
+	if source_path.is_empty():
+		source_path = "<runtime>"
+	var line := int(source.get("line", 0))
+	var location := source_path
+	if line > 0:
+		location = "%s:%d" % [source_path, line]
+	push_error(
+		"AudioPresenter: voice layer '%s' %s at %s"
+			% [layer_id, detail, location])
 
 
 func _voice_playback_event_is_current(

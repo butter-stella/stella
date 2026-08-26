@@ -70,7 +70,7 @@ run_probe() {
 	local export_log="$smoke_root/$pack_name-export.log"
 	local run_log="$smoke_root/$pack_name-run.log"
 
-	if ! "$godot_bin" --headless --path "$repo_root" \
+	if ! "$godot_bin" --audio-driver Dummy --headless --path "$repo_root" \
 		--export-pack "$preset_name" "$pack_path" >"$export_log" 2>&1; then
 		cat "$export_log"
 		return 1
@@ -84,7 +84,8 @@ run_probe() {
 		cd "$run_dir"
 		STELLA_EXPORT_PROBE_MODE="$probe_mode" \
 		STELLA_EXPORT_PROBE_MARKER="$marker_path" \
-			"$godot_bin" --headless --main-pack "$pack_path" --quit-after 600 \
+			"$godot_bin" --audio-driver Dummy --headless \
+			--main-pack "$pack_path" --quit-after 600 \
 			res://tests/fixtures/pck_smoke/export_probe_host.tscn
 	) >"$run_log" 2>&1; then
 		cat "$run_log"

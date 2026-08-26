@@ -417,12 +417,49 @@ func _nvl_entry_is_valid(
 	if not entry.has("segments") or not entry["segments"] is Array:
 		return false
 	for raw_segment: Variant in entry["segments"]:
-		if not raw_segment is Dictionary:
-			return false
-		for key: String in ["text", "voice"]:
-			if raw_segment.has(key) and not raw_segment[key] is String:
+		if not _nvl_segment_is_valid(raw_segment):
 				return false
 	return true
+
+
+func _nvl_segment_is_valid(raw_segment: Variant) -> bool:
+	if not raw_segment is Dictionary:
+		return false
+	var segment: Dictionary = raw_segment
+	var segment_keys := segment.keys()
+	segment_keys.sort()
+	if segment_keys != ["text", "voice_layers"]:
+		return false
+	if not segment["text"] is String or not segment["voice_layers"] is Array:
+		return false
+	var layers: Array = segment["voice_layers"]
+	if layers.size() > VoicePlaybackRequest.MAX_LAYERS:
+		return false
+	var request_layers: Array = []
+	for layer_value: Variant in layers:
+		if not layer_value is Dictionary:
+			return false
+		var layer: Dictionary = layer_value
+		var layer_keys := layer.keys()
+		layer_keys.sort()
+		if layer_keys != ["asset", "character", "dsp", "id", "line"]:
+			return false
+		for key: String in ["asset", "character", "dsp", "id"]:
+			if not layer[key] is String:
+				return false
+		if not _integer_is_valid(layer["line"]) or int(layer["line"]) < 0:
+			return false
+		request_layers.append({
+			"id": layer["id"],
+			"asset": layer["asset"],
+			"character": layer["character"],
+			"dsp": layer["dsp"],
+			"source": {"line": int(layer["line"])},
+		})
+	if request_layers.is_empty():
+		return true
+	return String(VoicePlaybackRequest.canonicalize_layers(
+		request_layers).get("error", "")).is_empty()
 
 
 func _variable_store_snapshot_is_valid(raw_snapshot: Variant) -> bool:

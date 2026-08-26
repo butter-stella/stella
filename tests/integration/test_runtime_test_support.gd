@@ -947,7 +947,7 @@ func test_reset_for_test_invalidates_a_real_dialogue_typewriter() -> void:
 	_runtime.engine.load_scenario(_build_blocking_scenario())
 	SignalBus.show_dialogue.emit("n", [{
 		"text": "x",
-		"voice": "",
+		"voice_layers": [],
 	}], "adv")
 	var active_generation: int = dialogue._dialogue_gen
 	assert_eq(dialogue._current_scenario_id, "runtime_reset_test")
@@ -981,7 +981,7 @@ func test_reset_for_test_cancels_a_delayed_skip_advance() -> void:
 
 	SignalBus.show_dialogue.emit("n", [{
 		"text": "skip then reset",
-		"voice": "",
+		"voice_layers": [],
 	}], "adv")
 	await get_tree().process_frame
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())

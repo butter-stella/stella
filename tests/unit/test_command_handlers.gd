@@ -71,7 +71,10 @@ func test_dialogue_handler_emits_signal():
 	var cmd = _build_cmd("dialogue", {
 		"character": "sakura",
 		"text": "Hello!",
-		"voice": "voice_001",
+		"voice_layers": [{
+			"id": "main", "asset": "voice_001", "character": "sakura",
+			"dsp": "", "line": 0,
+		}],
 		"mode": "adv",
 	})
 
@@ -84,7 +87,8 @@ func test_dialogue_handler_emits_signal():
 	assert_eq(received[0]["character"], "sakura")
 	assert_eq(received[0]["segments"].size(), 1)
 	assert_eq(received[0]["segments"][0]["text"], "Hello!")
-	assert_eq(received[0]["segments"][0]["voice"], "voice_001")
+	assert_eq(received[0]["segments"][0]["voice_layers"][0]["asset"],
+		"voice_001")
 	assert_true(_dialogue_is_read(),
 		"normal dialogue completion records the current command")
 
@@ -257,7 +261,7 @@ func test_dialogue_handler_defaults():
 	_bus.show_dialogue.connect(func(_c, segs, m):
 		received.append({
 			"mode": m,
-			"voice": segs[0]["voice"],
+			"voice_layers": segs[0]["voice_layers"],
 			"nvl_page_key": _bus.current_dialogue_nvl_page_key(),
 		})
 	)
@@ -267,7 +271,7 @@ func test_dialogue_handler_defaults():
 	await handler.execute(cmd, _context)
 
 	assert_eq(received[0]["mode"], "adv")
-	assert_eq(received[0]["voice"], "")
+	assert_eq(received[0]["voice_layers"], [])
 	assert_eq(received[0]["nvl_page_key"], "")
 
 
@@ -304,13 +308,19 @@ func test_dialogue_handler_passes_segments_through():
 	_bus.show_dialogue.connect(func(_c, segs, _m): received.append(segs))
 
 	var segments = [
-		{"text": "一", "voice": "v1", "presentation_ops": []},
-		{"text": "二", "voice": "v2", "presentation_ops": []},
+		{"text": "一", "voice_layers": [{
+			"id": "main", "asset": "v1", "character": "sakura",
+			"dsp": "", "line": 0,
+		}], "presentation_ops": []},
+		{"text": "二", "voice_layers": [{
+			"id": "main", "asset": "v2", "character": "sakura",
+			"dsp": "", "line": 0,
+		}], "presentation_ops": []},
 	]
 	var cmd = _build_cmd("dialogue", {
 		"character": "sakura",
 		"text": "一二",
-		"voice": "v1",
+		"voice_layers": segments[0]["voice_layers"],
 		"mode": "adv",
 		"segments": segments,
 	})
@@ -320,7 +330,7 @@ func test_dialogue_handler_passes_segments_through():
 
 	assert_eq(received.size(), 1)
 	assert_eq(received[0].size(), 2)
-	assert_eq(received[0][0]["voice"], "v1")
+	assert_eq(received[0][0]["voice_layers"][0]["asset"], "v1")
 	assert_eq(received[0][1]["presentation_ops"], [])
 
 
@@ -482,7 +492,7 @@ func test_nested_raw_show_does_not_inherit_outer_presentation_metadata() -> void
 			nested = true
 			_bus.show_dialogue.emit(
 				"inner", [{
-					"text": "inner", "voice": "", "expression": "",
+					"text": "inner", "voice_layers": [], "expression": "",
 				}], "adv")
 		elif character == "inner":
 			inner_metadata.append(_bus.current_dialogue_metadata(segments))
@@ -498,7 +508,7 @@ func test_nested_raw_show_does_not_inherit_outer_presentation_metadata() -> void
 
 	_bus.emit_show_dialogue(
 		"outer",
-		[{"text": "outer", "voice": "", "expression": ""}],
+		[{"text": "outer", "voice_layers": [], "expression": ""}],
 		"nvl",
 		{"line_spacing": 9},
 		true,
@@ -526,7 +536,7 @@ func test_wrapper_metadata_survives_listener_mutating_segments() -> void:
 			return
 		segments[0]["text"] = "filtered"
 		segments.append({
-			"text": "appended", "voice": "", "expression": "",
+			"text": "appended", "voice_layers": [], "expression": "",
 		})
 	)
 	_bus.show_dialogue.connect(func(character, segments, _mode):
@@ -537,7 +547,7 @@ func test_wrapper_metadata_survives_listener_mutating_segments() -> void:
 
 	_bus.emit_show_dialogue(
 		"outer",
-		[{"text": "original", "voice": "", "expression": ""}],
+		[{"text": "original", "voice_layers": [], "expression": ""}],
 		"nvl",
 		{"line_spacing": 11},
 		true,
@@ -557,7 +567,7 @@ func test_wrapper_metadata_survives_listener_mutating_segments() -> void:
 
 func test_mutated_nested_raw_payload_cannot_match_outer_metadata_by_value() -> void:
 	var outer_segments := [{
-		"text": "outer", "voice": "", "expression": "",
+		"text": "outer", "voice_layers": [], "expression": "",
 	}]
 	var nested_metadata: Array[Dictionary] = []
 	var nesting := [false]
@@ -566,7 +576,7 @@ func test_mutated_nested_raw_payload_cannot_match_outer_metadata_by_value() -> v
 			return
 		nesting[0] = true
 		_bus.show_dialogue.emit("identity_inner", [{
-			"text": "inner", "voice": "", "expression": "",
+			"text": "inner", "voice_layers": [], "expression": "",
 		}], "nvl")
 		nesting[0] = false
 	var mutate_nested := func(character, segments, _mode):

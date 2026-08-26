@@ -40,9 +40,8 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 	if segments.is_empty():
 		segments = [{
 			"text": data.get_string("text", ""),
-			"voice": data.get_string("voice", ""),
-			"voice_dsp": data.get_string("voice_dsp", ""),
-			"voice_dsp_line": data.get_int("voice_dsp_line", 0),
+			"voice_layers": data.params.get(
+				"voice_layers", []).duplicate(true),
 			"presentation_ops": data.params.get(
 				"presentation_ops", []).duplicate(true),
 			"presentation_operation_lines": data.params.get(

@@ -85,7 +85,7 @@ relevant test; before handoff, run the full applicable suite when practical.
 
 ```bash
 # Import assets and surface script/resource errors.
-godot --headless --import
+godot --audio-driver Dummy --headless --import
 
 # Full GUT suite; .gutconfig.json includes unit and integration directories.
 STELLA_DISABLE_LOCAL_CONFIG=1 \

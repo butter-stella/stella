@@ -850,4 +850,4 @@ func _connect_tracked(
 
 
 func _segment(text: String) -> Dictionary:
-	return {"text": text, "voice": "", "presentation_ops": []}
+	return {"text": text, "voice_layers": [], "presentation_ops": []}
