@@ -116,6 +116,8 @@ var _choice_session_serial: int = 0
 var _active_choice_session: int = -1
 var _active_choice_auto_suspension: bool = false
 var _choice_presentation_dispatch_stack: Array[int] = []
+var _active_recollection_playback: ScenarioPlaybackContext
+var _active_recollection_context: ScenarioContext
 
 
 func _init() -> void:
@@ -618,6 +620,7 @@ func _register_handlers():
 	registry.register(PresentationBatchHandler.new(
 		presentation_director, presentation_state))
 	registry.register(PresentationClipHandler.new(presentation_director))
+	registry.register(RecollectionExitHandler.new())
 	registry.register(JumpHandler.new())
 	registry.register(SetHandler.new())
 	registry.register(ConditionHandler.new())
@@ -697,6 +700,64 @@ func start_game(scenario_path: String = "", game_scene_path: String = "") -> voi
 	if not _start_preparsed_scenario(scenario_data, scenario_path, navigation):
 		return
 	_finish_navigation(navigation)
+
+
+## Start one scenario in recollection/gallery playback. The explicit caller
+## continuation must be a valid zero-argument Callable and must outlive any
+## scene replaced by this entry. It is never serialized.
+func start_recollection(
+	scenario_path: String,
+	return_continuation: Callable,
+	game_scene_path: String = "",
+) -> bool:
+	if scenario_path.is_empty():
+		push_error(
+			"StellaRuntime: recollection scenario path is missing at <entry>")
+		return false
+	if not ScenarioPlaybackContext.continuation_is_valid(return_continuation):
+		push_error(
+			"StellaRuntime: recollection return continuation must be a valid zero-argument Callable at %s:entry"
+			% scenario_path)
+		return false
+	if game_scene_path.is_empty():
+		game_scene_path = _get_game_scene_path()
+	var scenario_data := _parse_scenario(scenario_path)
+	if scenario_data == null:
+		return false
+	var destination := _load_navigation_scene(game_scene_path, "recollection game")
+	if destination.is_empty():
+		return false
+	var playback := ScenarioPlaybackContext.recollection(return_continuation)
+	var navigation := _begin_navigation("start_recollection", true)
+	if not _owns_navigation(navigation):
+		return false
+	if not await _enter_scene_and_confirm(
+		destination,
+		navigation,
+		"recollection game",
+	):
+		_finish_navigation(navigation)
+		return false
+	if not _owns_navigation(navigation):
+		return false
+	if not _cancel_active_gameplay(navigation):
+		return false
+	_close_current_overlay()
+	if not _owns_navigation(navigation):
+		return false
+	_last_scenario_path = scenario_path
+	game_state.transition_to(GameStateMachine.State.PLAYING)
+	if not _owns_navigation(navigation):
+		return false
+	if not _start_preparsed_scenario(
+		scenario_data,
+		scenario_path,
+		navigation,
+		playback,
+	):
+		return false
+	_finish_navigation(navigation)
+	return true
 
 
 ## Load a saved game — switch to game scene, restore state, run.
@@ -1462,6 +1523,8 @@ func _cancel_active_gameplay(navigation: int = -1) -> bool:
 		return false
 	if engine == null or engine.context == null:
 		return true
+	if _navigation_kind != "recollection_return":
+		_cancel_recollection_for_replacement(engine.context)
 	var retired_abort_connections := _capture_engine_abort_connections()
 	var retired_choice_session := _begin_choice_hard_boundary()
 	engine.cancel_current_run()
@@ -1477,6 +1540,166 @@ func _cancel_active_gameplay(navigation: int = -1) -> bool:
 		return false
 	_finish_choice_hard_boundary(true)
 	return _owns_navigation(navigation) and engine.context == null
+
+
+func _cancel_recollection_for_replacement(
+	expected_context: ScenarioContext,
+) -> void:
+	if (
+		expected_context == null
+		or expected_context != _active_recollection_context
+		or _active_recollection_playback == null
+	):
+		return
+	_active_recollection_playback.cancel()
+	_active_recollection_playback = null
+	_active_recollection_context = null
+
+
+func _recollection_source_location(
+	context: ScenarioContext,
+	line_override: int = -1,
+) -> String:
+	var source_path := "<programmatic-scenario>"
+	if (
+		context != null
+		and context.scenario_data != null
+		and not context.scenario_data.source_path.is_empty()
+	):
+		source_path = context.scenario_data.source_path
+	var line := line_override
+	if line < 0 and context != null:
+		line = context.recollection_exit_line
+	if line > 0:
+		return "%s:%d" % [source_path, line]
+	return "%s:end" % source_path
+
+
+func _is_recollection_context_active() -> bool:
+	return (
+		engine != null
+		and engine.context != null
+		and engine.context.is_recollection_playback()
+	)
+
+
+## True only while the current ScenarioContext was entered through the public
+## recollection facade. A context whose caller was superseded remains a
+## recollection context until its winning replacement detaches it, so save and
+## rollback stay fail-closed during that handoff.
+func is_recollection_playing() -> bool:
+	return (
+		_is_recollection_context_active()
+		and engine.context == _active_recollection_context
+		and _active_recollection_playback != null
+	)
+
+
+## User-owned early return. Natural scenario exhaustion and the DSL command
+## call the same exact-once implementation from _on_scenario_ended().
+func return_from_recollection() -> bool:
+	if not is_recollection_playing():
+		return false
+	var context := _active_recollection_context
+	var line := 0
+	var command := context.current_command() if context != null else null
+	if command != null:
+		line = command.declared_line
+	return _complete_recollection_return(context, line)
+
+
+func _complete_recollection_return(
+	context: ScenarioContext,
+	line_override: int = -1,
+) -> bool:
+	if (
+		context == null
+		or context != _active_recollection_context
+		or _active_recollection_playback == null
+		or context.playback_context != _active_recollection_playback
+	):
+		return false
+	var playback := _active_recollection_playback
+	var location := _recollection_source_location(context, line_override)
+	if not playback.try_begin_return():
+		return false
+
+	# No project callback runs until this exact Runtime generation has retired
+	# Core and all live presentation owners. Any synchronous cleanup reentry that
+	# installs a newer navigation cancels this continuation without touching it.
+	var navigation := _begin_navigation("recollection_return", true)
+	if not _owns_navigation(navigation):
+		playback.cancel()
+		return false
+	if not _acquire_navigation_runtime_ownership(navigation, false):
+		playback.cancel()
+		return false
+	if not _cancel_active_gameplay(navigation):
+		playback.cancel()
+		if _active_recollection_playback == playback:
+			_active_recollection_playback = null
+			_active_recollection_context = null
+		push_error(
+			"StellaRuntime: recollection return cleanup lost ownership at %s"
+			% location)
+		return false
+	if not presentation_clip_audio_choice_authority.clear_to_unstarted():
+		playback.cancel()
+		if _active_recollection_playback == playback:
+			_active_recollection_playback = null
+			_active_recollection_context = null
+		push_error(
+			"StellaRuntime: recollection audio-choice cleanup failed at %s"
+			% location)
+		return false
+	if not _owns_navigation_context(navigation, null):
+		playback.cancel()
+		return false
+	_close_current_overlay()
+	if not _owns_navigation_context(navigation, null):
+		playback.cancel()
+		return false
+	SignalBus.reset_loop_se_presentation()
+	if not _owns_navigation_context(navigation, null):
+		playback.cancel()
+		return false
+	if not _reset_presentation(navigation, null, true):
+		playback.cancel()
+		if _active_recollection_playback == playback:
+			_active_recollection_playback = null
+			_active_recollection_context = null
+		push_error(
+			"StellaRuntime: recollection presentation cleanup failed at %s"
+			% location)
+		return false
+	backlog_manager.clear()
+	choice_history_manager.clear()
+	auto_play.stop()
+	if not _owns_navigation_context(navigation, null):
+		playback.cancel()
+		return false
+	skip_controller.stop()
+	if not _owns_navigation_context(navigation, null):
+		playback.cancel()
+		return false
+	game_state.transition_to(GameStateMachine.State.PAUSED)
+	if not _owns_navigation_context(navigation, null):
+		playback.cancel()
+		return false
+	_active_recollection_playback = null
+	_active_recollection_context = null
+	_navigation_projection_committed = true
+	_finish_navigation(navigation)
+
+	# The target can become invalid after a valid entry (for example because its
+	# owner scene was freed). Cleanup above still completed deterministically;
+	# fail closed here without invoking any other destination.
+	if not playback.complete_return():
+		push_error(
+			"StellaRuntime: recollection return continuation is no longer valid at %s"
+			% location)
+		return false
+	return true
 
 
 ## Resolve UID destinations to their canonical resource path and load the
@@ -2257,13 +2480,14 @@ func _start_preparsed_scenario(
 	scenario_data: ScenarioData,
 	scenario_path: String,
 	navigation: int,
+	playback_context: ScenarioPlaybackContext = null,
 ) -> bool:
 	if not _owns_navigation(navigation):
 		return false
 	if not presentation_clip_audio_choice_authority.start_fresh_run():
 		push_error("StellaRuntime: presentation-clip audio-choice seed initialization failed")
 		return false
-	_install_scenario(scenario_data, scenario_path)
+	_install_scenario(scenario_data, scenario_path, playback_context)
 	var expected_context := engine.context if engine != null else null
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
@@ -2336,7 +2560,11 @@ func _prepare_scenario(scenario_path: String) -> bool:
 	return true
 
 
-func _install_scenario(data: ScenarioData, scenario_path: String) -> void:
+func _install_scenario(
+	data: ScenarioData,
+	scenario_path: String,
+	playback_context: ScenarioPlaybackContext = null,
+) -> void:
 	var scenario_id := data.id
 
 	# Invalidate semantic policy only when this call itself replaces an execution
@@ -2353,6 +2581,20 @@ func _install_scenario(data: ScenarioData, scenario_path: String) -> void:
 		retired_abort_connections = _capture_engine_abort_connections()
 		_begin_choice_hard_boundary()
 	engine.load_scenario(data)
+	var installed_playback := (
+		playback_context
+		if playback_context != null
+		else ScenarioPlaybackContext.story()
+	)
+	if not engine.context.set_playback_context(installed_playback):
+		push_error(
+			"StellaRuntime: invalid scenario playback context at %s:entry"
+			% scenario_path)
+		engine.context.request_cancellation()
+	_active_recollection_playback = (
+		installed_playback if installed_playback.is_recollection() else null)
+	_active_recollection_context = (
+		engine.context if installed_playback.is_recollection() else null)
 	save_manager.register_provider(engine.context)
 	save_manager.register_provider(engine.context.variable_store)
 	backlog_manager.clear()
@@ -2757,12 +2999,16 @@ func _on_state_changed(from_state: int, _to_state: int) -> void:
 func _on_scenario_ended(id: String) -> void:
 	if engine == null or not engine.is_emitting_active_scenario_end():
 		return
+	var ended_context := engine.context
 	SignalBus.scenario_ended_event.emit(id)
 	# The public bridge is itself reentrant. A listener may start a replacement
 	# navigation, which invalidates this run while the engine is still inside
 	# scenario_ended.emit(). Do not let the retired callback append a title
 	# navigation after that newer owner has already taken over.
 	if not engine.is_emitting_active_scenario_end():
+		return
+	if ended_context != null and ended_context.is_recollection_playback():
+		_complete_recollection_return(ended_context)
 		return
 	# Auto return to title after scenario ends
 	return_to_title()
@@ -3030,6 +3276,10 @@ func _refresh_current_flowchart_chapter_snapshot_for_save() -> void:
 
 ## Quick save (separate from manual save slots).
 func quick_save() -> void:
+	if _is_recollection_context_active():
+		push_warning(
+			"StellaRuntime: quick save is unavailable during recollection playback")
+		return
 	_refresh_current_flowchart_chapter_snapshot_for_save()
 	save_manager.quick_save()
 
@@ -3118,6 +3368,10 @@ func delete_quick_save() -> void:
 ## Auto save (triggered on game interruption — return to title, app close).
 func auto_save() -> void:
 	if game_state.current_state != GameStateMachine.State.PLAYING:
+		return
+	if _is_recollection_context_active():
+		push_warning(
+			"StellaRuntime: auto save is unavailable during recollection playback")
 		return
 	_refresh_current_flowchart_chapter_snapshot_for_save()
 	save_manager.auto_save()
@@ -3235,6 +3489,10 @@ func _read_continue_data(
 
 ## Save to a specific slot.
 func save(slot_id: int) -> void:
+	if _is_recollection_context_active():
+		push_warning(
+			"StellaRuntime: manual save is unavailable during recollection playback")
+		return
 	_refresh_current_flowchart_chapter_snapshot_for_save()
 	save_manager.save(slot_id)
 
@@ -3807,6 +4065,10 @@ func _restore_runtime_from_snapshot(
 ) -> bool:
 	if engine == null or engine.context == null:
 		return false
+	if engine.context.is_recollection_playback():
+		push_warning(
+			"StellaRuntime: rollback is unavailable during recollection playback")
+		return false
 	var raw_choice_snapshot: Variant = snap.get(
 		PresentationClipAudioChoiceAuthority.PROVIDER_ID, null)
 	if not PresentationClipAudioChoiceAuthority.validate_playthrough_snapshot(
@@ -3952,6 +4214,8 @@ func _restore_runtime_from_snapshot(
 func jump_from_backlog(index: int) -> bool:
 	if engine == null or engine.context == null:
 		return false
+	if engine.context.is_recollection_playback():
+		return false
 	var info = backlog_manager.peek_jump(index)
 	if info.is_empty():
 		return false
@@ -3971,6 +4235,8 @@ func jump_from_backlog(index: int) -> bool:
 func can_jump_to_previous_choice() -> bool:
 	if engine == null or engine.context == null:
 		return false
+	if engine.context.is_recollection_playback():
+		return false
 	var cur_cmd = engine.context.current_command()
 	var cur_uid: int = -1
 	if cur_cmd != null:
@@ -3986,6 +4252,8 @@ func can_jump_to_previous_choice() -> bool:
 ## snapshot available.
 func jump_to_previous_choice() -> bool:
 	if engine == null or engine.context == null:
+		return false
+	if engine.context.is_recollection_playback():
 		return false
 	var cur_cmd = engine.context.current_command()
 	var cur_uid: int = -1
@@ -4015,6 +4283,8 @@ func jump_to_previous_choice() -> bool:
 ## jumpable but the player would get stuck again immediately).
 func jump_from_flowchart(chapter_id: String) -> bool:
 	if engine == null or engine.context == null:
+		return false
+	if engine.context.is_recollection_playback():
 		return false
 	if scenario_graph == null:
 		return false

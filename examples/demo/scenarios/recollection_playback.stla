@@ -1,0 +1,6 @@
+// Public synthetic contract: the same scenario may run as story or recollection.
+@chapter recollection_demo "Recollection Playback"
+@scene memory
+「This line is shared by story and gallery playback.」
+@recollection_exit
+「Story playback continues here; recollection playback returns to its caller.」

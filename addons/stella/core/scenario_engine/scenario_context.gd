@@ -9,6 +9,10 @@ var current_scene_index: int = 0
 var current_command_index: int = 0
 var pending_jump: String = ""
 var is_finished: bool = false
+## Runtime-only entry/return contract. It is intentionally not serialized;
+## recollection playbacks reject save/rollback at the Runtime facade boundary.
+var playback_context: ScenarioPlaybackContext = ScenarioPlaybackContext.story()
+var recollection_exit_line: int = 0
 ## Canonical authored target for the chapter indicator. Chapter metadata and
 ## presenter state are derived projections and deliberately are not persisted.
 var chapter_indicator_visible: bool = false
@@ -54,6 +58,28 @@ func is_runtime_owner_current() -> bool:
 			or bool(_runtime_owner_state.get("current", false))
 		)
 	)
+
+
+func set_playback_context(value: ScenarioPlaybackContext) -> bool:
+	if value == null or not value.is_valid_for_entry():
+		return false
+	playback_context = value
+	return true
+
+
+func is_recollection_playback() -> bool:
+	return playback_context != null and playback_context.is_recollection()
+
+
+## The command itself never calls project code. It only makes this exact engine
+## generation terminal; ScenarioEngine's canonical end emission hands the same
+## Context to Runtime for cleanup and continuation settlement.
+func request_recollection_exit(source_line: int) -> bool:
+	if not is_recollection_playback():
+		return true
+	recollection_exit_line = maxi(0, source_line)
+	is_finished = true
+	return true
 
 
 ## Retire only the current execution session while keeping authored Context

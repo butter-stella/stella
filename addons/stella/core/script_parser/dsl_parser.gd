@@ -6,7 +6,7 @@ const INTERNAL_DIALOGUE_MODE_EVENT := "__dialogue_mode_event"
 const INTERNAL_IF_NODE := "__if_node"
 const _PARALLEL_BLOCKING_COMMANDS := [
 	"dialogue", "choice", "wait", "chapter_indicator", "presentation_batch",
-	"presentation_clip",
+	"presentation_clip", "recollection_exit",
 ]
 const _CHAPTER_INDICATOR_ACTIONS := ["show", "hide"]
 const _CHAPTER_INDICATOR_TRANSITIONS := ["cut", "none", "fade"]
@@ -749,7 +749,9 @@ static func parse(
 						"DslParser: only @stage and @dialogue_avatar are allowed inside @combine block; @%s was ignored (line %d)"
 						% [cmd_name, token.line]
 					)
-					if cmd_name in ["chapter_indicator", "loop_se", "bgm"]:
+					if cmd_name in [
+						"chapter_indicator", "loop_se", "bgm", "recollection_exit",
+					]:
 						combine_message = (
 							"DslParser: @%s is not allowed inside @combine at %s"
 							% [cmd_name, _source_location(data, token.line)]
@@ -758,7 +760,9 @@ static func parse(
 						data,
 						(
 							"error"
-							if cmd_name in ["chapter_indicator", "loop_se", "bgm"]
+							if cmd_name in [
+								"chapter_indicator", "loop_se", "bgm", "recollection_exit",
+							]
 							else "warning"
 						),
 						combine_message,
@@ -966,6 +970,19 @@ static func parse(
 							data,
 							"error",
 							"DslParser: @bgm requires an active @scene at %s"
+							% _source_location(data, token.line),
+							token.line,
+						)
+						cmd = null
+					if (
+						cmd != null
+						and cmd.type == "recollection_exit"
+						and (current_scene == null or chapter_needs_scene)
+					):
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @recollection_exit requires an active @scene at %s"
 							% _source_location(data, token.line),
 							token.line,
 						)
@@ -1523,6 +1540,17 @@ static func _parse_at_command(
 	var parts = _split_args(args)
 
 	match name:
+		"recollection_exit":
+			if not parts.is_empty():
+				_record_diagnostic(
+					data,
+					"error",
+					"DslParser: @recollection_exit does not accept arguments at %s"
+					% _source_location(data, token.line),
+					token.line,
+				)
+				return null
+			return _make_cmd("recollection_exit", {})
 		"presentation_clip":
 			return _parse_presentation_clip_command(parts, token.line, data)
 		"chapter_indicator":
