@@ -593,6 +593,44 @@ func test_public_sealed_particle_plan_has_seekable_start_curve_and_end_pixels() 
 	presenter.free()
 
 
+func test_cut_policy_renders_the_tail_before_boundary_and_none_after_teardown() -> void:
+	var definition := load(
+		"res://tests/fixtures/presentation_clips/synthetic_particle_teardown_clip.tres"
+	) as PresentationClipDefinition
+	var presenter := PresentationClipPresenter.new()
+	var plan: Dictionary = presenter.call("_prepare_plan", definition)
+	assert_true(bool(plan.get("valid", false)), str(plan))
+	if not bool(plan.get("valid", false)):
+		presenter.free()
+		return
+	var schedules: Array = plan.get("particle_schedules", [])
+	assert_eq(schedules.size(), 1)
+	var harness := _particle_schedules_harness(schedules, Color.BLACK, 0.999)
+	var before := await _render_particle_harness(harness)
+	_reproject_particle_harness(harness, 1.0)
+	var uncropped_end := await _render_particle_harness(harness)
+	var expected_black := _solid_image(Vector2i(64, 64), Color.BLACK)
+	expected_black.convert(before.get_format())
+	assert_ne(before.get_data(), expected_black.get_data(),
+		"the authored overrun particle is visible immediately before main end")
+	assert_ne(uncropped_end.get_data(), expected_black.get_data(),
+		"the sealed lifetime is not shortened to fit the main clock")
+	presenter.call(
+		"_cut_particle_projections",
+		{"particle_projections": harness.get("projections", [])},
+		&"cut",
+	)
+	var after := await _render_particle_harness(harness)
+	assert_eq(after.get_data(), expected_black.get_data(),
+		"clip teardown synchronously removes every live cut-policy instance")
+	_reproject_particle_harness(harness, 0.999)
+	var stale_reproject := await _render_particle_harness(harness)
+	assert_eq(stale_reproject.get_data(), expected_black.get_data(),
+		"a stale main-position projection cannot resurrect a cut pool")
+	presenter.call("_release_plan", plan)
+	presenter.free()
+
+
 func test_particle_texture_filter_is_an_explicit_visual_contract() -> void:
 	var source := Image.create(2, 1, false, Image.FORMAT_RGBA8)
 	source.set_pixel(0, 0, Color.BLACK)
