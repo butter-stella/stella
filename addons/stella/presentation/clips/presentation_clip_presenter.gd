@@ -554,6 +554,9 @@ func _on_animation_finished(
 		(_active["animation_player"] as AnimationPlayer).current_animation_length)
 	if not _active_identity_is_current(request_id, generation):
 		return
+	_cut_particle_projections(_active, &"cut")
+	if not _active_identity_is_current(request_id, generation):
+		return
 	if definition.exit_transition == &"turn" and definition.exit_duration > 0.0:
 		_active["phase"] = &"exiting"
 		_start_transition(true)
@@ -767,6 +770,8 @@ func _project_particle_layer(projection: Dictionary, position: float) -> void:
 	var multimesh := projection.get("multimesh") as MultiMesh
 	if multimesh == null:
 		return
+	if bool(projection.get("teardown_cut_done", false)):
+		return
 	var spawn_times: PackedFloat64Array = projection.get(
 		"spawn_times", PackedFloat64Array())
 	var lifetime_seconds := float(projection.get("lifetime_seconds", 0.0))
@@ -834,6 +839,34 @@ func _project_particle_layer(projection: Dictionary, position: float) -> void:
 	var instance := projection.get("instance") as MultiMeshInstance2D
 	if instance != null and is_instance_valid(instance):
 		instance.visible = visible_count > 0
+
+
+## Synchronously clears clip-owned particle instances before their visual owner
+## is hidden or queued for deletion.  The sealed projection dictionary carries
+## the idempotence marker, so main-end cut and a later owner retirement cannot
+## clear the same pool twice.
+func _cut_particle_projections(
+	record: Dictionary,
+	required_policy: StringName = &"",
+) -> void:
+	for projection_value: Variant in (
+		record.get("particle_projections", []) as Array):
+		var projection := projection_value as Dictionary
+		if (
+			not required_policy.is_empty()
+			and StringName(projection.get(
+				"teardown_policy", &"fully_contained")) != required_policy
+		):
+			continue
+		if bool(projection.get("teardown_cut_done", false)):
+			continue
+		projection["teardown_cut_done"] = true
+		var multimesh := projection.get("multimesh") as MultiMesh
+		if multimesh != null:
+			multimesh.visible_instance_count = 0
+		var instance := projection.get("instance") as MultiMeshInstance2D
+		if instance != null and is_instance_valid(instance):
+			instance.visible = false
 
 
 func _upper_bound_particle_spawn_times(
@@ -951,6 +984,7 @@ func _retire_visual_record(
 ) -> void:
 	if record.is_empty():
 		return
+	_cut_particle_projections(record)
 	var tween: Tween = record.get("transition_tween")
 	if tween != null and tween.is_valid():
 		tween.kill()
@@ -1231,8 +1265,16 @@ func _seal_particle_schedules(
 					definition, layer_index, layer,
 					"sealed emission schedule exceeds the 8192-event limit"),
 			}
+		if spawn_times[spawn_times.size() - 1] > animation_length + 0.000001:
+			return {
+				"valid": false,
+				"error": _particle_diagnostic(
+					definition, layer_index, layer,
+					"last sealed spawn exceeds the bounded main animation"),
+			}
 		if (
-			spawn_times[spawn_times.size() - 1] + layer.lifetime_seconds
+			layer.teardown_policy == &"fully_contained"
+			and spawn_times[spawn_times.size() - 1] + layer.lifetime_seconds
 			> animation_length + 0.000001
 		):
 			return {
@@ -1272,6 +1314,7 @@ func _seal_particle_schedules(
 			"origin": layer.origin,
 			"lifetime_seconds": layer.lifetime_seconds,
 			"maximum_live_particles": layer.maximum_live_particles,
+			"teardown_policy": layer.teardown_policy,
 			"projection_bounds": layer.projection_bounds,
 			"offset_motion_keys": layer.offset_motion_keys.duplicate(),
 			"scaled_motion_keys": layer.scaled_motion_keys.duplicate(),

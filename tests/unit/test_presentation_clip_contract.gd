@@ -5,6 +5,8 @@ const SOURCE_PATH := "res://tests/fixtures/scenarios/presentation_clip/contract.
 const CLIP_PATH := "res://tests/fixtures/presentation_clips/synthetic_clip.tres"
 const PARTICLE_CLIP_PATH := (
 	"res://tests/fixtures/presentation_clips/synthetic_particle_clip.tres")
+const PARTICLE_TEARDOWN_CLIP_PATH := (
+	"res://tests/fixtures/presentation_clips/synthetic_particle_teardown_clip.tres")
 
 
 func _parse(source: String) -> ScenarioData:
@@ -222,6 +224,8 @@ func test_particle_layers_are_typed_ordered_and_defensively_snapshotted() -> voi
 	assert_eq((layers[0] as Dictionary).get("emission_mode"), "burst")
 	assert_eq((layers[0] as Dictionary).get("burst_count_min"), 2)
 	assert_eq((layers[0] as Dictionary).get("texture_filter"), "linear")
+	assert_eq(
+		(layers[0] as Dictionary).get("teardown_policy"), "fully_contained")
 	assert_eq((layers[1] as Dictionary).get("id"), "rate_back")
 	assert_eq((layers[1] as Dictionary).get("emission_mode"), "rate")
 	assert_eq((layers[1] as Dictionary).get("spawn_rate_max"), 20.0)
@@ -342,6 +346,12 @@ func test_particle_emission_modes_fail_close_instead_of_averaging_authored_range
 	live_source.texture = wrapped_live
 	assert_string_contains(
 		"\n".join(live_source.validation_errors()), "Texture2DRD")
+	var unknown_teardown := _particle_layer(&"unknown_teardown", &"burst")
+	unknown_teardown.teardown_policy = &"wait_for_particles"
+	assert_string_contains(
+		"\n".join(unknown_teardown.validation_errors()),
+		"teardown_policy must be fully_contained or cut",
+	)
 
 
 func test_particle_plan_preflights_exact_resources_and_native_particle_nodes_stay_forbidden() -> void:
@@ -464,6 +474,51 @@ func test_particle_schedule_and_geometry_fail_before_budget_claim() -> void:
 	assert_string_contains(
 		String(geometry_plan.get("error", "")),
 		"projection_bounds do not enclose",
+	)
+
+
+func test_particle_teardown_policy_explicitly_seals_or_rejects_a_live_tail() -> void:
+	var cut_definition := load(
+		PARTICLE_TEARDOWN_CLIP_PATH) as PresentationClipDefinition
+	assert_not_null(cut_definition)
+	if cut_definition == null:
+		return
+	assert_eq(cut_definition.particle_layers.size(), 1)
+	assert_eq(cut_definition.particle_layers[0].emission_mode, &"rate")
+	assert_eq(cut_definition.particle_layers[0].teardown_policy, &"cut")
+	var cut_plan := _prepare(cut_definition)
+	assert_true(bool(cut_plan.get("valid", false)), str(cut_plan))
+	if bool(cut_plan.get("valid", false)):
+		var schedules: Array = cut_plan.get("particle_schedules", [])
+		assert_eq(schedules.size(), 1)
+		var schedule := schedules[0] as Dictionary
+		var spawn_times: PackedFloat64Array = schedule.get("spawn_times")
+		assert_eq(schedule.get("teardown_policy"), &"cut")
+		assert_gt(
+			spawn_times[spawn_times.size() - 1]
+				+ float(schedule.get("lifetime_seconds", 0.0)),
+			1.0,
+			"explicit cut retains the authored lifetime beyond bounded main",
+		)
+		_release_plan(cut_plan)
+	var late_spawn := cut_definition.duplicate(true) as PresentationClipDefinition
+	late_spawn.particle_layers[0].emission_end_seconds = 1.2
+	var late_spawn_rejected := _prepare(late_spawn)
+	assert_false(bool(late_spawn_rejected.get("valid", false)),
+		str(late_spawn_rejected))
+	assert_string_contains(
+		String(late_spawn_rejected.get("error", "")),
+		("particle_teardown.stla:4: last sealed spawn exceeds the bounded "
+		+ "main animation"),
+	)
+	var contained := cut_definition.duplicate(true) as PresentationClipDefinition
+	contained.particle_layers[0].teardown_policy = &"fully_contained"
+	var rejected := _prepare(contained)
+	assert_false(bool(rejected.get("valid", false)), str(rejected))
+	assert_string_contains(
+		String(rejected.get("error", "")),
+		("particle_teardown.stla:4: last sealed spawn plus lifetime exceeds "
+		+ "the bounded main animation"),
 	)
 
 

@@ -329,6 +329,7 @@ func canonical_value_snapshot() -> Dictionary:
 			"burst_count_max": layer.burst_count_max,
 			"lifetime_seconds": layer.lifetime_seconds,
 			"maximum_live_particles": layer.maximum_live_particles,
+			"teardown_policy": String(layer.teardown_policy),
 			"seed": layer.seed,
 			"spawn_rect": layer.spawn_rect,
 			"projection_bounds": layer.projection_bounds,

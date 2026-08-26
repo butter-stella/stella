@@ -187,6 +187,43 @@ func _pause_active_main_clock() -> void:
 	(scene_root.get_node("AnimationPlayer") as AnimationPlayer).pause()
 
 
+func _project_active_cut_tail(position: float = 0.999) -> Dictionary:
+	var main := _clip_presenter._active.get("animation_player") as AnimationPlayer
+	assert_not_null(main, "cut-tail fixture owns the bounded main clock")
+	if main == null:
+		return {}
+	main.pause()
+	main.seek(position, true)
+	_clip_presenter._process(0.0)
+	var projections: Array = _clip_presenter._active.get(
+		"particle_projections", [])
+	assert_eq(projections.size(), 1, "cut-tail fixture owns one typed layer")
+	if projections.size() != 1:
+		return {}
+	var projection := projections[0] as Dictionary
+	assert_eq(projection.get("teardown_policy"), &"cut")
+	var multimesh := projection.get("multimesh") as MultiMesh
+	assert_not_null(multimesh)
+	if multimesh != null:
+		assert_eq(multimesh.visible_instance_count, 2,
+			"authored tail remains visible immediately before bounded main end")
+	return projection
+
+
+func _assert_particle_projection_cut(projection: Dictionary, label: String) -> void:
+	assert_true(bool(projection.get("teardown_cut_done", false)),
+		label + " exact cut marker")
+	var multimesh := projection.get("multimesh") as MultiMesh
+	assert_not_null(multimesh, label + " bounded pool")
+	if multimesh != null:
+		assert_eq(multimesh.visible_instance_count, 0,
+			label + " visible instances")
+	var instance_value: Variant = projection.get("instance")
+	if is_instance_valid(instance_value):
+		var instance := instance_value as MultiMeshInstance2D
+		assert_false(instance.visible, label + " CanvasItem visibility")
+
+
 func _dialogue_segment(text: String) -> Dictionary:
 	return {"text": text, "voice_layers": [], "expression": ""}
 
@@ -980,6 +1017,87 @@ func test_particles_are_a_deterministic_projection_of_only_the_main_clock() -> v
 	assert_false(is_instance_valid(input_blocker))
 	assert_false(is_instance_valid(particle_root),
 		"reset retires the whole preallocated pool without a tail clock")
+
+
+func test_cut_tail_is_visible_before_main_end_then_cleared_once_without_resurrection() -> void:
+	var request := _submit(
+		"synthetic_particle_teardown_clip",
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		361,
+	)
+	await _await_settled(request)
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	var request_id := _active_request_id()
+	var generation := int(_clip_presenter._active.get("generation", 0))
+	var projection := _project_active_cut_tail()
+	var reserved_bytes := int(_clip_presenter._active.get("resource_bytes", 0))
+	assert_gt(reserved_bytes, 0)
+	assert_eq(_clip_presenter._reserved_resource_bytes, reserved_bytes)
+
+	_clip_presenter._on_animation_finished(&"clip", request_id, generation)
+	_assert_particle_projection_cut(projection, "bounded main teardown")
+	assert_false(_clip_presenter._active.is_empty(),
+		"the exit turn may retain the clip surface without retaining particles")
+	_clip_presenter._project_particle_layer(projection, 0.999)
+	_assert_particle_projection_cut(projection, "stale post-teardown projection")
+	assert_true(await wait_until(
+		func() -> bool: return _clip_presenter._active.is_empty(),
+		1.0,
+		"the authored exit transition retires the clip owner",
+	))
+	assert_eq(_clip_presenter._reserved_resource_bytes, 0,
+		"normal finish returns the exact sealed resource reservation")
+	assert_eq(_terminals.filter(
+		func(value: Dictionary) -> bool:
+			return int(value.get("request_id", 0)) == request_id
+	).size(), 1, "normal finish publishes one exact terminal")
+
+
+func test_cut_tail_skip_replacement_and_cancel_share_exact_pool_retirement() -> void:
+	var skipped := _submit(
+		"synthetic_particle_teardown_clip",
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		362,
+	)
+	await _await_settled(skipped)
+	var skipped_projection := _project_active_cut_tail()
+	SignalBus.presentation_clip_finish_requested.emit(_active_request_id())
+	_assert_particle_projection_cut(skipped_projection, "Skip")
+	_assert_clip_projection_retired("Skip cut-tail retirement")
+
+	var replaced := _submit(
+		"synthetic_particle_teardown_clip",
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		363,
+	)
+	await _await_settled(replaced)
+	var replaced_projection := _project_active_cut_tail()
+	var replacement := _submit(
+		"synthetic_clip",
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		364,
+	)
+	await _await_settled(replacement)
+	assert_eq(replacement.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	_assert_particle_projection_cut(replaced_projection, "replacement")
+	assert_eq(
+		_clip_presenter._reserved_resource_bytes,
+		int(_clip_presenter._active.get("resource_bytes", 0)),
+		"replacement releases A and retains only B's exact reservation",
+	)
+	SignalBus.presentation_clip_finish_requested.emit(_active_request_id())
+	_assert_clip_projection_retired("replacement terminal")
+
+	var cancelled := _submit(
+		"synthetic_particle_teardown_clip",
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		365,
+	)
+	await _await_settled(cancelled)
+	var cancelled_projection := _project_active_cut_tail()
+	SignalBus.reset_presentation_clip()
+	_assert_particle_projection_cut(cancelled_projection, "cancel/reset")
+	_assert_clip_projection_retired("cancel/reset cut-tail retirement")
 
 
 func test_interleaved_state_players_project_in_latest_authored_activation_order() -> void:
@@ -1885,6 +2003,42 @@ func test_projection_reset_retires_active_clip_and_all_private_claims() -> void:
 	assert_eq(_clip_presenter._reserved_resource_bytes, 0)
 
 
+func test_public_quick_load_cuts_live_tail_before_fresh_same_cursor_replay() -> void:
+	await _runtime.start_scenario(SOURCE_PATH)
+	assert_true(await wait_until(
+		func() -> bool: return _active_request_id() > 0,
+		1.0,
+		"public scenario publishes the cut-tail clip",
+	))
+	var retired_context: ScenarioContext = _runtime.engine.context
+	var retired_request_id := _active_request_id()
+	var retired_root_ref: WeakRef = weakref(_active_scene_root())
+	var retired_projection := _project_active_cut_tail()
+	_runtime.quick_save()
+
+	assert_true(await _runtime.quick_load())
+	assert_true(await wait_until(
+		func() -> bool:
+			return (
+				_runtime.engine.context != retired_context
+				and _active_request_id() > 0
+				and _active_request_id() != retired_request_id
+			),
+		1.0,
+		"quick-load replays the saved clip with a fresh exact owner",
+	))
+	_assert_particle_projection_cut(retired_projection, "quick-load")
+	assert_null(retired_root_ref.get_ref(),
+		"quick-load cannot retain the old particle scene or callback target")
+	assert_eq(
+		_clip_presenter._reserved_resource_bytes,
+		int(_clip_presenter._active.get("resource_bytes", 0)),
+		"quick-load retains only the replayed owner's exact reservation",
+	)
+	SignalBus.presentation_clip_finish_requested.emit(_active_request_id())
+	_assert_clip_projection_retired("quick-load cut-tail terminal")
+
+
 func test_public_quick_save_load_replaces_the_active_clip_generation() -> void:
 	await _runtime.start_scenario(SOURCE_PATH)
 	assert_true(await wait_until(
@@ -2011,9 +2165,15 @@ func test_public_backlog_rollback_retires_clip_before_restored_context_runs() ->
 		saved_choice_state,
 		"published choice advances the authority before rollback",
 	)
+	var tail := _submit(
+		"synthetic_particle_teardown_clip",
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		122,
+	)
+	await _await_settled(tail)
+	var retired_projection := _project_active_cut_tail()
 	var retired_context: ScenarioContext = _runtime.engine.context
 	var retired_root := _active_scene_root()
-	_pause_active_main_clock()
 
 	assert_true(_runtime.jump_from_backlog(0))
 	assert_true(await wait_until(
@@ -2026,6 +2186,7 @@ func test_public_backlog_rollback_retires_clip_before_restored_context_runs() ->
 		"backlog rollback installs the captured context after retiring the clip",
 	))
 	assert_false(is_instance_valid(retired_root))
+	_assert_particle_projection_cut(retired_projection, "backlog rollback")
 	assert_eq(
 		_runtime.presentation_clip_audio_choice_authority.capture_snapshot(),
 		saved_choice_state,
@@ -2043,10 +2204,16 @@ func test_public_scenario_restart_retires_old_clip_before_new_owner() -> void:
 		17,
 		"the old playthrough has consumed a choice before restart",
 	)
+	var tail := _submit(
+		"synthetic_particle_teardown_clip",
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		132,
+	)
+	await _await_settled(tail)
+	var retired_projection := _project_active_cut_tail()
 	var retired_context: ScenarioContext = _runtime.engine.context
 	var retired_request_id := _active_request_id()
 	var retired_root := _active_scene_root()
-	_pause_active_main_clock()
 
 	await _runtime.start_scenario(SOURCE_PATH)
 	assert_true(await wait_until(
@@ -2060,6 +2227,7 @@ func test_public_scenario_restart_retires_old_clip_before_new_owner() -> void:
 		"scenario restart installs a fresh clip owner",
 	))
 	assert_false(is_instance_valid(retired_root))
+	_assert_particle_projection_cut(retired_projection, "scenario restart")
 	assert_eq(
 		_runtime.presentation_clip_audio_choice_authority.capture_snapshot(),
 		{
@@ -2083,9 +2251,15 @@ func test_public_return_to_title_retires_clip_without_late_projection() -> void:
 	await _await_settled(request)
 	var autosaved_choice_state: Dictionary = (
 		_runtime.presentation_clip_audio_choice_authority.capture_snapshot())
+	var tail := _submit(
+		"synthetic_particle_teardown_clip",
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		142,
+	)
+	await _await_settled(tail)
+	var retired_projection := _project_active_cut_tail()
 	var retired_root := _active_scene_root()
 	var retired_generation := int(_clip_presenter._active.get("generation", 0))
-	_pause_active_main_clock()
 
 	_runtime._navigation_scene_change_override = \
 		func(_scene: PackedScene) -> int: return OK
@@ -2110,6 +2284,7 @@ func test_public_return_to_title_retires_clip_without_late_projection() -> void:
 		"return-to-title confirms the accepted replacement owner",
 	))
 	assert_false(is_instance_valid(retired_root))
+	_assert_particle_projection_cut(retired_projection, "return-to-title")
 	_assert_clip_projection_retired("return-to-title")
 	assert_ne(replacement_dialogue_id, outgoing_dialogue_id)
 	assert_not_null(_dialogue._presentation_clip_participant_capability)
@@ -2143,10 +2318,16 @@ func test_public_game_scene_replacement_retires_then_replays_clip() -> void:
 		"synthetic_choice", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 151)
 	await _await_settled(request)
 	var retired_context: ScenarioContext = _runtime.engine.context
+	var tail := _submit(
+		"synthetic_particle_teardown_clip",
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		152,
+	)
+	await _await_settled(tail)
+	var retired_projection := _project_active_cut_tail()
 	var retired_request_id := _active_request_id()
 	var retired_root := _active_scene_root()
 	var retired_generation := int(_clip_presenter._active.get("generation", 0))
-	_pause_active_main_clock()
 
 	_runtime._navigation_scene_change_override = \
 		func(_scene: PackedScene) -> int: return OK
@@ -2173,6 +2354,7 @@ func test_public_game_scene_replacement_retires_then_replays_clip() -> void:
 		"public game-scene replacement installs the clip in the accepted scene",
 	))
 	assert_false(is_instance_valid(retired_root))
+	_assert_particle_projection_cut(retired_projection, "game-scene replacement")
 	assert_ne(replacement_dialogue_id, outgoing_dialogue_id)
 	assert_not_null(_dialogue._presentation_clip_participant_capability)
 	assert_gt(int(_clip_presenter._active.get("generation", 0)), retired_generation,

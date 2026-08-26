@@ -487,6 +487,12 @@ pool 都在 publish 前验证和预算。项目 scene 中的 GPUParticles/CPUPar
 不需要、也不能用第二 scheduler 或 wall-clock 粒子 node 绕过 main timeline。粒子纹理也只
 接受static imported/Image与递归static Atlas/Canvas；render-target、camera/RD、animated、noise
 或external texture不能作为看似data-only的隐式live owner。
+每层还必须选择 closed `teardown_policy=fully_contained|cut`（默认
+`fully_contained`）。普通粒子要在 bounded main 结束前自然耗尽；只有源对象确实在 clip teardown
+截断仍存活实例时才用 `cut`。所有 spawn 仍必须位于 bounded main；cut 会保留原 emission window 与 lifetime，在 main 结束时由同一个
+Presenter 同步归零 fixed pool；之后的 Skip、cancel、replacement、load/rollback、restart 和 scene
+replacement 复用同一幂等清理，旧 projection 不能复活。它是 definition resource 字段，不会扩大
+`@presentation_clip` 的 scenario grammar。
 
 `logical_viewport_size` 与 `fit_mode=contain|cover|stretch` 明确坐标空间；resource cap 和
 viewport cap 在 `[presentation_clips] resource_budget_bytes` / `max_viewport_pixels` 配置，
