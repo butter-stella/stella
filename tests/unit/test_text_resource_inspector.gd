@@ -297,6 +297,34 @@ func test_quoted_resource_ids_share_canonical_domain_without_reparsing():
 		)
 
 
+func test_typed_ext_resource_generic_is_declared_and_fail_closed() -> void:
+	_write_text(
+		OUTER_PATH,
+		(
+			"[gd_scene load_steps=2 format=3]\n\n"
+			+ "[ext_resource type=\"Texture2D\" "
+			+ "path=\"res://examples/demo/art/backgrounds/bg_cafe.png\" "
+			+ "id=\"texture\"]\n\n"
+			+ "[node name=\"Root\" type=\"Node\"]\n"
+			+ "metadata/textures = Array[ExtResource(\"texture\")]([ExtResource(\"texture\")])\n"
+		),
+	)
+	var accepted := _inspector.inspect(OUTER_PATH, "PackedScene")
+	assert_true(accepted.ok)
+	assert_true(accepted.matches_expected_type)
+
+	_write_text(
+		OUTER_PATH,
+		(
+			"[gd_scene format=3]\n\n"
+			+ "[node name=\"Root\" type=\"Node\"]\n"
+			+ "metadata/textures = Array[ExtResource(\"undeclared\")]([])\n"
+		),
+	)
+	assert_false(_inspector.inspect(OUTER_PATH, "PackedScene").ok)
+	assert_engine_error_count(0)
+
+
 func test_quoted_empty_ext_and_sub_resource_ids_match_godot_loader():
 	_write_text(
 		OUTER_PATH,

@@ -99,9 +99,21 @@ standalone Stage 与 `FIRE_AND_FORGET` 从不 claim advance，也不消费、重
 
 Stage、addressable dialogue avatar、chapter indicator、dialogue visibility、loop-SE 和固定 `bgm:main` 共享 Director-owned generic blocking presentation waiter。reset、load、rollback、restart、return-to-title 或 context replacement 先退休旧 owner/generation，再重置或 cut canonical 投影；不存在 audio/indicator/stage/avatar 并列的私有 scheduler/flag，旧 callback 也不能回来领取新 input。单纯 AudioPresenter replacement 只退休旧音频投影并从 canonical channel+position+stem mix 唯一重投影，不把 persistent channel 当成 session state 清空。BGM play/mix/pause/resume/stop receipt 被 context/global abort 取消时会 cut 到已经原子提交的 stable target，不能留下仍在 Tween 的无 owner player 或 stem gain。
 
+`@presentation_clip` 也复用这个 authority。JOIN 命令等待 receipt；FNF 命令本身虽已 settle，
+其仍在显示的 clip projection 继续是最前 modal story-input owner。玩家 mouse/key/joy、公开 raw
+advance、手动 typed dialogue advance 与 Skip edge 都先同步 claim 当前 active clip：
+`skippable=true` 把唯一 main clock 投影到 sealed 终点，未到时的 named-state cue 按 authored
+ordinal 应用、system-audio cue取消而不是补放；`skippable=false` 消费同一 physical/semantic
+edge但保持 bounded 播放，绝不落到被遮挡的 typewriter、choice、soft-hide 或下一句。Skip edge
+被 clip claim 后会停止，必须由之后独立的用户 edge 才能重新开启；若 unskippable FNF 发布时
+Skip 已经 active，发布边界消费并停止该 intent，不自动恢复。Auto 的内部 dialogue commit 不是
+玩家/Skip edge：FNF 背景剧情可按 authored Auto policy 继续，但 Auto 不截短 clip；JOIN 本身仍
+阻塞下一 command。reset、navigation 或 scene replacement 会取消 old request/cue/audio/
+transition generation，不会把同一输入重放给下一条 Dialogue 或 clip。
+
 `dialogue:avatar`、`surface`、`quick_menu`、`chapter:indicator`、`loop_se:<channel>` 与 `bgm:main` 在同一个 Director queue 上分配 request/receipt/generation，并和 Stage mixed batch 共用 exact finish、persistent Skip force-cut、save/load projection restore 与 stale callback 拒绝规则。mixed batch 先全量 preflight/seal（包括 avatar logical resource 与 loop-SE/BGM resource、cue、stem metadata 和完整 loop-region validation），后按 authored child order apply；dispatch tail 的 Skip 也只能结束这一个 sealed owner。Profile baseline、mode binding、stable addressable avatar 与 canonical gate 是声明式合成关系；backlog overlay 与 soft UI hide 不会修改这些 canonical values 或 audio channels。
 
-既有输入优先级保持不变：soft-hidden UI 先恢复，Button/Slider 左键交给 GUI，非 PLAYING 不处理；Skip/Auto 的既有左键 policy 先于普通推进。成功进入 normal path 后，无论是 typed dialogue advance、Presentation JOIN、可跳过 timed wait 还是 `@wait click` 都会 `set_input_as_handled()`。左键、Space、Enter 与手柄 A 进入同一个 advance dispatch serial；#133 的可重绑输入系统仍是后续工作。
+active presentation clip 是 story input 的最前 modal owner；它在 choice、soft-hidden UI、Button/Slider、Skip/Auto 与 typewriter 之前 claim 上述输入，但非 PLAYING 仍不处理 story advance。没有 active clip 时维持既有优先级：choice 与 GUI control 按原 owner处理，soft-hidden UI 先恢复，Skip/Auto 左键 policy 再先于普通推进。成功进入 normal path 后，无论是 typed dialogue advance、Presentation JOIN、可跳过 timed wait 还是 `@wait click` 都会 `set_input_as_handled()`。左键、Space、Enter、Ctrl 与手柄 A 进入同一个 advance dispatch serial；#133 的可重绑输入系统仍是后续工作。
 
 ## Timed wait 与一次推进边界
 

@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Resource" path="res://tests/fixtures/presentation_clips/forbidden_nested_allowed_script.tres" id="1_resource"]
+
+[node name="ForbiddenNestedAllowedScriptClip" type="Node2D"]
+metadata/forbidden_resource = ExtResource("1_resource")

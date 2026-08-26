@@ -6,6 +6,7 @@ const INTERNAL_DIALOGUE_MODE_EVENT := "__dialogue_mode_event"
 const INTERNAL_IF_NODE := "__if_node"
 const _PARALLEL_BLOCKING_COMMANDS := [
 	"dialogue", "choice", "wait", "chapter_indicator", "presentation_batch",
+	"presentation_clip",
 ]
 const _CHAPTER_INDICATOR_ACTIONS := ["show", "hide"]
 const _CHAPTER_INDICATOR_TRANSITIONS := ["cut", "none", "fade"]
@@ -1522,6 +1523,8 @@ static func _parse_at_command(
 	var parts = _split_args(args)
 
 	match name:
+		"presentation_clip":
+			return _parse_presentation_clip_command(parts, token.line, data)
 		"chapter_indicator":
 			var chapter_command := _parse_chapter_indicator_command(
 				parts, token.line, data)
@@ -3009,6 +3012,61 @@ static func _parse_presentation_batch_header(
 	if not bool(result.get("valid", false)):
 		return result
 	return result
+
+
+static func _parse_presentation_clip_command(
+	parts: Array,
+	line: int,
+	data: ScenarioData,
+) -> CommandData:
+	var location := _source_location(data, line)
+	if parts.is_empty() or parts.size() > 2:
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @presentation_clip requires one logical definition id and optional policy=join|fire_and_forget at %s"
+			% location,
+			line,
+		)
+		return null
+	var asset := String(parts[0])
+	if not PresentationClipDefinition.is_logical_id(asset):
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @presentation_clip definition id is not canonical at %s"
+			% location,
+			line,
+		)
+		return null
+	var policy := "join"
+	if parts.size() == 2:
+		var option := String(parts[1])
+		if not option.begins_with("policy="):
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: @presentation_clip only accepts policy=join|fire_and_forget at %s"
+				% location,
+				line,
+			)
+			return null
+		policy = option.trim_prefix("policy=")
+		if policy not in ["join", "fire_and_forget"]:
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: @presentation_clip policy must be join or fire_and_forget at %s"
+				% location,
+				line,
+			)
+			return null
+	var command := _make_cmd("presentation_clip", {
+		"asset": asset,
+		"policy": policy,
+	})
+	command.declared_line = line
+	return command
 
 
 static func _parse_dialogue_visibility_command(

@@ -35,6 +35,11 @@ var _loop_se_validation_cache: Dictionary = {}
 var _loop_se_generation: int = 1
 var _next_loop_se_token: int = 1
 var _shutdown_quiesced := false
+var _presentation_clip_participant_capability: RefCounted
+var _presentation_clip_prepared: Dictionary = {}
+var _presentation_clip_claimed: Dictionary = {}
+var _presentation_clip_audio: Dictionary = {}
+var _presentation_clip_transaction: Dictionary = {}
 
 
 func _ready():
@@ -55,6 +60,15 @@ func _ready():
 	if _bgm_capability == null or _loop_se_capability == null:
 		set_process(false)
 		return
+	_presentation_clip_participant_capability = (
+		StellaRuntime._register_presentation_clip_audio_participant(self))
+	if _presentation_clip_participant_capability == null:
+		StellaRuntime._unregister_audio_presenter(
+			self, _loop_se_capability, _bgm_capability)
+		_bgm_capability = null
+		_loop_se_capability = null
+		set_process(false)
+		return
 
 	# Create SE player pool
 	for i in range(_max_se_channels):
@@ -70,6 +84,12 @@ func _ready():
 			self, _loop_se_capability, _bgm_capability)
 		_bgm_capability = null
 		_loop_se_capability = null
+		StellaRuntime._unregister_presentation_clip_composition_participant(
+			self,
+			_presentation_clip_participant_capability,
+			PresentationClipOperationRequest.ROLE_AUDIO,
+		)
+		_presentation_clip_participant_capability = null
 		set_process(false)
 		return
 	_voice_player = AudioStreamPlayer.new()
@@ -120,6 +140,24 @@ func _ready():
 		_on_bgm_state_capture_requested)
 	SignalBus.runtime_audio_shutdown_requested.connect(
 		_on_runtime_audio_shutdown_requested)
+	SignalBus.presentation_clip_validate_requested.connect(
+		_on_presentation_clip_validate_requested)
+	SignalBus.presentation_clip_accept_requested.connect(
+		_on_presentation_clip_accept_requested)
+	SignalBus.presentation_clip_apply_readiness_requested.connect(
+		_on_presentation_clip_apply_readiness_requested)
+	SignalBus.presentation_clip_apply_requested.connect(
+		_on_presentation_clip_apply_requested)
+	SignalBus.presentation_clip_publish_readiness_requested.connect(
+		_on_presentation_clip_publish_readiness_requested)
+	SignalBus.presentation_clip_audio_cue_requested.connect(
+		_on_presentation_clip_audio_cue_requested)
+	SignalBus.presentation_clip_retire_requested.connect(
+		_on_presentation_clip_retire_requested)
+	SignalBus.presentation_clip_projection_reset_requested.connect(
+		_on_presentation_clip_projection_reset_requested)
+	SignalBus.presentation_clip_request_settled.connect(
+		_on_presentation_clip_request_settled)
 
 	_apply_volumes()
 	SignalBus.announce_loop_se_presenter_registered(
@@ -136,6 +174,9 @@ func _on_runtime_audio_shutdown_requested(request_serial: int) -> void:
 		for player_value: Variant in _se_players:
 			_retire_fixed_audio_player(player_value as AudioStreamPlayer)
 		_retire_fixed_audio_player(_system_se_player)
+		_retire_presentation_clip_audio()
+		_release_presentation_clip_claimed()
+		_release_presentation_clip_prepared()
 	# First quiesce always invalidates both typed epochs. A validation/pre-apply
 	# request can own a Director/Bus slot before either local player map exists;
 	# map emptiness is therefore never sufficient evidence of lifecycle idleness.
@@ -163,6 +204,9 @@ func _runtime_audio_shutdown_presenter_is_idle() -> bool:
 		or not _loop_se_channels.is_empty()
 		or not _bgm_validation_cache.is_empty()
 		or not _loop_se_validation_cache.is_empty()
+		or not _presentation_clip_prepared.is_empty()
+		or not _presentation_clip_claimed.is_empty()
+		or not _presentation_clip_audio.is_empty()
 		or _voice_playback_token >= 0
 		or not _voice_layers.is_empty()
 	):
@@ -213,6 +257,10 @@ func _retire_fixed_audio_player(player: AudioStreamPlayer) -> void:
 
 func _exit_tree() -> void:
 	_voice_lifecycle_revision += 1
+	_abort_presentation_clip_audio_transaction()
+	_retire_presentation_clip_audio()
+	_release_presentation_clip_claimed()
+	_release_presentation_clip_prepared()
 	_retire_voice_group_projection()
 	_release_voice_dsp_bus()
 	if _bgm_capability != null and _loop_se_capability != null:
@@ -230,6 +278,13 @@ func _exit_tree() -> void:
 			self, _loop_se_capability, _bgm_capability)
 		_bgm_capability = null
 		_loop_se_capability = null
+	if _presentation_clip_participant_capability != null:
+		StellaRuntime._unregister_presentation_clip_composition_participant(
+			self,
+			_presentation_clip_participant_capability,
+			PresentationClipOperationRequest.ROLE_AUDIO,
+		)
+		_presentation_clip_participant_capability = null
 
 
 func _process(_delta: float) -> void:
@@ -303,6 +358,9 @@ func _apply_volumes(changed_key: String = ""):
 	if update_all or changed_key in ["master_volume", "system_se_volume"]:
 		var sys_se_vol := _get_volume_setting("system_se_volume", 1.0)
 		_system_se_player.volume_db = _to_db(master * sys_se_vol)
+	_apply_presentation_clip_audio_volumes()
+	if not _presentation_clip_claimed.is_empty():
+		_apply_presentation_clip_record_volumes(_presentation_clip_claimed)
 
 
 func _get_volume_setting(key: String, fallback: float) -> float:
@@ -2776,6 +2834,8 @@ func _on_voice_layer_tail_timeout(
 
 
 func _on_advance_requested():
+	if SignalBus.current_advance_dispatch_was_claimed():
+		return
 	if _voice_playback_token >= 0:
 		var continue_on_advance = StellaRuntime.get_setting("voice_continue_on_advance")
 		# The advance pre-dispatch hook can finalize a typing line, whose public
@@ -2990,6 +3050,481 @@ func _voice_finished_event_is_current(revision: int) -> bool:
 		and not is_queued_for_deletion()
 		and revision == _voice_lifecycle_revision
 	)
+
+
+# ─── Typed presentation-clip system audio ───
+
+func _on_presentation_clip_validate_requested(
+	request: PresentationClipOperationRequest,
+) -> void:
+	if (
+		_presentation_clip_participant_capability == null
+		or request == null
+		or not request.is_target(
+			self, PresentationClipOperationRequest.ROLE_AUDIO)
+	):
+		return
+	if _audio_admission_is_closed():
+		SignalBus.reject_presentation_clip_request(
+			request,
+			self,
+			_presentation_clip_participant_capability,
+			PresentationClipOperationRequest.ROLE_AUDIO,
+			"audio presenter is quiescing",
+		)
+		return
+	var definition := _presentation_clip_definition_for(request)
+	if definition == null:
+		SignalBus.reject_presentation_clip_request(
+			request,
+			self,
+			_presentation_clip_participant_capability,
+			PresentationClipOperationRequest.ROLE_AUDIO,
+			"clip definition is unavailable",
+		)
+		return
+	var players: Array[AudioStreamPlayer] = []
+	var players_by_cue: Dictionary = {}
+	for cue_index in range(definition.cues.size()):
+		if not definition.cues[cue_index] is PresentationClipAudioCue:
+			continue
+		var cue := definition.cues[cue_index] as PresentationClipAudioCue
+		var stream := _load_audio(
+			StellaRuntime.se_path, cue.asset, ["ogg", "wav", "mp3"])
+		if stream == null:
+			_release_detached_clip_players(players)
+			var definition_path := definition.resource_path
+			if definition_path.is_empty():
+				definition_path = "<embedded PresentationClipDefinition>"
+			var provenance := ""
+			if (
+				not cue.authored_source_path.is_empty()
+				and cue.authored_source_line > 0
+			):
+				provenance = " authored at %s:%d" % [
+					cue.authored_source_path, cue.authored_source_line,
+				]
+			SignalBus.reject_presentation_clip_request(
+				request,
+				self,
+				_presentation_clip_participant_capability,
+				PresentationClipOperationRequest.ROLE_AUDIO,
+				"%s cues[%d]%s asset '%s' could not be resolved"
+					% [definition_path, cue_index, provenance, cue.asset],
+			)
+			return
+		var player := AudioStreamPlayer.new()
+		player.name = "PresentationClipAudio%d" % cue_index
+		player.bus = &"Master"
+		player.stream = stream
+		players.append(player)
+		players_by_cue[cue_index] = player
+	_presentation_clip_prepared[request.get_instance_id()] = {
+		"definition": definition,
+		"players": players,
+		"players_by_cue": players_by_cue,
+		"definition_fingerprint": definition.semantic_fingerprint(),
+	}
+	SignalBus.validate_presentation_clip_request(
+		request,
+		self,
+		_presentation_clip_participant_capability,
+		PresentationClipOperationRequest.ROLE_AUDIO,
+	)
+
+
+func _on_presentation_clip_accept_requested(
+	request: PresentationClipOperationRequest,
+) -> void:
+	if (
+		_presentation_clip_participant_capability == null
+		or request == null
+		or not request.is_target(
+			self, PresentationClipOperationRequest.ROLE_AUDIO)
+		or not _presentation_clip_prepared.has(request.get_instance_id())
+	):
+		return
+	SignalBus.accept_presentation_clip_request(
+		request,
+		self,
+		_presentation_clip_participant_capability,
+		PresentationClipOperationRequest.ROLE_AUDIO,
+	)
+
+
+func _on_presentation_clip_apply_readiness_requested(
+	request: PresentationClipOperationRequest,
+) -> void:
+	if (
+		_presentation_clip_participant_capability == null
+		or request == null
+		or not request.is_target(
+			self, PresentationClipOperationRequest.ROLE_AUDIO)
+	):
+		return
+	var plan: Dictionary = _presentation_clip_prepared.get(
+		request.get_instance_id(), {})
+	if plan.is_empty():
+		return
+	var definition: PresentationClipDefinition = plan.get("definition")
+	if (
+		definition == null
+		or String(plan.get("definition_fingerprint", ""))
+			!= definition.semantic_fingerprint()
+	):
+		SignalBus.fail_presentation_clip_apply(
+			request, self, _presentation_clip_participant_capability,
+			PresentationClipOperationRequest.ROLE_AUDIO,
+			"audio definition fingerprint changed before claim",
+		)
+		return
+	for player_value: Variant in plan.get("players", []):
+		var player := player_value as AudioStreamPlayer
+		if player == null or not is_instance_valid(player) or player.is_inside_tree():
+			return
+	SignalBus.mark_presentation_clip_apply_ready(
+		request,
+		self,
+		_presentation_clip_participant_capability,
+		PresentationClipOperationRequest.ROLE_AUDIO,
+	)
+
+
+func _on_presentation_clip_apply_requested(
+	request: PresentationClipOperationRequest,
+) -> void:
+	if (
+		_presentation_clip_participant_capability == null
+		or request == null
+		or not request.is_target(
+			self, PresentationClipOperationRequest.ROLE_AUDIO)
+	):
+		return
+	var plan: Dictionary = _presentation_clip_prepared.get(
+		request.get_instance_id(), {})
+	_presentation_clip_prepared.erase(request.get_instance_id())
+	if plan.is_empty():
+		return
+	var definition: PresentationClipDefinition = plan.get("definition")
+	if (
+		definition == null
+		or String(plan.get("definition_fingerprint", ""))
+			!= definition.semantic_fingerprint()
+	):
+		_release_detached_clip_players(plan.get("players", []))
+		SignalBus.fail_presentation_clip_apply(
+			request, self, _presentation_clip_participant_capability,
+			PresentationClipOperationRequest.ROLE_AUDIO,
+			"audio definition fingerprint changed during claim",
+		)
+		return
+	var players: Array = plan.get("players", [])
+	for player_value: Variant in players:
+		add_child(player_value as AudioStreamPlayer)
+	_presentation_clip_claimed = {
+		"request_id": request.get_request_id(),
+		"generation": 0,
+		"definition": plan.get("definition"),
+		"players": players,
+		"players_by_cue": (plan.get("players_by_cue", {}) as Dictionary).duplicate(),
+		"definition_fingerprint": plan.get("definition_fingerprint", ""),
+	}
+	_apply_presentation_clip_record_volumes(_presentation_clip_claimed)
+	SignalBus.acknowledge_presentation_clip_apply(
+		request,
+		self,
+		_presentation_clip_participant_capability,
+		PresentationClipOperationRequest.ROLE_AUDIO,
+	)
+
+
+func _on_presentation_clip_publish_readiness_requested(
+	request: PresentationClipOperationRequest,
+) -> void:
+	if (
+		request == null
+		or _presentation_clip_claimed.is_empty()
+		or int(_presentation_clip_claimed.get("request_id", 0))
+			!= request.get_request_id()
+		or String(_presentation_clip_claimed.get("definition_fingerprint", ""))
+			!= _presentation_clip_definition_fingerprint(request)
+	):
+		if request != null and not _presentation_clip_claimed.is_empty():
+			SignalBus.fail_presentation_clip_apply(
+				request, self, _presentation_clip_participant_capability,
+				PresentationClipOperationRequest.ROLE_AUDIO,
+				"audio definition fingerprint changed before final commit",
+			)
+		return
+	SignalBus.mark_presentation_clip_publish_ready(
+		request,
+		self,
+		_presentation_clip_participant_capability,
+		PresentationClipOperationRequest.ROLE_AUDIO,
+	)
+
+
+func _run_presentation_clip_transaction_phase(
+	request: PresentationClipOperationRequest,
+	capability: RefCounted,
+	phase: StringName,
+) -> bool:
+	var request_key := request.get_instance_id() if request != null else 0
+	if (
+		phase == &"abort"
+		and request != null
+		and capability == _presentation_clip_participant_capability
+		and _presentation_clip_audio_transaction_is_current(request_key)
+	):
+		return _abort_presentation_clip_audio_transaction(request_key)
+	if (
+		request == null
+		or capability == null
+		or capability != _presentation_clip_participant_capability
+		or not request.is_target(self, PresentationClipOperationRequest.ROLE_AUDIO)
+	):
+		return false
+	match phase:
+		&"hold":
+			if (
+				not _presentation_clip_transaction.is_empty()
+				or _presentation_clip_claimed.is_empty()
+				or int(_presentation_clip_claimed.get("request_id", 0))
+					!= request.get_request_id()
+				or String(_presentation_clip_claimed.get(
+					"definition_fingerprint", ""))
+					!= _presentation_clip_definition_fingerprint(request)
+			):
+				SignalBus.fail_presentation_clip_apply(
+					request, self, _presentation_clip_participant_capability,
+					PresentationClipOperationRequest.ROLE_AUDIO,
+					"audio sealed definition changed before transaction hold",
+				)
+				return false
+			_presentation_clip_transaction = {
+				"request_key": request_key,
+				"previous": _presentation_clip_audio,
+				"committed": false,
+			}
+			return true
+		&"commit":
+			if not _presentation_clip_audio_transaction_is_current(request_key):
+				return false
+			_presentation_clip_audio = _presentation_clip_claimed
+			_presentation_clip_claimed = {}
+			_presentation_clip_transaction["committed"] = true
+			return true
+		&"finalize":
+			return (
+				_presentation_clip_audio_transaction_is_current(request_key)
+				and bool(_presentation_clip_transaction.get("committed", false))
+			)
+		&"publish":
+			if (
+				not _presentation_clip_audio_transaction_is_current(request_key)
+				or not bool(_presentation_clip_transaction.get("committed", false))
+			):
+				return false
+			return true
+		&"complete":
+			if (
+				not _presentation_clip_audio_transaction_is_current(request_key)
+				or not bool(_presentation_clip_transaction.get("committed", false))
+			):
+				return false
+			var previous: Dictionary = _presentation_clip_transaction.get(
+				"previous", {})
+			_presentation_clip_transaction.clear()
+			_release_presentation_clip_audio_record(previous)
+			return true
+		&"abort":
+			return _abort_presentation_clip_audio_transaction(request_key)
+	return false
+
+
+func _presentation_clip_definition_for(
+	request: PresentationClipOperationRequest,
+) -> PresentationClipDefinition:
+	return SignalBus.presentation_clip_definition_for(
+		request,
+		self,
+		_presentation_clip_participant_capability,
+		PresentationClipOperationRequest.ROLE_AUDIO,
+	)
+
+
+func _presentation_clip_definition_fingerprint(
+	request: PresentationClipOperationRequest,
+) -> String:
+	var definition := _presentation_clip_definition_for(request)
+	return definition.semantic_fingerprint() if definition != null else ""
+
+
+func _presentation_clip_audio_transaction_is_current(request_key: int) -> bool:
+	return (
+		request_key != 0
+		and int(_presentation_clip_transaction.get("request_key", 0)) == request_key
+	)
+
+
+func _abort_presentation_clip_audio_transaction(request_key: int = 0) -> bool:
+	if _presentation_clip_transaction.is_empty():
+		return true
+	if (
+		request_key != 0
+		and not _presentation_clip_audio_transaction_is_current(request_key)
+	):
+		return false
+	var transaction := _presentation_clip_transaction
+	_presentation_clip_transaction = {}
+	if bool(transaction.get("committed", false)):
+		var rejected := _presentation_clip_audio
+		_presentation_clip_audio = transaction.get("previous", {})
+		_release_presentation_clip_audio_record(rejected)
+	else:
+		_release_presentation_clip_claimed()
+	return true
+
+
+func _on_presentation_clip_audio_cue_requested(
+	request_id: int,
+	cue_index: int,
+	generation: int,
+) -> void:
+	if (
+		_presentation_clip_audio.is_empty()
+		or int(_presentation_clip_audio.get("request_id", 0)) != request_id
+		or generation <= 0
+	):
+		return
+	var active_generation := int(
+		_presentation_clip_audio.get("generation", 0))
+	if active_generation == 0:
+		_presentation_clip_audio["generation"] = generation
+	elif active_generation != generation:
+		return
+	var players_by_cue: Dictionary = _presentation_clip_audio.get(
+		"players_by_cue", {})
+	if not players_by_cue.has(cue_index):
+		return
+	var player := players_by_cue[cue_index] as AudioStreamPlayer
+	if player != null and is_instance_valid(player):
+		player.play()
+
+
+func _on_presentation_clip_retire_requested(
+	request_id: int,
+	generation: int,
+	_outcome: StringName,
+) -> void:
+	if (
+		_presentation_clip_audio.is_empty()
+		or int(_presentation_clip_audio.get("request_id", 0)) != request_id
+	):
+		return
+	var active_generation := int(
+		_presentation_clip_audio.get("generation", 0))
+	if active_generation not in [0, generation]:
+		return
+	_retire_presentation_clip_audio()
+
+
+func _on_presentation_clip_projection_reset_requested(_epoch: int) -> void:
+	_abort_presentation_clip_audio_transaction()
+	_retire_presentation_clip_audio()
+	_release_presentation_clip_claimed()
+	_release_presentation_clip_prepared()
+
+
+func _on_presentation_clip_request_settled(
+	request: PresentationClipOperationRequest,
+) -> void:
+	if request == null:
+		return
+	var plan: Dictionary = _presentation_clip_prepared.get(
+		request.get_instance_id(), {})
+	_presentation_clip_prepared.erase(request.get_instance_id())
+	if not plan.is_empty():
+		_release_detached_clip_players(plan.get("players", []))
+	if (
+		not _presentation_clip_claimed.is_empty()
+		and int(_presentation_clip_claimed.get("request_id", 0))
+			== request.get_request_id()
+	):
+		_release_presentation_clip_claimed()
+
+
+func _release_presentation_clip_prepared() -> void:
+	var plans := _presentation_clip_prepared.values()
+	_presentation_clip_prepared.clear()
+	for plan_value: Variant in plans:
+		_release_detached_clip_players(
+			(plan_value as Dictionary).get("players", []))
+
+
+func _release_detached_clip_players(players: Array) -> void:
+	for player_value: Variant in players:
+		var player := player_value as AudioStreamPlayer
+		if player == null or not is_instance_valid(player):
+			continue
+		player.stop()
+		player.stream = null
+		if player.is_inside_tree():
+			player.queue_free()
+		else:
+			player.free()
+
+
+func _retire_presentation_clip_audio() -> void:
+	if _presentation_clip_audio.is_empty():
+		return
+	var active := _presentation_clip_audio
+	_presentation_clip_audio = {}
+	_release_presentation_clip_audio_record(active)
+
+
+func _release_presentation_clip_audio_record(record: Dictionary) -> void:
+	if record.is_empty():
+		return
+	_release_detached_clip_players(record.get("players", []))
+
+
+func _release_presentation_clip_claimed() -> void:
+	if _presentation_clip_claimed.is_empty():
+		return
+	var claimed := _presentation_clip_claimed
+	_presentation_clip_claimed = {}
+	_release_detached_clip_players(claimed.get("players", []))
+
+
+func _apply_presentation_clip_audio_volumes() -> void:
+	if _presentation_clip_audio.is_empty():
+		return
+	_apply_presentation_clip_record_volumes(_presentation_clip_audio)
+
+
+func _apply_presentation_clip_record_volumes(record: Dictionary) -> void:
+	var definition: PresentationClipDefinition = (
+		record.get("definition"))
+	var players_by_cue: Dictionary = record.get("players_by_cue", {})
+	if definition == null:
+		return
+	var settings_db := _to_db(
+		_get_volume_setting("master_volume", 1.0)
+		* _get_volume_setting("system_se_volume", 1.0))
+	for cue_index_value: Variant in players_by_cue:
+		var cue_index := int(cue_index_value)
+		if (
+			cue_index < 0
+			or cue_index >= definition.cues.size()
+			or not definition.cues[cue_index] is PresentationClipAudioCue
+		):
+			continue
+		var player := players_by_cue[cue_index] as AudioStreamPlayer
+		if player != null and is_instance_valid(player):
+			player.volume_db = (
+				(definition.cues[cue_index] as PresentationClipAudioCue).volume_db
+				+ settings_db)
 
 
 # ─── System SE ───

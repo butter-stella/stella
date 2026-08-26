@@ -13,6 +13,15 @@ func _input(event: InputEvent) -> void:
 	var dialogue = _get_dialogue()
 
 	if event.button_index == MOUSE_BUTTON_LEFT:
+		# The published full-screen clip is the foremost story-input owner. This
+		# precedes choice, soft-hide, hovered GUI, Skip/Auto, and dialogue so one
+		# physical click can never operate content hidden behind the clip.
+		if (
+			StellaRuntime.game_state.is_playing()
+			and _consume_presentation_clip_advance()
+		):
+			get_viewport().set_input_as_handled()
+			return
 		# An active choice owns normal story input before hidden-dialogue,
 		# typewriter, or wait-click fallbacks. Interactive controls still receive
 		# the click through GUI propagation so an option or toolbar action remains
@@ -92,6 +101,15 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not event is InputEventKey:
 		return
 	var dialogue = _get_dialogue()
+	if (
+		event.pressed
+		and not event.echo
+		and event.keycode in [KEY_SPACE, KEY_ENTER, KEY_CTRL]
+		and StellaRuntime.game_state.is_playing()
+		and _consume_presentation_clip_advance()
+	):
+		get_viewport().set_input_as_handled()
+		return
 	# ui_accept on a focused option Button is consumed by GUI before reaching
 	# _unhandled_input. Every remaining normal advance key is modal-owned and
 	# cannot restore/complete/advance content behind the choice.
@@ -163,6 +181,12 @@ func _handle_joypad_advance(event: InputEventJoypadButton) -> void:
 	if not event.pressed or event.button_index != JOY_BUTTON_A:
 		return
 	var dialogue = _get_dialogue()
+	if (
+		StellaRuntime.game_state.is_playing()
+		and _consume_presentation_clip_advance()
+	):
+		get_viewport().set_input_as_handled()
+		return
 	if StellaRuntime.is_choice_active():
 		if StellaRuntime.game_state.is_playing():
 			if _activate_focused_choice_option():
@@ -203,9 +227,23 @@ func _activate_focused_choice_option() -> bool:
 ## stop propagation before synchronous completion can expose a new UI/owner to
 ## the tail of the same physical event.
 func _handle_normal_advance(dialogue) -> void:
+	if _consume_presentation_clip_advance():
+		get_viewport().set_input_as_handled()
+		return
 	if not _consume_typewriter_advance(dialogue):
 		_request_dialogue_advance(dialogue)
 	get_viewport().set_input_as_handled()
+
+
+## A published clip is a modal presentation boundary even when its command was
+## fire-and-forget. The one Runtime-owned Director synchronously claims every
+## active projection: skippable clips finish, while unskippable clips consume
+## the edge without mutating their bounded clock or the dialogue behind them.
+func _consume_presentation_clip_advance() -> bool:
+	return (
+		StellaRuntime.presentation_director != null
+		and StellaRuntime.presentation_director.consume_active_presentation_clip_input()
+	)
 
 
 ## Give the active typewriter first ownership of each normal advance event.

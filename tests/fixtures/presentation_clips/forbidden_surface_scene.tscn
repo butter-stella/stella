@@ -1,0 +1,21 @@
+[gd_scene load_steps=3 format=3]
+
+[sub_resource type="Animation" id="Animation_clip"]
+resource_name = "clip"
+length = 0.2
+
+[sub_resource type="AnimationLibrary" id="AnimationLibrary_main"]
+_data = {
+&"clip": SubResource("Animation_clip")
+}
+
+[node name="ForbiddenSurfaceClip" type="Node2D"]
+
+[node name="AnimationPlayer" type="AnimationPlayer" parent="."]
+libraries = {
+&"": SubResource("AnimationLibrary_main")
+}
+
+[node name="ForbiddenAllocation" type="SubViewport" parent="."]
+size = Vector2i(16384, 16384)
+render_target_update_mode = 4
