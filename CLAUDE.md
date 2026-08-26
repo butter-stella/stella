@@ -35,8 +35,8 @@ Never write implementation before tests. Never skip the red phase.
 ### 3. Run Tests Locally
 
 ```bash
-godot --headless --import 2>&1 | tail -1
-godot -s addons/gut/gut_cmdln.gd --headless 2>&1
+godot --audio-driver Dummy --headless --import 2>&1 | tail -1
+godot --audio-driver Dummy -s addons/gut/gut_cmdln.gd --headless 2>&1
 ```
 
 All tests must pass (exit code 0) before proceeding.
@@ -79,8 +79,8 @@ Launch CR sub-agent(s) in background to review the PR. Choose the right shape ba
 - For re-review rounds, include a "v1 concerns status check" section asking the agent to mark each prior concern as RESOLVED / PARTIAL / STILL OPEN. This forces explicit verification rather than vague reassurance.
 - Tell the agent to run tests itself (not just trust the PR description). The exact commands:
   ```
-  godot --headless --import 2>&1 | tail -3
-  godot -s addons/gut/gut_cmdln.gd --headless -gdir=res://tests/unit,res://tests/integration -gexit 2>&1 | tail -10
+  godot --audio-driver Dummy --headless --import 2>&1 | tail -3
+  godot --audio-driver Dummy -s addons/gut/gut_cmdln.gd --headless -gdir=res://tests/unit,res://tests/integration -gexit 2>&1 | tail -10
   ```
 - Word limit reports: "under 600 words" for code-review, "600-1200 words" for architect. Without this they tend to over-report.
 - For merger agents: include the user's exact authorization quote in the prompt so the agent can satisfy CLAUDE.md's "user is the reviewer" gate for unplanned tasks.

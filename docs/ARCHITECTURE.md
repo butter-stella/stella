@@ -856,7 +856,7 @@ stella/
 ### 运行测试
 
 ```bash
-godot --headless --import
+godot --audio-driver Dummy --headless --import
 STELLA_DISABLE_LOCAL_CONFIG=1 godot --audio-driver Dummy \
   -s addons/gut/gut_cmdln.gd --headless 2>&1
 ```
