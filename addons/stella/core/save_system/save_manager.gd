@@ -468,38 +468,35 @@ func _presentation_snapshot_is_valid(
 			snapshot["loop_se_channels"], false)
 	):
 		return false
-	var has_dialogue_visibility := snapshot.has("dialogue_visibility")
-	var has_dialogue_content := snapshot.has("dialogue_content")
-	var has_dialogue_avatar := snapshot.has("dialogue_avatar")
 	if (
-		has_dialogue_visibility != has_dialogue_content
-		or has_dialogue_avatar != has_dialogue_visibility
+		not snapshot.has("dialogue_visibility")
+		or not snapshot.has("dialogue_content")
+		or not snapshot.has("dialogue_avatar")
 	):
 		return false
-	if has_dialogue_visibility:
-		if not DialogueVisibilityState.validate_snapshot_state(
-			snapshot["dialogue_visibility"],
-			false,
-		):
-			return false
-		if not PresentationState._validate_dialogue_content(
-			snapshot["dialogue_content"],
-			false,
-		):
-			return false
-		if (
-			scenario_data != null
-			and not PresentationState.dialogue_content_profiles_exist(
-				snapshot["dialogue_content"] as Dictionary,
-				scenario_data,
-			)
-		):
-			return false
-		if not DialogueAvatarState.validate_snapshot_state(
-			snapshot["dialogue_avatar"],
-			false,
-		):
-			return false
+	if not DialogueVisibilityState.validate_snapshot_state(
+		snapshot["dialogue_visibility"],
+		false,
+	):
+		return false
+	if not PresentationState._validate_dialogue_content(
+		snapshot["dialogue_content"],
+		false,
+	):
+		return false
+	if (
+		scenario_data != null
+		and not PresentationState.dialogue_content_profiles_exist(
+			snapshot["dialogue_content"] as Dictionary,
+			scenario_data,
+		)
+	):
+		return false
+	if not DialogueAvatarState.validate_snapshot_state(
+		snapshot["dialogue_avatar"],
+		false,
+	):
+		return false
 	return true
 
 

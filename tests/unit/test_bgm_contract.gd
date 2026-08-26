@@ -220,27 +220,34 @@ func test_authored_transition_duration_matrix_is_preserved_exactly() -> void:
 
 func test_save_schema_accepts_only_exact_stable_dictionary_and_legacy_string_fails() -> void:
 	var manager := SaveManager.new()
+	var presentation_base := {
+		"bg": "",
+		"dialogue_visibility": DialogueVisibilityState.default_state(),
+		"dialogue_content": PresentationState._inactive_dialogue_content(),
+		"dialogue_avatar": DialogueAvatarState.default_state(),
+	}
 	var active := {
 		"asset": "theme", "cue": "intro", "loop": false,
 		"position": 1.25, "status": "paused", "stem_mix": {},
 		"volume": 0.6,
 	}
-	assert_true(manager._presentation_snapshot_is_valid({"bg": "", "bgm": {}}))
-	assert_true(manager._presentation_snapshot_is_valid({"bg": "", "bgm": active}))
+	assert_true(manager._presentation_snapshot_is_valid(
+		presentation_base.merged({"bgm": {}}, true)))
+	assert_true(manager._presentation_snapshot_is_valid(
+		presentation_base.merged({"bgm": active}, true)))
 	var previous_six_field := active.duplicate(true)
 	previous_six_field.erase("stem_mix")
-	assert_false(manager._presentation_snapshot_is_valid({
-		"bg": "", "bgm": previous_six_field,
-	}), "pre-stem saves require an explicit host migration; runtime has no legacy branch")
-	assert_false(manager._presentation_snapshot_is_valid({
-		"bg": "", "bgm": "theme",
-	}), "unversioned legacy String saves fail closed; there is no runtime compatibility API")
+	assert_false(manager._presentation_snapshot_is_valid(presentation_base.merged({
+		"bgm": previous_six_field,
+	}, true)), "pre-stem saves require an explicit host migration; runtime has no legacy branch")
+	assert_false(manager._presentation_snapshot_is_valid(presentation_base.merged({
+		"bgm": "theme",
+	}, true)), "unversioned legacy String saves fail closed; there is no runtime compatibility API")
 	for invalid: Variant in [
 		active.merged({"status": "fading"}, true),
 		active.merged({"position": -1.0}, true),
 		active.merged({"volume": INF}, true),
 		active.merged({"extra": true}, true),
 	]:
-		assert_false(manager._presentation_snapshot_is_valid({
-			"bg": "", "bgm": invalid,
-		}))
+		assert_false(manager._presentation_snapshot_is_valid(
+			presentation_base.merged({"bgm": invalid}, true)))

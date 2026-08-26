@@ -426,6 +426,9 @@ canonical payload。精确语法和 fail-close 规则见 [DSL 文档](DSL.md#35a
 importer 在有确定证据时翻译，否则保留原 source line fail-close。内部 Sprite、outgoing
 crossfade 与 receipt 都由内建 DialoguePresenter 管理，项目不应操作 UI node 或创建第二条
 scheduler。完整语法见 [DSL 文档](DSL.md#35b-addressable-dialogue-avatar)。
+`position` / `origin` 是 avatar-container 本地画布中的有符号像素，`origin` 从源纹理左上角
+计量并映射为负 offset；`scale` 无单位，`rotation` 使用弧度。Importer 必须先解码源格式的
+无符号、定点或角度编码，不能把 raw 数字直接塞入 Stella DSL。
 可运行且由 CI 实际解析的公开 synthetic 示例位于
 [`examples/demo/scenarios/dialogue_avatar.stla`](../examples/demo/scenarios/dialogue_avatar.stla)。
 

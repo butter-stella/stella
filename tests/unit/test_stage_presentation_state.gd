@@ -92,7 +92,13 @@ func test_stage_operations_are_tracked_and_json_roundtrip_exactly() -> void:
 func test_snapshot_without_stage_layers_restores_empty_stage() -> void:
 	var state := PresentationState.new()
 	state.stage_layers = {"old": StageLayerState.default_state()}
-	state.restore_snapshot({"bg": "", "bgm": {}})
+	state.restore_snapshot({
+		"bg": "",
+		"bgm": {},
+		"dialogue_visibility": DialogueVisibilityState.default_state(),
+		"dialogue_content": PresentationState._inactive_dialogue_content(),
+		"dialogue_avatar": DialogueAvatarState.default_state(),
+	})
 	assert_true(state.stage_layers.is_empty())
 
 

@@ -32,7 +32,7 @@ func test_set_can_create_hidden_asset_state_with_canonical_transforms() -> void:
 		"asset": "character:portraits/red.png",
 		"visible": false,
 		"position": [-280.0, -140.0],
-		"origin": [65056.0, 320.0],
+		"origin": [-480.0, 320.0],
 		"scale": [0.45, 0.45],
 		"z_index": 12,
 		"opacity": 0.8,
@@ -44,7 +44,7 @@ func test_set_can_create_hidden_asset_state_with_canonical_transforms() -> void:
 	assert_false(target["visible"])
 	assert_eq(target["source_kind"], "asset")
 	assert_eq(target["position"], [-280.0, -140.0])
-	assert_eq(target["origin"], [65056.0, 320.0])
+	assert_eq(target["origin"], [-480.0, 320.0])
 	assert_eq(target["scale"], [0.45, 0.45])
 
 

@@ -91,6 +91,15 @@ func capture_snapshot() -> Dictionary:
 
 
 func restore_snapshot(snapshot: Dictionary) -> void:
+	if (
+		not snapshot.has("dialogue_visibility")
+		or not snapshot.has("dialogue_content")
+		or not snapshot.has("dialogue_avatar")
+	):
+		push_warning(
+			"PresentationState: current snapshot requires the complete dialogue_visibility/dialogue_content/dialogue_avatar envelope"
+		)
+		return
 	current_bg = String(snapshot.get("bg", ""))
 	current_bgm.clear()
 	var restored_bgm: Variant = snapshot.get("bgm", {})
@@ -122,10 +131,7 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 					"PresentationState: invalid stage layer '%s' in snapshot"
 					% str(id)
 				)
-	var restored_visibility: Variant = snapshot.get(
-		"dialogue_visibility",
-		DialogueVisibilityState.default_state(),
-	)
+	var restored_visibility: Variant = snapshot["dialogue_visibility"]
 	if DialogueVisibilityState.validate_snapshot_state(restored_visibility, false):
 		dialogue_visibility = (restored_visibility as Dictionary).duplicate(true)
 	else:
@@ -133,10 +139,7 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 			"PresentationState: invalid dialogue_visibility snapshot; using defaults"
 		)
 		dialogue_visibility = DialogueVisibilityState.default_state()
-	var restored_content: Variant = snapshot.get(
-		"dialogue_content",
-		_inactive_dialogue_content(),
-	)
+	var restored_content: Variant = snapshot["dialogue_content"]
 	if _validate_dialogue_content(restored_content, false):
 		dialogue_content = _normalize_dialogue_content(restored_content as Dictionary)
 	else:
@@ -145,8 +148,7 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 		)
 		dialogue_visibility = DialogueVisibilityState.default_state()
 		dialogue_content = _inactive_dialogue_content()
-	var restored_avatar: Variant = snapshot.get(
-		"dialogue_avatar", DialogueAvatarState.default_state())
+	var restored_avatar: Variant = snapshot["dialogue_avatar"]
 	if DialogueAvatarState.validate_snapshot_state(restored_avatar, false):
 		dialogue_avatar = (restored_avatar as Dictionary).duplicate(true)
 	else:

@@ -1,7 +1,9 @@
 ## Canonical, JSON-safe stable state for the single addressable dialogue avatar.
 ##
 ## This state is independent from line-local `[expr:]` markers and named Stage
-## layers. Vector values use number pairs so save snapshots remain JSON-safe.
+## layers. Position/origin are signed local-canvas pixels, scale is unitless,
+## and rotation is radians. Vector values use number pairs so save snapshots
+## remain JSON-safe; source-format numeric encodings are never stored here.
 class_name DialogueAvatarState extends RefCounted
 
 const MIN_Z_INDEX := -4096

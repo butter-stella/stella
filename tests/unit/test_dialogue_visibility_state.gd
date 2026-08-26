@@ -489,15 +489,21 @@ func test_clear_restores_true_gates_and_inactive_content() -> void:
 	_assert_dialogue_defaults(state.capture_snapshot())
 
 
-func test_old_snapshot_without_dialogue_fields_uses_canonical_defaults() -> void:
+func test_missing_current_dialogue_envelope_fails_without_partial_restore() -> void:
 	var state := PresentationState.new()
+	state.restore_snapshot(_snapshot_with_dialogue(
+		{"surface": false, "quick_menu": true},
+		_adv_content(),
+	))
+	var before := state.capture_snapshot()
 	state.restore_snapshot({
-		"bg": "legacy",
+		"bg": "must-not-commit",
 		"stage_layers": {},
 	})
-	var snapshot := state.capture_snapshot()
-	_assert_dialogue_defaults(snapshot)
-	assert_eq(snapshot.get("bg"), "legacy")
+	assert_push_warning(
+		"current snapshot requires the complete dialogue_visibility/dialogue_content/dialogue_avatar envelope")
+	assert_eq(state.capture_snapshot(), before,
+		"missing current fields reject before any provider mutation")
 
 
 func test_inactive_content_is_normalized_exactly_without_hidden_payload() -> void:

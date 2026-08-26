@@ -307,7 +307,7 @@ independent from line-local `[expr:]` markers and from named Stage layers. The s
 without waiting for a later dialogue line:
 
 ```stla
-@dialogue_avatar set character=hero expression=neutral visible=false position=-280,-140 origin=65056,320 scale=0.45,0.45
+@dialogue_avatar set character=hero expression=neutral visible=false position=-280,-140 origin=-480,320 scale=0.45,0.45
 @dialogue_avatar show transition=fade duration=0.3
 @dialogue_avatar set expression=smile opacity=0.85
 @dialogue_avatar remove transition=fade duration=0.25
@@ -321,6 +321,8 @@ The exact grammar is:
 - `@dialogue_avatar remove [transition=cut|fade] [duration=<seconds>]`
 - source is either `asset=<logical-id>` or the pair `character=<id> expression=<id>`; the two forms are mutually exclusive
 - canonical properties are `visible` (only with `set`), `position=x,y`, `origin=x,y`, `scale=x,y`, `rotation`, `z_index`, and `opacity`
+- `position` and `origin` are signed pixel coordinates in the avatar container local canvas; `position` places the Sprite, while `origin` is the pivot measured from the source texture top-left and projects as `Sprite2D.offset=-origin`
+- `scale` is a unitless positive pair and `rotation` is in radians; source fixed-point, unsigned, degree, or packed encodings must be decoded by the importer before constructing Stella DSL
 - `cut` is the default and requires `duration=0`; `fade` defaults to `duration=0.25` and crossfades old/new projections
 
 Source-format fields such as `xpos`, `ypos`, `zoom`, `showmode`, `visvalue`, `leveloffset`,

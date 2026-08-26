@@ -16,7 +16,7 @@ func _errors(data: ScenarioData) -> Array:
 func test_standalone_show_lowers_to_join_typed_batch() -> void:
 	var data := _parse("""@chapter c
 @scene s
-@dialogue_avatar show asset=character:portraits/red.png position=-280,-140 origin=65056,320 scale=0.45,0.45 z_index=12 opacity=0.8 transition=fade duration=0.3""")
+@dialogue_avatar show asset=character:portraits/red.png position=-280,-140 origin=-480,320 scale=0.45,0.45 z_index=12 opacity=0.8 transition=fade duration=0.3""")
 	assert_true(_errors(data).is_empty(), str(data.diagnostics))
 	var command: CommandData = data.scenes[0].commands[0]
 	assert_eq(command.type, "presentation_batch")
@@ -29,7 +29,7 @@ func test_standalone_show_lowers_to_join_typed_batch() -> void:
 			"properties": {
 				"asset": "character:portraits/red.png",
 				"position": [-280.0, -140.0],
-				"origin": [65056.0, 320.0],
+				"origin": [-480.0, 320.0],
 				"scale": [0.45, 0.45],
 				"z_index": 12,
 				"opacity": 0.8,

@@ -169,7 +169,7 @@ func test_cut_set_creates_stable_hidden_avatar_with_exact_transform() -> void:
 		"asset": "stage:redraw_source",
 		"visible": false,
 		"position": [-280.0, -140.0],
-		"origin": [65056.0, 320.0],
+		"origin": [-480.0, 320.0],
 		"scale": [0.45, 0.45],
 		"z_index": 12,
 	}), PresentationBatchRequest.Policy.JOIN, 272)
@@ -183,7 +183,7 @@ func test_cut_set_creates_stable_hidden_avatar_with_exact_transform() -> void:
 	assert_not_null(sprite.texture)
 	assert_false(sprite.visible)
 	assert_eq(sprite.position, Vector2(-280.0, -140.0))
-	assert_eq(sprite.offset, Vector2(-65056.0, -320.0))
+	assert_eq(sprite.offset, Vector2(480.0, -320.0))
 	assert_eq(sprite.scale, Vector2(0.45, 0.45))
 	assert_eq(sprite.z_index, 12)
 	assert_true(_receipts.is_empty())
