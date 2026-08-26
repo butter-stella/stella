@@ -1,0 +1,65 @@
+[gd_scene format=3]
+
+[node name="NestedBudgetLeaf" type="Node2D"]
+
+[node name="Leaf01" type="Node2D" parent="."]
+
+[node name="Leaf02" type="Node2D" parent="."]
+
+[node name="Leaf03" type="Node2D" parent="."]
+
+[node name="Leaf04" type="Node2D" parent="."]
+
+[node name="Leaf05" type="Node2D" parent="."]
+
+[node name="Leaf06" type="Node2D" parent="."]
+
+[node name="Leaf07" type="Node2D" parent="."]
+
+[node name="Leaf08" type="Node2D" parent="."]
+
+[node name="Leaf09" type="Node2D" parent="."]
+
+[node name="Leaf10" type="Node2D" parent="."]
+
+[node name="Leaf11" type="Node2D" parent="."]
+
+[node name="Leaf12" type="Node2D" parent="."]
+
+[node name="Leaf13" type="Node2D" parent="."]
+
+[node name="Leaf14" type="Node2D" parent="."]
+
+[node name="Leaf15" type="Node2D" parent="."]
+
+[node name="Leaf16" type="Node2D" parent="."]
+
+[node name="Leaf17" type="Node2D" parent="."]
+
+[node name="Leaf18" type="Node2D" parent="."]
+
+[node name="Leaf19" type="Node2D" parent="."]
+
+[node name="Leaf20" type="Node2D" parent="."]
+
+[node name="Leaf21" type="Node2D" parent="."]
+
+[node name="Leaf22" type="Node2D" parent="."]
+
+[node name="Leaf23" type="Node2D" parent="."]
+
+[node name="Leaf24" type="Node2D" parent="."]
+
+[node name="Leaf25" type="Node2D" parent="."]
+
+[node name="Leaf26" type="Node2D" parent="."]
+
+[node name="Leaf27" type="Node2D" parent="."]
+
+[node name="Leaf28" type="Node2D" parent="."]
+
+[node name="Leaf29" type="Node2D" parent="."]
+
+[node name="Leaf30" type="Node2D" parent="."]
+
+[node name="Leaf31" type="Node2D" parent="."]

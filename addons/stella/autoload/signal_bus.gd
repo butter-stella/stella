@@ -52,6 +52,8 @@ var _owned_dialogue_advance_echo_pending: int = 0
 var _last_raw_show_dispatch_serial: int = -1
 var _last_raw_show_segments: Variant = null
 var _advance_dispatch_serial: int = 0
+var _advance_modal_claimed_serial: int = -1
+var _presentation_clip_input_boundary: Callable
 # DialoguePresenter-owned events keep normal Godot Signal delivery semantics.
 # Stateful built-in consumers consult this synchronous frame so a nested SHOW
 # cannot let the retired signal tail overwrite the replacement state. Direct
@@ -173,6 +175,12 @@ func emit_advance_requested() -> void:
 
 func current_advance_dispatch_serial() -> int:
 	return _advance_dispatch_serial
+
+
+## Built-in advance consumers use this dispatch-scoped bit to prevent the tail
+## of one public notification from advancing content behind a modal clip.
+func current_advance_dispatch_was_claimed() -> bool:
+	return _advance_modal_claimed_serial == _advance_dispatch_serial
 
 
 ## Canonical typed request. Built-in AudioPresenter consumes this signal;
@@ -560,8 +568,16 @@ func _on_show_dialogue_dispatch_started(
 func _on_advance_requested_dispatch_started() -> void:
 	if _owned_dialogue_advance_echo_pending > 0:
 		_owned_dialogue_advance_echo_pending -= 1
+		_advance_modal_claimed_serial = -1
 		return
 	_advance_dispatch_serial += 1
+	_advance_modal_claimed_serial = -1
+	if (
+		_presentation_clip_input_boundary.is_valid()
+		and bool(_presentation_clip_input_boundary.call())
+	):
+		_advance_modal_claimed_serial = _advance_dispatch_serial
+		return
 	advance_dispatch_started.emit(_advance_dispatch_serial)
 
 
@@ -1458,6 +1474,41 @@ signal bgm_position_committed(position: float)
 signal bgm_natural_stop_committed()
 signal bgm_presenter_registered()
 
+# Declarative animated presentation clips
+signal presentation_clip_prepare_requested(request: PresentationClipOperationRequest)
+signal presentation_clip_validate_requested(request: PresentationClipOperationRequest)
+signal presentation_clip_accept_requested(request: PresentationClipOperationRequest)
+signal presentation_clip_apply_readiness_requested(request: PresentationClipOperationRequest)
+signal presentation_clip_apply_requested(request: PresentationClipOperationRequest)
+signal presentation_clip_publish_readiness_requested(
+	request: PresentationClipOperationRequest)
+signal presentation_clip_request_settled(request: PresentationClipOperationRequest)
+signal presentation_clip_audio_cue_requested(
+	request_id: int,
+	cue_index: int,
+	generation: int,
+)
+signal presentation_clip_retire_requested(
+	request_id: int,
+	generation: int,
+	outcome: StringName,
+)
+signal presentation_clip_transition_receipt_started(
+	presenter_instance_id: int,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+)
+signal presentation_clip_transition_terminal(
+	presenter_instance_id: int,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+	outcome: StringName,
+)
+signal presentation_clip_finish_requested(request_id: int)
+signal presentation_clip_projection_reset_requested(epoch: int)
+
 # Runtime-owned graceful shutdown performs a synchronous capability handshake
 # with the same unique AudioPresenter that owns every Stella audio projection.
 # The Runtime observes the later AudioServer mix boundary; the Bus only proves
@@ -1496,6 +1547,19 @@ var _bgm_participant_authority := RefCounted.new()
 var _bgm_registrar_authority: Object
 var _bgm_presenter: WeakRef
 var _bgm_capability: RefCounted
+var _presentation_clip_epoch := 1
+var _presentation_clip_participant_authority := RefCounted.new()
+var _presentation_clip_registrar_authority: Object
+var _presentation_clip_presenter: WeakRef
+var _presentation_clip_capability: RefCounted
+var _presentation_clip_presenter_transaction: Callable
+var _presentation_clip_presenter_input_claim: Callable
+var _presentation_clip_dialogue_participants: Dictionary = {}
+var _presentation_clip_audio_presenter: WeakRef
+var _presentation_clip_audio_capability: RefCounted
+var _presentation_clip_audio_transaction: Callable
+var _dispatching_presentation_clip_request: PresentationClipOperationRequest
+var _applying_presentation_clip_request: PresentationClipOperationRequest
 var _next_runtime_audio_shutdown_serial := 1
 var _dispatching_runtime_audio_shutdown_serial := 0
 var _runtime_audio_shutdown_acknowledged := false
@@ -2121,6 +2185,589 @@ func _bgm_participant_identity_matches(
 	)
 
 
+func configure_presentation_clip_registrar(authority: Object) -> bool:
+	if authority == null:
+		return false
+	if _presentation_clip_registrar_authority == null:
+		_presentation_clip_registrar_authority = authority
+	return _presentation_clip_registrar_authority == authority
+
+
+## Bind the modal clip input seam to the same Runtime authority as presenter
+## admission. It is not a scheduler: the callable synchronously claims the
+## active Director-owned receipt at the public advance dispatch boundary.
+func configure_presentation_clip_input_boundary(
+	registrar_authority: Object,
+	input_boundary: Callable,
+) -> bool:
+	if (
+		registrar_authority != _presentation_clip_registrar_authority
+		or not input_boundary.is_valid()
+	):
+		return false
+	if not _presentation_clip_input_boundary.is_valid():
+		_presentation_clip_input_boundary = input_boundary
+	return _presentation_clip_input_boundary == input_boundary
+
+
+func register_presentation_clip_presenter(
+	presenter: Object,
+	registrar_authority: Object,
+	transaction: Callable,
+	input_claim: Callable,
+) -> RefCounted:
+	if (
+		registrar_authority != _presentation_clip_registrar_authority
+		or presenter == null
+		or not is_instance_valid(presenter)
+		or not presenter is Node
+		or (presenter as Node).is_queued_for_deletion()
+		or not transaction.is_valid()
+		or transaction.get_object() != presenter
+		or not input_claim.is_valid()
+		or input_claim.get_object() != presenter
+		or _current_presentation_clip_presenter() != null
+	):
+		return null
+	_presentation_clip_presenter = weakref(presenter)
+	_presentation_clip_capability = RefCounted.new()
+	_presentation_clip_presenter_transaction = transaction
+	_presentation_clip_presenter_input_claim = input_claim
+	return _presentation_clip_capability
+
+
+func unregister_presentation_clip_presenter(
+	presenter: Object,
+	capability: RefCounted,
+	registrar_authority: Object,
+) -> bool:
+	if (
+		registrar_authority != _presentation_clip_registrar_authority
+		or not _presentation_clip_participant_identity_matches(
+			presenter, capability)
+	):
+		return false
+	_presentation_clip_presenter = null
+	_presentation_clip_capability = null
+	_presentation_clip_presenter_transaction = Callable()
+	_presentation_clip_presenter_input_claim = Callable()
+	return true
+
+
+## Ask the one Runtime-owned visual presenter to atomically claim the current
+## skippable clip boundary. The presenter completes the exact active identity
+## synchronously, so the physical input event cannot fall through to dialogue.
+func claim_active_presentation_clip_input(request_id: int) -> bool:
+	var presenter := _current_presentation_clip_presenter()
+	if (
+		request_id <= 0
+		or presenter == null
+		or not _presentation_clip_presenter_input_claim.is_valid()
+		or _presentation_clip_presenter_input_claim.get_object() != presenter
+	):
+		return false
+	return bool(_presentation_clip_presenter_input_claim.call(
+		request_id, _presentation_clip_capability))
+
+
+func register_presentation_clip_composition_participant(
+	presenter: Object,
+	role: StringName,
+	registrar_authority: Object,
+	transaction: Callable,
+) -> RefCounted:
+	if (
+		registrar_authority != _presentation_clip_registrar_authority
+		or presenter == null
+		or not is_instance_valid(presenter)
+		or not presenter is Node
+		or (presenter as Node).is_queued_for_deletion()
+		or not transaction.is_valid()
+		or transaction.get_object() != presenter
+		or role not in [
+			PresentationClipOperationRequest.ROLE_DIALOGUE,
+			PresentationClipOperationRequest.ROLE_AUDIO,
+		]
+	):
+		return null
+	var capability := RefCounted.new()
+	if role == PresentationClipOperationRequest.ROLE_DIALOGUE:
+		var presenter_id := presenter.get_instance_id()
+		if _presentation_clip_dialogue_participants.has(presenter_id):
+			return null
+		_presentation_clip_dialogue_participants[presenter_id] = {
+			"presenter": weakref(presenter),
+			"capability": capability,
+			"transaction": transaction,
+		}
+		return capability
+	if _current_presentation_clip_audio_presenter() != null:
+		return null
+	_presentation_clip_audio_presenter = weakref(presenter)
+	_presentation_clip_audio_capability = capability
+	_presentation_clip_audio_transaction = transaction
+	return capability
+
+
+func unregister_presentation_clip_composition_participant(
+	presenter: Object,
+	capability: RefCounted,
+	role: StringName,
+	registrar_authority: Object,
+) -> bool:
+	if (
+		registrar_authority != _presentation_clip_registrar_authority
+		or not _presentation_clip_composition_identity_matches(
+			presenter, capability, role)
+	):
+		return false
+	if role == PresentationClipOperationRequest.ROLE_DIALOGUE:
+		_presentation_clip_dialogue_participants.erase(presenter.get_instance_id())
+	else:
+		_presentation_clip_audio_presenter = null
+		_presentation_clip_audio_capability = null
+		_presentation_clip_audio_transaction = Callable()
+	return true
+
+
+func _presentation_clip_composition_participant_snapshot(
+	role: StringName,
+) -> Array[Dictionary]:
+	var result: Array[Dictionary] = []
+	if role == PresentationClipOperationRequest.ROLE_DIALOGUE:
+		for presenter_id: int in _presentation_clip_dialogue_participants.keys():
+			var entry: Dictionary = (
+				_presentation_clip_dialogue_participants[presenter_id])
+			var weak_presenter: WeakRef = entry.get("presenter")
+			var presenter := weak_presenter.get_ref() if weak_presenter != null else null
+			var capability: RefCounted = entry.get("capability")
+			if not _presentation_clip_composition_identity_matches(
+				presenter, capability, role):
+				_presentation_clip_dialogue_participants.erase(presenter_id)
+				continue
+			result.append({
+				"presenter": presenter,
+				"capability": capability,
+				"transaction": entry.get("transaction", Callable()),
+			})
+		return result
+	var audio_presenter := _current_presentation_clip_audio_presenter()
+	if audio_presenter != null:
+		result.append({
+			"presenter": audio_presenter,
+			"capability": _presentation_clip_audio_capability,
+			"transaction": _presentation_clip_audio_transaction,
+		})
+	return result
+
+
+func _current_presentation_clip_audio_presenter() -> Object:
+	if _presentation_clip_audio_presenter == null:
+		return null
+	var presenter: Object = _presentation_clip_audio_presenter.get_ref()
+	if not _presentation_clip_composition_identity_matches(
+		presenter,
+		_presentation_clip_audio_capability,
+		PresentationClipOperationRequest.ROLE_AUDIO,
+	):
+		_presentation_clip_audio_presenter = null
+		_presentation_clip_audio_capability = null
+		_presentation_clip_audio_transaction = Callable()
+		return null
+	return presenter
+
+
+func _presentation_clip_composition_identity_matches(
+	presenter: Object,
+	capability: Object,
+	role: StringName,
+) -> bool:
+	if (
+		presenter == null
+		or capability == null
+		or not is_instance_valid(presenter)
+		or not presenter is Node
+		or (presenter as Node).is_queued_for_deletion()
+	):
+		return false
+	if role == PresentationClipOperationRequest.ROLE_DIALOGUE:
+		var entry: Dictionary = _presentation_clip_dialogue_participants.get(
+			presenter.get_instance_id(), {})
+		return (
+			not entry.is_empty()
+			and entry.get("capability") == capability
+			and (entry.get("presenter") as WeakRef).get_ref() == presenter
+		)
+	if role == PresentationClipOperationRequest.ROLE_AUDIO:
+		return (
+			capability == _presentation_clip_audio_capability
+			and _presentation_clip_audio_presenter != null
+			and _presentation_clip_audio_presenter.get_ref() == presenter
+		)
+	return false
+
+
+func reject_presentation_clip_request(
+	request: PresentationClipOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	role: StringName,
+	error: String,
+) -> bool:
+	if not _presentation_clip_request_target_is_current(
+		request, presenter, capability, role, false):
+		return false
+	return request._reject(
+		presenter, role, error, _presentation_clip_participant_authority)
+
+
+func prepare_presentation_clip_definition(
+	request: PresentationClipOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	definition: PresentationClipDefinition,
+) -> bool:
+	if (
+		request == null
+		or request != _dispatching_presentation_clip_request
+		or not _presentation_clip_participant_identity_matches(
+			presenter, capability)
+	):
+		return false
+	return request._set_definition(
+		definition, _presentation_clip_participant_authority)
+
+
+func reject_presentation_clip_definition(
+	request: PresentationClipOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	error: String,
+) -> bool:
+	if (
+		request == null
+		or request != _dispatching_presentation_clip_request
+		or not _presentation_clip_participant_identity_matches(
+			presenter, capability)
+	):
+		return false
+	return request._reject_prepare(
+		error, _presentation_clip_participant_authority)
+
+
+func presentation_clip_definition_for(
+	request: PresentationClipOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	role: StringName,
+) -> PresentationClipDefinition:
+	if request == null:
+		return null
+	var applying := request == _applying_presentation_clip_request
+	if (
+		not applying
+		and request != _dispatching_presentation_clip_request
+	):
+		return null
+	if not _presentation_clip_request_target_is_current(
+		request, presenter, capability, role, applying):
+		return null
+	return request._get_sealed_definition(
+		_presentation_clip_participant_authority)
+
+
+func validate_presentation_clip_request(
+	request: PresentationClipOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	role: StringName,
+) -> bool:
+	if not _presentation_clip_request_target_is_current(
+		request, presenter, capability, role, false):
+		return false
+	return request._validate(
+		presenter, role, _presentation_clip_participant_authority)
+
+
+func accept_presentation_clip_request(
+	request: PresentationClipOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	role: StringName,
+) -> bool:
+	if not _presentation_clip_request_target_is_current(
+		request, presenter, capability, role, false):
+		return false
+	return request._accept(
+		presenter, role, _presentation_clip_participant_authority)
+
+
+func mark_presentation_clip_apply_ready(
+	request: PresentationClipOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	role: StringName,
+) -> bool:
+	if not _presentation_clip_request_target_is_current(
+		request, presenter, capability, role, true):
+		return false
+	return request._mark_ready(
+		presenter, role, _presentation_clip_participant_authority)
+
+
+func acknowledge_presentation_clip_apply(
+	request: PresentationClipOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	role: StringName,
+) -> bool:
+	if not _presentation_clip_request_target_is_current(
+		request, presenter, capability, role, true):
+		return false
+	return request._apply(
+		presenter, role, _presentation_clip_participant_authority)
+
+
+func fail_presentation_clip_apply(
+	request: PresentationClipOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	role: StringName,
+	error: String,
+) -> bool:
+	if not _presentation_clip_request_target_is_current(
+		request, presenter, capability, role, true):
+		return false
+	return request._fail_current(
+		error, _presentation_clip_participant_authority)
+
+
+func mark_presentation_clip_publish_ready(
+	request: PresentationClipOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	role: StringName,
+) -> bool:
+	if not _presentation_clip_request_target_is_current(
+		request, presenter, capability, role, true):
+		return false
+	return request._mark_publish_ready(
+		presenter, role, _presentation_clip_participant_authority)
+
+
+func _commit_presentation_clip_request(
+	request: PresentationClipOperationRequest,
+	expected_epoch: int,
+	apply_started_callback: Callable,
+	channel: StringName,
+) -> bool:
+	if (
+		request == null
+		or request != _applying_presentation_clip_request
+		or expected_epoch != _presentation_clip_epoch
+		or not request.participants_are_live()
+	):
+		return false
+	var participants := request._get_transaction_participants(
+		_presentation_clip_participant_authority)
+	if participants.is_empty():
+		return false
+	var held: Array[Dictionary] = []
+	for participant: Dictionary in participants:
+		var transaction: Callable = participant.get("transaction", Callable())
+		if (
+			not transaction.is_valid()
+			or not bool(transaction.call(
+				request, participant.get("capability"), &"hold"))
+		):
+			_abort_presentation_clip_transaction(request, held)
+			return false
+		held.append(participant)
+	if (
+		expected_epoch != _presentation_clip_epoch
+		or not request.participants_are_live()
+	):
+		_abort_presentation_clip_transaction(request, held)
+		return false
+	for participant: Dictionary in participants:
+		var transaction: Callable = participant.get("transaction")
+		if not bool(transaction.call(
+			request, participant.get("capability"), &"commit")):
+			_abort_presentation_clip_transaction(request, held)
+			return false
+	if (
+		expected_epoch != _presentation_clip_epoch
+		or not request.participants_are_live()
+	):
+		_abort_presentation_clip_transaction(request, held)
+		return false
+	# Finalize is a capability-bound, non-publishing private swap. Every held
+	# participant has already proved this phase cannot fail, so ordinary signal
+	# listeners cannot interleave with a half-visible composition.
+	for participant: Dictionary in participants:
+		var transaction: Callable = participant.get("transaction")
+		if not bool(transaction.call(
+			request, participant.get("capability"), &"finalize")):
+			_abort_presentation_clip_transaction(request, held)
+			return false
+	if (
+		request != _applying_presentation_clip_request
+		or expected_epoch != _presentation_clip_epoch
+		or not request.participants_are_live()
+	):
+		_abort_presentation_clip_transaction(request, held)
+		return false
+	# Dialogue and audio ownership must be current before the visual owner can
+	# reveal, start its clock, or synchronously publish offset-zero cues.
+	participants.sort_custom(func(left: Dictionary, right: Dictionary) -> bool:
+		return _presentation_clip_publish_role_order(
+			StringName(left.get("role"))) < _presentation_clip_publish_role_order(
+				StringName(right.get("role"))))
+	for participant: Dictionary in participants:
+		var transaction: Callable = participant.get("transaction")
+		if not bool(transaction.call(
+			request, participant.get("capability"), &"publish")):
+			request._fail_current(
+				"request invalidated during publication preparation",
+				_presentation_clip_participant_authority,
+			)
+			request._record_transaction_liveness_failures(
+				&"publication preparation",
+				_presentation_clip_participant_authority,
+			)
+			_abort_presentation_clip_transaction(request, held)
+			return false
+		if (
+			request != _applying_presentation_clip_request
+			or expected_epoch != _presentation_clip_epoch
+			or not request.participants_are_live()
+		):
+			if (
+				request != _applying_presentation_clip_request
+				or expected_epoch != _presentation_clip_epoch
+			):
+				request._fail_current(
+					"request invalidated during publication preparation",
+					_presentation_clip_participant_authority,
+				)
+			request._record_transaction_liveness_failures(
+				&"publication preparation",
+				_presentation_clip_participant_authority,
+			)
+			_abort_presentation_clip_transaction(request, held)
+			return false
+	# All callback-capable preparation ran while the next projection remained
+	# hidden, silent, and rollbackable. Completion is the sealed commit point;
+	# participants must now reveal in the fixed composition order without a new
+	# validation or scheduler boundary.
+	if apply_started_callback.is_valid():
+		apply_started_callback.call([channel])
+	for participant: Dictionary in participants:
+		var transaction: Callable = participant.get("transaction")
+		if not bool(transaction.call(
+			request, participant.get("capability"), &"complete")):
+			push_error("presentation clip participant violated final completion contract")
+			return false
+	return true
+
+
+func _abort_presentation_clip_transaction(
+	request: PresentationClipOperationRequest,
+	participants: Array[Dictionary],
+) -> void:
+	for participant: Dictionary in participants:
+		var transaction: Callable = participant.get("transaction", Callable())
+		if transaction.is_valid():
+			transaction.call(
+				request, participant.get("capability"), &"abort")
+
+
+func _presentation_clip_publish_role_order(role: StringName) -> int:
+	match role:
+		PresentationClipOperationRequest.ROLE_DIALOGUE:
+			return 0
+		PresentationClipOperationRequest.ROLE_AUDIO:
+			return 1
+	return 2
+
+
+func current_presentation_clip_epoch() -> int:
+	return _presentation_clip_epoch
+
+
+func reset_presentation_clip() -> int:
+	_mark_presentation_projection_retirement_started()
+	_presentation_clip_epoch += 1
+	var epoch := _presentation_clip_epoch
+	for request: Dictionary in _presentation_operation_queue:
+		if _request_belongs_to_retained_projection(request):
+			request["clip_epoch"] = epoch
+	_dispatching_presentation_clip_request = null
+	_applying_presentation_clip_request = null
+	presentation_clip_projection_reset_requested.emit(epoch)
+	return epoch
+
+
+func _presentation_clip_request_target_is_current(
+	request: PresentationClipOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	role: StringName,
+	applying: bool,
+) -> bool:
+	var identity_current := false
+	match role:
+		PresentationClipOperationRequest.ROLE_VISUAL:
+			identity_current = _presentation_clip_participant_identity_matches(
+				presenter, capability)
+		PresentationClipOperationRequest.ROLE_DIALOGUE:
+			identity_current = _presentation_clip_composition_identity_matches(
+				presenter, capability, role)
+		PresentationClipOperationRequest.ROLE_AUDIO:
+			identity_current = _presentation_clip_composition_identity_matches(
+				presenter, capability, role)
+	return (
+		request != null
+		and request == (
+			_applying_presentation_clip_request
+			if applying
+			else _dispatching_presentation_clip_request
+		)
+		and identity_current
+		and request.is_target(presenter, role)
+	)
+
+
+func _current_presentation_clip_presenter() -> Object:
+	if _presentation_clip_presenter == null:
+		return null
+	var presenter: Object = _presentation_clip_presenter.get_ref()
+	if not _presentation_clip_participant_identity_matches(
+		presenter, _presentation_clip_capability):
+		_presentation_clip_presenter = null
+		_presentation_clip_capability = null
+		_presentation_clip_presenter_transaction = Callable()
+		_presentation_clip_presenter_input_claim = Callable()
+		return null
+	return presenter
+
+
+func _presentation_clip_participant_identity_matches(
+	presenter: Object,
+	capability: Object,
+) -> bool:
+	return (
+		presenter != null
+		and capability != null
+		and capability == _presentation_clip_capability
+		and _presentation_clip_presenter != null
+		and is_instance_valid(presenter)
+		and presenter is Node
+		and not (presenter as Node).is_queued_for_deletion()
+		and _presentation_clip_presenter.get_ref() == presenter
+	)
+
+
 ## Allocate an identity before submission when a caller needs to own the exact
 ## transitions caused by its batch. Most callers can omit this and let
 ## emit_stage_operations allocate an anonymous identity.
@@ -2250,6 +2897,13 @@ func emit_presentation_operations(
 				and not LoopSeChannelState.validate_operation(payload, true))
 			or (operation is BgmPresentationOperation
 				and not BgmChannelState.validate_operation(payload, true))
+			or (operation is PresentationClipPresentationOperation
+				and (
+					payload.keys() != ["asset"]
+					or not payload.get("asset", null) is String
+					or not PresentationClipDefinition.is_logical_id(
+						String(payload.get("asset", "")))
+				))
 			or not operation is StagePresentationOperation
 				and not operation is DialogueAvatarPresentationOperation
 				and not operation is DialogueVisibilityPresentationOperation
@@ -2257,6 +2911,7 @@ func emit_presentation_operations(
 				and not operation is ChapterIndicatorPresentationOperation
 				and not operation is LoopSePresentationOperation
 				and not operation is BgmPresentationOperation
+				and not operation is PresentationClipPresentationOperation
 		):
 			presentation_operation_request_finished.emit(request_id, false)
 			return request_id
@@ -2272,6 +2927,7 @@ func emit_presentation_operations(
 		"chapter_epoch": _chapter_indicator_epoch,
 		"loop_se_epoch": _loop_se_epoch,
 		"bgm_epoch": _bgm_epoch,
+		"clip_epoch": _presentation_clip_epoch,
 		"enqueue_serial": _presentation_enqueue_serial,
 		"projection_lifecycle_id": _active_presentation_projection_lifecycle_id,
 		"born_after_retirement": _presentation_projection_retirement_started,
@@ -2489,6 +3145,7 @@ func _drain_presentation_operation_queue_once() -> void:
 	var chapter_epoch := int(request.get("chapter_epoch", 0))
 	var loop_se_epoch := int(request.get("loop_se_epoch", 0))
 	var bgm_epoch := int(request.get("bgm_epoch", 0))
+	var clip_epoch := int(request.get("clip_epoch", 0))
 	var operations: Array = request.get("operations", [])
 	var force_cut := bool(request.get("force_cut", false))
 	var apply_started_callback: Callable = request.get(
@@ -2501,6 +3158,7 @@ func _drain_presentation_operation_queue_once() -> void:
 	var uses_chapter_indicator := false
 	var uses_loop_se := false
 	var uses_bgm := false
+	var uses_presentation_clip := false
 	for operation_value: Variant in operations:
 		if operation_value is StagePresentationOperation:
 			uses_stage = true
@@ -2516,6 +3174,8 @@ func _drain_presentation_operation_queue_once() -> void:
 			uses_loop_se = true
 		elif operation_value is BgmPresentationOperation:
 			uses_bgm = true
+		elif operation_value is PresentationClipPresentationOperation:
+			uses_presentation_clip = true
 	_stage_operation_dispatch_stack.append(request_id)
 	_stage_operation_epoch_stack.append(stage_epoch)
 	_dialogue_visibility_dispatch_stack.append(request_id)
@@ -2531,11 +3191,110 @@ func _drain_presentation_operation_queue_once() -> void:
 	var chapter_requests: Dictionary = {}
 	var loop_se_requests: Dictionary = {}
 	var bgm_requests: Dictionary = {}
+	var clip_requests: Dictionary = {}
 	var preflight_valid := true
 	var stage_runs: Array[Dictionary] = []
 	var dialogue_avatar_operation_count := 0
 	for operation_value: Variant in operations:
-		if operation_value is DialogueAvatarPresentationOperation:
+		if operation_value is PresentationClipPresentationOperation:
+			var operation: PresentationClipPresentationOperation = operation_value
+			var clip_request := PresentationClipOperationRequest.new(
+				operation, force_cut)
+			clip_request._bind_authority(_presentation_clip_participant_authority)
+			clip_requests[operation.get_instance_id()] = clip_request
+			_dispatching_presentation_clip_request = clip_request
+			presentation_clip_prepare_requested.emit(clip_request)
+			if (
+				clip_epoch != _presentation_clip_epoch
+				or not clip_request._finish_prepare(
+					_presentation_clip_participant_authority)
+			):
+				_report_presentation_clip_rejection(
+					operation.get_source(), clip_request.get_validation_errors())
+				preflight_valid = false
+				break
+			var visual_presenter := _current_presentation_clip_presenter()
+			clip_request._snapshot_participant(
+				PresentationClipOperationRequest.ROLE_VISUAL,
+				visual_presenter,
+				_presentation_clip_capability,
+				_presentation_clip_participant_identity_matches,
+				_presentation_clip_presenter_transaction,
+				_presentation_clip_participant_authority,
+			)
+			var definition := clip_request._get_sealed_definition(
+				_presentation_clip_participant_authority)
+			if (
+				definition != null
+				and (
+					definition.suppress_dialogue_surface
+					or definition.suppress_quick_menu
+				)
+			):
+				var dialogue_participants := (
+					_presentation_clip_composition_participant_snapshot(
+						PresentationClipOperationRequest.ROLE_DIALOGUE))
+				if dialogue_participants.is_empty():
+					clip_request._snapshot_participant(
+						PresentationClipOperationRequest.ROLE_DIALOGUE,
+						null,
+						null,
+						Callable(),
+						Callable(),
+						_presentation_clip_participant_authority,
+					)
+				for participant: Dictionary in dialogue_participants:
+					clip_request._snapshot_participant(
+						PresentationClipOperationRequest.ROLE_DIALOGUE,
+						participant.get("presenter"),
+						participant.get("capability"),
+						_presentation_clip_composition_identity_matches.bind(
+							PresentationClipOperationRequest.ROLE_DIALOGUE),
+						participant.get("transaction", Callable()),
+						_presentation_clip_participant_authority,
+					)
+			if definition != null and definition.has_audio_cues():
+				var audio_participants := (
+					_presentation_clip_composition_participant_snapshot(
+						PresentationClipOperationRequest.ROLE_AUDIO))
+				if audio_participants.is_empty():
+					clip_request._snapshot_participant(
+						PresentationClipOperationRequest.ROLE_AUDIO,
+						null,
+						null,
+						Callable(),
+						Callable(),
+						_presentation_clip_participant_authority,
+					)
+				for participant: Dictionary in audio_participants:
+					clip_request._snapshot_participant(
+						PresentationClipOperationRequest.ROLE_AUDIO,
+						participant.get("presenter"),
+						participant.get("capability"),
+						_presentation_clip_composition_identity_matches.bind(
+							PresentationClipOperationRequest.ROLE_AUDIO),
+						participant.get("transaction", Callable()),
+						_presentation_clip_participant_authority,
+					)
+			presentation_clip_validate_requested.emit(clip_request)
+			if (
+				clip_epoch != _presentation_clip_epoch
+				or not clip_request._seal_validation(
+					request_id, _presentation_clip_participant_authority)
+			):
+				_report_presentation_clip_rejection(
+					operation.get_source(), clip_request.get_validation_errors())
+				preflight_valid = false
+				break
+			presentation_clip_accept_requested.emit(clip_request)
+			if not clip_request._seal_accept(
+				_presentation_clip_participant_authority):
+				_report_presentation_clip_rejection(operation.get_source(), [
+					"a sealed clip participant did not accept the captured binding",
+				])
+				preflight_valid = false
+				break
+		elif operation_value is DialogueAvatarPresentationOperation:
 			dialogue_avatar_operation_count += 1
 	var dialogue_avatar_preflight_index := 0
 	var stage_preflight_index := 0
@@ -2800,6 +3559,7 @@ func _drain_presentation_operation_queue_once() -> void:
 	_dispatching_chapter_indicator_request = null
 	_dispatching_loop_se_request = null
 	_dispatching_bgm_request = null
+	_dispatching_presentation_clip_request = null
 	var epochs_valid := _presentation_operation_epochs_are_current(
 		stage_epoch,
 		visibility_epoch,
@@ -2807,12 +3567,14 @@ func _drain_presentation_operation_queue_once() -> void:
 		chapter_epoch,
 		loop_se_epoch,
 		bgm_epoch,
+		clip_epoch,
 		uses_stage,
 		uses_dialogue_visibility,
 		uses_dialogue_avatar,
 		uses_chapter_indicator,
 		uses_loop_se,
 		uses_bgm,
+		uses_presentation_clip,
 	)
 	if not preflight_valid or not epochs_valid:
 		for stage_request_value: Variant in stage_requests.values():
@@ -2833,6 +3595,12 @@ func _drain_presentation_operation_queue_once() -> void:
 		for bgm_request_value: Variant in bgm_requests.values():
 			(bgm_request_value as BgmOperationRequest)._finish(
 				false, false, _bgm_participant_authority)
+		for clip_request_value: Variant in clip_requests.values():
+			var failed_clip_request := (
+				clip_request_value as PresentationClipOperationRequest)
+			failed_clip_request._finish(
+				false, false, _presentation_clip_participant_authority)
+			presentation_clip_request_settled.emit(failed_clip_request)
 		_bgm_epoch_stack.pop_back()
 		_loop_se_epoch_stack.pop_back()
 		_dialogue_avatar_epoch_stack.pop_back()
@@ -2846,7 +3614,70 @@ func _drain_presentation_operation_queue_once() -> void:
 	var operation_index := 0
 	while operation_index < operations.size():
 		var operation: PresentationOperation = operations[operation_index]
-		if operation is StagePresentationOperation:
+		if operation is PresentationClipPresentationOperation:
+			var clip_request: PresentationClipOperationRequest = clip_requests.get(
+				operation.get_instance_id())
+			_applying_presentation_clip_request = clip_request
+			presentation_clip_apply_readiness_requested.emit(clip_request)
+			if (
+				clip_request == null
+				or not clip_request._seal_readiness(
+					_presentation_clip_participant_authority)
+				or clip_epoch != _presentation_clip_epoch
+			):
+				if clip_request != null:
+					_report_presentation_clip_rejection(
+						operation.get_source(),
+						clip_request.get_validation_errors(),
+					)
+				_applying_presentation_clip_request = null
+				delivered = false
+				break
+			presentation_clip_apply_requested.emit(clip_request)
+			if (
+				not clip_request._begin_publish_readiness(
+					_presentation_clip_participant_authority)
+				or clip_epoch != _presentation_clip_epoch
+			):
+				_report_presentation_clip_rejection(
+					operation.get_source(), clip_request.get_validation_errors())
+				_applying_presentation_clip_request = null
+				delivered = false
+				break
+			presentation_clip_publish_readiness_requested.emit(clip_request)
+			if (
+				not clip_request._seal_publish_readiness(
+					_presentation_clip_participant_authority)
+				or not clip_request.participants_are_live()
+				or clip_epoch != _presentation_clip_epoch
+			):
+				_report_presentation_clip_rejection(
+					operation.get_source(), clip_request.get_validation_errors())
+				_applying_presentation_clip_request = null
+				delivered = false
+				break
+			var clip_committed := _commit_presentation_clip_request(
+				clip_request,
+				clip_epoch,
+				apply_started_callback,
+				operation.get_channel(),
+			)
+			if not clip_committed:
+				_report_presentation_clip_rejection(
+					operation.get_source(), clip_request.get_validation_errors())
+				_applying_presentation_clip_request = null
+				delivered = false
+				break
+			if (
+				clip_request != _applying_presentation_clip_request
+				or clip_epoch != _presentation_clip_epoch
+			):
+				_applying_presentation_clip_request = null
+				delivered = false
+				break
+			_applying_presentation_clip_request = null
+			operation_index += 1
+		elif operation is StagePresentationOperation:
 			var first_stage_operation := operation as StagePresentationOperation
 			var stage_run: Array = []
 			var stage_channels: Array[StringName] = []
@@ -3042,12 +3873,14 @@ func _drain_presentation_operation_queue_once() -> void:
 			chapter_epoch,
 			loop_se_epoch,
 			bgm_epoch,
+			clip_epoch,
 			uses_stage,
 			uses_dialogue_visibility,
 			uses_dialogue_avatar,
 			uses_chapter_indicator,
 			uses_loop_se,
 			uses_bgm,
+			uses_presentation_clip,
 		):
 			delivered = false
 			break
@@ -3069,6 +3902,12 @@ func _drain_presentation_operation_queue_once() -> void:
 	for bgm_request_value: Variant in bgm_requests.values():
 		(bgm_request_value as BgmOperationRequest)._finish(
 			delivered, false, _bgm_participant_authority)
+	for clip_request_value: Variant in clip_requests.values():
+		var finished_clip_request := (
+			clip_request_value as PresentationClipOperationRequest)
+		finished_clip_request._finish(
+			delivered, false, _presentation_clip_participant_authority)
+		presentation_clip_request_settled.emit(finished_clip_request)
 	_bgm_epoch_stack.pop_back()
 	_loop_se_epoch_stack.pop_back()
 	_dialogue_avatar_epoch_stack.pop_back()
@@ -3086,12 +3925,14 @@ func _drain_presentation_operation_queue_once() -> void:
 			chapter_epoch,
 			loop_se_epoch,
 			bgm_epoch,
+			clip_epoch,
 			uses_stage,
 			uses_dialogue_visibility,
 			uses_dialogue_avatar,
 			uses_chapter_indicator,
 			uses_loop_se,
 			uses_bgm,
+			uses_presentation_clip,
 		),
 	)
 
@@ -3103,12 +3944,14 @@ func _presentation_operation_epochs_are_current(
 	chapter_epoch: int,
 	loop_se_epoch: int,
 	bgm_epoch: int,
+	clip_epoch: int,
 	uses_stage: bool,
 	uses_dialogue_visibility: bool,
 	uses_dialogue_avatar: bool,
 	uses_chapter_indicator: bool,
 	uses_loop_se: bool,
 	uses_bgm: bool,
+	uses_presentation_clip: bool,
 ) -> bool:
 	return (
 		(not uses_stage or stage_epoch == _stage_operation_epoch)
@@ -3126,6 +3969,10 @@ func _presentation_operation_epochs_are_current(
 		)
 		and (not uses_loop_se or loop_se_epoch == _loop_se_epoch)
 		and (not uses_bgm or bgm_epoch == _bgm_epoch)
+		and (
+			not uses_presentation_clip
+			or clip_epoch == _presentation_clip_epoch
+		)
 	)
 
 
@@ -3822,6 +4669,20 @@ func _report_bgm_rejection(source: Dictionary, errors: Array) -> void:
 		messages.append("request invalidated during preflight")
 	push_error(
 		"%s BGM request rejected: %s"
+		% [_chapter_indicator_source_label(source), "; ".join(messages)])
+
+
+func _report_presentation_clip_rejection(
+	source: Dictionary,
+	errors: Array,
+) -> void:
+	var messages: Array[String] = []
+	for error_value: Variant in errors:
+		messages.append(String(error_value))
+	if messages.is_empty():
+		messages.append("request invalidated during preflight")
+	push_error(
+		"%s presentation clip request rejected: %s"
 		% [_chapter_indicator_source_label(source), "; ".join(messages)])
 
 

@@ -1,0 +1,37 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="PackedScene" path="res://tests/fixtures/presentation_clips/nested_budget_leaf.tscn" id="1_leaf"]
+
+[node name="NestedBudgetOverflow" type="Node2D"]
+
+[node name="Instance01" parent="." instance=ExtResource("1_leaf")]
+
+[node name="Instance02" parent="." instance=ExtResource("1_leaf")]
+
+[node name="Instance03" parent="." instance=ExtResource("1_leaf")]
+
+[node name="Instance04" parent="." instance=ExtResource("1_leaf")]
+
+[node name="Instance05" parent="." instance=ExtResource("1_leaf")]
+
+[node name="Instance06" parent="." instance=ExtResource("1_leaf")]
+
+[node name="Instance07" parent="." instance=ExtResource("1_leaf")]
+
+[node name="Instance08" parent="." instance=ExtResource("1_leaf")]
+
+[node name="Instance09" parent="." instance=ExtResource("1_leaf")]
+
+[node name="Instance10" parent="." instance=ExtResource("1_leaf")]
+
+[node name="Instance11" parent="." instance=ExtResource("1_leaf")]
+
+[node name="Instance12" parent="." instance=ExtResource("1_leaf")]
+
+[node name="Instance13" parent="." instance=ExtResource("1_leaf")]
+
+[node name="Instance14" parent="." instance=ExtResource("1_leaf")]
+
+[node name="Instance15" parent="." instance=ExtResource("1_leaf")]
+
+[node name="Instance16" parent="." instance=ExtResource("1_leaf")]

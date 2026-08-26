@@ -132,6 +132,11 @@ func before_each():
 		"se_path": _runtime.se_path,
 		"voice_path": _runtime.voice_path,
 		"voice_dsp_path": _runtime.voice_dsp_path,
+		"presentation_clips_path": _runtime.presentation_clips_path,
+		"presentation_clip_resource_budget_bytes": (
+			_runtime.presentation_clip_resource_budget_bytes),
+		"presentation_clip_max_viewport_pixels": (
+			_runtime.presentation_clip_max_viewport_pixels),
 		"title_scene_path": _runtime.title_scene_path,
 	}
 
@@ -196,6 +201,9 @@ func test_defaults_when_no_file():
 	assert_eq(config.se_path, "res://audio/se/")
 	assert_eq(config.voice_path, "res://audio/voice/")
 	assert_eq(config.voice_dsp_path, "res://audio/voice_dsp/")
+	assert_eq(config.presentation_clips_path, "res://presentation/clips/")
+	assert_eq(config.presentation_clip_resource_budget_bytes, 512 * 1024 * 1024)
+	assert_eq(config.presentation_clip_max_viewport_pixels, 3840 * 2160)
 
 	assert_eq(config.cg_gallery, false)
 	assert_eq(config.backlog, true)
@@ -307,6 +315,9 @@ func test_runtime_applies_config_paths():
 	cf.set_value("paths", "se", "res://custom/se/")
 	cf.set_value("paths", "voice", "res://custom/voice/")
 	cf.set_value("paths", "voice_dsp", "res://custom/voice_dsp/")
+	cf.set_value("paths", "presentation_clips", "res://custom/clips/")
+	cf.set_value("presentation_clips", "resource_budget_bytes", 256 * 1024 * 1024)
+	cf.set_value("presentation_clips", "max_viewport_pixels", 1920 * 1080)
 	cf.save(path)
 
 	var loaded_config := StellaConfig.new()
@@ -321,6 +332,9 @@ func test_runtime_applies_config_paths():
 	assert_eq(_runtime.se_path, "res://custom/se/")
 	assert_eq(_runtime.voice_path, "res://custom/voice/")
 	assert_eq(_runtime.voice_dsp_path, "res://custom/voice_dsp/")
+	assert_eq(_runtime.presentation_clips_path, "res://custom/clips/")
+	assert_eq(_runtime.presentation_clip_resource_budget_bytes, 256 * 1024 * 1024)
+	assert_eq(_runtime.presentation_clip_max_viewport_pixels, 1920 * 1080)
 
 
 func test_runtime_applies_default_snapshot_after_config_sources_are_removed():
@@ -332,6 +346,9 @@ func test_runtime_applies_default_snapshot_after_config_sources_are_removed():
 	_runtime.se_path = "res://private/se/"
 	_runtime.voice_path = "res://private/voice/"
 	_runtime.voice_dsp_path = "res://private/voice_dsp/"
+	_runtime.presentation_clips_path = "res://private/clips/"
+	_runtime.presentation_clip_resource_budget_bytes = 32 * 1024 * 1024
+	_runtime.presentation_clip_max_viewport_pixels = 320 * 180
 
 	_runtime.config = StellaConfig.new()
 	_runtime._apply_config()
@@ -343,6 +360,71 @@ func test_runtime_applies_default_snapshot_after_config_sources_are_removed():
 	assert_eq(_runtime.se_path, "res://audio/se/")
 	assert_eq(_runtime.voice_path, "res://audio/voice/")
 	assert_eq(_runtime.voice_dsp_path, "res://audio/voice_dsp/")
+	assert_eq(_runtime.presentation_clips_path, "res://presentation/clips/")
+	assert_eq(
+		_runtime.presentation_clip_resource_budget_bytes, 512 * 1024 * 1024)
+	assert_eq(_runtime.presentation_clip_max_viewport_pixels, 3840 * 2160)
+
+
+func test_presentation_clip_config_layers_boundaries_and_reset() -> void:
+	_write_project_config(TEST_BASE_CONFIG_PATH, {
+		"paths": {"presentation_clips": "res://base/clips/"},
+		"presentation_clips": {
+			"resource_budget_bytes": 32 * 1024 * 1024,
+			"max_viewport_pixels": 320 * 180,
+		},
+	})
+	_write_project_config(TEST_LOCAL_CONFIG_PATH, {
+		"paths": {"presentation_clips": "res://local/clips/"},
+		"presentation_clips": {
+			"resource_budget_bytes": 2 * 1024 * 1024 * 1024,
+			"max_viewport_pixels": 16384 * 16384,
+		},
+	})
+	var loaded: StellaConfig = _runtime._load_project_config(
+		TEST_BASE_CONFIG_PATH, TEST_LOCAL_CONFIG_PATH)
+	assert_eq(loaded.presentation_clips_path, "res://local/clips/")
+	assert_eq(loaded.presentation_clip_resource_budget_bytes,
+		2 * 1024 * 1024 * 1024)
+	assert_eq(loaded.presentation_clip_max_viewport_pixels, 16384 * 16384)
+	assert_eq(loaded.get_applied_sources(), PackedStringArray([
+		TEST_BASE_CONFIG_PATH, TEST_LOCAL_CONFIG_PATH,
+	]))
+	_runtime.config = loaded
+	_runtime._apply_config()
+	assert_eq(_runtime.presentation_clips_path, "res://local/clips/")
+	assert_eq(_runtime.presentation_clip_resource_budget_bytes,
+		2 * 1024 * 1024 * 1024)
+	assert_eq(_runtime.presentation_clip_max_viewport_pixels, 16384 * 16384)
+	loaded.reset()
+	assert_eq(loaded.presentation_clips_path, "res://presentation/clips/")
+	assert_eq(loaded.presentation_clip_resource_budget_bytes, 512 * 1024 * 1024)
+	assert_eq(loaded.presentation_clip_max_viewport_pixels, 3840 * 2160)
+
+
+func test_presentation_clip_config_invalid_values_fail_atomically() -> void:
+	var cases: Array[String] = [
+		"[presentation_clips]\nresource_budget_bytes = 33554431\n",
+		"[presentation_clips]\nresource_budget_bytes = 2147483649\n",
+		"[presentation_clips]\nmax_viewport_pixels = 57599\n",
+		"[presentation_clips]\nmax_viewport_pixels = 268435457\n",
+		"[presentation_clips]\nresource_budget_bytes = \"large\"\n",
+		"[presentation_clips]\nunknown_budget = 1\n",
+		"[paths]\npresentation_clips = 7\n",
+	]
+	for case_index in cases.size():
+		config.reset()
+		config.presentation_clips_path = "res://before/clips/"
+		config.presentation_clip_resource_budget_bytes = 64 * 1024 * 1024
+		config.presentation_clip_max_viewport_pixels = 640 * 360
+		_write_raw_project_config(TEST_BASE_CONFIG_PATH, cases[case_index])
+		assert_eq(config.load_from_path(TEST_BASE_CONFIG_PATH), ERR_INVALID_DATA,
+			"case %d" % case_index)
+		assert_eq(config.presentation_clips_path, "res://before/clips/")
+		assert_eq(config.presentation_clip_resource_budget_bytes,
+			64 * 1024 * 1024)
+		assert_eq(config.presentation_clip_max_viewport_pixels, 640 * 360)
+		assert_eq(config.get_applied_sources(), PackedStringArray())
 
 
 func test_runtime_title_scene_defaults_to_builtin():

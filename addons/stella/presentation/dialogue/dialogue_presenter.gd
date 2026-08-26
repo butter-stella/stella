@@ -175,8 +175,13 @@ var _dialogue_visibility_effective_signatures: Dictionary = {
 	"quick_menu": "",
 }
 var _dialogue_visibility_active: Dictionary = {}
+var _presentation_clip_plans: Dictionary = {}
+var _presentation_clip_claimed_suppression: Dictionary = {}
+var _presentation_clip_suppression: Dictionary = {}
+var _presentation_clip_transaction: Dictionary = {}
 var _dialogue_clear_participant_capability: RefCounted
 var _dialogue_avatar_participant_capability: RefCounted
+var _presentation_clip_participant_capability: RefCounted
 var _addressable_avatar_sprite: Sprite2D
 var _addressable_avatar_outgoing: Sprite2D
 var _addressable_avatar_state: Dictionary = DialogueAvatarState.default_state()
@@ -194,6 +199,7 @@ var _advance_indicator_offset: Vector2 = Vector2.ZERO
 var _indicator_candidate_dialogue_gen: int = -1
 var _indicator_token: int = 0
 var _dialogue_ready: bool = false
+var _advance_indicator_surface_effective: bool = true
 var _indicator_operation_depth: int = 0
 var _indicator_configuration_revision: int = 0
 var _indicator_deferred_action: String = ""
@@ -340,6 +346,22 @@ func _ready():
 		_on_dialogue_avatar_state_apply_requested)
 	SignalBus.dialogue_avatar_transition_receipts_finish_requested.connect(
 		_on_dialogue_avatar_transition_receipts_finish_requested)
+	SignalBus.presentation_clip_validate_requested.connect(
+		_on_presentation_clip_validate_requested)
+	SignalBus.presentation_clip_accept_requested.connect(
+		_on_presentation_clip_accept_requested)
+	SignalBus.presentation_clip_apply_readiness_requested.connect(
+		_on_presentation_clip_apply_readiness_requested)
+	SignalBus.presentation_clip_apply_requested.connect(
+		_on_presentation_clip_apply_requested)
+	SignalBus.presentation_clip_publish_readiness_requested.connect(
+		_on_presentation_clip_publish_readiness_requested)
+	SignalBus.presentation_clip_retire_requested.connect(
+		_on_presentation_clip_retire_requested)
+	SignalBus.presentation_clip_projection_reset_requested.connect(
+		_on_presentation_clip_projection_reset_requested)
+	SignalBus.presentation_clip_request_settled.connect(
+		_on_presentation_clip_request_settled)
 	if SignalBus.has_signal(&"dialogue_visibility_state_apply_requested"):
 		(SignalBus.get(&"dialogue_visibility_state_apply_requested") as Signal).connect(
 			_on_dialogue_visibility_state_apply_requested
@@ -371,6 +393,15 @@ func _ready():
 	if _dialogue_avatar_participant_capability == null:
 		push_error(
 			"DialoguePresenter could not join the internal avatar registry")
+		return
+	_presentation_clip_participant_capability = (
+		StellaRuntime._register_presentation_clip_dialogue_participant(self))
+	if _presentation_clip_participant_capability == null:
+		push_error(
+			"DialoguePresenter could not join the clip-composition registry")
+		StellaRuntime._unregister_dialogue_avatar_presenter(
+			self, _dialogue_avatar_participant_capability)
+		_dialogue_avatar_participant_capability = null
 		return
 	_dialogue_bg = get_node_or_null("DialogueBg") as Control
 	_text_area = get_node_or_null("HBox/TextArea")
@@ -742,6 +773,7 @@ func _exit_tree() -> void:
 	_cancel_all_dialogue_timer_waiters()
 	_cancel_all_voice_event_waiters()
 	_cancel_all_next_frame_waiters()
+	_abort_presentation_clip_dialogue_transaction()
 	StellaRuntime._unregister_dialogue_clear_presenter(
 		self, _dialogue_clear_participant_capability)
 	_dialogue_clear_participant_capability = null
@@ -749,7 +781,16 @@ func _exit_tree() -> void:
 	StellaRuntime._unregister_dialogue_avatar_presenter(
 		self, _dialogue_avatar_participant_capability)
 	_dialogue_avatar_participant_capability = null
+	StellaRuntime._unregister_presentation_clip_composition_participant(
+		self,
+		_presentation_clip_participant_capability,
+		PresentationClipOperationRequest.ROLE_DIALOGUE,
+	)
+	_presentation_clip_participant_capability = null
 	_dialogue_avatar_request_plans.clear()
+	_presentation_clip_plans.clear()
+	_presentation_clip_claimed_suppression.clear()
+	_presentation_clip_suppression.clear()
 	_request_lifecycle_boundary(_LIFECYCLE_EXIT)
 
 
@@ -1309,6 +1350,12 @@ func _on_skip_active_changed(active: bool) -> void:
 	if not active:
 		cancel_pending_skip()
 		return
+	if (
+		StellaRuntime.presentation_director != null
+		and StellaRuntime.presentation_director
+			.current_skip_activation_was_claimed_by_clip()
+	):
+		return
 	if StellaRuntime.is_choice_active():
 		# A menu-time toolbar toggle changes future intent only. Never let the old
 		# ready dialogue or typewriter become an advance source behind the choice.
@@ -1589,6 +1636,15 @@ func _capture_request_identity(request: Dictionary) -> void:
 ## Legacy raw SHOW calls have no blocking activation and retain their global
 ## compatibility notification.
 func request_current_dialogue_advance() -> bool:
+	if (
+		StellaRuntime.presentation_director != null
+		and StellaRuntime.presentation_director.consume_active_presentation_clip_input()
+	):
+		return true
+	return _commit_current_dialogue_advance()
+
+
+func _commit_current_dialogue_advance() -> bool:
 	if _current_dialogue_activation != null:
 		if _current_dialogue_activation.advance():
 			return true
@@ -1907,13 +1963,14 @@ func _show_dialogue_now(
 	if gen != _dialogue_gen:
 		return
 	if toolbar and not uses_presentation_profile:
-		toolbar.visible = (mode == "adv")
+		_set_dialogue_visibility_node_baseline(toolbar, mode == "adv")
+		_update_dialogue_visibility_node_baseline(toolbar)
 
 	# Mode-specific text setup
 	var new_line_text: String = ""
 	var authored_source_start: int = 0
 	if mode == "nvl":
-		name_label.visible = false
+		_set_dialogue_visibility_node_baseline(name_label, false)
 		var entry_format := _resolve_nvl_entry_format()
 		var entry_prefix: String = entry_format["prefix"]
 		var entry_separator: String = entry_format["separator"]
@@ -1966,7 +2023,7 @@ func _show_dialogue_now(
 		_nvl_has_entries = true
 	elif mode == "overlay":
 		_reset_nvl_accumulator()
-		name_label.visible = false
+		_set_dialogue_visibility_node_baseline(name_label, false)
 		new_line_text = full_text
 		text_label.text = full_text
 		text_label.visible_characters = 0
@@ -1975,10 +2032,10 @@ func _show_dialogue_now(
 		new_line_text = full_text
 		if character != "":
 			name_label.text = character
-			name_label.visible = true
+			_set_dialogue_visibility_node_baseline(name_label, true)
 		else:
 			name_label.text = ""
-			name_label.visible = false
+			_set_dialogue_visibility_node_baseline(name_label, false)
 		text_label.text = full_text
 		text_label.visible_characters = 0
 
@@ -2028,9 +2085,9 @@ func _show_dialogue_now(
 		_avatar_expressions[character] = avatar_expr
 	# Skip projects only the combined final state, avoiding a segment-zero flash.
 	_update_dialogue_visibility_node_baseline(name_label)
-	_update_dialogue_visibility_node_baseline(text_label)
 	if not _should_skip_current():
 		_update_avatar(character, avatar_expr, mode)
+	_apply_canonical_dialogue_visibility()
 
 	# Commit every line-owned field before invoking custom indicator or voice
 	# hooks. Synchronous input from either boundary must see one complete active
@@ -2257,7 +2314,7 @@ func _continue_auto_play_after_ready(gen: int) -> void:
 	if StellaRuntime.is_auto_play_effective() \
 		and not StellaRuntime.is_choice_active() \
 		and StellaRuntime.game_state.is_playing():
-		request_current_dialogue_advance()
+		_commit_current_dialogue_advance()
 
 
 func _wait_for_active_voice_finished(gen: int, attempt: int) -> bool:
@@ -2416,7 +2473,12 @@ func _mark_dialogue_ready_for_indicator(gen: int) -> void:
 	if gen != _dialogue_gen or _indicator_candidate_dialogue_gen != gen:
 		return
 	_dialogue_ready = true
-	if _advance_indicator == null or _should_skip_current() or _ctrl_held:
+	if (
+		_advance_indicator == null
+		or _should_skip_current()
+		or _ctrl_held
+		or not _dialogue_surface_is_effectively_visible()
+	):
 		return
 	var token := _indicator_token
 	_show_advance_indicator_after_layout(gen, token)
@@ -2489,6 +2551,7 @@ func _indicator_request_is_current(gen: int, token: int) -> bool:
 		and _advance_indicator != null
 		and not _should_skip_current()
 		and not _ctrl_held
+		and _dialogue_surface_is_effectively_visible()
 	)
 
 
@@ -3486,7 +3549,10 @@ func set_presentation_profile(profile: DialoguePresentationProfile) -> void:
 		if owner_gen != _dialogue_gen:
 			return
 		if toolbar and not uses_profile:
-			toolbar.visible = (_current_mode == "adv")
+			_set_dialogue_visibility_node_baseline(
+				toolbar, _current_mode == "adv")
+			_update_dialogue_visibility_node_baseline(toolbar)
+		_apply_canonical_dialogue_visibility()
 	if has_active_dialogue:
 		if not _configure_advance_indicator(
 			_current_mode, _active_stla_mode_profile, owner_gen):
@@ -3826,7 +3892,8 @@ func _apply_mode_profile(
 		if _dialogue_bg == null:
 			_profile_warning(mode, "background visibility override requires a DialogueBg Control")
 		else:
-			_dialogue_bg.visible = profile.background_visible
+			_set_dialogue_visibility_node_baseline(
+				_dialogue_bg, profile.background_visible)
 	if profile.overrides_property(&"background_modulate"):
 		if _dialogue_bg == null:
 			_profile_warning(mode, "background modulation override requires a DialogueBg Control")
@@ -3842,7 +3909,8 @@ func _apply_mode_profile(
 			continue
 		for node in nodes:
 			_capture_auxiliary_visibility(node)
-			node.visible = bool(profile.visibility_groups[group_name_value])
+			_set_dialogue_visibility_node_baseline(
+				node, bool(profile.visibility_groups[group_name_value]))
 	if commit_visibility:
 		_resolve_dialogue_visibility_binding(direct_binding, false)
 		_capture_dialogue_visibility_profile_baseline()
@@ -3906,10 +3974,12 @@ func _restore_authored_presentation(apply_canonical_gate: bool = true) -> void:
 	text_label.autowrap_mode = _authored_presentation["autowrap_mode"]
 	text_label.clip_contents = _authored_presentation["clip_contents"]
 	if toolbar and _authored_presentation.has("toolbar_visible"):
-		toolbar.visible = _authored_presentation["toolbar_visible"]
+		_set_dialogue_visibility_node_baseline(
+			toolbar, bool(_authored_presentation["toolbar_visible"]))
 	if _dialogue_bg and _authored_presentation.has("background_rect"):
 		_restore_control_rect(_dialogue_bg, _authored_presentation["background_rect"])
-		_dialogue_bg.visible = _authored_presentation["background_visible"]
+		_set_dialogue_visibility_node_baseline(
+			_dialogue_bg, bool(_authored_presentation["background_visible"]))
 		_dialogue_bg.modulate = _authored_presentation["background_modulate"]
 	if _text_rect_target and _authored_presentation.has("text_rect"):
 		_restore_control_rect(_text_rect_target, _authored_presentation["text_rect"])
@@ -3919,7 +3989,8 @@ func _restore_authored_presentation(apply_canonical_gate: bool = true) -> void:
 		var entry: Dictionary = entry_value
 		var node: CanvasItem = entry["node"]
 		if is_instance_valid(node):
-			node.visible = entry["visible"]
+			_set_dialogue_visibility_node_baseline(
+				node, bool(entry["visible"]))
 	if apply_canonical_gate:
 		_apply_canonical_dialogue_visibility()
 
@@ -3983,30 +4054,80 @@ func _capture_dialogue_visibility_nodes() -> void:
 
 
 func _restore_dialogue_visibility_profile_baseline() -> void:
+	var retained: Dictionary = {}
 	for entry_value: Variant in _dialogue_visibility_profile_baseline.values():
 		var entry: Dictionary = entry_value
 		var node: CanvasItem = entry.get("node")
 		if not is_instance_valid(node):
 			continue
+		if _dialogue_visibility_node_is_suppressed(node):
+			retained[node.get_instance_id()] = entry.duplicate()
+			if node.visible:
+				node.visible = false
+			continue
 		node.visible = bool(entry.get("visible", true))
 		var restored_modulate := node.modulate
 		restored_modulate.a = float(entry.get("alpha", restored_modulate.a))
 		node.modulate = restored_modulate
-	_dialogue_visibility_profile_baseline.clear()
+	_dialogue_visibility_profile_baseline = retained
 
 
 func _capture_dialogue_visibility_profile_baseline() -> void:
+	var previous := _dialogue_visibility_profile_baseline.duplicate()
 	_dialogue_visibility_profile_baseline.clear()
 	for target: String in _dialogue_visibility_nodes:
 		for node_value: Variant in _dialogue_visibility_nodes.get(target, []):
 			var node: CanvasItem = node_value
 			if not is_instance_valid(node):
 				continue
+			var previous_entry := (
+				previous.get(node.get_instance_id(), {}) as Dictionary)
 			_dialogue_visibility_profile_baseline[node.get_instance_id()] = {
 				"node": node,
-				"visible": node.visible,
+				"visible": (
+					bool(previous_entry.get("visible", node.visible))
+					if _dialogue_visibility_node_is_suppressed(node)
+					else node.visible
+				),
 				"alpha": node.modulate.a,
 			}
+
+
+func _dialogue_visibility_node_is_suppressed(node: CanvasItem) -> bool:
+	if node == null or not is_instance_valid(node):
+		return false
+	for target: String in _dialogue_visibility_nodes:
+		if (
+			node in (_dialogue_visibility_nodes.get(target, []) as Array)
+			and bool(_presentation_clip_suppression.get(target, false))
+		):
+			return true
+	return false
+
+
+func _set_dialogue_visibility_node_baseline(
+	node: CanvasItem,
+	visible_target: bool,
+) -> void:
+	if node == null or not is_instance_valid(node):
+		return
+	if not _dialogue_visibility_node_is_suppressed(node):
+		node.visible = visible_target
+		return
+	var instance_id := node.get_instance_id()
+	var baseline := (
+		_dialogue_visibility_profile_baseline.get(instance_id, {
+			"node": node,
+			"visible": node.visible,
+			"alpha": node.modulate.a,
+		}) as Dictionary
+	).duplicate()
+	baseline["node"] = node
+	baseline["visible"] = visible_target
+	baseline["alpha"] = node.modulate.a
+	_dialogue_visibility_profile_baseline[instance_id] = baseline
+	if node.visible:
+		node.visible = false
 
 
 func _update_dialogue_visibility_node_baseline(node: CanvasItem) -> void:
@@ -4015,9 +4136,16 @@ func _update_dialogue_visibility_node_baseline(node: CanvasItem) -> void:
 	for target: String in _dialogue_visibility_nodes:
 		if node not in (_dialogue_visibility_nodes.get(target, []) as Array):
 			continue
+		var existing := (
+			_dialogue_visibility_profile_baseline.get(
+				node.get_instance_id(), {}) as Dictionary)
 		_dialogue_visibility_profile_baseline[node.get_instance_id()] = {
 			"node": node,
-			"visible": node.visible,
+			"visible": (
+				bool(existing.get("visible", node.visible))
+				if _dialogue_visibility_node_is_suppressed(node)
+				else node.visible
+			),
 			"alpha": node.modulate.a,
 		}
 		return
@@ -4055,6 +4183,20 @@ func _dialogue_visibility_fade_participants(target: String) -> Array[Dictionary]
 			"visible": true,
 			"alpha": baseline_alpha,
 		})
+	if (
+		target == "surface"
+		and _advance_indicator != null
+		and is_instance_valid(_advance_indicator)
+		and _dialogue_ready
+		and _indicator_candidate_dialogue_gen == _dialogue_gen
+		and bool(_advance_indicator.get("_position_valid"))
+	):
+		participants.append({
+			"node": _advance_indicator,
+			"visible": true,
+			"alpha": _advance_indicator.modulate.a,
+			"advance_indicator": true,
+		})
 	return participants
 
 
@@ -4075,10 +4217,435 @@ func _apply_canonical_dialogue_visibility(active_target: String = "") -> void:
 				node.visible = (
 					bool(_canonical_dialogue_visibility[target])
 					and bool(baseline.get("visible", true))
+					and not bool(_presentation_clip_suppression.get(target, false))
 				)
 				var canonical_modulate := node.modulate
 				canonical_modulate.a = float(baseline.get("alpha", canonical_modulate.a))
 				node.modulate = canonical_modulate
+	_reconcile_advance_indicator_surface_projection()
+
+
+## AdvanceIndicator is part of the canonical dialogue surface even though its
+## layout helper is a direct DialoguePanel child rather than a profile group.
+## One effective gate combines authored visibility, the current profile
+## baseline, transitions, and modal clip suppression.
+func _dialogue_surface_is_effectively_visible() -> bool:
+	if (
+		not bool(_canonical_dialogue_visibility.get("surface", true))
+		or bool(_presentation_clip_suppression.get("surface", false))
+		or _dialogue_visibility_active.has("surface")
+	):
+		return false
+	var surface_nodes: Array = _dialogue_visibility_nodes.get("surface", [])
+	if surface_nodes.is_empty():
+		return true
+	for node_value: Variant in surface_nodes:
+		var node := node_value as CanvasItem
+		if node == null or not is_instance_valid(node):
+			continue
+		var baseline := (
+			_dialogue_visibility_profile_baseline.get(
+				node.get_instance_id(),
+				{"visible": node.visible, "alpha": node.modulate.a},
+			) as Dictionary
+		)
+		if (
+			bool(baseline.get("visible", true))
+			and float(baseline.get("alpha", 1.0)) > 0.0
+		):
+			return true
+	return false
+
+
+func _hide_advance_indicator_for_surface_projection() -> void:
+	if _advance_indicator == null or not is_instance_valid(_advance_indicator):
+		return
+	if _indicator_operation_depth > 0:
+		_defer_indicator_action("hide", _dialogue_gen)
+	else:
+		_run_indicator_operation(func(): _advance_indicator.hide_indicator())
+
+
+func _restore_advance_indicator_after_surface_projection() -> void:
+	if (
+		not _dialogue_surface_is_effectively_visible()
+		or not _dialogue_ready
+		or _indicator_candidate_dialogue_gen != _dialogue_gen
+		or _advance_indicator == null
+		or not is_instance_valid(_advance_indicator)
+		or _should_skip_current()
+		or _ctrl_held
+	):
+		return
+	if _advance_indicator.visible:
+		return
+	_show_advance_indicator_after_layout(_dialogue_gen, _indicator_token)
+
+
+func _reconcile_advance_indicator_surface_projection() -> void:
+	var effective := _dialogue_surface_is_effectively_visible()
+	var changed := effective != _advance_indicator_surface_effective
+	_advance_indicator_surface_effective = effective
+	if not effective:
+		if changed:
+			# Invalidate async layout callbacks admitted by the previously visible
+			# canonical surface before hiding the marker projection.
+			_indicator_token += 1
+		_hide_advance_indicator_for_surface_projection()
+	elif changed:
+		_restore_advance_indicator_after_surface_projection()
+
+
+func _on_presentation_clip_validate_requested(
+	request: PresentationClipOperationRequest,
+) -> void:
+	if (
+		_presentation_clip_participant_capability == null
+		or request == null
+		or not request.is_target(
+			self, PresentationClipOperationRequest.ROLE_DIALOGUE)
+	):
+		return
+	var definition := _presentation_clip_definition_for(request)
+	if definition == null:
+		SignalBus.reject_presentation_clip_request(
+			request,
+			self,
+			_presentation_clip_participant_capability,
+			PresentationClipOperationRequest.ROLE_DIALOGUE,
+			"clip definition is unavailable",
+		)
+		return
+	var targets: Array[String] = []
+	if definition.suppress_dialogue_surface:
+		targets.append("surface")
+	if definition.suppress_quick_menu:
+		targets.append("quick_menu")
+	var node_ids: Dictionary = {}
+	for target: String in targets:
+		var nodes: Array = _dialogue_visibility_nodes.get(target, [])
+		if nodes.is_empty():
+			SignalBus.reject_presentation_clip_request(
+				request,
+				self,
+				_presentation_clip_participant_capability,
+				PresentationClipOperationRequest.ROLE_DIALOGUE,
+				"dialogue visibility target '%s' has no bound nodes" % target,
+			)
+			return
+		var ids: Array[int] = []
+		for node_value: Variant in nodes:
+			var node := node_value as CanvasItem
+			if node == null or not is_instance_valid(node):
+				SignalBus.reject_presentation_clip_request(
+					request,
+					self,
+					_presentation_clip_participant_capability,
+					PresentationClipOperationRequest.ROLE_DIALOGUE,
+					"dialogue visibility target '%s' contains a stale binding" % target,
+				)
+				return
+			ids.append(node.get_instance_id())
+		node_ids[target] = ids
+	_presentation_clip_plans[request.get_instance_id()] = {
+		"request": weakref(request),
+		"definition": definition,
+		"definition_fingerprint": definition.semantic_fingerprint(),
+		"targets": targets,
+		"node_ids": node_ids,
+	}
+	SignalBus.validate_presentation_clip_request(
+		request,
+		self,
+		_presentation_clip_participant_capability,
+		PresentationClipOperationRequest.ROLE_DIALOGUE,
+	)
+
+
+func _on_presentation_clip_accept_requested(
+	request: PresentationClipOperationRequest,
+) -> void:
+	if (
+		request == null
+		or not request.is_target(
+			self, PresentationClipOperationRequest.ROLE_DIALOGUE)
+		or not _presentation_clip_plans.has(request.get_instance_id())
+	):
+		return
+	SignalBus.accept_presentation_clip_request(
+		request,
+		self,
+		_presentation_clip_participant_capability,
+		PresentationClipOperationRequest.ROLE_DIALOGUE,
+	)
+
+
+func _on_presentation_clip_apply_readiness_requested(
+	request: PresentationClipOperationRequest,
+) -> void:
+	if request == null or not request.is_target(
+		self, PresentationClipOperationRequest.ROLE_DIALOGUE):
+		return
+	var plan: Dictionary = _presentation_clip_plans.get(
+		request.get_instance_id(), {})
+	if not _presentation_clip_dialogue_plan_is_current(plan, request):
+		if not plan.is_empty():
+			SignalBus.fail_presentation_clip_apply(
+				request, self, _presentation_clip_participant_capability,
+				PresentationClipOperationRequest.ROLE_DIALOGUE,
+				"dialogue definition fingerprint or bound visibility nodes changed before claim",
+			)
+		return
+	SignalBus.mark_presentation_clip_apply_ready(
+		request,
+		self,
+		_presentation_clip_participant_capability,
+		PresentationClipOperationRequest.ROLE_DIALOGUE,
+	)
+
+
+func _on_presentation_clip_apply_requested(
+	request: PresentationClipOperationRequest,
+) -> void:
+	if request == null or not request.is_target(
+		self, PresentationClipOperationRequest.ROLE_DIALOGUE):
+		return
+	var plan: Dictionary = _presentation_clip_plans.get(
+		request.get_instance_id(), {})
+	if not _presentation_clip_dialogue_plan_is_current(plan, request):
+		if not plan.is_empty():
+			SignalBus.fail_presentation_clip_apply(
+				request, self, _presentation_clip_participant_capability,
+				PresentationClipOperationRequest.ROLE_DIALOGUE,
+				"dialogue definition fingerprint or bound visibility nodes changed during claim",
+			)
+		return
+	if not SignalBus.acknowledge_presentation_clip_apply(
+		request,
+		self,
+		_presentation_clip_participant_capability,
+		PresentationClipOperationRequest.ROLE_DIALOGUE,
+	):
+		return
+	_presentation_clip_plans.erase(request.get_instance_id())
+	_presentation_clip_claimed_suppression = {
+		"request_id": request.get_request_id(),
+		"targets": (plan.get("targets", []) as Array).duplicate(),
+		"definition_fingerprint": plan.get("definition_fingerprint", ""),
+	}
+
+
+func _on_presentation_clip_publish_readiness_requested(
+	request: PresentationClipOperationRequest,
+) -> void:
+	if (
+		request == null
+		or _presentation_clip_claimed_suppression.is_empty()
+		or int(_presentation_clip_claimed_suppression.get("request_id", 0))
+			!= request.get_request_id()
+	):
+		if request != null and not _presentation_clip_claimed_suppression.is_empty():
+			SignalBus.fail_presentation_clip_apply(
+				request, self, _presentation_clip_participant_capability,
+				PresentationClipOperationRequest.ROLE_DIALOGUE,
+				"dialogue definition fingerprint changed before final commit",
+			)
+		return
+	SignalBus.mark_presentation_clip_publish_ready(
+		request,
+		self,
+		_presentation_clip_participant_capability,
+		PresentationClipOperationRequest.ROLE_DIALOGUE,
+	)
+
+
+func _run_presentation_clip_transaction_phase(
+	request: PresentationClipOperationRequest,
+	capability: RefCounted,
+	phase: StringName,
+) -> bool:
+	var request_key := request.get_instance_id() if request != null else 0
+	if (
+		phase == &"abort"
+		and request != null
+		and capability == _presentation_clip_participant_capability
+		and _presentation_clip_dialogue_transaction_is_current(request_key)
+	):
+		return _abort_presentation_clip_dialogue_transaction(request_key)
+	if (
+		request == null
+		or capability == null
+		or capability != _presentation_clip_participant_capability
+		or not request.is_target(
+			self, PresentationClipOperationRequest.ROLE_DIALOGUE)
+	):
+		return false
+	match phase:
+		&"hold":
+			if (
+				not _presentation_clip_transaction.is_empty()
+				or _presentation_clip_claimed_suppression.is_empty()
+				or int(_presentation_clip_claimed_suppression.get("request_id", 0))
+					!= request.get_request_id()
+				or String(_presentation_clip_claimed_suppression.get(
+					"definition_fingerprint", ""))
+					!= _presentation_clip_definition_fingerprint(request)
+			):
+				SignalBus.fail_presentation_clip_apply(
+					request, self, _presentation_clip_participant_capability,
+					PresentationClipOperationRequest.ROLE_DIALOGUE,
+					"dialogue sealed definition changed before transaction hold",
+				)
+				return false
+			_presentation_clip_transaction = {
+				"request_key": request_key,
+				"previous": _presentation_clip_suppression.duplicate(true),
+				"committed": false,
+			}
+			return true
+		&"commit":
+			if not _presentation_clip_dialogue_transaction_is_current(request_key):
+				return false
+			_presentation_clip_suppression = {
+				"request_id": request.get_request_id(),
+			}
+			for target_value: Variant in _presentation_clip_claimed_suppression.get(
+				"targets", []):
+				_presentation_clip_suppression[String(target_value)] = true
+			_presentation_clip_claimed_suppression.clear()
+			_presentation_clip_transaction["committed"] = true
+			return true
+		&"finalize":
+			return (
+				_presentation_clip_dialogue_transaction_is_current(request_key)
+				and bool(_presentation_clip_transaction.get("committed", false))
+			)
+		&"publish":
+			if (
+				not _presentation_clip_dialogue_transaction_is_current(request_key)
+				or not bool(_presentation_clip_transaction.get("committed", false))
+			):
+				return false
+			return true
+		&"complete":
+			if (
+				not _presentation_clip_dialogue_transaction_is_current(request_key)
+				or not bool(_presentation_clip_transaction.get("committed", false))
+			):
+				return false
+			_presentation_clip_transaction.clear()
+			_apply_canonical_dialogue_visibility()
+			return true
+		&"abort":
+			return _abort_presentation_clip_dialogue_transaction(request_key)
+	return false
+
+
+func _presentation_clip_definition_for(
+	request: PresentationClipOperationRequest,
+) -> PresentationClipDefinition:
+	return SignalBus.presentation_clip_definition_for(
+		request,
+		self,
+		_presentation_clip_participant_capability,
+		PresentationClipOperationRequest.ROLE_DIALOGUE,
+	)
+
+
+func _presentation_clip_definition_fingerprint(
+	request: PresentationClipOperationRequest,
+) -> String:
+	var definition := _presentation_clip_definition_for(request)
+	return definition.semantic_fingerprint() if definition != null else ""
+
+
+func _presentation_clip_dialogue_transaction_is_current(request_key: int) -> bool:
+	return (
+		request_key != 0
+		and int(_presentation_clip_transaction.get("request_key", 0)) == request_key
+	)
+
+
+func _abort_presentation_clip_dialogue_transaction(request_key: int = 0) -> bool:
+	if _presentation_clip_transaction.is_empty():
+		return true
+	if (
+		request_key != 0
+		and not _presentation_clip_dialogue_transaction_is_current(request_key)
+	):
+		return false
+	var transaction := _presentation_clip_transaction
+	_presentation_clip_transaction = {}
+	if bool(transaction.get("committed", false)):
+		_presentation_clip_suppression = transaction.get("previous", {})
+	else:
+		_presentation_clip_claimed_suppression.clear()
+	return true
+
+
+func _on_presentation_clip_retire_requested(
+	request_id: int,
+	_generation: int,
+	_outcome: StringName,
+) -> void:
+	if int(_presentation_clip_suppression.get("request_id", 0)) != request_id:
+		return
+	_presentation_clip_suppression.clear()
+	_apply_canonical_dialogue_visibility()
+
+
+func _on_presentation_clip_projection_reset_requested(_epoch: int) -> void:
+	_abort_presentation_clip_dialogue_transaction()
+	_presentation_clip_plans.clear()
+	_presentation_clip_claimed_suppression.clear()
+	if not _presentation_clip_suppression.is_empty():
+		_presentation_clip_suppression.clear()
+		_apply_canonical_dialogue_visibility()
+
+
+func _on_presentation_clip_request_settled(
+	request: PresentationClipOperationRequest,
+) -> void:
+	if request == null:
+		return
+	_presentation_clip_plans.erase(request.get_instance_id())
+	if (
+		not _presentation_clip_claimed_suppression.is_empty()
+		and int(_presentation_clip_claimed_suppression.get("request_id", 0))
+			== request.get_request_id()
+	):
+		_presentation_clip_claimed_suppression.clear()
+
+
+func _presentation_clip_dialogue_plan_is_current(
+	plan: Dictionary,
+	request: PresentationClipOperationRequest,
+) -> bool:
+	if plan.is_empty() or (plan.get("request") as WeakRef).get_ref() != request:
+		return false
+	var definition: PresentationClipDefinition = plan.get("definition")
+	if (
+		definition == null
+		or String(plan.get("definition_fingerprint", ""))
+			!= definition.semantic_fingerprint()
+	):
+		return false
+	var node_ids: Dictionary = plan.get("node_ids", {})
+	for target_value: Variant in plan.get("targets", []):
+		var target := String(target_value)
+		var ids: Array = node_ids.get(target, [])
+		var nodes: Array = _dialogue_visibility_nodes.get(target, [])
+		if ids.size() != nodes.size():
+			return false
+		for index in range(nodes.size()):
+			var node := nodes[index] as CanvasItem
+			if (
+				node == null
+				or not is_instance_valid(node)
+				or node.get_instance_id() != int(ids[index])
+			):
+				return false
+	return true
 
 
 func _emit_dialogue_visibility_receipt(
@@ -4198,6 +4765,10 @@ func _on_dialogue_visibility_operations_requested(
 				var node: CanvasItem = state["node"]
 				if not is_instance_valid(node) or not bool(state["visible"]):
 					continue
+				if bool(state.get("advance_indicator", false)):
+					_run_indicator_operation(
+						func(): _advance_indicator.show_ready())
+				node.visible = true
 				var transparent := node.modulate
 				transparent.a = 0.0
 				node.modulate = transparent
@@ -5481,8 +6052,10 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 		_current_avatar_expression = expression if mode == "adv" else ""
 		_avatar_texture.texture = null
 		_avatar_texture.visible = false
-		_avatar_container.visible = bool(
-			_addressable_avatar_state.get("visible", false))
+		_set_dialogue_visibility_node_baseline(
+			_avatar_container,
+			bool(_addressable_avatar_state.get("visible", false)),
+		)
 		_update_dialogue_visibility_node_baseline(_avatar_container)
 		return
 
@@ -5490,7 +6063,7 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 	if mode != "adv" or character == "":
 		_current_character = ""
 		_current_avatar_expression = ""
-		_avatar_container.visible = false
+		_set_dialogue_visibility_node_baseline(_avatar_container, false)
 		_avatar_texture.texture = null
 		_update_dialogue_visibility_node_baseline(_avatar_container)
 		return
@@ -5500,7 +6073,7 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 	if not config.has_avatar_rect():
 		_current_character = ""
 		_current_avatar_expression = ""
-		_avatar_container.visible = false
+		_set_dialogue_visibility_node_baseline(_avatar_container, false)
 		_avatar_texture.texture = null
 		_update_dialogue_visibility_node_baseline(_avatar_container)
 		return
@@ -5513,7 +6086,7 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 			push_warning("DialoguePresenter: avatar sprite not found: %s" % sprite_path)
 		_current_character = ""
 		_current_avatar_expression = ""
-		_avatar_container.visible = false
+		_set_dialogue_visibility_node_baseline(_avatar_container, false)
 		_avatar_texture.texture = null
 		_update_dialogue_visibility_node_baseline(_avatar_container)
 		return
@@ -5526,7 +6099,7 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 		)
 		_current_character = ""
 		_current_avatar_expression = ""
-		_avatar_container.visible = false
+		_set_dialogue_visibility_node_baseline(_avatar_container, false)
 		_avatar_texture.texture = null
 		_update_dialogue_visibility_node_baseline(_avatar_container)
 		return
@@ -5537,7 +6110,7 @@ func _update_avatar(character: String, expression: String, mode: String) -> void
 	atlas.atlas = source_tex
 	atlas.region = config.avatar_rect
 	_avatar_texture.texture = atlas
-	_avatar_container.visible = true
+	_set_dialogue_visibility_node_baseline(_avatar_container, true)
 	_update_dialogue_visibility_node_baseline(_avatar_container)
 	_apply_canonical_dialogue_visibility()
 

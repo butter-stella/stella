@@ -18,6 +18,9 @@ class InspectionResult extends RefCounted:
 	## Compact effective-tree model. Only nodes authored or queried by an
 	## override are materialized; nested instance descendants resolve lazily.
 	var scene_model: Dictionary = {}
+	## Declared native types for every inline sub-resource in source order.
+	## Consumers can impose stricter side-effect boundaries before ResourceLoader.
+	var sub_resource_types: PackedStringArray = PackedStringArray()
 	var matches_expected_type: bool = true
 	## Unique canonical path + expected-type inspections performed by the most
 	## recent top-level transaction. Cached repeated instances do not increment it.
@@ -32,6 +35,7 @@ class InspectionResult extends RefCounted:
 			"header": header.duplicate(true),
 			"node_paths": node_paths.duplicate(true),
 			"scene_model": scene_model.duplicate(true),
+			"sub_resource_types": sub_resource_types.duplicate(),
 			"matches_expected_type": matches_expected_type,
 			"visited_resource_count": visited_resource_count,
 		}
@@ -356,6 +360,8 @@ func _inspection_result_from_dictionary(raw: Dictionary) -> InspectionResult:
 	result.header = raw.get("header", {}).duplicate(true)
 	result.node_paths = raw.get("node_paths", {}).duplicate(true)
 	result.scene_model = raw.get("scene_model", {}).duplicate(true)
+	for sub_resource_type: Variant in raw.get("sub_resource_types", []):
+		result.sub_resource_types.append(String(sub_resource_type))
 	result.matches_expected_type = raw.get("matches_expected_type", true)
 	result.visited_resource_count = raw.get("visited_resource_count", 0)
 	return result
@@ -574,24 +580,57 @@ class _ResourceValueParser:
 	func _parse_generic_type_list() -> String:
 		var start := _index
 		var depth := 0
+		var in_string := false
+		var escaped := false
 		while _index < _text.length():
 			var character := _text[_index]
-			if character == "[":
+			if in_string:
+				if escaped:
+					escaped = false
+				elif character == "\\":
+					escaped = true
+				elif character == "\"":
+					in_string = false
+				_index += 1
+				continue
+			if character == "\"":
+				in_string = true
+			elif character == "[":
 				depth += 1
 			elif character == "]":
 				depth -= 1
 				if depth == 0:
 					_index += 1
-					return _text.substr(start, _index - start)
-			elif not (
-				character in [" ", "\t", "\r", "\n", ",", ".", "_"]
+					var generic := _text.substr(start, _index - start)
+					return generic if _generic_type_list_is_valid(generic) else ""
+			_index += 1
+		return ""
+
+
+	func _generic_type_list_is_valid(generic: String) -> bool:
+		if generic.length() < 3:
+			return false
+		var body := generic.substr(1, generic.length() - 2).strip_edges()
+		if body.is_empty():
+			return false
+		if body.begins_with("ExtResource(") or body.begins_with("SubResource("):
+			var parsed := _ResourceValueParser.new(body).parse()
+			if not parsed.get("ok", false):
+				return false
+			var references: Array = parsed.get("references", [])
+			if references.size() != 1:
+				return false
+			_references.append((references[0] as Dictionary).duplicate(true))
+			return true
+		for character: String in body:
+			if not (
+				character in [" ", "\t", "\r", "\n", ",", ".", "_", "[", "]"]
 				or _is_digit(character)
 				or character >= "A" and character <= "Z"
 				or character >= "a" and character <= "z"
 			):
-				return ""
-			_index += 1
-		return ""
+				return false
+		return true
 
 
 	func _constructor_arguments_are_valid(
@@ -868,6 +907,7 @@ func _inspect_dictionary(path: String) -> Dictionary:
 	var ext_resource_ids: Dictionary = {}
 	var ext_resources: Dictionary = {}
 	var sub_resource_ids: Dictionary = {}
+	var sub_resource_types := PackedStringArray()
 	var scene_structure_tags: Array[Dictionary] = []
 	var resource_references: Array[Dictionary] = []
 	if not _append_resource_tag_references(header, resource_references):
@@ -940,6 +980,8 @@ func _inspect_dictionary(path: String) -> Dictionary:
 				if sub_id.is_empty() or sub_resource_ids.has(sub_id):
 					return {"ok": false, "dependencies": []}
 				sub_resource_ids[sub_id] = true
+				sub_resource_types.append(String(
+					(tag["attributes"] as Dictionary).get("type", "")))
 			continue
 		if not format_state.get("allows_assignments", false):
 			return {"ok": false, "dependencies": []}
@@ -982,6 +1024,7 @@ func _inspect_dictionary(path: String) -> Dictionary:
 		"header": header,
 		"node_paths": node_paths,
 		"scene_model": scene_model,
+		"sub_resource_types": sub_resource_types,
 	}
 
 
@@ -1829,33 +1872,38 @@ func _begin_resource_assignment(line: String) -> Dictionary:
 func _resource_container_start(value: String) -> int:
 	if value[0] in ["[", "{", "("]:
 		return 0
-	var open_index := value.find("(")
+	var open_index := -1
+	var generic_depth := 0
+	var in_string := false
+	var escaped := false
+	for index in value.length():
+		var character := value[index]
+		if in_string:
+			if escaped:
+				escaped = false
+			elif character == "\\":
+				escaped = true
+			elif character == "\"":
+				in_string = false
+			continue
+		if character == "\"":
+			in_string = true
+		elif character == "[":
+			generic_depth += 1
+		elif character == "]":
+			generic_depth -= 1
+			if generic_depth < 0:
+				return -1
+		elif character == "(" and generic_depth == 0:
+			open_index = index
+			break
 	if open_index <= 0:
 		return -1
 	var prefix := value.substr(0, open_index).strip_edges()
 	var base_name := prefix.get_slice("[", 0).strip_edges()
 	if not _resource_constructor_is_known(base_name):
 		return -1
-	var generic_depth := 0
-	for character in prefix:
-		if character == "[":
-			generic_depth += 1
-		elif character == "]":
-			generic_depth -= 1
-			if generic_depth < 0:
-				return -1
-		elif not (
-			character == "_"
-			or character == ","
-			or character == "."
-			or character == " "
-			or character == "\t"
-			or character >= "0" and character <= "9"
-			or character >= "A" and character <= "Z"
-			or character >= "a" and character <= "z"
-		):
-			return -1
-	if generic_depth != 0:
+	if generic_depth != 0 or in_string:
 		return -1
 	return open_index
 

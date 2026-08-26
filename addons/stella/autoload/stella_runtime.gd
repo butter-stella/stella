@@ -51,6 +51,9 @@ var bgm_path: String = "res://audio/bgm/"
 var se_path: String = "res://audio/se/"
 var voice_path: String = "res://audio/voice/"
 var voice_dsp_path: String = "res://audio/voice_dsp/"
+var presentation_clips_path: String = "res://presentation/clips/"
+var presentation_clip_resource_budget_bytes: int = 512 * 1024 * 1024
+var presentation_clip_max_viewport_pixels: int = 3840 * 2160
 
 ## Scene paths
 var title_scene_path: String = ""
@@ -103,6 +106,7 @@ var _dialogue_avatar_registrar_authority := RefCounted.new()
 var _chapter_indicator_registrar_authority := RefCounted.new()
 var _loop_se_registrar_authority := RefCounted.new()
 var _bgm_registrar_authority := RefCounted.new()
+var _presentation_clip_registrar_authority := RefCounted.new()
 var _quit_requested := false
 var _quit_exit_code := 0
 var _quit_completion_started := false
@@ -137,6 +141,9 @@ func _init() -> void:
 		push_error("StellaRuntime: loop-SE registrar authority conflict")
 	if not SignalBus.configure_bgm_registrar(_bgm_registrar_authority):
 		push_error("StellaRuntime: BGM registrar authority conflict")
+	if not SignalBus.configure_presentation_clip_registrar(
+		_presentation_clip_registrar_authority):
+		push_error("StellaRuntime: presentation-clip registrar authority conflict")
 
 
 ## Composition-owned admission keeps the cross-layer Bus free of concrete
@@ -207,6 +214,49 @@ func _unregister_dialogue_avatar_presenter(
 	)
 
 
+func _register_presentation_clip_dialogue_participant(
+	presenter: Object,
+) -> RefCounted:
+	if (
+		presenter == null
+		or not presenter is Control
+		or presenter.get_script() != DIALOGUE_PRESENTER_SCRIPT
+	):
+		return null
+	return SignalBus.register_presentation_clip_composition_participant(
+		presenter,
+		PresentationClipOperationRequest.ROLE_DIALOGUE,
+		_presentation_clip_registrar_authority,
+		Callable(presenter, "_run_presentation_clip_transaction_phase"),
+	)
+
+
+func _register_presentation_clip_audio_participant(
+	presenter: Object,
+) -> RefCounted:
+	if not presenter is AudioPresenter:
+		return null
+	return SignalBus.register_presentation_clip_composition_participant(
+		presenter,
+		PresentationClipOperationRequest.ROLE_AUDIO,
+		_presentation_clip_registrar_authority,
+		Callable(presenter, "_run_presentation_clip_transaction_phase"),
+	)
+
+
+func _unregister_presentation_clip_composition_participant(
+	presenter: Object,
+	capability: RefCounted,
+	role: StringName,
+) -> bool:
+	return SignalBus.unregister_presentation_clip_composition_participant(
+		presenter,
+		capability,
+		role,
+		_presentation_clip_registrar_authority,
+	)
+
+
 func _register_chapter_indicator_presenter(presenter: Object) -> RefCounted:
 	if not presenter is ChapterIndicatorPresenter:
 		return null
@@ -247,6 +297,25 @@ func _unregister_audio_presenter(
 		_loop_se_registrar_authority,
 		_bgm_registrar_authority,
 	)
+
+
+func _register_presentation_clip_presenter(presenter: Object) -> RefCounted:
+	if not presenter is PresentationClipPresenter:
+		return null
+	return SignalBus.register_presentation_clip_presenter(
+		presenter,
+		_presentation_clip_registrar_authority,
+		Callable(presenter, "_run_presentation_clip_transaction_phase"),
+		Callable(presenter, "_claim_active_input_finish"),
+	)
+
+
+func _unregister_presentation_clip_presenter(
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	return SignalBus.unregister_presentation_clip_presenter(
+		presenter, capability, _presentation_clip_registrar_authority)
 
 
 func _notification(what: int) -> void:
@@ -380,7 +449,13 @@ func _ready():
 	presentation_director = PresentationDirector.new(
 		presentation_state,
 		func() -> bool: return skip_controller.is_active,
+		func() -> void: skip_controller.stop(),
 	)
+	if not SignalBus.configure_presentation_clip_input_boundary(
+		_presentation_clip_registrar_authority,
+		Callable(presentation_director, "consume_active_presentation_clip_input"),
+	):
+		push_error("StellaRuntime: presentation-clip input authority conflict")
 	skip_controller.active_changed.connect(
 		presentation_director.on_skip_active_changed)
 	character_config_loader = CharacterConfigLoader.new()
@@ -404,6 +479,9 @@ func _ready():
 	var audio_node := AudioPresenter.new()
 	audio_node.name = "AudioPresenter"
 	add_child(audio_node)
+	var clip_node := PresentationClipPresenter.new()
+	clip_node.name = "PresentationClipPresenter"
+	add_child(clip_node)
 
 	registry = CommandRegistry.new()
 	engine = ScenarioEngine.new()
@@ -507,6 +585,11 @@ func _apply_config() -> void:
 	se_path = config.se_path
 	voice_path = config.voice_path
 	voice_dsp_path = config.voice_dsp_path
+	presentation_clips_path = config.presentation_clips_path
+	presentation_clip_resource_budget_bytes = (
+		config.presentation_clip_resource_budget_bytes)
+	presentation_clip_max_viewport_pixels = (
+		config.presentation_clip_max_viewport_pixels)
 
 	if config.title_scene != "":
 		title_scene_path = config.title_scene
@@ -523,6 +606,7 @@ func _register_handlers():
 		presentation_director, presentation_state))
 	registry.register(PresentationBatchHandler.new(
 		presentation_director, presentation_state))
+	registry.register(PresentationClipHandler.new(presentation_director))
 	registry.register(JumpHandler.new())
 	registry.register(SetHandler.new())
 	registry.register(ConditionHandler.new())
@@ -551,7 +635,11 @@ func _register_dialogue_handler() -> void:
 
 ## Register a fresh handler against the current Runtime-owned Skip lifecycle.
 func _register_wait_handler() -> void:
-	registry.register(WaitHandler.new(skip_controller))
+	registry.register(WaitHandler.new(
+		skip_controller,
+		Callable(presentation_director,
+			"current_skip_activation_was_claimed_by_clip"),
+	))
 
 
 ## Resolve the game scene path — config override or built-in default.
@@ -848,6 +936,9 @@ func _acquire_navigation_runtime_ownership(
 	if not _navigation_reset_owner_survived(navigation, expected_context):
 		return false
 	SignalBus.reset_stage_visuals()
+	if not _navigation_reset_owner_survived(navigation, expected_context):
+		return false
+	SignalBus.reset_presentation_clip()
 	if not _navigation_reset_owner_survived(navigation, expected_context):
 		return false
 	SignalBus.reset_chapter_indicator_presentation()
@@ -2165,6 +2256,9 @@ func _start_preparsed_scenario(
 	SignalBus.reset_stage_visuals()
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
+	SignalBus.reset_presentation_clip()
+	if not _owns_navigation_context(navigation, expected_context):
+		return false
 	SignalBus.reset_chapter_indicator_presentation()
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
@@ -2365,6 +2459,9 @@ func _reset_presentation(
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
 	SignalBus.reset_stage_visuals()
+	if not _owns_navigation_context(navigation, expected_context):
+		return false
+	SignalBus.reset_presentation_clip()
 	if not _owns_navigation_context(navigation, expected_context):
 		return false
 	SignalBus.reset_chapter_indicator_presentation()
@@ -3756,6 +3853,10 @@ func _restore_runtime_from_snapshot(
 		return false
 
 	SignalBus.reset_stage_visuals()
+	if not _owns_navigation_context(navigation, new_ctx):
+		_release_retired_choice_boundary_token(retired_choice_session)
+		return false
+	SignalBus.reset_presentation_clip()
 	if not _owns_navigation_context(navigation, new_ctx):
 		_release_retired_choice_boundary_token(retired_choice_session)
 		return false
