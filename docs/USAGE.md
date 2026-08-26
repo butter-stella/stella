@@ -654,6 +654,8 @@ WAV definition duplicate 以 source sample frame 写入 `loop_begin` / `loop_end
 
 普通左键、Space 或 Enter 只会把当前 sealed JOIN 的 exact receipts（包括 rule-mask/mosaic Stage projection）snap 到 authored endpoint；standalone Stage 与 `FIRE_AND_FORGET` 不 claim input，也不会消费、重放 advance 或把下一句 click 归给旧转场。Skip 从 false 切换为 true 时 exact-finish 当前 JOIN 一次；Skip 是持续模式，新 batch 提交时已 active 则在 participant seal 后直接 force-cut，不创建 projection snapshot/Tween。Auto 状态本身不结束 Stage JOIN。完整语法、ordering 与 fail-close 规则见 [DSL 文档](DSL.md#312-舞台批次组合stage_batch)；公开的 reference scenario 见 [`examples/demo/scenarios/stage_batch.stla`](../examples/demo/scenarios/stage_batch.stla)，它不是默认 Start Game 入口。
 
+`z_index` 是整数基础平面，`depth_origin` 是独立有限浮点排序偏移；最终排序键为两者之和。它不会改变 position、二维 origin、scale/zoom、`depth_scale`、rotation、clip/crop 或 Asset/Body/Face 合成。对于把基础深度与深度原点分开存储的来源格式，importer 必须生成这两个 canonical 字段，不得烘焙素材或添加项目侧 Presenter 分支；`originz` 等来源字段名不是 Stella DSL alias。完整浮点键会进入 Stage canonical snapshot，并由 move transition 连续插值；load、rollback、restart、return-to-title 和 scene replacement 都通过同一 Runtime-owned Stage lifecycle cut 恢复精确终态。
+
 Rule-mask 与 mosaic 的公开合成示例位于 [`examples/demo/scenarios/stage_transitions.stla`](../examples/demo/scenarios/stage_transitions.stla)，遮罩是仓库内可再分发的 synthetic SVG；测试和示例都不依赖任何宿主项目素材。
 
 高级 typed surface 由 `PresentationOperation`、`StagePresentationOperation`、`DialogueAvatarPresentationOperation`、`DialogueVisibilityPresentationOperation`、`DialogueClearPresentationOperation`、`ChapterIndicatorPresentationOperation`、`LoopSePresentationOperation`、`BgmPresentationOperation`、`PresentationOperationReceipt`、`PresentationBatchRequest` 和 `PresentationDirector` 组成。唯一 owner 是 `StellaRuntime.presentation_director`；项目不应自行 `new()` 第二个 Director，也不应调用 `_bind_authority()`、`_seal()` 或 `_settle()` 等下划线内部方法。`PresentationRequestReservation` 同样是 Runtime 内部的单次 capability，仅供 `@combine` 在同步 typed dispatch 前登记 exact owner，不是用裸 request ID 提交工作的公开 API。同一个 Director 支持 Stage、`@dialogue_avatar`、`@dialogue_visibility`、`@dialogue_clear`、`@chapter_indicator`、`@loop_se` 与 `@bgm` 的 mixed `@presentation_batch`，在任何 apply 前完成全批 preflight/seal，再按 authored child order dispatch。它只用于需要跨 channel 共享 JOIN/FNF boundary 的高级 composition；普通 avatar/chapter/dialogue clear/显隐与 loop-SE/BGM 保持各自 standalone 写法，并由 parser lowering 到同一条 canonical child 路径。
@@ -705,6 +707,8 @@ legacy_snapshot["scenario_context"]["scenario_source_identity"] = (
 在游戏内读档、快读或从 Backlog/选项/流程图回退时，Runtime 会先把 engine context 所有权转交给恢复后的 context，再清理旧画面和阻塞命令。旧对话的取消不会触发自然 `scenario_ended`，恢复后的 context 始终是最终执行 owner；自定义 Presenter 仍只需遵守上文的 request `advance()` / `abort()` 契约。
 
 JOIN 动画进行中可以存档。存档记录已原子提交的 final canonical Stage target、loop-SE 的 `{asset, loop, volume, position}`、BGM 的 `{asset, cue, loop, position, status, stem_mix, volume}`（stopped 为 `{}`；single-stream 的 `stem_mix={}`）与 scenario cursor；operation、policy、request/batch、receipt、token、generation、Tween、barrier、fade progress 与 outgoing player 都不入档。恢复时先 cancel old generation，再 reset + atomic cut canonical target，最后在 same cursor 重新派发。BGM pause fade 存档会采样保存瞬间 cursor，但恢复直接是稳定 paused；crossfade 存档只保存 incoming target/current incoming cursor，mix fade 保存已提交的 final mix。这是有意的 cut projection，不恢复 Tween progress。loop-SE/BGM 的 same target 仍须通过 AudioPresenter/resource preflight。旧版 String `bgm` 或缺少 `stem_mix` 的旧六字段 BGM 存档不是当前版本公共 schema，generic read 与 scenario-aware load 都在任何 provider mutation 前 fail-close；宿主若需要迁移已确认版本的 single-stream 旧档，应在自己的版本化迁移事务中补入 `stem_mix={}`，Stella Runtime 不保留 legacy 分支。
+
+Stage target 中的 `z_index` 与 `depth_origin` 作为两个独立 canonical 字段进入同一 JSON snapshot；恢复时重新计算完整浮点排序键，不保存 CanvasItem bucket、sibling index 或 Tween 中间值。
 
 presentation-clip audio choice 另保存 Runtime-owned RNG authority 的完整 current snapshot。active clip
 的 player、timeline、cue cursor 仍不入档并在 load/rollback 边界退休；selection 前快照重新派发会
@@ -865,7 +869,8 @@ sakura（内心独白）
 @bg bg_school fade 0.8
 
 // 人物与其他动态图片统一使用命名舞台层
-@stage sakura show kind=character body=stage:sakura/body face=stage:sakura/smile x=960 y=1050 origin=500,1000
+@stage sakura show kind=character body=stage:sakura/body face=stage:sakura/smile x=960 y=1050 origin=500,1000 z_index=25 depth_origin=-9000
+@stage foreground_effect show asset=stage:soft_light z_index=25 depth_origin=-8000
 @stage sakura update face=stage:sakura/sad transition=fade duration=0.2
 @stage sakura hide
 @stage sakura remove

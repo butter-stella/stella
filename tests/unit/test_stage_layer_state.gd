@@ -50,6 +50,7 @@ func test_show_normalizes_complete_json_safe_state():
 			"zoom": [1.1, 1.2],
 			"depth_scale": 0.8,
 			"z": 12,
+			"depth_origin": -9000.25,
 			"opacity": 0.6,
 			"flip_x": true,
 			"redraw": _redraw_pipeline(),
@@ -64,6 +65,7 @@ func test_show_normalizes_complete_json_safe_state():
 	assert_eq(state["zoom"], [1.1, 1.2])
 	assert_almost_eq(state["depth_scale"], 0.8, 0.001)
 	assert_eq(state["z_index"], 12)
+	assert_almost_eq(state["depth_origin"], -9000.25, 0.001)
 	assert_almost_eq(state["opacity"], 0.6, 0.001)
 	assert_true(state["flip_x"])
 	assert_false(state["flip_y"])
@@ -367,6 +369,7 @@ func test_operation_envelope_is_closed_and_rejects_invalid_timing():
 func test_canonical_stage_properties_use_one_spelling_and_typed_booleans():
 	var operation := _op("show", "hero", {
 		"depth_scale": 0.8,
+		"depth_origin": -9000.25,
 		"rotation": 15.0,
 		"asset": "none",
 		"body": "none",
@@ -378,6 +381,7 @@ func test_canonical_stage_properties_use_one_spelling_and_typed_booleans():
 	assert_true(StageLayerState.validate_operation(operation, false))
 	var layers := StageLayerState.reduce({}, [operation], false)
 	assert_almost_eq(layers["hero"]["depth_scale"], 0.8, 0.001)
+	assert_almost_eq(layers["hero"]["depth_origin"], -9000.25, 0.001)
 	assert_almost_eq(layers["hero"]["rotation"], 15.0, 0.001)
 	assert_eq(layers["hero"]["asset"], "")
 	assert_eq(layers["hero"]["body"], "")
@@ -385,6 +389,17 @@ func test_canonical_stage_properties_use_one_spelling_and_typed_booleans():
 	assert_true(layers["hero"]["visible"])
 	assert_false(layers["hero"]["flip_x"])
 	assert_true(layers["hero"]["flip_y"])
+
+
+func test_depth_origin_preserves_finite_values_beyond_canvas_buckets() -> void:
+	for depth_origin in [-1.0e100, 1.0e100]:
+		var operation := _op("show", "extreme", {
+			"z_index": 25,
+			"depth_origin": depth_origin,
+		})
+		assert_true(StageLayerState.validate_operation(operation, false))
+		var layers := StageLayerState.reduce({}, [operation], false)
+		assert_eq(layers["extreme"]["depth_origin"], depth_origin)
 
 
 func test_undocumented_aliases_reject_the_whole_state_operation():
@@ -397,6 +412,7 @@ func test_undocumented_aliases_reject_the_whole_state_operation():
 	var original := layers.duplicate(true)
 	var invalid_properties := [
 		{"depth": 0.8},
+		{"originz": -9000.0},
 		{"rotation_degrees": 15.0},
 		{"z": 1.5},
 		{"z": 1.5, "z_index": 2},
@@ -420,6 +436,8 @@ func test_undocumented_aliases_reject_the_whole_state_operation():
 		{"visible": 0},
 		{"flip_x": "yes"},
 		{"flip_y": 0},
+		{"depth_origin": NAN},
+		{"depth_origin": INF},
 	]
 	for invalid_property in invalid_properties:
 		var mixed_patch := {"opacity": 0.25}

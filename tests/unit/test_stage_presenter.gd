@@ -134,6 +134,7 @@ func test_named_layer_mounts_under_shake_root_and_projects_state() -> void:
 		"depth_scale": 2.0,
 		"rotation": 37.0,
 		"z_index": 12,
+		"depth_origin": 0.75,
 		"opacity": 0.45,
 		"flip_x": true,
 		"redraw": [
@@ -152,6 +153,8 @@ func test_named_layer_mounts_under_shake_root_and_projects_state() -> void:
 	assert_eq(layer.scale, Vector2(2.0, 1.5))
 	assert_almost_eq(layer.rotation_degrees, 37.0, 0.001)
 	assert_eq(layer.z_index, 12)
+	assert_almost_eq(
+		float(_presenter._layers[layer_id]["depth_sort_key"]), 12.75, 0.001)
 
 	var composite := layer.get_node("Composite") as CanvasGroup
 	assert_eq(composite.position, Vector2(8.0, -9.0))
@@ -165,6 +168,113 @@ func test_named_layer_mounts_under_shake_root_and_projects_state() -> void:
 	assert_eq(_sprite(layer, "asset").position, Vector2(1.0, 2.0))
 	assert_eq(_sprite(layer, "body").position, Vector2(3.0, 4.0))
 	assert_eq(_sprite(layer, "face").position, Vector2(5.0, 6.0))
+
+
+func test_depth_origin_sorts_independently_from_transform_and_channels() -> void:
+	_emit_operations([
+		_operation("show", "effect", {
+			"asset": "stage:bg_school_gate",
+			"position": [0.0, 0.0],
+			"origin": [3.0, 4.0],
+			"scale": [1.25, 0.75],
+			"depth_scale": 0.8,
+			"z_index": 25,
+			"depth_origin": -8000.0,
+		}),
+		_operation("show", "character", {
+			"body": "stage:bg_cafe",
+			"face": "stage:bg_hallway",
+			"position": [0.0, -150.0],
+			"origin": [7.0, 9.0],
+			"scale": [0.5, 0.75],
+			"depth_scale": 1.2,
+			"z_index": 25,
+			"depth_origin": -9000.0,
+			"redraw": [{
+				"type": "clip",
+				"asset": "res://tests/fixtures/stage/redraw_mask.png",
+				"offset": [11.0, 13.0],
+				"fit": "native",
+			}],
+		}),
+	])
+	var effect := _presenter.get_layer_node("effect")
+	var character := _presenter.get_layer_node("character")
+	assert_gt(effect.get_index(), character.get_index())
+	assert_eq(effect.position, Vector2.ZERO)
+	assert_eq(character.position, Vector2(0.0, -150.0))
+	assert_eq(effect.scale, Vector2(1.0, 0.6))
+	assert_almost_eq(character.scale.x, 0.6, 0.001)
+	assert_almost_eq(character.scale.y, 0.9, 0.001)
+	assert_eq((effect.get_node("Composite") as CanvasGroup).position, Vector2(-3.0, -4.0))
+	assert_eq((character.get_node("Composite") as CanvasGroup).position, Vector2(-7.0, -9.0))
+	assert_not_null(_sprite(character, "body").texture)
+	assert_not_null(_sprite(character, "face").texture)
+	assert_eq(
+		(_presenter._states["character"]["redraw"] as Array)[0]["offset"],
+		[11.0, 13.0],
+	)
+
+	_emit_operations([_operation("update", "character", {
+		"depth_origin": -7000.0,
+	})])
+	assert_gt(character.get_index(), effect.get_index())
+	assert_eq(character.position, Vector2(0.0, -150.0))
+	assert_almost_eq(character.scale.x, 0.6, 0.001)
+	assert_almost_eq(character.scale.y, 0.9, 0.001)
+
+
+func test_move_interpolates_full_depth_key_and_force_finish_snaps_exactly() -> void:
+	_emit_operations([_operation("show", "moving_depth", {
+		"z_index": 25,
+		"depth_origin": -9000.0,
+	})])
+	_emit_operations([_operation("update", "moving_depth", {
+		"depth_origin": -8000.0,
+	}, "move", 2.0)], false)
+	var tween: Tween = _presenter._layer_tweens["moving_depth"]
+	tween.custom_step(1.0)
+	assert_almost_eq(
+		float(_presenter._layers["moving_depth"]["depth_sort_key"]),
+		-8475.0,
+		0.01,
+	)
+	var transition := _latest_transition("moving_depth")
+	SignalBus.stage_transitions_finish_requested.emit([transition])
+	assert_false(_presenter._layer_tweens.has("moving_depth"))
+	assert_almost_eq(
+		float(_presenter._layers["moving_depth"]["depth_sort_key"]),
+		-7975.0,
+		0.001,
+	)
+	assert_eq(
+		_presenter.get_layer_node("moving_depth").z_index,
+		RenderingServer.CANVAS_ITEM_Z_MIN,
+		"the CanvasItem bucket may clamp without losing the authored float key",
+	)
+
+
+func test_extreme_finite_depth_origin_clamps_only_the_canvas_bucket() -> void:
+	_emit_operations([
+		_operation("show", "far_back", {"depth_origin": -1.0e100}),
+		_operation("show", "far_front", {"depth_origin": 1.0e100}),
+	])
+	assert_eq(
+		_presenter._layers["far_back"]["depth_sort_key"], -1.0e100)
+	assert_eq(
+		_presenter._layers["far_front"]["depth_sort_key"], 1.0e100)
+	assert_eq(
+		_presenter.get_layer_node("far_back").z_index,
+		RenderingServer.CANVAS_ITEM_Z_MIN,
+	)
+	assert_eq(
+		_presenter.get_layer_node("far_front").z_index,
+		RenderingServer.CANVAS_ITEM_Z_MAX,
+	)
+	assert_lt(
+		_presenter.get_layer_node("far_back").get_index(),
+		_presenter.get_layer_node("far_front").get_index(),
+	)
 
 
 func test_resource_prefixes_and_bare_ids_use_runtime_paths() -> void:
@@ -959,12 +1069,15 @@ func test_abort_snaps_in_flight_transition_to_canonical_target() -> void:
 		"position": [900.0, 300.0],
 		"rotation": 24.0,
 		"opacity": 0.6,
+		"depth_origin": -8000.25,
 	}, "move", 1.0)], false)
 	SignalBus.engine_abort_requested.emit()
 	var layer := _presenter.get_layer_node("hero")
 	assert_eq(layer.position, Vector2(900.0, 300.0))
 	assert_almost_eq(layer.rotation_degrees, 24.0, 0.001)
 	assert_almost_eq((layer.get_node("Composite") as CanvasGroup).self_modulate.a, 0.6, 0.001)
+	assert_almost_eq(
+		float(_presenter._layers["hero"]["depth_sort_key"]), -8000.25, 0.001)
 
 
 func test_stage_restore_replaces_the_complete_named_layer_set() -> void:
@@ -1109,7 +1222,7 @@ func test_presentation_state_json_roundtrip_rebuilds_complete_stage() -> void:
 			"position": [321.0, 432.0], "origin": [12.0, 34.0],
 			"scale": [0.75, 0.8], "zoom": [1.2, 1.1],
 			"depth_scale": 0.9, "rotation": 17.0, "opacity": 0.65,
-			"z_index": 8,
+			"z_index": 8, "depth_origin": -8000.25,
 		}),
 		_operation("hide", "roundtrip"),
 	])
@@ -1125,6 +1238,11 @@ func test_presentation_state_json_roundtrip_rebuilds_complete_stage() -> void:
 	assert_eq((hero.get_node("Composite") as CanvasGroup).position, Vector2(-12.0, -34.0))
 	assert_almost_eq(hero.scale.x, 0.81, 0.001)
 	assert_almost_eq(hero.scale.y, 0.792, 0.001)
+	assert_almost_eq(
+		float(_presenter._layers["roundtrip"]["depth_sort_key"]),
+		-7992.25,
+		0.001,
+	)
 	assert_true(_sprite(hero, "body").texture.resource_path.ends_with("bg_cafe.png"))
 	assert_true(_sprite(hero, "face").texture.resource_path.ends_with("bg_hallway.png"))
 	state.disconnect_signals()

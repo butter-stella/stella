@@ -78,6 +78,7 @@ var _transition_texture_cache_order: Array[String] = []
 var _active_transition_snapshot_bytes := 0
 var _pending_transition_snapshot_bytes := 0
 var _layer_transition_projections: Dictionary = {}
+var _depth_order_signature: Array[int] = []
 var _pending_stage_request_plans: Dictionary = {}
 var _pending_stage_preflight_states: Dictionary = {}
 var _held_stage_transactions: Dictionary = {}
@@ -1444,12 +1445,12 @@ func _start_projection_transition(
 		return false
 	holder.name = "Transition_%s" % layer_id
 	holder.z_as_relative = false
-	holder.z_index = clampi(
-		int(target_state.get(
-			"z_index", (record["root"] as Node2D).z_index)),
-		RenderingServer.CANVAS_ITEM_Z_MIN,
-		RenderingServer.CANVAS_ITEM_Z_MAX,
+	var depth_sort_key := (
+		_state_depth_sort_key(target_state)
+		if not target_state.is_empty()
+		else float(record.get("depth_sort_key", 0.0))
 	)
+	_apply_canvas_depth_bucket(holder, depth_sort_key)
 	_layer_host().add_child(holder)
 	var snapshot_bytes := int(prepared.get("snapshot_bytes", 0))
 	_active_transition_snapshot_bytes += snapshot_bytes
@@ -1457,7 +1458,10 @@ func _start_projection_transition(
 		"holder": holder,
 		"bytes": snapshot_bytes,
 		"removing": removing,
+		"depth_sort_key": depth_sort_key,
+		"depth_sort_sequence": int(record.get("depth_sort_sequence", 0)),
 	}
+	_refresh_depth_order()
 	(record["root"] as Node2D).visible = false
 	var tween := create_tween()
 	_layer_tweens[layer_id] = tween
@@ -1588,6 +1592,7 @@ func _cleanup_transition_projection(layer_id: String, show_live: bool) -> void:
 		if holder.get_parent() != null:
 			holder.get_parent().remove_child(holder)
 		holder.queue_free()
+	_refresh_depth_order()
 	if show_live and _layers.has(layer_id) and _states.has(layer_id):
 		var record: Dictionary = _layers[layer_id]
 		(record["root"] as Node2D).visible = bool(
@@ -1664,11 +1669,12 @@ func _ensure_layer(layer_id: String) -> Dictionary:
 	var record := _create_layer_record(layer_id)
 	_layer_host().add_child(record["root"])
 	_layers[layer_id] = record
+	_refresh_depth_order()
 	return record
 
 
 func _create_layer_record(layer_id: String) -> Dictionary:
-
+	var depth_sort_sequence := _next_node_index
 	var root := Node2D.new()
 	root.name = "Layer_%d" % _next_node_index
 	_next_node_index += 1
@@ -1714,6 +1720,8 @@ func _create_layer_record(layer_id: String) -> Dictionary:
 		"redraw_render_bounds": Rect2(),
 		"redraw_pipeline_dynamic": false,
 		"redraw_dynamic_size_signature": [],
+		"depth_sort_key": 0.0,
+		"depth_sort_sequence": depth_sort_sequence,
 	}
 
 
@@ -1939,6 +1947,7 @@ func _free_layer(layer_id: String, emit_terminal: bool = true) -> Dictionary:
 		root.queue_free()
 	_layers.erase(layer_id)
 	_layer_generations.erase(layer_id)
+	_refresh_depth_order()
 	if emit_terminal:
 		_publish_stage_transition_terminal(cancelled, &"cancelled")
 	return cancelled
@@ -2106,11 +2115,7 @@ func _apply_transform_cut(record: Dictionary, state: Dictionary) -> void:
 	root.position = _state_position(state)
 	root.rotation_degrees = float(state.get("rotation", 0.0))
 	root.scale = _state_scale(state)
-	root.z_index = clampi(
-		int(state.get("z_index", 0)),
-		RenderingServer.CANVAS_ITEM_Z_MIN,
-		RenderingServer.CANVAS_ITEM_Z_MAX,
-	)
+	_set_record_depth_sort_key(record, _state_depth_sort_key(state))
 	composite.position = _composite_origin_position(state)
 	composite.scale = Vector2(
 		-1.0 if bool(state.get("flip_x", false)) else 1.0,
@@ -2127,10 +2132,16 @@ func _tween_transform(
 ) -> void:
 	var root := record["root"] as Node2D
 	var composite := record["composite"] as CanvasGroup
-	root.z_index = clampi(
-		int(state.get("z_index", 0)),
-		RenderingServer.CANVAS_ITEM_Z_MIN,
-		RenderingServer.CANVAS_ITEM_Z_MAX,
+	var target_depth_sort_key := _state_depth_sort_key(state)
+	var current_depth_sort_key := float(
+		record.get("depth_sort_key", target_depth_sort_key)
+	)
+	tween.tween_method(
+		func(value: float) -> void:
+			_set_record_depth_sort_key(record, value),
+		current_depth_sort_key,
+		target_depth_sort_key,
+		duration,
 	)
 	if tween_position:
 		tween.tween_property(root, "position", _state_position(state), duration)
@@ -2162,6 +2173,79 @@ func _state_scale(state: Dictionary) -> Vector2:
 	var zoom := _array_to_vector2(state.get("zoom", [1.0, 1.0]), Vector2.ONE)
 	var depth_scale := float(state.get("depth_scale", 1.0))
 	return scale_value * zoom * depth_scale
+
+
+func _state_depth_sort_key(state: Dictionary) -> float:
+	return float(state.get("z_index", 0)) + float(state.get("depth_origin", 0.0))
+
+
+func _set_record_depth_sort_key(record: Dictionary, value: float) -> void:
+	record["depth_sort_key"] = value
+	var root := record.get("root") as Node2D
+	if is_instance_valid(root):
+		_apply_canvas_depth_bucket(root, value)
+	_refresh_depth_order()
+
+
+func _apply_canvas_depth_bucket(item: CanvasItem, value: float) -> void:
+	if value <= float(RenderingServer.CANVAS_ITEM_Z_MIN):
+		item.z_index = RenderingServer.CANVAS_ITEM_Z_MIN
+	elif value >= float(RenderingServer.CANVAS_ITEM_Z_MAX):
+		item.z_index = RenderingServer.CANVAS_ITEM_Z_MAX
+	else:
+		item.z_index = int(floorf(value))
+
+
+func _refresh_depth_order() -> void:
+	var host := _layer_host()
+	if host == null:
+		return
+	var sortable: Array[Dictionary] = []
+	for raw_layer_id in _layers:
+		var record: Dictionary = _layers[raw_layer_id]
+		var root := record.get("root") as Node2D
+		if not is_instance_valid(root) or root.get_parent() != host:
+			continue
+		var key := float(record.get("depth_sort_key", 0.0))
+		_apply_canvas_depth_bucket(root, key)
+		sortable.append({
+			"node": root,
+			"key": key,
+			"sequence": int(record.get("depth_sort_sequence", 0)) * 2,
+		})
+	for raw_layer_id in _layer_transition_projections:
+		var projection: Dictionary = _layer_transition_projections[raw_layer_id]
+		var holder := projection.get("holder") as Node2D
+		if not is_instance_valid(holder) or holder.get_parent() != host:
+			continue
+		var key := float(projection.get("depth_sort_key", 0.0))
+		_apply_canvas_depth_bucket(holder, key)
+		sortable.append({
+			"node": holder,
+			"key": key,
+			"sequence": int(projection.get("depth_sort_sequence", 0)) * 2 + 1,
+		})
+	var desired_signature: Array[int] = []
+	sortable.sort_custom(func(left: Dictionary, right: Dictionary) -> bool:
+		var left_key := float(left["key"])
+		var right_key := float(right["key"])
+		if left_key != right_key:
+			return left_key < right_key
+		return int(left["sequence"]) < int(right["sequence"])
+	)
+	for entry: Dictionary in sortable:
+		desired_signature.append((entry["node"] as Node).get_instance_id())
+	if desired_signature == _depth_order_signature:
+		return
+	_depth_order_signature = desired_signature
+	if sortable.size() < 2:
+		return
+	var target_indices: Array[int] = []
+	for entry: Dictionary in sortable:
+		target_indices.append((entry["node"] as Node).get_index())
+	target_indices.sort()
+	for index in range(sortable.size()):
+		host.move_child(sortable[index]["node"], target_indices[index])
 
 
 func _composite_origin_position(state: Dictionary) -> Vector2:

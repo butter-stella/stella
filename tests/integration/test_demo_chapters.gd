@@ -17,6 +17,8 @@ const LOOP_SE_REFERENCE_PATH = "res://examples/demo/scenarios/loop_se.stla"
 const BGM_REFERENCE_PATH = "res://examples/demo/scenarios/bgm_lifecycle.stla"
 const RECOLLECTION_REFERENCE_PATH = \
 	"res://examples/demo/scenarios/recollection_playback.stla"
+const STAGE_BATCH_REFERENCE_PATH = \
+	"res://examples/demo/scenarios/stage_batch.stla"
 const BGM_RESOURCE_PATH = "res://examples/demo/audio/bgm/synthetic_bgm.tres"
 const BGM_STEM_RESOURCE_PATH = \
 	"res://examples/demo/audio/bgm/synthetic_bgm_stems.tres"
@@ -116,6 +118,38 @@ func test_recollection_public_reference_uses_shared_story_source() -> void:
 	])
 	assert_eq(source.count("@recollection_exit"), 1,
 		"the public example uses the only canonical zero-argument spelling")
+
+
+func test_stage_batch_public_reference_keeps_depth_origin_independent() -> void:
+	assert_true(FileAccess.file_exists(STAGE_BATCH_REFERENCE_PATH))
+	if not FileAccess.file_exists(STAGE_BATCH_REFERENCE_PATH):
+		return
+	var file := FileAccess.open(STAGE_BATCH_REFERENCE_PATH, FileAccess.READ)
+	assert_not_null(file)
+	if file == null:
+		return
+	var source := file.get_as_text()
+	file.close()
+	var data := DslParser.parse(
+		DslLexer.tokenize(source),
+		"stage_batch_demo",
+		STAGE_BATCH_REFERENCE_PATH,
+	)
+	assert_eq(data.diagnostics, [], str(data.diagnostics))
+	var scene := data.get_scene("stage_batch_start")
+	assert_not_null(scene)
+	if scene == null:
+		return
+	var first_batch: CommandData = scene.commands[0]
+	assert_eq(first_batch.type, "stage_batch")
+	var operations: Array = first_batch.params["operations"]
+	assert_eq(operations.size(), 2)
+	assert_eq(operations[0]["properties"]["z_index"], 25)
+	assert_eq(operations[1]["properties"]["z_index"], 25)
+	assert_eq(operations[0]["properties"]["depth_origin"], -9000)
+	assert_eq(operations[1]["properties"]["depth_origin"], -8000)
+	assert_false("originz=" in source,
+		"public Stella authors use only the canonical property")
 
 
 func test_demo_cafe_flash_is_a_real_command_before_combined_dialogue():

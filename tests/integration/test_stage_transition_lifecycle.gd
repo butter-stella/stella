@@ -178,7 +178,11 @@ func test_missing_rule_mask_fails_at_child_source_before_stage_mutation() -> voi
 	var request := _submit(_operation(
 		"update",
 		"event",
-		{"asset": "stage:redraw_blur_order"},
+		{
+			"asset": "stage:redraw_blur_order",
+			"z_index": 25,
+			"depth_origin": -8000.25,
+		},
 		"rule",
 		{"mask": "stage:definitely_missing", "softness": 0.0, "invert": false},
 		1.0,
@@ -756,7 +760,11 @@ func test_mosaic_join_uses_existing_exact_receipt_and_releases_snapshot_budget()
 	var request := _submit(_operation(
 		"update",
 		"event",
-		{"asset": "stage:redraw_blur_order"},
+		{
+			"asset": "stage:redraw_blur_order",
+			"z_index": 25,
+			"depth_origin": -8000.25,
+		},
 		"mosaic",
 		{"cell": 24},
 		10.0,
@@ -765,6 +773,12 @@ func test_mosaic_join_uses_existing_exact_receipt_and_releases_snapshot_budget()
 	assert_false(request.is_settled())
 	assert_eq(_receipts.size(), 1)
 	assert_true(_presenter._layer_transition_projections.has("event"))
+	var projection: Dictionary = _presenter._layer_transition_projections["event"]
+	assert_almost_eq(float(projection["depth_sort_key"]), -7975.25, 0.001)
+	assert_eq(
+		(projection["holder"] as Node2D).z_index,
+		RenderingServer.CANVAS_ITEM_Z_MIN,
+	)
 	assert_gt(_presenter._active_transition_snapshot_bytes, 0)
 	assert_eq(
 		_runtime.presentation_state.stage_layers["event"]["asset"],
@@ -780,6 +794,8 @@ func test_mosaic_join_uses_existing_exact_receipt_and_releases_snapshot_budget()
 		_presenter.get_layer_state("event")["asset"],
 		"stage:redraw_blur_order",
 	)
+	assert_almost_eq(
+		float(_presenter._layers["event"]["depth_sort_key"]), -7975.25, 0.001)
 
 
 func test_rule_fire_and_forget_does_not_claim_ordinary_advance() -> void:
@@ -787,7 +803,11 @@ func test_rule_fire_and_forget_does_not_claim_ordinary_advance() -> void:
 	var request := _submit(_operation(
 		"update",
 		"event",
-		{"asset": "stage:redraw_blur_order"},
+		{
+			"asset": "stage:redraw_blur_order",
+			"z_index": 25,
+			"depth_origin": -9000.25,
+		},
 		"rule",
 		{"mask": "stage:redraw_mask", "softness": 0.1, "invert": false},
 		10.0,
@@ -812,7 +832,11 @@ func test_mid_transition_restore_cuts_to_sealed_target_and_rejects_old_receipt()
 	var request := _submit(_operation(
 		"update",
 		"event",
-		{"asset": "stage:redraw_blur_order"},
+		{
+			"asset": "stage:redraw_blur_order",
+			"z_index": 25,
+			"depth_origin": -9000.25,
+		},
 		"mosaic",
 		{"cell": 32},
 		10.0,
@@ -825,6 +849,8 @@ func test_mid_transition_restore_cuts_to_sealed_target_and_rejects_old_receipt()
 	assert_true(_presenter._layer_transition_tokens.is_empty())
 	assert_true(_presenter._layer_transition_projections.is_empty())
 	assert_eq(_presenter.get_layer_state("event")["asset"], "stage:redraw_blur_order")
+	assert_almost_eq(
+		float(_presenter._layers["event"]["depth_sort_key"]), -8975.25, 0.001)
 	SignalBus.stage_transition_receipts_finish_requested.emit(stale_receipts)
 	assert_eq(_presenter.get_layer_state("event")["asset"], "stage:redraw_blur_order")
 	assert_true(_presenter._layer_transition_tokens.is_empty())
@@ -896,7 +922,11 @@ func test_overlap_replacement_rejects_old_rule_receipt_for_new_mosaic_owner() ->
 	_show_source()
 	_receipts.clear()
 	var first := _submit(_operation(
-		"update", "event", {"asset": "stage:redraw_blur_order"},
+		"update", "event", {
+			"asset": "stage:redraw_blur_order",
+			"z_index": 25,
+			"depth_origin": -8000.25,
+		},
 		"rule", {"mask": "stage:redraw_mask", "softness": 0.0, "invert": false},
 		10.0, 52,
 	), PresentationBatchRequest.Policy.FIRE_AND_FORGET)
@@ -950,7 +980,11 @@ func test_persistent_skip_force_cuts_projection_without_receipt_or_advance() -> 
 	_receipts.clear()
 	_runtime.skip_controller.is_active = true
 	var request := _submit(_operation(
-		"update", "event", {"asset": "stage:redraw_blur_order"},
+		"update", "event", {
+			"asset": "stage:redraw_blur_order",
+			"z_index": 25,
+			"depth_origin": -8000.25,
+		},
 		"rule", {"mask": "stage:redraw_mask", "softness": 0.2, "invert": false},
 		10.0, 64,
 	), PresentationBatchRequest.Policy.JOIN)
@@ -961,6 +995,8 @@ func test_persistent_skip_force_cuts_projection_without_receipt_or_advance() -> 
 	assert_true(_presenter._layer_transition_projections.is_empty())
 	assert_eq(_presenter.get_layer_state("event")["asset"],
 		"stage:redraw_blur_order")
+	assert_almost_eq(
+		float(_presenter._layers["event"]["depth_sort_key"]), -7975.25, 0.001)
 	_runtime.skip_controller.is_active = false
 
 
@@ -1051,7 +1087,11 @@ func test_abort_cuts_to_canonical_target_and_retires_old_projection_owner() -> v
 	_show_source()
 	_receipts.clear()
 	var request := _submit(_operation(
-		"update", "event", {"asset": "stage:redraw_blur_order"},
+		"update", "event", {
+			"asset": "stage:redraw_blur_order",
+			"z_index": 25,
+			"depth_origin": -8000.25,
+		},
 		"mosaic", {"cell": 32}, 10.0, 69,
 	), PresentationBatchRequest.Policy.JOIN)
 	assert_false(request.is_settled())
@@ -1073,7 +1113,11 @@ func test_rollback_and_restart_restore_only_sealed_canonical_snapshots() -> void
 	var before: Dictionary = _runtime.presentation_state.stage_layers.duplicate(true)
 	_receipts.clear()
 	var request := _submit(_operation(
-		"update", "event", {"asset": "stage:redraw_blur_order"},
+		"update", "event", {
+			"asset": "stage:redraw_blur_order",
+			"z_index": 25,
+			"depth_origin": -9000.25,
+		},
 		"rule", {"mask": "stage:redraw_mask", "softness": 0.1, "invert": false},
 		10.0, 74,
 	), PresentationBatchRequest.Policy.JOIN)
@@ -1088,7 +1132,11 @@ func test_rollback_and_restart_restore_only_sealed_canonical_snapshots() -> void
 
 	_receipts.clear()
 	var restart_owner := _submit(_operation(
-		"update", "event", {"asset": "stage:redraw_blur_order"},
+		"update", "event", {
+			"asset": "stage:redraw_blur_order",
+			"z_index": 25,
+			"depth_origin": -8000.25,
+		},
 		"mosaic", {"cell": 32}, 10.0, 75,
 	), PresentationBatchRequest.Policy.FIRE_AND_FORGET)
 	assert_true(restart_owner.is_settled())
@@ -1105,7 +1153,11 @@ func test_scene_replacement_retires_receipt_then_projects_canonical_target() -> 
 	_show_source()
 	_receipts.clear()
 	var request := _submit(_operation(
-		"update", "event", {"asset": "stage:redraw_blur_order"},
+		"update", "event", {
+			"asset": "stage:redraw_blur_order",
+			"z_index": 25,
+			"depth_origin": -8000.25,
+		},
 		"mosaic", {"cell": 32}, 10.0, 81,
 	), PresentationBatchRequest.Policy.JOIN)
 	assert_false(request.is_settled())
@@ -1123,6 +1175,8 @@ func test_scene_replacement_retires_receipt_then_projects_canonical_target() -> 
 	SignalBus.reset_and_apply_stage_state(target)
 	assert_eq(replacement.get_layer_state("event")["asset"],
 		"stage:redraw_blur_order")
+	assert_almost_eq(
+		float(replacement._layers["event"]["depth_sort_key"]), -7975.25, 0.001)
 	_finish_receipts(stale_receipts)
 	assert_eq(replacement.get_layer_state("event")["asset"],
 		"stage:redraw_blur_order")

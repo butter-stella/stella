@@ -1,6 +1,6 @@
 @chapter stage_batch_lifecycle "Synthetic joined lifecycle"
 @scene start
 @stage_batch policy=join
-  @stage lifecycle show kind=overlay asset=stage:redraw_source transition=fade duration=10
+  @stage lifecycle show kind=overlay asset=stage:redraw_source z_index=25 depth_origin=-8000.25 transition=fade duration=10
 @end
 「lifecycle tail」

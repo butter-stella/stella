@@ -29,7 +29,7 @@ const _NUMBER_PROPERTY_KEYS := [
 	"x", "y", "origin_x", "origin_y", "scale_x", "scale_y",
 	"zoom_x", "zoom_y", "asset_x", "asset_y", "body_x", "body_y",
 	"face_x", "face_y", "depth_scale", "rotation", "z", "z_index",
-	"opacity",
+	"depth_origin", "opacity",
 ]
 const _BOOL_PROPERTY_KEYS := ["visible", "flip_x", "flip_y"]
 
@@ -63,6 +63,7 @@ const _KNOWN_PROPERTY_KEYS := {
 	"rotation": true,
 	"z": true,
 	"z_index": true,
+	"depth_origin": true,
 	"visible": true,
 	"opacity": true,
 	"fit": true,
@@ -103,6 +104,7 @@ static func default_state() -> Dictionary:
 		"depth_scale": 1.0,
 		"rotation": 0.0,
 		"z_index": 0,
+		"depth_origin": 0.0,
 		"visible": true,
 		"opacity": 1.0,
 		"fit": "native",
@@ -399,6 +401,12 @@ static func _apply_patch_to_normalized(
 				report_warnings,
 			)
 		result["z_index"] = clampi(z_index, MIN_Z_INDEX, MAX_Z_INDEX)
+
+	if patch.has("depth_origin"):
+		result["depth_origin"] = _as_float(
+			patch["depth_origin"],
+			result["depth_origin"],
+		)
 
 	if patch.has("visible"):
 		if _is_valid_bool(patch["visible"]):
