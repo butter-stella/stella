@@ -225,6 +225,7 @@ func test_save_schema_accepts_only_exact_stable_dictionary_and_legacy_string_fai
 		"dialogue_visibility": DialogueVisibilityState.default_state(),
 		"dialogue_content": PresentationState._inactive_dialogue_content(),
 		"dialogue_avatar": DialogueAvatarState.default_state(),
+		"movie": {},
 	}
 	var active := {
 		"asset": "theme", "cue": "intro", "loop": false,

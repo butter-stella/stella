@@ -7,6 +7,7 @@ const _TYPEWRITER_MILLISECOND_KEYS := [
 	"character_interval",
 	"punctuation_pause",
 ]
+const _MOVIE_BOOL_KEYS := ["movie_right_click_skip", "movie_skip_on_skip"]
 
 var settings: GameSettings = GameSettings.new()
 var settings_path: String = "user://settings.json"
@@ -16,6 +17,12 @@ func set_value(key: String, value: Variant) -> void:
 	if key in settings:
 		if key == "effect_enabled" and typeof(value) != TYPE_BOOL:
 			_warn_invalid_effect_enabled()
+			return
+		if key == "movie_volume" and not _movie_volume_is_valid(value):
+			_warn_invalid_movie_setting(key)
+			return
+		if key in _MOVIE_BOOL_KEYS and typeof(value) != TYPE_BOOL:
+			_warn_invalid_movie_setting(key)
 			return
 		var normalized_value := value
 		if key in _TYPEWRITER_MILLISECOND_KEYS:
@@ -50,6 +57,16 @@ func load_settings() -> void:
 		):
 			_warn_invalid_effect_enabled()
 			return
+		if (
+			"movie_volume" in normalized_data
+			and not _movie_volume_is_valid(normalized_data["movie_volume"])
+		):
+			_warn_invalid_movie_setting("movie_volume")
+			return
+		for key in _MOVIE_BOOL_KEYS:
+			if key in normalized_data and typeof(normalized_data[key]) != TYPE_BOOL:
+				_warn_invalid_movie_setting(key)
+				return
 		for key in _TYPEWRITER_MILLISECOND_KEYS:
 			if key in normalized_data:
 				normalized_data[key] = _validated_typewriter_milliseconds(
@@ -121,6 +138,21 @@ func _warn_invalid_effect_enabled() -> void:
 	push_warning(
 		"SettingsManager: effect_enabled must be a bool; keeping current settings"
 	)
+
+
+func _movie_volume_is_valid(value: Variant) -> bool:
+	return (
+		(value is int or value is float)
+		and is_finite(float(value))
+		and float(value) >= 0.0
+		and float(value) <= 1.0
+	)
+
+
+func _warn_invalid_movie_setting(key: String) -> void:
+	push_warning(
+		"SettingsManager: %s has an invalid type or range; keeping current settings"
+		% key)
 
 
 func _validated_typewriter_milliseconds(

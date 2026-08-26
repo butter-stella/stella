@@ -6,7 +6,7 @@ const INTERNAL_DIALOGUE_MODE_EVENT := "__dialogue_mode_event"
 const INTERNAL_IF_NODE := "__if_node"
 const _PARALLEL_BLOCKING_COMMANDS := [
 	"dialogue", "choice", "wait", "chapter_indicator", "presentation_batch",
-	"presentation_clip", "recollection_exit",
+	"presentation_clip", "movie", "recollection_exit",
 ]
 const _CHAPTER_INDICATOR_ACTIONS := ["show", "hide"]
 const _CHAPTER_INDICATOR_TRANSITIONS := ["cut", "none", "fade"]
@@ -104,6 +104,7 @@ static func parse(
 	var presentation_batch_has_dialogue_clear: bool = false
 	var presentation_batch_has_chapter_indicator: bool = false
 	var presentation_batch_has_bgm: bool = false
+	var presentation_batch_has_movie: bool = false
 	var presentation_batch_has_dialogue_avatar: bool = false
 	var presentation_batch_start_line: int = 0
 	var presentation_batch_invalid: bool = false
@@ -138,6 +139,7 @@ static func parse(
 				presentation_batch_has_dialogue_clear = false
 				presentation_batch_has_chapter_indicator = false
 				presentation_batch_has_bgm = false
+				presentation_batch_has_movie = false
 				presentation_batch_has_dialogue_avatar = false
 				presentation_batch_start_line = 0
 				presentation_batch_invalid = false
@@ -332,6 +334,38 @@ static func parse(
 							"payload": bgm_child.params.duplicate(true),
 						})
 						presentation_batch_operation_lines.append(token.line)
+				elif child_name == "movie":
+					var movie_child := _parse_at_command(token, data)
+					if movie_child == null or movie_child.type != "movie":
+						presentation_batch_invalid = true
+					elif presentation_batch_has_movie:
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: duplicate movie channel at %s"
+							% _source_location(data, token.line),
+							token.line,
+						)
+						presentation_batch_invalid = true
+					elif (
+						presentation_batch_policy == "join"
+						and bool(movie_child.params.get("loop", false))
+					):
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: looped @movie requires presentation_batch policy=fire_and_forget at %s"
+							% _source_location(data, token.line),
+							token.line,
+						)
+						presentation_batch_invalid = true
+					else:
+						presentation_batch_has_movie = true
+						presentation_batch_operations.append({
+							"kind": "movie",
+							"payload": movie_child.params.duplicate(true),
+						})
+						presentation_batch_operation_lines.append(token.line)
 				elif child_name == "end":
 					if (
 						presentation_batch_operations.is_empty()
@@ -367,6 +401,7 @@ static func parse(
 					presentation_batch_has_dialogue_clear = false
 					presentation_batch_has_chapter_indicator = false
 					presentation_batch_has_bgm = false
+					presentation_batch_has_movie = false
 					presentation_batch_has_dialogue_avatar = false
 					presentation_batch_start_line = 0
 					presentation_batch_invalid = false
@@ -385,7 +420,7 @@ static func parse(
 					_record_diagnostic(
 						data,
 						"error",
-						"DslParser: only canonical @stage, @dialogue_avatar, @dialogue_visibility, @dialogue_clear, @chapter_indicator, @loop_se, and @bgm children are allowed inside @presentation_batch; found @%s at %s"
+						"DslParser: only canonical @stage, @dialogue_avatar, @dialogue_visibility, @dialogue_clear, @chapter_indicator, @loop_se, @bgm, and @movie children are allowed inside @presentation_batch; found @%s at %s"
 						% [child_name, _source_location(data, token.line)],
 						token.line,
 					)
@@ -396,7 +431,7 @@ static func parse(
 				_record_diagnostic(
 					data,
 					"error",
-					"DslParser: only canonical @stage, @dialogue_avatar, @dialogue_visibility, @dialogue_clear, @chapter_indicator, @loop_se, and @bgm children are allowed inside @presentation_batch at %s"
+					"DslParser: only canonical @stage, @dialogue_avatar, @dialogue_visibility, @dialogue_clear, @chapter_indicator, @loop_se, @bgm, and @movie children are allowed inside @presentation_batch at %s"
 					% _source_location(data, token.line),
 					token.line,
 				)
@@ -685,6 +720,7 @@ static func parse(
 					presentation_batch_has_dialogue_clear = false
 					presentation_batch_has_chapter_indicator = false
 					presentation_batch_has_bgm = false
+					presentation_batch_has_movie = false
 					presentation_batch_has_dialogue_avatar = false
 					presentation_batch_nested_depth = 0
 					presentation_batch_invalid = false
@@ -750,7 +786,7 @@ static func parse(
 						% [cmd_name, token.line]
 					)
 					if cmd_name in [
-						"chapter_indicator", "loop_se", "bgm", "recollection_exit",
+						"chapter_indicator", "loop_se", "bgm", "movie", "recollection_exit",
 					]:
 						combine_message = (
 							"DslParser: @%s is not allowed inside @combine at %s"
@@ -761,7 +797,7 @@ static func parse(
 						(
 							"error"
 							if cmd_name in [
-								"chapter_indicator", "loop_se", "bgm", "recollection_exit",
+								"chapter_indicator", "loop_se", "bgm", "movie", "recollection_exit",
 							]
 							else "warning"
 						),
@@ -970,6 +1006,19 @@ static func parse(
 							data,
 							"error",
 							"DslParser: @bgm requires an active @scene at %s"
+							% _source_location(data, token.line),
+							token.line,
+						)
+						cmd = null
+					if (
+						cmd != null
+						and _command_contains_operation_kind(cmd, "movie")
+						and (current_scene == null or chapter_needs_scene)
+					):
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: @movie requires an active @scene at %s"
 							% _source_location(data, token.line),
 							token.line,
 						)
@@ -1553,6 +1602,21 @@ static func _parse_at_command(
 			return _make_cmd("recollection_exit", {})
 		"presentation_clip":
 			return _parse_presentation_clip_command(parts, token.line, data)
+		"movie":
+			var movie_command := _parse_movie_command(
+				parts, token.line, data, lower_standalone_presentation)
+			if movie_command == null or not lower_standalone_presentation:
+				return movie_command
+			var policy := String(movie_command.params.get("policy", "join"))
+			var payload := movie_command.params.duplicate(true)
+			payload.erase("policy")
+			var batch_command := _make_cmd("presentation_batch", {
+				"policy": policy,
+				"operations": [{"kind": "movie", "payload": payload}],
+				"operation_lines": [token.line],
+			})
+			batch_command.declared_line = token.line
+			return batch_command
 		"chapter_indicator":
 			var chapter_command := _parse_chapter_indicator_command(
 				parts, token.line, data)
@@ -3052,6 +3116,109 @@ static func _parse_presentation_batch_header(
 	if not bool(result.get("valid", false)):
 		return result
 	return result
+
+
+static func _parse_movie_command(
+	parts: Array,
+	line: int,
+	data: ScenarioData,
+	allow_policy: bool,
+) -> CommandData:
+	var location := _source_location(data, line)
+	if parts.is_empty():
+		_record_diagnostic(
+			data, "error", "DslParser: @movie requires a logical id or stop at %s"
+			% location, line)
+		return null
+	var first := String(parts[0])
+	if first == "stop":
+		if parts.size() != 1:
+			_record_diagnostic(
+				data, "error", "DslParser: @movie stop does not accept options at %s"
+				% location, line)
+			return null
+		var stop_payload := {
+			"action": "stop", "asset": "", "loop": false, "skippable": true,
+		}
+		if allow_policy:
+			stop_payload["policy"] = "join"
+		return _make_cmd("movie", stop_payload)
+	if not MovieChannelState.is_logical_id(first):
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: @movie asset must be a canonical logical id at %s" % location,
+			line,
+		)
+		return null
+	var loop := false
+	var skippable := true
+	var policy := "join"
+	var seen := {}
+	var invalid := false
+	for index in range(1, parts.size()):
+		var encoded := String(parts[index])
+		var equals_at := encoded.find("=")
+		if equals_at < 1:
+			_record_diagnostic(
+				data, "error", "DslParser: invalid @movie option '%s' at %s"
+				% [encoded, location], line)
+			invalid = true
+			continue
+		var key := encoded.substr(0, equals_at)
+		var value := encoded.substr(equals_at + 1)
+		if key in seen:
+			_record_diagnostic(
+				data, "error", "DslParser: duplicate @movie option '%s' at %s"
+				% [key, location], line)
+			invalid = true
+			continue
+		seen[key] = true
+		match key:
+			"loop", "skippable":
+				if value not in ["true", "false"]:
+					_record_diagnostic(
+						data, "error", "DslParser: @movie %s must be true or false at %s"
+						% [key, location], line)
+					invalid = true
+				elif key == "loop":
+					loop = value == "true"
+				else:
+					skippable = value == "true"
+			"policy":
+				if not allow_policy:
+					_record_diagnostic(
+						data, "error", "DslParser: @movie child inherits presentation_batch policy at %s"
+						% location, line)
+					invalid = true
+				elif value not in ["join", "fire_and_forget"]:
+					_record_diagnostic(
+						data, "error", "DslParser: @movie policy must be join or fire_and_forget at %s"
+						% location, line)
+					invalid = true
+				else:
+					policy = value
+			_:
+				_record_diagnostic(
+					data, "error", "DslParser: unknown @movie option '%s' at %s"
+					% [key, location], line)
+				invalid = true
+	if loop and allow_policy and policy != "fire_and_forget":
+		_record_diagnostic(
+			data,
+			"error",
+			"DslParser: looped @movie requires policy=fire_and_forget at %s" % location,
+			line,
+		)
+		invalid = true
+	if invalid:
+		return null
+	var payload := {
+		"action": "play", "asset": first, "loop": loop, "skippable": skippable,
+	}
+	if allow_policy:
+		payload["policy"] = policy
+	return _make_cmd("movie", payload)
 
 
 static func _parse_presentation_clip_command(

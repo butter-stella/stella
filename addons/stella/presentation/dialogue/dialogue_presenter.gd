@@ -1353,7 +1353,7 @@ func _on_skip_active_changed(active: bool) -> void:
 	if (
 		StellaRuntime.presentation_director != null
 		and StellaRuntime.presentation_director
-			.current_skip_activation_was_claimed_by_clip()
+			.current_skip_activation_was_claimed_by_presentation()
 	):
 		return
 	if StellaRuntime.is_choice_active():

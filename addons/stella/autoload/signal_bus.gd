@@ -16,6 +16,10 @@ const BgmOperationRequestType = preload(
 	"res://addons/stella/core/data/bgm_operation_request.gd")
 const BgmStateCaptureRequestType = preload(
 	"res://addons/stella/core/data/bgm_state_capture_request.gd")
+const MovieOperationRequestType = preload(
+	"res://addons/stella/core/data/movie_operation_request.gd")
+const MovieStateCaptureRequestType = preload(
+	"res://addons/stella/core/data/movie_state_capture_request.gd")
 
 # Dialogue
 ## Canonical internal request. Core and built-in presenters consume this typed,
@@ -49,11 +53,13 @@ var _dialogue_presentation_stack: Array[Dictionary] = []
 var _show_dialogue_dispatch_serial: int = 0
 var _dialogue_request_serial: int = 0
 var _owned_dialogue_advance_echo_pending: int = 0
+var _owned_dialogue_advance_echo_depth: int = 0
 var _last_raw_show_dispatch_serial: int = -1
 var _last_raw_show_segments: Variant = null
 var _advance_dispatch_serial: int = 0
 var _advance_modal_claimed_serial: int = -1
 var _presentation_clip_input_boundary: Callable
+var _movie_input_boundary: Callable
 # DialoguePresenter-owned events keep normal Godot Signal delivery semantics.
 # Stateful built-in consumers consult this synchronous frame so a nested SHOW
 # cannot let the retired signal tail overwrite the replacement state. Direct
@@ -162,8 +168,14 @@ func emit_dialogue_advance_committed(activation: DialogueActivation) -> bool:
 		return false
 	dialogue_advance_committed.emit(activation.get_instance_id())
 	_owned_dialogue_advance_echo_pending += 1
+	_owned_dialogue_advance_echo_depth += 1
 	advance_requested.emit()
+	_owned_dialogue_advance_echo_depth -= 1
 	return true
+
+
+func is_owned_dialogue_advance_echo() -> bool:
+	return _owned_dialogue_advance_echo_depth > 0
 
 
 ## Compatibility notification emitter. Direct advance_requested.emit() remains
@@ -572,6 +584,12 @@ func _on_advance_requested_dispatch_started() -> void:
 		return
 	_advance_dispatch_serial += 1
 	_advance_modal_claimed_serial = -1
+	if (
+		_movie_input_boundary.is_valid()
+		and bool(_movie_input_boundary.call(&"advance"))
+	):
+		_advance_modal_claimed_serial = _advance_dispatch_serial
+		return
 	if (
 		_presentation_clip_input_boundary.is_valid()
 		and bool(_presentation_clip_input_boundary.call())
@@ -1474,6 +1492,32 @@ signal bgm_position_committed(position: float)
 signal bgm_natural_stop_committed()
 signal bgm_presenter_registered()
 
+# One Runtime-owned full-screen movie surface
+signal movie_validate_requested(request: MovieOperationRequest)
+signal movie_accept_requested(request: MovieOperationRequest)
+signal movie_apply_requested(request: MovieOperationRequest)
+signal movie_operation_committed(
+	operation: MoviePresentationOperation,
+	state: Dictionary,
+)
+signal movie_transition_receipt_started(
+	presenter_instance_id: int,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+)
+signal movie_transition_terminal(
+	presenter_instance_id: int,
+	token: int,
+	operation_request_id: int,
+	generation: int,
+	outcome: StringName,
+)
+signal movie_finish_requested(request_id: int, input_kind: StringName)
+signal movie_projection_reset_requested(epoch: int)
+signal movie_state_capture_requested(request: MovieStateCaptureRequest)
+signal movie_completion_committed()
+
 # Declarative animated presentation clips
 signal presentation_clip_prepare_requested(request: PresentationClipOperationRequest)
 signal presentation_clip_validate_requested(request: PresentationClipOperationRequest)
@@ -1547,6 +1591,24 @@ var _bgm_participant_authority := RefCounted.new()
 var _bgm_registrar_authority: Object
 var _bgm_presenter: WeakRef
 var _bgm_capability: RefCounted
+var _movie_epoch := 1
+var _movie_epoch_stack: Array[int] = []
+var _dispatching_movie_request: MovieOperationRequest
+var _applying_movie_request: MovieOperationRequest
+var _capturing_movie_request: MovieStateCaptureRequest
+var _movie_completion_serial := 0
+var _movie_completion_stack: Array[Dictionary] = []
+var _movie_participant_authority := RefCounted.new()
+var _movie_registrar_authority: Object
+var _movie_presenter: WeakRef
+var _movie_capability: RefCounted
+var _movie_presenter_input_claim: Callable
+var _movie_presenter_active_query: Callable
+var _movie_presenter_recovery_discard: Callable
+var _movie_presenter_restore_apply: Callable
+var _movie_presenter_rollback_prepare: Callable
+var _movie_presenter_rollback_apply: Callable
+var _movie_presenter_rollback_release: Callable
 var _presentation_clip_epoch := 1
 var _presentation_clip_participant_authority := RefCounted.new()
 var _presentation_clip_registrar_authority: Object
@@ -1554,6 +1616,7 @@ var _presentation_clip_presenter: WeakRef
 var _presentation_clip_capability: RefCounted
 var _presentation_clip_presenter_transaction: Callable
 var _presentation_clip_presenter_input_claim: Callable
+var _presentation_clip_presenter_active_query: Callable
 var _presentation_clip_dialogue_participants: Dictionary = {}
 var _presentation_clip_audio_presenter: WeakRef
 var _presentation_clip_audio_capability: RefCounted
@@ -2185,6 +2248,437 @@ func _bgm_participant_identity_matches(
 	)
 
 
+func configure_movie_registrar(authority: Object) -> bool:
+	if authority == null:
+		return false
+	if _movie_registrar_authority == null:
+		_movie_registrar_authority = authority
+	return _movie_registrar_authority == authority
+
+
+func configure_movie_input_boundary(
+	registrar_authority: Object,
+	input_boundary: Callable,
+) -> bool:
+	if (
+		registrar_authority != _movie_registrar_authority
+		or not input_boundary.is_valid()
+	):
+		return false
+	if not _movie_input_boundary.is_valid():
+		_movie_input_boundary = input_boundary
+	return _movie_input_boundary == input_boundary
+
+
+func register_movie_presenter(
+	presenter: Object,
+	registrar_authority: Object,
+	input_claim: Callable,
+	active_query: Callable,
+	recovery_discard: Callable,
+	restore_apply: Callable,
+	rollback_prepare: Callable,
+	rollback_apply: Callable,
+	rollback_release: Callable,
+) -> RefCounted:
+	if (
+		registrar_authority != _movie_registrar_authority
+		or presenter == null
+		or not is_instance_valid(presenter)
+		or not presenter is Node
+		or (presenter as Node).is_queued_for_deletion()
+		or not input_claim.is_valid()
+		or input_claim.get_object() != presenter
+		or not active_query.is_valid()
+		or active_query.get_object() != presenter
+		or not recovery_discard.is_valid()
+		or recovery_discard.get_object() != presenter
+		or not restore_apply.is_valid()
+		or restore_apply.get_object() != presenter
+		or not rollback_prepare.is_valid()
+		or rollback_prepare.get_object() != presenter
+		or not rollback_apply.is_valid()
+		or rollback_apply.get_object() != presenter
+		or not rollback_release.is_valid()
+		or rollback_release.get_object() != presenter
+	):
+		return null
+	var existing := _current_movie_presenter()
+	if existing != null:
+		return _movie_capability if existing == presenter else null
+	_movie_presenter = weakref(presenter)
+	_movie_capability = RefCounted.new()
+	_movie_presenter_input_claim = input_claim
+	_movie_presenter_active_query = active_query
+	_movie_presenter_recovery_discard = recovery_discard
+	_movie_presenter_restore_apply = restore_apply
+	_movie_presenter_rollback_prepare = rollback_prepare
+	_movie_presenter_rollback_apply = rollback_apply
+	_movie_presenter_rollback_release = rollback_release
+	return _movie_capability
+
+
+func unregister_movie_presenter(
+	presenter: Object,
+	capability: RefCounted,
+	registrar_authority: Object,
+) -> bool:
+	if (
+		registrar_authority != _movie_registrar_authority
+		or not _movie_participant_identity_matches(presenter, capability)
+	):
+		return false
+	_movie_presenter = null
+	_movie_capability = null
+	_movie_presenter_input_claim = Callable()
+	_movie_presenter_active_query = Callable()
+	_movie_presenter_recovery_discard = Callable()
+	_movie_presenter_restore_apply = Callable()
+	_movie_presenter_rollback_prepare = Callable()
+	_movie_presenter_rollback_apply = Callable()
+	_movie_presenter_rollback_release = Callable()
+	return true
+
+
+func prepare_movie_rollback_state(request_id: int, state: Dictionary) -> bool:
+	var presenter := _current_movie_presenter()
+	if (
+		request_id <= 0
+		or presenter == null
+		or not _movie_presenter_rollback_prepare.is_valid()
+		or _movie_presenter_rollback_prepare.get_object() != presenter
+	):
+		return false
+	return bool(_movie_presenter_rollback_prepare.call(
+		request_id, state.duplicate(true), _movie_capability))
+
+
+func release_movie_rollback_plan(request_id: int) -> bool:
+	var presenter := _current_movie_presenter()
+	if (
+		request_id <= 0
+		or presenter == null
+		or not _movie_presenter_rollback_release.is_valid()
+		or _movie_presenter_rollback_release.get_object() != presenter
+	):
+		return false
+	return bool(_movie_presenter_rollback_release.call(
+		request_id, _movie_capability))
+
+
+func reject_movie_request(
+	request: MovieOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	error: String,
+) -> bool:
+	if not _movie_request_target_is_current(request, presenter, capability, false):
+		return false
+	return request._reject(error, _movie_participant_authority)
+
+
+func validate_movie_request(
+	request: MovieOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _movie_request_target_is_current(request, presenter, capability, false):
+		return false
+	return request._validate(presenter, _movie_participant_authority)
+
+
+func accept_movie_request(
+	request: MovieOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+) -> bool:
+	if not _movie_request_target_is_current(request, presenter, capability, false):
+		return false
+	return request._accept(presenter, _movie_participant_authority)
+
+
+func acknowledge_movie_apply(
+	request: MovieOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	committed_state: Dictionary,
+) -> bool:
+	if not _movie_request_target_is_current(request, presenter, capability, true):
+		return false
+	return request._apply(
+		presenter, committed_state, _movie_participant_authority)
+
+
+func fail_movie_apply(
+	request: MovieOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	error: String,
+) -> bool:
+	if not _movie_request_target_is_current(request, presenter, capability, true):
+		return false
+	if not request._fail_apply(error, _movie_participant_authority):
+		return false
+	_report_movie_rejection(request.get_source(), [error])
+	return true
+
+
+func capture_movie_state() -> Dictionary:
+	var presenter := _current_movie_presenter()
+	if presenter == null:
+		return {}
+	var request := MovieStateCaptureRequestType.new()
+	request._bind_authority(_movie_participant_authority)
+	_capturing_movie_request = request
+	movie_state_capture_requested.emit(request)
+	_capturing_movie_request = null
+	return request.get_state() if request.is_resolved() else {}
+
+
+func movie_save_boundary_is_stable() -> bool:
+	if not _movie_completion_stack.is_empty():
+		return false
+	var presenter := _current_movie_presenter()
+	if presenter == null:
+		return true
+	var request := MovieStateCaptureRequestType.new()
+	request._bind_authority(_movie_participant_authority)
+	_capturing_movie_request = request
+	movie_state_capture_requested.emit(request)
+	_capturing_movie_request = null
+	return request.is_stable()
+
+
+func has_active_movie_projection() -> bool:
+	var presenter := _current_movie_presenter()
+	return (
+		presenter != null
+		and _movie_presenter_active_query.is_valid()
+		and _movie_presenter_active_query.get_object() == presenter
+		and bool(_movie_presenter_active_query.call(_movie_capability))
+	)
+
+
+func resolve_movie_state_capture(
+	request: MovieStateCaptureRequest,
+	presenter: Object,
+	capability: RefCounted,
+	state: Dictionary,
+	stable: bool = true,
+) -> bool:
+	if (
+		request == null
+		or request != _capturing_movie_request
+		or not _movie_participant_identity_matches(presenter, capability)
+	):
+		return false
+	return request._resolve(state, stable, _movie_participant_authority)
+
+
+func commit_movie_completion(
+	presenter: Object,
+	capability: RefCounted,
+) -> int:
+	if not _movie_participant_identity_matches(presenter, capability):
+		return 0
+	_movie_completion_serial += 1
+	var token := _movie_completion_serial
+	_movie_completion_stack.append({
+		"capability": capability,
+		"presenter_id": presenter.get_instance_id(),
+		"token": token,
+	})
+	movie_completion_committed.emit()
+	return token
+
+
+func finish_movie_completion(
+	presenter: Object,
+	capability: RefCounted,
+	token: int,
+) -> bool:
+	if _movie_completion_stack.is_empty():
+		return false
+	var record: Dictionary = _movie_completion_stack.back()
+	if (
+		presenter == null
+		or capability == null
+		or token <= 0
+		or capability != record.get("capability")
+		or presenter.get_instance_id() != int(record.get("presenter_id", 0))
+		or token != int(record.get("token", 0))
+	):
+		return false
+	_movie_completion_stack.pop_back()
+	return true
+
+
+func claim_active_movie_input(request_id: int, input_kind: StringName) -> bool:
+	var presenter := _current_movie_presenter()
+	if (
+		request_id <= 0
+		or input_kind not in [&"advance", &"right_click", &"skip"]
+		or presenter == null
+		or not _movie_presenter_input_claim.is_valid()
+		or _movie_presenter_input_claim.get_object() != presenter
+	):
+		return false
+	return bool(_movie_presenter_input_claim.call(
+		request_id, input_kind, _movie_capability))
+
+
+func current_movie_epoch() -> int:
+	return _movie_epoch
+
+
+func is_current_movie_operation_valid() -> bool:
+	return _movie_epoch_stack.is_empty() or _movie_epoch_stack.back() == _movie_epoch
+
+
+func reset_movie_presentation(preserve_recovery: bool = false) -> int:
+	return _reset_movie_projection({}, preserve_recovery)
+
+
+func discard_movie_recovery_state() -> bool:
+	var presenter := _current_movie_presenter()
+	if (
+		presenter == null
+		or not _movie_presenter_recovery_discard.is_valid()
+		or _movie_presenter_recovery_discard.get_object() != presenter
+	):
+		return false
+	return bool(_movie_presenter_recovery_discard.call(_movie_capability))
+
+
+func reset_and_apply_movie_state(state: Dictionary) -> bool:
+	if not MovieChannelState.validate_snapshot_state(state, true):
+		return false
+	if state.is_empty():
+		return _reset_movie_projection({}) > 0
+	var presenter := _current_movie_presenter()
+	if (
+		presenter == null
+		or not _movie_presenter_restore_apply.is_valid()
+		or _movie_presenter_restore_apply.get_object() != presenter
+	):
+		return false
+	var epoch := _reset_movie_projection({}, true)
+	if (
+		epoch != _movie_epoch
+		or not _movie_participant_identity_matches(presenter, _movie_capability)
+	):
+		_movie_presenter_restore_apply.call(
+			state.duplicate(true), epoch, _movie_capability)
+		return false
+	return bool(_movie_presenter_restore_apply.call(
+		state.duplicate(true), epoch, _movie_capability))
+
+
+## Atomic rollback consumes the Presenter-sealed plan for this exact authored
+## request. Navigation restore tickets deliberately cannot satisfy this path.
+func reset_and_apply_movie_rollback_state(
+	request_id: int,
+	state: Dictionary,
+) -> bool:
+	if (
+		request_id <= 0
+		or not MovieChannelState.validate_snapshot_state(state, true)
+	):
+		return false
+	var presenter := _current_movie_presenter()
+	if (
+		presenter == null
+		or not _movie_presenter_rollback_apply.is_valid()
+		or _movie_presenter_rollback_apply.get_object() != presenter
+	):
+		return false
+	_mark_presentation_projection_retirement_started()
+	_movie_epoch += 1
+	var epoch := _movie_epoch
+	for request: Dictionary in _presentation_operation_queue:
+		if _request_belongs_to_retained_projection(request):
+			request["movie_epoch"] = epoch
+	_dispatching_movie_request = null
+	_applying_movie_request = null
+	movie_projection_reset_requested.emit(epoch)
+	if (
+		epoch != _movie_epoch
+		or not _movie_participant_identity_matches(presenter, _movie_capability)
+	):
+		_movie_presenter_rollback_apply.call(
+			request_id, state.duplicate(true), epoch, _movie_capability)
+		return false
+	return bool(_movie_presenter_rollback_apply.call(
+		request_id, state.duplicate(true), epoch, _movie_capability))
+
+
+func _reset_movie_projection(
+	state: Dictionary,
+	preserve_recovery: bool = false,
+) -> int:
+	_mark_presentation_projection_retirement_started()
+	_movie_epoch += 1
+	var epoch := _movie_epoch
+	for request: Dictionary in _presentation_operation_queue:
+		if _request_belongs_to_retained_projection(request):
+			request["movie_epoch"] = epoch
+	_dispatching_movie_request = null
+	_applying_movie_request = null
+	movie_projection_reset_requested.emit(epoch)
+	if not preserve_recovery:
+		discard_movie_recovery_state()
+	return epoch
+
+
+func _movie_request_target_is_current(
+	request: MovieOperationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	applying: bool,
+) -> bool:
+	return (
+		request != null
+		and request == (
+			_applying_movie_request if applying else _dispatching_movie_request)
+		and _movie_participant_identity_matches(presenter, capability)
+		and request.is_target(presenter)
+	)
+
+
+func _current_movie_presenter() -> Object:
+	if _movie_presenter == null:
+		return null
+	var presenter: Object = _movie_presenter.get_ref()
+	if not _movie_participant_identity_matches(presenter, _movie_capability):
+		_movie_presenter = null
+		_movie_capability = null
+		_movie_presenter_input_claim = Callable()
+		_movie_presenter_active_query = Callable()
+		_movie_presenter_recovery_discard = Callable()
+		_movie_presenter_restore_apply = Callable()
+		_movie_presenter_rollback_prepare = Callable()
+		_movie_presenter_rollback_apply = Callable()
+		_movie_presenter_rollback_release = Callable()
+		return null
+	return presenter
+
+
+func _movie_participant_identity_matches(
+	presenter: Object,
+	capability: Object,
+) -> bool:
+	return (
+		presenter != null
+		and capability != null
+		and capability == _movie_capability
+		and _movie_presenter != null
+		and is_instance_valid(presenter)
+		and presenter is Node
+		and not (presenter as Node).is_queued_for_deletion()
+		and _movie_presenter.get_ref() == presenter
+	)
+
+
 func configure_presentation_clip_registrar(authority: Object) -> bool:
 	if authority == null:
 		return false
@@ -2215,6 +2709,7 @@ func register_presentation_clip_presenter(
 	registrar_authority: Object,
 	transaction: Callable,
 	input_claim: Callable,
+	active_query: Callable,
 ) -> RefCounted:
 	if (
 		registrar_authority != _presentation_clip_registrar_authority
@@ -2226,6 +2721,8 @@ func register_presentation_clip_presenter(
 		or transaction.get_object() != presenter
 		or not input_claim.is_valid()
 		or input_claim.get_object() != presenter
+		or not active_query.is_valid()
+		or active_query.get_object() != presenter
 		or _current_presentation_clip_presenter() != null
 	):
 		return null
@@ -2233,6 +2730,7 @@ func register_presentation_clip_presenter(
 	_presentation_clip_capability = RefCounted.new()
 	_presentation_clip_presenter_transaction = transaction
 	_presentation_clip_presenter_input_claim = input_claim
+	_presentation_clip_presenter_active_query = active_query
 	return _presentation_clip_capability
 
 
@@ -2251,7 +2749,20 @@ func unregister_presentation_clip_presenter(
 	_presentation_clip_capability = null
 	_presentation_clip_presenter_transaction = Callable()
 	_presentation_clip_presenter_input_claim = Callable()
+	_presentation_clip_presenter_active_query = Callable()
 	return true
+
+
+func has_active_presentation_clip_projection() -> bool:
+	var presenter := _current_presentation_clip_presenter()
+	if (
+		presenter == null
+		or not _presentation_clip_presenter_active_query.is_valid()
+		or _presentation_clip_presenter_active_query.get_object() != presenter
+	):
+		return false
+	return bool(_presentation_clip_presenter_active_query.call(
+		_presentation_clip_capability))
 
 
 ## Ask the one Runtime-owned visual presenter to atomically claim the current
@@ -2748,6 +3259,7 @@ func _current_presentation_clip_presenter() -> Object:
 		_presentation_clip_capability = null
 		_presentation_clip_presenter_transaction = Callable()
 		_presentation_clip_presenter_input_claim = Callable()
+		_presentation_clip_presenter_active_query = Callable()
 		return null
 	return presenter
 
@@ -2904,6 +3416,8 @@ func emit_presentation_operations(
 					or not PresentationClipDefinition.is_logical_id(
 						String(payload.get("asset", "")))
 				))
+			or (operation is MoviePresentationOperation
+				and not MovieChannelState.validate_operation(payload, true))
 			or not operation is StagePresentationOperation
 				and not operation is DialogueAvatarPresentationOperation
 				and not operation is DialogueVisibilityPresentationOperation
@@ -2912,6 +3426,7 @@ func emit_presentation_operations(
 				and not operation is LoopSePresentationOperation
 				and not operation is BgmPresentationOperation
 				and not operation is PresentationClipPresentationOperation
+				and not operation is MoviePresentationOperation
 		):
 			presentation_operation_request_finished.emit(request_id, false)
 			return request_id
@@ -2928,6 +3443,7 @@ func emit_presentation_operations(
 		"loop_se_epoch": _loop_se_epoch,
 		"bgm_epoch": _bgm_epoch,
 		"clip_epoch": _presentation_clip_epoch,
+		"movie_epoch": _movie_epoch,
 		"enqueue_serial": _presentation_enqueue_serial,
 		"projection_lifecycle_id": _active_presentation_projection_lifecycle_id,
 		"born_after_retirement": _presentation_projection_retirement_started,
@@ -3146,6 +3662,7 @@ func _drain_presentation_operation_queue_once() -> void:
 	var loop_se_epoch := int(request.get("loop_se_epoch", 0))
 	var bgm_epoch := int(request.get("bgm_epoch", 0))
 	var clip_epoch := int(request.get("clip_epoch", 0))
+	var movie_epoch := int(request.get("movie_epoch", 0))
 	var operations: Array = request.get("operations", [])
 	var force_cut := bool(request.get("force_cut", false))
 	var apply_started_callback: Callable = request.get(
@@ -3159,6 +3676,7 @@ func _drain_presentation_operation_queue_once() -> void:
 	var uses_loop_se := false
 	var uses_bgm := false
 	var uses_presentation_clip := false
+	var uses_movie := false
 	for operation_value: Variant in operations:
 		if operation_value is StagePresentationOperation:
 			uses_stage = true
@@ -3176,6 +3694,8 @@ func _drain_presentation_operation_queue_once() -> void:
 			uses_bgm = true
 		elif operation_value is PresentationClipPresentationOperation:
 			uses_presentation_clip = true
+		elif operation_value is MoviePresentationOperation:
+			uses_movie = true
 	_stage_operation_dispatch_stack.append(request_id)
 	_stage_operation_epoch_stack.append(stage_epoch)
 	_dialogue_visibility_dispatch_stack.append(request_id)
@@ -3183,6 +3703,7 @@ func _drain_presentation_operation_queue_once() -> void:
 	_dialogue_avatar_epoch_stack.append(avatar_epoch)
 	_loop_se_epoch_stack.append(loop_se_epoch)
 	_bgm_epoch_stack.append(bgm_epoch)
+	_movie_epoch_stack.append(movie_epoch)
 	if dispatch_started_callback.is_valid():
 		dispatch_started_callback.call()
 	var dialogue_clear_requests: Dictionary = {}
@@ -3192,6 +3713,7 @@ func _drain_presentation_operation_queue_once() -> void:
 	var loop_se_requests: Dictionary = {}
 	var bgm_requests: Dictionary = {}
 	var clip_requests: Dictionary = {}
+	var movie_requests: Dictionary = {}
 	var preflight_valid := true
 	var stage_runs: Array[Dictionary] = []
 	var dialogue_avatar_operation_count := 0
@@ -3553,6 +4075,37 @@ func _drain_presentation_operation_queue_once() -> void:
 				preflight_valid = false
 				break
 			bgm_requests[operation.get_instance_id()] = bgm_request
+		elif operation_value is MoviePresentationOperation:
+			var operation: MoviePresentationOperation = operation_value
+			var movie_request := MovieOperationRequestType.new(operation)
+			movie_request._bind_authority(
+				_movie_participant_authority,
+				_movie_participant_identity_matches,
+			)
+			movie_request._snapshot_presenter(
+				_current_movie_presenter(),
+				_movie_capability,
+				_movie_participant_authority,
+			)
+			_dispatching_movie_request = movie_request
+			movie_validate_requested.emit(movie_request)
+			if (
+				movie_epoch != _movie_epoch
+				or not movie_request._seal_validation(
+					request_id, _movie_participant_authority)
+			):
+				_report_movie_rejection(
+					movie_request.get_source(), movie_request.get_validation_errors())
+				preflight_valid = false
+				break
+			movie_accept_requested.emit(movie_request)
+			if not movie_request.was_accepted() or not movie_request.presenter_is_live():
+				_report_movie_rejection(movie_request.get_source(), [
+					"the sealed MoviePresenter did not accept the captured binding",
+				])
+				preflight_valid = false
+				break
+			movie_requests[operation.get_instance_id()] = movie_request
 	_dispatching_stage_request = null
 	_dispatching_dialogue_avatar_request = null
 	_dispatching_dialogue_clear_request = null
@@ -3560,6 +4113,7 @@ func _drain_presentation_operation_queue_once() -> void:
 	_dispatching_loop_se_request = null
 	_dispatching_bgm_request = null
 	_dispatching_presentation_clip_request = null
+	_dispatching_movie_request = null
 	var epochs_valid := _presentation_operation_epochs_are_current(
 		stage_epoch,
 		visibility_epoch,
@@ -3568,6 +4122,7 @@ func _drain_presentation_operation_queue_once() -> void:
 		loop_se_epoch,
 		bgm_epoch,
 		clip_epoch,
+		movie_epoch,
 		uses_stage,
 		uses_dialogue_visibility,
 		uses_dialogue_avatar,
@@ -3575,6 +4130,7 @@ func _drain_presentation_operation_queue_once() -> void:
 		uses_loop_se,
 		uses_bgm,
 		uses_presentation_clip,
+		uses_movie,
 	)
 	if not preflight_valid or not epochs_valid:
 		for stage_request_value: Variant in stage_requests.values():
@@ -3601,6 +4157,10 @@ func _drain_presentation_operation_queue_once() -> void:
 			failed_clip_request._finish(
 				false, false, _presentation_clip_participant_authority)
 			presentation_clip_request_settled.emit(failed_clip_request)
+		for movie_request_value: Variant in movie_requests.values():
+			(movie_request_value as MovieOperationRequest)._finish(
+				false, false, _movie_participant_authority)
+		_movie_epoch_stack.pop_back()
 		_bgm_epoch_stack.pop_back()
 		_loop_se_epoch_stack.pop_back()
 		_dialogue_avatar_epoch_stack.pop_back()
@@ -3866,6 +4426,25 @@ func _drain_presentation_operation_queue_once() -> void:
 			bgm_operation_committed.emit(
 				operation, bgm_request.get_committed_state())
 			operation_index += 1
+		elif operation is MoviePresentationOperation:
+			var movie_request: MovieOperationRequest = movie_requests.get(
+				operation.get_instance_id())
+			if apply_started_callback.is_valid():
+				apply_started_callback.call([operation.get_channel()])
+			_applying_movie_request = movie_request
+			movie_apply_requested.emit(movie_request)
+			_applying_movie_request = null
+			if (
+				movie_request == null
+				or not movie_request.was_applied()
+				or not movie_request.presenter_is_live()
+				or movie_epoch != _movie_epoch
+			):
+				delivered = false
+				break
+			movie_operation_committed.emit(
+				operation, movie_request.get_committed_state())
+			operation_index += 1
 		if not _presentation_operation_epochs_are_current(
 			stage_epoch,
 			visibility_epoch,
@@ -3874,6 +4453,7 @@ func _drain_presentation_operation_queue_once() -> void:
 			loop_se_epoch,
 			bgm_epoch,
 			clip_epoch,
+			movie_epoch,
 			uses_stage,
 			uses_dialogue_visibility,
 			uses_dialogue_avatar,
@@ -3881,6 +4461,7 @@ func _drain_presentation_operation_queue_once() -> void:
 			uses_loop_se,
 			uses_bgm,
 			uses_presentation_clip,
+			uses_movie,
 		):
 			delivered = false
 			break
@@ -3908,6 +4489,10 @@ func _drain_presentation_operation_queue_once() -> void:
 		finished_clip_request._finish(
 			delivered, false, _presentation_clip_participant_authority)
 		presentation_clip_request_settled.emit(finished_clip_request)
+	for movie_request_value: Variant in movie_requests.values():
+		(movie_request_value as MovieOperationRequest)._finish(
+			delivered, false, _movie_participant_authority)
+	_movie_epoch_stack.pop_back()
 	_bgm_epoch_stack.pop_back()
 	_loop_se_epoch_stack.pop_back()
 	_dialogue_avatar_epoch_stack.pop_back()
@@ -3926,6 +4511,7 @@ func _drain_presentation_operation_queue_once() -> void:
 			loop_se_epoch,
 			bgm_epoch,
 			clip_epoch,
+			movie_epoch,
 			uses_stage,
 			uses_dialogue_visibility,
 			uses_dialogue_avatar,
@@ -3933,6 +4519,7 @@ func _drain_presentation_operation_queue_once() -> void:
 			uses_loop_se,
 			uses_bgm,
 			uses_presentation_clip,
+			uses_movie,
 		),
 	)
 
@@ -3945,6 +4532,7 @@ func _presentation_operation_epochs_are_current(
 	loop_se_epoch: int,
 	bgm_epoch: int,
 	clip_epoch: int,
+	movie_epoch: int,
 	uses_stage: bool,
 	uses_dialogue_visibility: bool,
 	uses_dialogue_avatar: bool,
@@ -3952,6 +4540,7 @@ func _presentation_operation_epochs_are_current(
 	uses_loop_se: bool,
 	uses_bgm: bool,
 	uses_presentation_clip: bool,
+	uses_movie: bool,
 ) -> bool:
 	return (
 		(not uses_stage or stage_epoch == _stage_operation_epoch)
@@ -3973,6 +4562,7 @@ func _presentation_operation_epochs_are_current(
 			not uses_presentation_clip
 			or clip_epoch == _presentation_clip_epoch
 		)
+		and (not uses_movie or movie_epoch == _movie_epoch)
 	)
 
 
@@ -4669,6 +5259,17 @@ func _report_bgm_rejection(source: Dictionary, errors: Array) -> void:
 		messages.append("request invalidated during preflight")
 	push_error(
 		"%s BGM request rejected: %s"
+		% [_chapter_indicator_source_label(source), "; ".join(messages)])
+
+
+func _report_movie_rejection(source: Dictionary, errors: Array) -> void:
+	var messages: Array[String] = []
+	for error_value: Variant in errors:
+		messages.append(String(error_value))
+	if messages.is_empty():
+		messages.append("request invalidated during preflight")
+	push_error(
+		"%s movie request rejected: %s"
 		% [_chapter_indicator_source_label(source), "; ".join(messages)])
 
 

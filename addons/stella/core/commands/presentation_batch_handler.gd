@@ -23,6 +23,7 @@ const EXACT_BGM_PAYLOAD_KEYS := [
 	"action", "asset", "cue", "fade_duration", "resume_position", "stem_mix",
 	"volume",
 ]
+const EXACT_MOVIE_PAYLOAD_KEYS := ["action", "asset", "loop", "skippable"]
 
 var _director: PresentationDirector
 var _presentation_state: PresentationState
@@ -116,6 +117,9 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 			"bgm":
 				typed_operations.append(
 					BgmPresentationOperation.new(payload, operation_source))
+			"movie":
+				typed_operations.append(
+					MoviePresentationOperation.new(payload, operation_source))
 	var policy := (
 		PresentationBatchRequest.Policy.JOIN
 		if String(validation["policy"]) == "join"
@@ -198,6 +202,9 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 	var saw_bgm := false
 	var bgm_operations: Array = []
 	var bgm_line := data.declared_line
+	var saw_movie := false
+	var movie_operations: Array = []
+	var movie_line := data.declared_line
 	for index in range(operations.size()):
 		if not operation_lines[index] is int or int(operation_lines[index]) <= 0:
 			return {"valid": false, "error": "operation line must be a positive integer", "line": data.declared_line}
@@ -312,6 +319,20 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 				saw_bgm = true
 				bgm_line = int(operation_lines[index])
 				bgm_operations.append(payload.duplicate(true))
+			"movie":
+				var movie_keys := payload.keys()
+				movie_keys.sort()
+				if movie_keys != EXACT_MOVIE_PAYLOAD_KEYS:
+					return {"valid": false, "error": "movie payload must use the canonical four-field schema", "line": int(operation_lines[index])}
+				if not MovieChannelState.validate_operation(payload, false):
+					return {"valid": false, "error": "movie payload failed canonical validation", "line": int(operation_lines[index])}
+				if saw_movie:
+					return {"valid": false, "error": "duplicate movie channel", "line": int(operation_lines[index])}
+				if policy == "join" and bool(payload["loop"]):
+					return {"valid": false, "error": "looped movie requires fire_and_forget policy", "line": int(operation_lines[index])}
+				saw_movie = true
+				movie_line = int(operation_lines[index])
+				movie_operations.append(payload.duplicate(true))
 			_:
 				return {"valid": false, "error": "unsupported presentation operation kind '%s'" % kind, "line": int(operation_lines[index])}
 		canonical_operations.append({
@@ -383,12 +404,14 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 		"before_loop_se": loop_se_before,
 		"target_loop_se": loop_se_target,
 		"before_bgm": bgm_before,
+		"movie_line": movie_line,
 		"no_work": (
 			stage_operations.is_empty()
 			and stage_target == stage_before
 			and visibility_target == visibility_before
 			and loop_se_operations.is_empty()
 			and bgm_operations.is_empty()
+			and movie_operations.is_empty()
 			and visibility_operations.is_empty()
 			and avatar_operations.is_empty()
 			and not saw_dialogue_clear

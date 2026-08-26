@@ -679,6 +679,16 @@ enum {
 
 ---
 
+### Runtime-owned native movie channel
+
+Movie 使用唯一 `movie:main` typed channel 和 Runtime-owned `MoviePresenter(VideoStreamPlayer)`。DSL lowering、mixed batch preflight、receipt/generation/cancellation、JOIN/FNF settlement 与 rollback 都复用 `PresentationDirector`；没有项目 Presenter subclass、第二 scheduler、Timer 或 position polling。canonical state 是空字典或 `{asset, loop, skippable, length, position, status="playing"}`，只接受 `[paths] movies/<id>.ogv` 的 `VideoStreamTheora`。
+
+Presenter 同 Runtime 生命周期常驻，不随 game scene 重建。movie-to-movie replacement 先完整预检新 stream，再 exact 退休旧 receipt/resource；movie 与 presentation clip 共享互斥 fullscreen surface，整批同时包含二者会在任何 mutation 前失败。shared layer contract 固定 media=90、screen flash=100，避免 scene-tree insertion order 决定遮挡。
+
+save/load/rollback 使用 ticket/request-id scoped sealed resource plan与同步 physical acknowledgement。非循环 position 必须严格小于 authoritative length，loop position规范化；native stopped/finished 尚未交付 typed terminal时 snapshot不稳定并禁止保存。所有 semantic COMPLETED 先退休旧 physical generation，再在可嵌套 completion token boundary 清 canonical state，最后发送旧 receipt terminal，因此同步 callback 新建/完成另一个 movie 不会被旧 tail 覆盖。可逆 navigation 的 recovery resource 只持有到 exact rejection consume；winning title/new-game 会显式 discard，避免长视频被 Runtime 缓存长期 pin。
+
+`movie_volume`、`movie_right_click_skip`、`movie_skip_on_skip` 是 `GameSettings` 的独立持久字段；音量实时消费 `master * movie` 一次，输入 policy 仍由中央 InputHandler/Director authority执行。
+
 ## 四、扩展功能
 
 ### 4.1 对话头像内联表情切换

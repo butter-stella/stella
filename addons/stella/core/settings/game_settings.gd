@@ -26,8 +26,13 @@ var bgm_volume: float = 0.8
 var se_volume: float = 1.0
 var system_se_volume: float = 1.0
 var voice_volume: float = 1.0
+var movie_volume: float = 1.0
 var character_voice_volume: Dictionary = {}   # character_id -> float
 var character_voice_enabled: Dictionary = {}  # character_id -> bool
+
+# --- Movie input policy ---
+var movie_right_click_skip: bool = true
+var movie_skip_on_skip: bool = false
 
 # --- Voice behavior ---
 var voice_continue_on_advance: bool = false
@@ -58,8 +63,11 @@ func to_dict() -> Dictionary:
 		"se_volume": se_volume,
 		"system_se_volume": system_se_volume,
 		"voice_volume": voice_volume,
+		"movie_volume": movie_volume,
 		"character_voice_volume": character_voice_volume.duplicate(),
 		"character_voice_enabled": character_voice_enabled.duplicate(),
+		"movie_right_click_skip": movie_right_click_skip,
+		"movie_skip_on_skip": movie_skip_on_skip,
 		"voice_continue_on_advance": voice_continue_on_advance,
 		"voice_replay_on_backlog": voice_replay_on_backlog,
 		"fullscreen": fullscreen,

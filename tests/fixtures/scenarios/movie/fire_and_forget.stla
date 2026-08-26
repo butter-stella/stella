@@ -1,0 +1,5 @@
+@chapter movie_fnf "Persistent movie"
+@scene start
+@movie synthetic_movie policy=fire_and_forget
+@wait click
+@movie stop
