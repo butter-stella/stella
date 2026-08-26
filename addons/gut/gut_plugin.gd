@@ -1,11 +1,10 @@
 @tool
 extends EditorPlugin
 
-var VersionConversion = load("res://addons/gut/version_conversion.gd")
-var MenuManager = load("res://addons/gut/gut_menu.gd")
-var BottomPanelScene = preload('res://addons/gut/gui/GutBottomPanel.tscn')
-var GutEditorGlobals = load('res://addons/gut/gui/editor_globals.gd')
-var GutDock = load('res://addons/gut/gui/gut_dock.gd')
+var VersionConversion = null
+var MenuManager = null
+var GutEditorGlobals = null
+var GutDock = null
 
 var _bottom_panel : Control = null
 var _menu_mgr = null
@@ -15,15 +14,21 @@ var _dock_mode = 'none'
 var _gut_dock = null
 
 
-func _init():
-	if(VersionConversion.error_if_not_all_classes_imported()):
-		return
-
-
 func _enter_tree():
+	# The test runner is available headlessly without constructing the editor UI.
+	# Loading any GUI dependency during --headless --import races the font/texture
+	# importers in a newly materialized consumer project and emits deterministic
+	# resource errors.
+	if(DisplayServer.get_name() == "headless"):
+		return
+	VersionConversion = load("res://addons/gut/version_conversion.gd")
+	MenuManager = load("res://addons/gut/gut_menu.gd")
+	GutEditorGlobals = load('res://addons/gut/gui/editor_globals.gd')
+	GutDock = load('res://addons/gut/gui/gut_dock.gd')
 	if(!_version_conversion()):
 		return
 
+	var BottomPanelScene = load('res://addons/gut/gui/GutBottomPanel.tscn')
 	_bottom_panel = BottomPanelScene.instantiate()
 	gut_as_panel()
 
@@ -85,6 +90,8 @@ func toggle_windowed():
 
 
 func _exit_tree():
+	if(DisplayServer.get_name() == "headless"):
+		return
 	remove_tool_menu_item("GUT")
 	_menu_mgr = null
 	GutEditorGlobals.user_prefs.save_it()

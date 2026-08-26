@@ -58,7 +58,7 @@ static func validate_operation(raw_operation: Variant, report: bool = true) -> b
 	if volume < 0.0 or volume > 1.0:
 		return _reject(report, "volume must be between 0 and 1")
 	if action == "play":
-		if asset.is_empty() or asset != asset.strip_edges() or "\u0000" in asset:
+		if asset.is_empty() or asset != asset.strip_edges():
 			return _reject(report, "play requires a canonical non-empty asset")
 	else:
 		if not asset.is_empty() or volume != 1.0 or resume_position != 0.0:
@@ -81,7 +81,6 @@ static func validate_snapshot_state(raw_state: Variant, report: bool = true) -> 
 		not state.get("asset", null) is String
 		or String(state["asset"]).is_empty()
 		or String(state["asset"]) != String(state["asset"]).strip_edges()
-		or "\u0000" in String(state["asset"])
 		or not state.get("loop", null) is bool
 		or not bool(state["loop"])
 	):
