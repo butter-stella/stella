@@ -16,6 +16,10 @@ static func reset_for_test(runtime: Node, tree: SceneTree) -> void:
 	# these steps can let an old continuation publish lifecycle events into the
 	# replacement test session.
 	runtime.engine.cancel_current_run()
+	if runtime._active_recollection_playback != null:
+		runtime._active_recollection_playback.cancel()
+	runtime._active_recollection_playback = null
+	runtime._active_recollection_context = null
 	SignalBus.engine_abort_requested.emit()
 
 	runtime.settings_manager.reset_to_default()

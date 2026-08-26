@@ -74,6 +74,12 @@ Presenter 在 active choice gate 下绝不让旧 ready/typewriter 建立推进 t
 
 `StellaAction.QUIT` 不进入 advance dispatch；它与标题按钮、宿主显式退出和 OS close 一样调用 `StellaRuntime.request_quit()`。OS close 先 autosave，随后 Runtime 通过唯一 AudioPresenter 退休所有音频 owner，并等待真实 AudioServer mix + 主线程 cleanup boundary；重复 UI/OS 请求不会创建第二个退出或等待 owner。
 
+### 回想播放的返回边界
+
+`@recollection_exit` 不 claim、消费或伪造任何 physical/semantic advance；普通 story 中它同步 no-op，玩家的下一次输入仍只属于实际 pending owner。Recollection 中该命令是 ScenarioEngine terminal，Runtime 从 canonical scenario-end bridge 取得 exact return claim。Gallery 的显式返回按钮调用 `StellaRuntime.return_from_recollection()`，也不经 `advance_requested` 重放输入，因此同一次 Button click 不会落到旧 Dialogue、wait 或下一段剧情。
+
+Auto/Skip 在回想内仍遵循普通 typed owner 规则；返回 cleanup 会同步停止两者。Backlog 可只读打开，但 quick/manual/auto save 与所有 rollback cursor mutation 都 fail-close。normal load（包括 quick load）、start 或 title replacement 直接 supersede caller；callback 只在旧 engine/presentation 全退役后执行，并可同步启动新的 story/recollection/title owner。
+
 ## 打字完成 vs 推进
 
 默认的 AVG 行为是：打字未完成时正常推进输入 = 完成打字（不推进），打字完成后下一次输入 = 推进。`click_to_complete=false` 会把第一条规则改成“只消费输入、继续打字”；自然完成后，下一次输入仍正常推进。

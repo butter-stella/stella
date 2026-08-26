@@ -303,6 +303,35 @@ StellaRuntime.request_quit()         # 安全退休音频后退出
 
 自定义标题、性能模式或其他宿主退出入口必须调用 `request_quit(exit_code=0)`，不要直接 `get_tree().quit()`。该 API 与内置标题、`StellaAction.QUIT` 和 OS close 共用同一个幂等边界：OS close 先自动存档，唯一 AudioPresenter 再退休 BGM/loop-SE/Voice/SE，Runtime 观察真实 AudioServer mix 回绕并给主线程一次 cleanup boundary 后退出。ack、driver 或 timing 非法及有界等待耗尽会以非零状态 fail-close。Godot 4.6.1 的 raw `--quit-after` 存在上游 audio-driver teardown 顺序限制（godotengine/godot#76745 / #122742），不能用于验证 active-audio 的产品 clean shutdown。
 
+#### 场景回想 / Gallery 播放
+
+Gallery controller 以一个明确的零参数 continuation 启动同一份 STLA：
+
+```gdscript
+# GalleryController 建议是 Autoload 或其他不会随 game scene 被释放的 owner。
+func play_memory() -> void:
+	var entered := await StellaRuntime.start_recollection(
+		"res://story/memory_001.stla",
+		Callable(self, "_on_memory_returned"),
+	)
+	if not entered:
+		push_error("cannot enter memory playback")
+
+func _on_memory_returned() -> void:
+	# Runtime 已完整退休旧 engine/presentation owner；这里可安全打开下一段
+	# recollection、开始 normal story，或返回标题/Gallery。
+	show_gallery()
+
+func _on_gallery_return_button_pressed() -> void:
+	StellaRuntime.return_from_recollection()
+```
+
+`start_recollection(scenario_path, return_continuation, game_scene_path="") -> bool` 在切换场景前解析剧本、预检 game scene，并要求 continuation 在入口时有效且恰好零参数。continuation 不得绑定在即将被替换的 Gallery scene node 上；请使用持久 controller/autoload，或显式保证 owner 生命周期。Runtime 不序列化 Callable，也不根据 scene path 猜返回目标。
+
+`@recollection_exit` 与剧本自然耗尽都会走和 `return_from_recollection()` 相同的 exact-once 终点：先退休 ScenarioEngine generation、Choice/Director、Stage、presentation clip、chapter、dialogue、BGM/loop-SE 与 canonical state，停止 Auto/Skip，再调用 continuation。若 target 在成功入口后失效，Runtime 仍先完成清理，然后用触发命令的 `source_path:line`（自然结束为 `:end`）报错并拒绝回调；不会留下半活回想。continuation 在 callback 中重入 normal story、另一个 recollection 或 title 是安全的，旧 return 没有能取消新 owner 的尾部工作。
+
+回想播放期间 Backlog 仍可只读查看，Auto/Skip 保持普通播放语义；实际正常推进完成的 Dialogue 仍以同一 source identity/command UID 记录为已读。manual/quick/auto save 与 Backlog、Choice、流程图 rollback/jump 都 fail-close，因为 continuation 不是可持久化状态。return cleanup 不回滚 monotonic read flags 或 UnlockManager；入口/退出也不会自动猜测某个 scene/CG 的解锁，Gallery controller 应用稳定业务 ID 显式管理解锁。任一显式 normal load/start/title replacement（fresh restart 也属于 normal start）都会取消旧回想 continuation，不会在新 owner 后重新打开旧 Gallery。公开示例见 [`examples/demo/scenarios/recollection_playback.stla`](../examples/demo/scenarios/recollection_playback.stla)。
+
 ### 当前章节标题与可见目标
 
 当前章节身份来自正在执行的 scene cursor，标题已通过 `TranslationServer` 解析。项目 UI 只需使用三个稳定 Facade getter 和一个公开通知：
