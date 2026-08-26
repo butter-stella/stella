@@ -383,6 +383,89 @@ func test_state_animation_is_projected_only_from_the_bounded_main_clock() -> voi
 	assert_true(_clip_presenter._active.is_empty())
 
 
+func test_particles_are_a_deterministic_projection_of_only_the_main_clock() -> void:
+	var request := _submit(
+		"synthetic_particle_clip",
+		PresentationBatchRequest.Policy.FIRE_AND_FORGET,
+		36,
+	)
+	await _await_settled(request)
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	var projections: Array = _clip_presenter._active.get(
+		"particle_projections", [])
+	assert_eq(projections.size(), 2)
+	if projections.size() != 2:
+		return
+	assert_eq((projections[0] as Dictionary).get("id"), &"burst_front")
+	assert_eq((projections[1] as Dictionary).get("id"), &"rate_back")
+	var pool_size := 0
+	for projection_value: Variant in projections:
+		var multimesh := (projection_value as Dictionary).get("multimesh") as MultiMesh
+		pool_size += multimesh.instance_count
+	assert_eq(pool_size, 8, "the bounded pool is fully reserved before publication")
+	var main := _clip_presenter._active.get("animation_player") as AnimationPlayer
+	var schedule_identity := func() -> String:
+		var values: Array = []
+		for projection_value: Variant in (
+			_clip_presenter._active.get("particle_projections", []) as Array):
+			var projection := projection_value as Dictionary
+			values.append([
+				String(projection.get("id")),
+				projection.get("spawn_times"),
+				projection.get("spawn_x"),
+				projection.get("spawn_y"),
+				projection.get("motion_scales"),
+				projection.get("initial_scales"),
+				projection.get("initial_rotations"),
+			])
+		return str(values)
+	var visible_counts := func() -> Array[int]:
+		var values: Array[int] = []
+		for projection_value: Variant in (
+			_clip_presenter._active.get("particle_projections", []) as Array):
+			var multimesh := (projection_value as Dictionary).get(
+				"multimesh") as MultiMesh
+			values.append(multimesh.visible_instance_count)
+		return values
+	var sealed_schedule_identity: String = schedule_identity.call()
+	main.pause()
+	main.seek(0.25, true)
+	_clip_presenter._process(0.0)
+	assert_eq(visible_counts.call(), [3, 2],
+		"the second sealed spawn .2495960786 <= .250001 while the first remains in its 0.3s lifetime window")
+	assert_eq(String(schedule_identity.call()), sealed_schedule_identity,
+		"projection does not mutate the sealed event arrays")
+	main.seek(0.2, true)
+	_clip_presenter._process(0.0)
+	var first_counts: Array[int] = visible_counts.call()
+	assert_eq(first_counts, [3, 1])
+	await get_tree().process_frame
+	_clip_presenter._process(0.0)
+	assert_eq(visible_counts.call(), first_counts,
+		"a paused main position has no autonomous particle clock")
+	main.seek(0.55, true)
+	_clip_presenter._process(0.0)
+	assert_eq(visible_counts.call(), [3, 2],
+		"a different authored position projects a different bounded state")
+	main.seek(0.2, true)
+	_clip_presenter._process(0.0)
+	assert_eq(visible_counts.call(), first_counts,
+		"seeking back reprojects the exact stable seed and spawn order")
+	assert_eq(String(schedule_identity.call()), sealed_schedule_identity,
+		"same-position reseek preserves every sealed event array exactly")
+	var particle_root := _clip_presenter._active.get("particle_root") as Node2D
+	var input_blocker := _clip_presenter._active.get("input_blocker") as Control
+	SignalBus.reset_presentation_clip()
+	assert_true(_clip_presenter._active.is_empty())
+	assert_eq(_clip_presenter._reserved_resource_bytes, 0)
+	assert_true(input_blocker.is_queued_for_deletion(),
+		"reset retires the exact owner of the particle subtree")
+	await get_tree().process_frame
+	assert_false(is_instance_valid(input_blocker))
+	assert_false(is_instance_valid(particle_root),
+		"reset retires the whole preallocated pool without a tail clock")
+
+
 func test_interleaved_state_players_project_in_latest_authored_activation_order() -> void:
 	var request := _submit(
 		"synthetic_clip_interleaved",
@@ -636,8 +719,9 @@ func test_resource_and_viewport_budgets_fail_before_claim_and_return_to_zero() -
 	await _await_settled(resource_rejected)
 	assert_push_error(
 		SOURCE_PATH + ":43] presentation clip request rejected: visual participant: "
-		+ "clip 'synthetic_clip' definition: clip texture and transition surfaces "
-		+ "exceed the configured resource budget")
+		+ "clip 'synthetic_clip' definition: clip textures, transition surfaces, "
+		+ "and particle work exceed the configured resource budget; clip participant "
+		+ "'visual:%d' did not validate" % _clip_presenter.get_instance_id())
 	assert_eq(resource_rejected.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
 	assert_eq(_clip_presenter._reserved_resource_bytes, 0)
 	_runtime.presentation_clip_resource_budget_bytes = _original_clip_resource_budget
@@ -1142,7 +1226,7 @@ func test_later_missing_audio_cue_rejects_the_whole_plan_before_mutation() -> vo
 
 func test_later_participant_retirement_rolls_back_claim_and_preserves_active() -> void:
 	var active_request := _submit(
-		"synthetic_clip", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 90)
+		"synthetic_particle_clip", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 90)
 	await _await_settled(active_request)
 	assert_eq(active_request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
 	assert_false(_clip_presenter._active.is_empty())
@@ -1152,7 +1236,8 @@ func test_later_participant_retirement_rolls_back_claim_and_preserves_active() -
 		if _dialogue != null and is_instance_valid(_dialogue):
 			_dialogue.queue_free()
 	SignalBus.presentation_clip_apply_requested.connect(invalidator)
-	var replacement := _submit("synthetic_clip", PresentationBatchRequest.Policy.JOIN, 91)
+	var replacement := _submit(
+		"synthetic_particle_clip", PresentationBatchRequest.Policy.JOIN, 91)
 	SignalBus.presentation_clip_apply_requested.disconnect(invalidator)
 	await _await_settled(replacement)
 	assert_push_error(
@@ -1243,7 +1328,7 @@ func test_typed_batch_rejects_clip_mixed_with_an_external_owner() -> void:
 
 func test_projection_reset_retires_active_clip_and_all_private_claims() -> void:
 	var request := _submit(
-		"synthetic_clip", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 110)
+		"synthetic_particle_clip", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 110)
 	await _await_settled(request)
 	assert_false(_clip_presenter._active.is_empty())
 	SignalBus.reset_presentation_clip()
@@ -1298,7 +1383,7 @@ func test_public_backlog_rollback_retires_clip_before_restored_context_runs() ->
 		"presentation-clip-before",
 	)
 	var request := _submit(
-		"synthetic_clip", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 121)
+		"synthetic_particle_clip", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 121)
 	await _await_settled(request)
 	var retired_context: ScenarioContext = _runtime.engine.context
 	var retired_root := _active_scene_root()
@@ -1320,7 +1405,7 @@ func test_public_backlog_rollback_retires_clip_before_restored_context_runs() ->
 
 func test_public_scenario_restart_retires_old_clip_before_new_owner() -> void:
 	var request := _submit(
-		"synthetic_clip", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 131)
+		"synthetic_particle_clip", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 131)
 	await _await_settled(request)
 	var retired_context: ScenarioContext = _runtime.engine.context
 	var retired_request_id := _active_request_id()
@@ -1345,7 +1430,7 @@ func test_public_scenario_restart_retires_old_clip_before_new_owner() -> void:
 
 func test_public_return_to_title_retires_clip_without_late_projection() -> void:
 	var request := _submit(
-		"synthetic_clip", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 141)
+		"synthetic_particle_clip", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 141)
 	await _await_settled(request)
 	var retired_root := _active_scene_root()
 	var retired_generation := int(_clip_presenter._active.get("generation", 0))
@@ -1384,7 +1469,7 @@ func test_public_return_to_title_retires_clip_without_late_projection() -> void:
 
 func test_public_game_scene_replacement_retires_then_replays_clip() -> void:
 	var request := _submit(
-		"synthetic_clip", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 151)
+		"synthetic_particle_clip", PresentationBatchRequest.Policy.FIRE_AND_FORGET, 151)
 	await _await_settled(request)
 	var retired_context: ScenarioContext = _runtime.engine.context
 	var retired_request_id := _active_request_id()

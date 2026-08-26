@@ -459,10 +459,24 @@ instance 的 exact node count 一致；两道门还会在入树前拒绝 autopla
 的 named animation 使用 main position 确定性 seek，不自行播放第二时钟；system audio 仍由
 唯一 AudioPresenter typed ownership 预检并播放。
 
+需要粒子时也不增加 scenario 参数：在同一个 definition 的 `particle_layers` 中选择 typed
+`PresentationClipParticleLayer` 即可。`rate` 每次在 authored
+`1/spawn_rate_min..1/spawn_rate_max` interval endpoints 间重新采样，
+`burst` 保留一次性 count min/max；stable seed + layer/spawn/channel ordinal 让任意 seek 都得到
+相同 spawn order。unscaled local `offset_motion_keys` 与乘一个共享随机 scalar 的
+`scaled_motion_keys` 相加（都为 logical-pixel Vector2 curve，不会拆 x/y 改变方向）；纹理与
+mask 各自显式选择 nearest/linear，mask 为 alpha/inverse-alpha，blend 为
+mix/add/sub/mul。粒子 lifetime、spawn window、projection bounds、texture/mask 与 maximum-live
+pool 都在 publish 前验证和预算。项目 scene 中的 GPUParticles/CPUParticles 仍严格拒绝；作者
+不需要、也不能用第二 scheduler 或 wall-clock 粒子 node 绕过 main timeline。粒子纹理也只
+接受static imported/Image与递归static Atlas/Canvas；render-target、camera/RD、animated、noise
+或external texture不能作为看似data-only的隐式live owner。
+
 `logical_viewport_size` 与 `fit_mode=contain|cover|stretch` 明确坐标空间；resource cap 和
 viewport cap 在 `[presentation_clips] resource_budget_bytes` / `max_viewport_pixels` 配置，
-默认分别为 512 MiB 与 3840×2160 pixels。texture、显式 clip SubViewport surface 与封存的
-under snapshot surface 在任何 UI、audio、scene mutation 前预算；失败会报告 scenario
+默认分别为 512 MiB 与 3840×2160 pixels。texture、显式 clip SubViewport surface、封存的
+under snapshot surface、sealed particle packed event/curve work 与 fixed MultiMesh pool 都在
+任何 UI、audio、scene mutation 前预算；失败会报告 scenario
 `source_path:line`、definition path 和
 cue ordinal/provenance。`cut` / exact `turn`、Skip、cancel、replacement、load/rollback/
 restart/return-to-title/scene replacement 都走同一 Runtime-owned Director quorum。项目无需也

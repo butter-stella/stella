@@ -3,6 +3,8 @@ extends GutTest
 
 const SOURCE_PATH := "res://tests/fixtures/scenarios/presentation_clip/contract.stla"
 const CLIP_PATH := "res://tests/fixtures/presentation_clips/synthetic_clip.tres"
+const PARTICLE_CLIP_PATH := (
+	"res://tests/fixtures/presentation_clips/synthetic_particle_clip.tres")
 
 
 func _parse(source: String) -> ScenarioData:
@@ -31,6 +33,54 @@ func _operation(asset: String = "synthetic_clip") -> PresentationClipPresentatio
 
 func _valid_definition() -> PresentationClipDefinition:
 	return load(CLIP_PATH) as PresentationClipDefinition
+
+
+func _particle_layer(
+	id: StringName,
+	emission_mode: StringName,
+) -> PresentationClipParticleLayer:
+	var layer := PresentationClipParticleLayer.new()
+	layer.id = id
+	layer.texture = ImageTexture.create_from_image(
+		Image.create(4, 4, false, Image.FORMAT_RGBA8))
+	layer.texture_filter = &"linear"
+	layer.mask_mode = &"none"
+	layer.mask_filter = &"nearest"
+	layer.blend_mode = &"mix"
+	layer.emission_mode = emission_mode
+	layer.emission_start_seconds = 0.0
+	layer.emission_end_seconds = 0.0 if emission_mode == &"burst" else 0.1
+	layer.lifetime_seconds = 0.1
+	layer.maximum_live_particles = 4
+	layer.seed = 17
+	layer.spawn_rect = Rect2(16, 16, 4, 4)
+	layer.projection_bounds = Rect2(0, 0, 64, 64)
+	layer.offset_motion_keys = PackedVector3Array([
+		Vector3(0, 0, 0), Vector3(0.5, 2, 0), Vector3(1, 0, 0),
+	])
+	layer.scaled_motion_keys = PackedVector3Array([
+		Vector3(0, 0, 0), Vector3(1, 8, -4),
+	])
+	layer.opacity_keys = PackedVector2Array([
+		Vector2(0, 1), Vector2(1, 0),
+	])
+	layer.scale_keys = PackedVector2Array([
+		Vector2(0, 1), Vector2(1, 0.5),
+	])
+	layer.rotation_keys = PackedVector2Array([
+		Vector2(0, 0), Vector2(1, 1),
+	])
+	if emission_mode == &"burst":
+		layer.spawn_rate_min = 0.0
+		layer.spawn_rate_max = 0.0
+		layer.burst_count_min = 2
+		layer.burst_count_max = 3
+	else:
+		layer.spawn_rate_min = 10.0
+		layer.spawn_rate_max = 20.0
+		layer.burst_count_min = 0
+		layer.burst_count_max = 0
+	return layer
 
 
 func _packed_scene_with(
@@ -154,6 +204,256 @@ func test_definition_preserves_stable_authored_cue_order_and_bounds() -> void:
 	second.animation_name = &"right"
 	reversed.cues = [first, second]
 	assert_true("ascending authored offsets" in "\n".join(reversed.validation_errors()))
+
+
+func test_particle_layers_are_typed_ordered_and_defensively_snapshotted() -> void:
+	var definition := _valid_definition().duplicate(true) as PresentationClipDefinition
+	definition.particle_layers = [
+		_particle_layer(&"burst_front", &"burst"),
+		_particle_layer(&"rate_back", &"rate"),
+	]
+	assert_true(definition.validation_errors().is_empty(),
+		"\n".join(definition.validation_errors()))
+	var snapshot := definition.canonical_value_snapshot()
+	var layers: Array = snapshot.get("particle_layers", [])
+	assert_eq(layers.size(), 2)
+	assert_eq((layers[0] as Dictionary).get("id"), "burst_front")
+	assert_eq((layers[0] as Dictionary).get("emission_mode"), "burst")
+	assert_eq((layers[0] as Dictionary).get("burst_count_min"), 2)
+	assert_eq((layers[0] as Dictionary).get("texture_filter"), "linear")
+	assert_eq((layers[1] as Dictionary).get("id"), "rate_back")
+	assert_eq((layers[1] as Dictionary).get("emission_mode"), "rate")
+	assert_eq((layers[1] as Dictionary).get("spawn_rate_max"), 20.0)
+	(layers[0] as Dictionary)["id"] = "mutated"
+	assert_eq(String(definition.particle_layers[0].id), "burst_front",
+		"public canonical values cannot mutate the sealed Resource")
+	var duplicate := definition.duplicate(true) as PresentationClipDefinition
+	duplicate.particle_layers[1].id = &"burst_front"
+	assert_string_contains(
+		"\n".join(duplicate.validation_errors()), "duplicate id 'burst_front'")
+
+
+func test_particle_emission_modes_fail_close_instead_of_averaging_authored_ranges() -> void:
+	var burst := _particle_layer(&"burst", &"burst")
+	assert_eq(burst.maximum_spawn_event_count(), 3)
+	burst.spawn_rate_min = 10.0
+	assert_string_contains(
+		"\n".join(burst.validation_errors()),
+		"burst emission requires zero spawn_rate_min/max",
+	)
+	burst.spawn_rate_min = 0.0
+	burst.emission_end_seconds = 0.1
+	assert_string_contains(
+		"\n".join(burst.validation_errors()),
+		"burst emission requires end_seconds equal to start_seconds",
+	)
+	var rate := _particle_layer(&"rate", &"rate")
+	rate.emission_end_seconds = 0.2
+	assert_eq(rate.maximum_spawn_event_count(), 4)
+	var presenter := PresentationClipPresenter.new()
+	var sealed_rate: Dictionary = presenter.call(
+		"_seal_particle_event_arrays", rate, 0)
+	var sealed_times: PackedFloat64Array = sealed_rate.get("spawn_times")
+	assert_eq(sealed_times.size(), 3)
+	assert_almost_eq(sealed_times[0], 0.06574375226628035, 0.000000000001,
+		"rate mode samples the authored 1/fmin..1/fmax interval endpoints")
+	assert_almost_eq(sealed_times[1], 0.14873008953873068, 0.000000000001)
+	assert_almost_eq(sealed_times[2], 0.19895901181735097, 0.000000000001)
+	presenter.free()
+	rate.burst_count_max = 2
+	assert_string_contains(
+		"\n".join(rate.validation_errors()),
+		"rate emission requires zero burst_count_min/max",
+	)
+	rate.burst_count_max = 0
+	rate.spawn_rate_max = 80.0
+	assert_string_contains(
+		"\n".join(rate.validation_errors()),
+		"maximum_live_particles must cover the worst-case rate/lifetime window",
+	)
+	var shared_direction := _particle_layer(&"direction", &"burst")
+	shared_direction.motion_scale_min = 0.5
+	shared_direction.motion_scale_max = 2.0
+	assert_true(shared_direction.validation_errors().is_empty(),
+		"one scalar preserves the authored motion direction")
+	shared_direction.texture_filter = &"project_default"
+	shared_direction.mask_filter = &"project_default"
+	assert_string_contains(
+		"\n".join(shared_direction.validation_errors()),
+		"texture_filter must be nearest or linear",
+	)
+	assert_string_contains(
+		"\n".join(shared_direction.validation_errors()),
+		"mask_filter must be nearest or linear",
+	)
+	var live_source := _particle_layer(&"live_source", &"burst")
+	live_source.texture = ViewportTexture.new()
+	assert_string_contains(
+		"\n".join(live_source.validation_errors()),
+		"texture must not use live, external, procedural, or render-target",
+	)
+	var live_mask := _particle_layer(&"live_mask", &"burst")
+	live_mask.mask_mode = &"alpha"
+	live_mask.mask_rect = Rect2(0, 0, 64, 64)
+	live_mask.mask_texture = CameraTexture.new()
+	assert_string_contains(
+		"\n".join(live_mask.validation_errors()),
+		"mask_texture must not use live, external, procedural, or render-target",
+	)
+	var wrapped_live := AtlasTexture.new()
+	wrapped_live.atlas = Texture2DRD.new()
+	live_source.texture = wrapped_live
+	assert_string_contains(
+		"\n".join(live_source.validation_errors()), "Texture2DRD")
+
+
+func test_particle_plan_preflights_exact_resources_and_native_particle_nodes_stay_forbidden() -> void:
+	var definition := _valid_definition().duplicate(true) as PresentationClipDefinition
+	definition.particle_layers = [_particle_layer(&"rate", &"rate")]
+	var plan := _prepare(definition)
+	assert_true(bool(plan.get("valid", false)), str(plan))
+	if bool(plan.get("valid", false)):
+		assert_eq(
+			(plan.get("particle_schedules", []) as Array).size(), 1,
+			"typed particle work is sealed before apply",
+		)
+		assert_gt(int(plan.get("particle_instance_bytes", 0)), 0)
+		_release_plan(plan)
+	for forbidden: Node in [GPUParticles2D.new(), CPUParticles2D.new()]:
+		forbidden.name = "ForbiddenNativeParticle"
+		var forbidden_class := forbidden.get_class()
+		var native_plan := _prepare(_definition_for(_packed_scene_with(forbidden)))
+		assert_false(bool(native_plan.get("valid", false)), forbidden_class)
+		assert_eq(
+			String(native_plan.get("error", "")),
+			"clip scene contains forbidden data owner '%s' before instantiation" % forbidden_class,
+		)
+
+
+func test_particle_schedule_is_seeded_ordered_and_bounded_by_the_main_clock() -> void:
+	var definition := load(PARTICLE_CLIP_PATH) as PresentationClipDefinition
+	assert_not_null(definition)
+	if definition == null:
+		return
+	var first := _prepare(definition)
+	var second := _prepare(definition)
+	assert_true(bool(first.get("valid", false)), str(first))
+	assert_true(bool(second.get("valid", false)), str(second))
+	if not bool(first.get("valid", false)) or not bool(second.get("valid", false)):
+		_release_plan(first)
+		_release_plan(second)
+		return
+	var first_schedules: Array = first.get("particle_schedules", [])
+	var second_schedules: Array = second.get("particle_schedules", [])
+	assert_eq(first_schedules.size(), 2)
+	assert_eq((first_schedules[0] as Dictionary).get("id"), &"burst_front")
+	assert_eq((first_schedules[1] as Dictionary).get("id"), &"rate_back")
+	var first_signature := JSON.stringify(first_schedules.map(
+		func(schedule: Dictionary) -> Array:
+			return [
+				Array(schedule.get("spawn_times", PackedFloat64Array())),
+				Array(schedule.get("spawn_x", PackedFloat64Array())),
+				Array(schedule.get("spawn_y", PackedFloat64Array())),
+				Array(schedule.get("motion_scales", PackedFloat64Array())),
+				Array(schedule.get("initial_scales", PackedFloat64Array())),
+				Array(schedule.get("initial_rotations", PackedFloat64Array())),
+			]
+	))
+	var second_signature := JSON.stringify(second_schedules.map(
+		func(schedule: Dictionary) -> Array:
+			return [
+				Array(schedule.get("spawn_times", PackedFloat64Array())),
+				Array(schedule.get("spawn_x", PackedFloat64Array())),
+				Array(schedule.get("spawn_y", PackedFloat64Array())),
+				Array(schedule.get("motion_scales", PackedFloat64Array())),
+				Array(schedule.get("initial_scales", PackedFloat64Array())),
+				Array(schedule.get("initial_rotations", PackedFloat64Array())),
+			]
+	))
+	assert_eq(first_signature, second_signature,
+		"same definition and seed seal the same authored-order schedule")
+	assert_gt(int(first.get("particle_event_bytes", 0)), 0)
+	assert_gt(int(first.get("particle_instance_bytes", 0)), 0)
+	assert_gt(int(first.get("particle_curve_bytes", 0)), 0)
+	_release_plan(first)
+	_release_plan(second)
+
+
+func test_particle_schedule_and_geometry_fail_before_budget_claim() -> void:
+	var sparse_rate := _valid_definition().duplicate(true) as PresentationClipDefinition
+	var sparse_layer := _particle_layer(&"sparse", &"rate")
+	sparse_layer.emission_end_seconds = 0.19
+	sparse_layer.spawn_rate_min = 10.0
+	sparse_layer.spawn_rate_max = 10.0
+	sparse_layer.lifetime_seconds = 0.05
+	sparse_rate.particle_layers = [sparse_layer]
+	var sparse_plan := _prepare(sparse_rate)
+	assert_true(bool(sparse_plan.get("valid", false)), str(sparse_plan))
+	if bool(sparse_plan.get("valid", false)):
+		var sparse_schedule: Dictionary = (
+			sparse_plan.get("particle_schedules", []) as Array)[0]
+		assert_eq(
+			(sparse_schedule.get("spawn_times") as PackedFloat64Array).size(), 1,
+			"unused tail window does not reject an exact sealed rate schedule",
+		)
+		_release_plan(sparse_plan)
+	var duration_overflow := _valid_definition().duplicate(true) as PresentationClipDefinition
+	var late_layer := _particle_layer(&"late", &"burst")
+	late_layer.emission_start_seconds = 0.15
+	late_layer.emission_end_seconds = 0.15
+	duration_overflow.particle_layers = [late_layer]
+	var duration_plan := _prepare(duration_overflow)
+	assert_false(bool(duration_plan.get("valid", false)), str(duration_plan))
+	assert_string_contains(
+		String(duration_plan.get("error", "")),
+		"particle_layers[0]",
+	)
+	assert_string_contains(
+		String(duration_plan.get("error", "")),
+		"last sealed spawn plus lifetime exceeds",
+	)
+	var geometry_overflow := _valid_definition().duplicate(true) as PresentationClipDefinition
+	var escaped := _particle_layer(&"escaped", &"burst")
+	escaped.projection_bounds = Rect2(16, 16, 4, 4)
+	escaped.authored_source_path = SOURCE_PATH
+	escaped.authored_source_line = 27
+	geometry_overflow.particle_layers = [escaped]
+	var geometry_plan := _prepare(geometry_overflow)
+	assert_false(bool(geometry_plan.get("valid", false)), str(geometry_plan))
+	assert_string_contains(
+		String(geometry_plan.get("error", "")),
+		SOURCE_PATH + ":27",
+	)
+	assert_string_contains(
+		String(geometry_plan.get("error", "")),
+		"projection_bounds do not enclose",
+	)
+
+
+func test_particle_work_budget_reserves_and_releases_exactly() -> void:
+	var definition := load(PARTICLE_CLIP_PATH) as PresentationClipDefinition
+	var presenter := PresentationClipPresenter.new()
+	var original_budget := StellaRuntime.presentation_clip_resource_budget_bytes
+	var plan: Dictionary = presenter.call("_prepare_plan", definition)
+	assert_true(bool(plan.get("valid", false)), str(plan))
+	if not bool(plan.get("valid", false)):
+		presenter.free()
+		return
+	var exact_bytes := int(plan.get("resource_bytes", 0))
+	assert_gt(int(plan.get("particle_layer_owner_bytes", 0)), 0)
+	assert_eq(int(presenter.get("_reserved_resource_bytes")), exact_bytes)
+	presenter.call("_release_plan", plan)
+	assert_eq(int(presenter.get("_reserved_resource_bytes")), 0,
+		"successful plan release returns the whole particle reservation")
+	StellaRuntime.presentation_clip_resource_budget_bytes = exact_bytes - 1
+	var rejected: Dictionary = presenter.call("_prepare_plan", definition)
+	StellaRuntime.presentation_clip_resource_budget_bytes = original_budget
+	assert_false(bool(rejected.get("valid", false)), str(rejected))
+	assert_string_contains(
+		String(rejected.get("error", "")), "particle work exceed")
+	assert_eq(int(presenter.get("_reserved_resource_bytes")), 0,
+		"budget rejection leaves no reservation")
+	presenter.free()
 
 
 func test_definition_rejects_unknown_or_incoherent_transition_contracts() -> void:
