@@ -502,6 +502,35 @@ func test_state_cue_cannot_replace_the_bounded_main_animation_player() -> void:
 	assert_true(_clip_presenter._active.is_empty())
 
 
+func test_invalid_particle_range_reports_definition_layer_and_provenance() -> void:
+	var request := _submit(
+		"invalid_particle_clip", PresentationBatchRequest.Policy.JOIN, 39)
+	await _await_settled(request)
+	assert_push_error(
+		SOURCE_PATH + ":39] presentation clip request rejected: visual participant: "
+		+ "clip 'invalid_particle_clip' definition: "
+		+ CLIP_ROOT + "invalid_particle_clip.tres particle_layers[0] authored at "
+		+ "res://tests/fixtures/scenarios/presentation_clip/particle_authoring.stla:12: "
+		+ "spawn_rate_min/max must be finite ascending values in (0,240]")
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	assert_eq(_receipts.size(), 0, "invalid particle validation cannot publish a receipt")
+	_assert_clip_projection_retired("invalid particle range")
+
+
+func test_null_particle_ordinal_rejects_without_snapshot_script_error() -> void:
+	var request := _submit(
+		"invalid_null_particle_clip", PresentationBatchRequest.Policy.JOIN, 40)
+	await _await_settled(request)
+	assert_push_error(
+		SOURCE_PATH + ":40] presentation clip request rejected: visual participant: "
+		+ "clip 'invalid_null_particle_clip' definition: "
+		+ CLIP_ROOT + "invalid_null_particle_clip.tres particle_layers[0] "
+		+ "authored at <unavailable>: layer must not be null")
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	assert_eq(_receipts.size(), 0, "null particle validation cannot publish a receipt")
+	_assert_clip_projection_retired("null particle ordinal")
+
+
 func test_public_definition_snapshot_and_cached_resource_cannot_mutate_active() -> void:
 	var public_values: Array[Dictionary] = []
 	var capture := func(request: PresentationClipOperationRequest) -> void:

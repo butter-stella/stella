@@ -478,7 +478,8 @@ viewport cap 在 `[presentation_clips] resource_budget_bytes` / `max_viewport_pi
 under snapshot surface、sealed particle packed event/curve work 与 fixed MultiMesh pool 都在
 任何 UI、audio、scene mutation 前预算；失败会报告 scenario
 `source_path:line`、definition path 和
-cue ordinal/provenance。`cut` / exact `turn`、Skip、cancel、replacement、load/rollback/
+对应的 cue 或 particle-layer ordinal/provenance 与 offending field。`cut` / exact `turn`、
+Skip、cancel、replacement、load/rollback/
 restart/return-to-title/scene replacement 都走同一 Runtime-owned Director quorum。项目无需也
 不应添加专用 Presenter、源格式 alias、预烘帧/video 或 wall-clock timer。
 CI 会通过公开 synthetic scene/audio definition 实际解析并运行

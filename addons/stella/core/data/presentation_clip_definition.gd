@@ -76,37 +76,60 @@ func validation_errors() -> PackedStringArray:
 	if cues.size() > MAX_CUES:
 		errors.append("cues exceeds the 96-cue limit")
 	if particle_layers.size() > MAX_PARTICLE_LAYERS:
-		errors.append("particle_layers exceeds the 16-layer limit")
+		errors.append(_particle_validation_diagnostic(
+			MAX_PARTICLE_LAYERS,
+			particle_layers[MAX_PARTICLE_LAYERS],
+			"particle_layers exceeds the 16-layer limit",
+		))
 	var particle_ids: Dictionary = {}
 	var total_live_particles := 0
+	var total_live_limit_reported := false
 	var logical_viewport_rect := Rect2(Vector2.ZERO, Vector2(logical_viewport_size))
 	for layer_index in range(particle_layers.size()):
 		var layer := particle_layers[layer_index]
 		if layer == null:
-			errors.append("particle_layers[%d] is null" % layer_index)
+			errors.append(_particle_validation_diagnostic(
+				layer_index, layer, "layer must not be null"))
 			continue
 		for detail: String in layer.validation_errors():
-			errors.append("particle_layers[%d].%s" % [layer_index, detail])
+			errors.append(_particle_validation_diagnostic(
+				layer_index, layer, detail))
 		var layer_id := String(layer.id)
 		if particle_ids.has(layer_id):
-			errors.append("particle_layers contains duplicate id '%s'" % layer_id)
+			errors.append(_particle_validation_diagnostic(
+				layer_index, layer, "id contains duplicate id '%s'" % layer_id))
 		particle_ids[layer_id] = true
 		total_live_particles += layer.maximum_live_particles
+		if (
+			total_live_particles > MAX_TOTAL_LIVE_PARTICLES
+			and not total_live_limit_reported
+		):
+			errors.append(_particle_validation_diagnostic(
+				layer_index,
+				layer,
+				("maximum_live_particles makes the authored layers exceed "
+				+ "the 1024 total-live-particle limit"),
+			))
+			total_live_limit_reported = true
 		if not logical_viewport_rect.encloses(layer.spawn_rect):
-			errors.append(
-				"particle_layers[%d].spawn_rect must lie inside logical_viewport_size"
-				% layer_index)
+			errors.append(_particle_validation_diagnostic(
+				layer_index,
+				layer,
+				"spawn_rect must lie inside logical_viewport_size",
+			))
 		if not logical_viewport_rect.encloses(layer.projection_bounds):
-			errors.append(
-				"particle_layers[%d].projection_bounds must lie inside logical_viewport_size"
-				% layer_index)
+			errors.append(_particle_validation_diagnostic(
+				layer_index,
+				layer,
+				"projection_bounds must lie inside logical_viewport_size",
+			))
 		if layer.mask_mode != &"none" and not logical_viewport_rect.encloses(
 			layer.mask_rect):
-			errors.append(
-				"particle_layers[%d].mask_rect must lie inside logical_viewport_size"
-				% layer_index)
-	if total_live_particles > MAX_TOTAL_LIVE_PARTICLES:
-		errors.append("particle_layers exceeds the 1024 total-live-particle limit")
+			errors.append(_particle_validation_diagnostic(
+				layer_index,
+				layer,
+				"mask_rect must lie inside logical_viewport_size",
+			))
 	var previous_offset := -1.0
 	for index in range(cues.size()):
 		var cue := cues[index]
@@ -155,6 +178,28 @@ func validation_errors() -> PackedStringArray:
 	return errors
 
 
+func _particle_validation_diagnostic(
+	index: int,
+	layer: PresentationClipParticleLayer,
+	detail: String,
+) -> String:
+	var definition_path := resource_path
+	if definition_path.is_empty():
+		definition_path = "<embedded PresentationClipDefinition>"
+	var provenance := " authored at <unavailable>"
+	if (
+		layer != null
+		and not layer.authored_source_path.is_empty()
+		and layer.authored_source_line > 0
+	):
+		provenance = " authored at %s:%d" % [
+			layer.authored_source_path, layer.authored_source_line,
+		]
+	return "%s particle_layers[%d]%s: %s" % [
+		definition_path, index, provenance, detail,
+	]
+
+
 func has_audio_cues() -> bool:
 	for cue: PresentationClipCue in cues:
 		if cue is PresentationClipAudioCue:
@@ -163,9 +208,12 @@ func has_audio_cues() -> bool:
 
 
 func canonical_value_snapshot() -> Dictionary:
-	var ordered_cues: Array[Dictionary] = []
+	var ordered_cues: Array = []
 	for cue_index in range(cues.size()):
 		var cue := cues[cue_index]
+		if cue == null:
+			ordered_cues.append(null)
+			continue
 		var cue_value := {
 			"ordinal": cue_index,
 			"offset_seconds": cue.offset_seconds,
@@ -184,9 +232,12 @@ func canonical_value_snapshot() -> Dictionary:
 				state_cue.animation_player_path)
 			cue_value["animation_name"] = String(state_cue.animation_name)
 		ordered_cues.append(cue_value)
-	var ordered_particle_layers: Array[Dictionary] = []
+	var ordered_particle_layers: Array = []
 	for layer_index in range(particle_layers.size()):
 		var layer := particle_layers[layer_index]
+		if layer == null:
+			ordered_particle_layers.append(null)
+			continue
 		ordered_particle_layers.append({
 			"ordinal": layer_index,
 			"id": String(layer.id),

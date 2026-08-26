@@ -979,7 +979,9 @@ func _prepare_plan(definition: PresentationClipDefinition) -> Dictionary:
 	if not _definition_resource_scripts_are_exact(definition):
 		return {
 			"valid": false,
-			"error": "clip definition and cues must use exact Stella Resource scripts",
+			"error": (
+				"clip definition, cues, and particle layers must use exact Stella "
+				+ "Resource scripts"),
 		}
 	if (
 		not definition.resource_path.is_empty()
@@ -1515,7 +1517,8 @@ func _resolve_definition_result(asset: String) -> Dictionary:
 				return {
 					"definition": null,
 					"error": (
-						"clip logical id '%s' at '%s' must use exact Stella definition and cue Resource scripts"
+						("clip logical id '%s' at '%s' must use exact Stella definition, "
+						+ "cue, and particle-layer Resource scripts")
 						% [asset, path]),
 				}
 			return {"definition": resource, "error": ""}
@@ -1639,6 +1642,8 @@ func _definition_resource_scripts_are_exact(
 	):
 		return false
 	for cue: PresentationClipCue in definition.cues:
+		if cue == null:
+			continue
 		var expected_script_path := ""
 		if cue is PresentationClipAudioCue:
 			expected_script_path = AUDIO_CUE_SCRIPT_PATH
@@ -1647,15 +1652,15 @@ func _definition_resource_scripts_are_exact(
 		else:
 			return false
 		if (
-			cue == null
-			or cue.get_script() == null
+			cue.get_script() == null
 			or cue.get_script().resource_path != expected_script_path
 		):
 			return false
 	for layer: PresentationClipParticleLayer in definition.particle_layers:
+		if layer == null:
+			continue
 		if (
-			layer == null
-			or layer.get_script() == null
+			layer.get_script() == null
 			or layer.get_script().resource_path != PARTICLE_LAYER_SCRIPT_PATH
 		):
 			return false
@@ -1689,8 +1694,7 @@ func _particle_diagnostic(
 	layer: PresentationClipParticleLayer,
 	detail: String,
 ) -> String:
-	return _cue_diagnostic(
-		definition, "particle_layers", index, layer, detail)
+	return definition._particle_validation_diagnostic(index, layer, detail)
 
 
 func _validate_packed_scene_state(

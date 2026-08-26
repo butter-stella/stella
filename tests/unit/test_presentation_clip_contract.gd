@@ -214,6 +214,7 @@ func test_particle_layers_are_typed_ordered_and_defensively_snapshotted() -> voi
 	]
 	assert_true(definition.validation_errors().is_empty(),
 		"\n".join(definition.validation_errors()))
+	var fingerprint := definition.semantic_fingerprint()
 	var snapshot := definition.canonical_value_snapshot()
 	var layers: Array = snapshot.get("particle_layers", [])
 	assert_eq(layers.size(), 2)
@@ -227,10 +228,46 @@ func test_particle_layers_are_typed_ordered_and_defensively_snapshotted() -> voi
 	(layers[0] as Dictionary)["id"] = "mutated"
 	assert_eq(String(definition.particle_layers[0].id), "burst_front",
 		"public canonical values cannot mutate the sealed Resource")
+	assert_eq(definition.semantic_fingerprint(), fingerprint,
+		"defensive snapshot mutation cannot change valid order or fingerprint")
 	var duplicate := definition.duplicate(true) as PresentationClipDefinition
 	duplicate.particle_layers[1].id = &"burst_front"
 	assert_string_contains(
 		"\n".join(duplicate.validation_errors()), "duplicate id 'burst_front'")
+
+
+func test_embedded_particle_validation_identifies_layer_provenance_and_field() -> void:
+	var definition := _definition_for(_packed_scene_with())
+	var layer := _particle_layer(&"invalid_rate", &"rate")
+	layer.authored_source_path = SOURCE_PATH
+	layer.authored_source_line = 91
+	layer.spawn_rate_min = 0.0
+	definition.particle_layers = [layer]
+	var plan := _prepare(definition)
+	assert_false(bool(plan.get("valid", false)), str(plan))
+	assert_eq(
+		String(plan.get("error", "")),
+		("<embedded PresentationClipDefinition> particle_layers[0] authored at "
+		+ SOURCE_PATH + ":91: spawn_rate_min/max must be finite ascending values "
+		+ "in (0,240]"),
+	)
+
+
+func test_canonical_snapshot_preserves_null_cue_and_particle_ordinals() -> void:
+	var definition := _definition_for(_packed_scene_with())
+	definition.cues = [null]
+	definition.particle_layers = [null]
+	var snapshot := definition.canonical_value_snapshot()
+	var cues: Array = snapshot.get("cues", [])
+	var layers: Array = snapshot.get("particle_layers", [])
+	var presenter := PresentationClipPresenter.new()
+	assert_true(presenter.call("_definition_resource_scripts_are_exact", definition),
+		"null ordinals contain no executable script and defer to schema validation")
+	presenter.free()
+	assert_eq(cues.size(), 1)
+	assert_null(cues[0], "null cue remains at authored ordinal zero")
+	assert_eq(layers.size(), 1)
+	assert_null(layers[0], "null particle remains at authored ordinal zero")
 
 
 func test_particle_emission_modes_fail_close_instead_of_averaging_authored_ranges() -> void:
