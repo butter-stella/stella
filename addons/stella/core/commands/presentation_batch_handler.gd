@@ -9,6 +9,9 @@ const EXACT_STAGE_PAYLOAD_KEYS := [
 const EXACT_VISIBILITY_PAYLOAD_KEYS := [
 	"action", "duration", "target", "transition",
 ]
+const EXACT_DIALOGUE_AVATAR_PAYLOAD_KEYS := [
+	"action", "duration", "properties", "transition",
+]
 const EXACT_DIALOGUE_CLEAR_PAYLOAD_KEYS := ["scope"]
 const EXACT_CHAPTER_INDICATOR_PAYLOAD_KEYS := [
 	"action", "duration", "transition",
@@ -79,6 +82,13 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 			"stage":
 				typed_operations.append(StagePresentationOperation.new(
 					payload, operation_source))
+			"dialogue_avatar":
+				typed_operations.append(DialogueAvatarPresentationOperation.new(
+					payload,
+					validation["before_dialogue_avatar"],
+					validation["target_dialogue_avatar"],
+					operation_source,
+				))
 			"dialogue_visibility":
 				typed_operations.append(
 					DialogueVisibilityPresentationOperation.new(
@@ -178,6 +188,9 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 	var canonical_operations: Array = []
 	var stage_operations: Array = []
 	var visibility_operations: Array = []
+	var avatar_operations: Array = []
+	var saw_dialogue_avatar := false
+	var avatar_line := data.declared_line
 	var saw_dialogue_clear := false
 	var saw_chapter_indicator := false
 	var seen_loop_se_channels: Dictionary = {}
@@ -223,6 +236,18 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 							return {"valid": false, "error": "stage clear conflicts with another Stage sibling", "line": int(operation_lines[index])}
 					seen_stage_layers[layer_id] = true
 				stage_operations.append(payload.duplicate(true))
+			"dialogue_avatar":
+				var avatar_keys := payload.keys()
+				avatar_keys.sort()
+				if avatar_keys != EXACT_DIALOGUE_AVATAR_PAYLOAD_KEYS:
+					return {"valid": false, "error": "dialogue avatar payload must use the canonical four-field schema", "line": int(operation_lines[index])}
+				if saw_dialogue_avatar:
+					return {"valid": false, "error": "duplicate dialogue avatar channel", "line": int(operation_lines[index])}
+				if not DialogueAvatarState.validate_operation(payload, false):
+					return {"valid": false, "error": "dialogue avatar payload failed canonical validation", "line": int(operation_lines[index])}
+				saw_dialogue_avatar = true
+				avatar_line = int(operation_lines[index])
+				avatar_operations.append(payload.duplicate(true))
 			"dialogue_visibility":
 				var visibility_keys := payload.keys()
 				visibility_keys.sort()
@@ -306,6 +331,23 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 	)
 	var stage_target := StageLayerState.reduce(stage_before, stage_operations, false)
 	var visibility_target := DialogueVisibilityState.reduce(visibility_before, visibility_operations, false)
+	var avatar_before := (
+		_presentation_state.dialogue_avatar.duplicate(true)
+		if _presentation_state != null
+		else DialogueAvatarState.default_state()
+	)
+	if (
+		not avatar_operations.is_empty()
+		and not DialogueAvatarState.operation_is_supported(
+			avatar_before, avatar_operations[0])
+	):
+		return {
+			"valid": false,
+			"error": "dialogue avatar action is not valid for the current state",
+			"line": avatar_line,
+		}
+	var avatar_target := DialogueAvatarState.reduce(
+		avatar_before, avatar_operations, false)
 	var loop_se_before := (
 		_presentation_state.loop_se_channels.duplicate(true)
 		if _presentation_state != null
@@ -334,8 +376,10 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 		"operations": canonical_operations,
 		"before_stage": stage_before,
 		"before_visibility": visibility_before,
+		"before_dialogue_avatar": avatar_before,
 		"target_stage": stage_target,
 		"target_visibility": visibility_target,
+		"target_dialogue_avatar": avatar_target,
 		"before_loop_se": loop_se_before,
 		"target_loop_se": loop_se_target,
 		"before_bgm": bgm_before,
@@ -346,6 +390,7 @@ func _validate_and_reduce(data: CommandData) -> Dictionary:
 			and loop_se_operations.is_empty()
 			and bgm_operations.is_empty()
 			and visibility_operations.is_empty()
+			and avatar_operations.is_empty()
 			and not saw_dialogue_clear
 			and not saw_chapter_indicator
 		),

@@ -92,7 +92,13 @@ func test_stage_operations_are_tracked_and_json_roundtrip_exactly() -> void:
 func test_snapshot_without_stage_layers_restores_empty_stage() -> void:
 	var state := PresentationState.new()
 	state.stage_layers = {"old": StageLayerState.default_state()}
-	state.restore_snapshot({"bg": "", "bgm": {}})
+	state.restore_snapshot({
+		"bg": "",
+		"bgm": {},
+		"dialogue_visibility": DialogueVisibilityState.default_state(),
+		"dialogue_content": PresentationState._inactive_dialogue_content(),
+		"dialogue_avatar": DialogueAvatarState.default_state(),
+	})
 	assert_true(state.stage_layers.is_empty())
 
 
@@ -162,6 +168,7 @@ func test_dialogue_projection_defaults_and_restore_are_stable() -> void:
 		"avatar_expression": "",
 		"nvl_entries": [],
 	})
+	assert_eq(snapshot.get("dialogue_avatar"), DialogueAvatarState.default_state())
 	var stable := {
 		"bg": "",
 		"stage_layers": {},
@@ -180,6 +187,19 @@ func test_dialogue_projection_defaults_and_restore_are_stable() -> void:
 			"avatar_expression": "happy",
 			"nvl_entries": [],
 		},
+		"dialogue_avatar": DialogueAvatarState.reduce(
+			DialogueAvatarState.default_state(),
+			[{
+				"action": "set",
+				"properties": {
+					"asset": "stage:bg_cafe",
+					"visible": false,
+				},
+				"transition": "cut",
+				"duration": 0.0,
+			}],
+			false,
+		),
 	}
 	state.restore_snapshot(stable)
 	assert_eq(state.capture_snapshot(), stable)

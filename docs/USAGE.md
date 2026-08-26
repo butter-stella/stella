@@ -408,6 +408,30 @@ Godot 4.6 的 redraw 像素管线使用 Forward+ 或 Mobile renderer。macOS 上
 显式 `surface` 仍属于同一套可选 target grammar，并与省略形式生成相同的
 canonical payload。精确语法和 fail-close 规则见 [DSL 文档](DSL.md#35a-dialogue-visibility)。
 
+### 可寻址对话头像
+
+对话 surface 需要在台词边界之外预置或切换头像时，使用固定
+`dialogue:avatar` channel：
+
+```stla
+@dialogue_avatar set character=hero expression=neutral visible=false position=-280,-140 scale=0.45,0.45
+@dialogue_avatar show transition=fade duration=0.3
+@dialogue_avatar set expression=smile
+@dialogue_avatar hide
+```
+
+也可直接使用 `asset=<logical-id>`；它与 `character` / `expression` source 互斥。
+`set visible=false` 会建立可存档、可恢复但隐藏的稳定状态，不会延迟到下一句。
+位置、原点、缩放、旋转、层级与透明度只使用 Stella canonical property；源格式字段必须由
+importer 在有确定证据时翻译，否则保留原 source line fail-close。内部 Sprite、outgoing
+crossfade 与 receipt 都由内建 DialoguePresenter 管理，项目不应操作 UI node 或创建第二条
+scheduler。完整语法见 [DSL 文档](DSL.md#35b-addressable-dialogue-avatar)。
+`position` / `origin` 是 avatar-container 本地画布中的有符号像素，`origin` 从源纹理左上角
+计量并映射为负 offset；`scale` 无单位，`rotation` 使用弧度。Importer 必须先解码源格式的
+无符号、定点或角度编码，不能把 raw 数字直接塞入 Stella DSL。
+可运行且由 CI 实际解析的公开 synthetic 示例位于
+[`examples/demo/scenarios/dialogue_avatar.stla`](../examples/demo/scenarios/dialogue_avatar.stla)。
+
 ### 清空当前对话页
 
 普通作者只写零参数命令：
@@ -517,7 +541,7 @@ WAV definition duplicate 以 source sample frame 写入 `loop_begin` / `loop_end
 
 Rule-mask 与 mosaic 的公开合成示例位于 [`examples/demo/scenarios/stage_transitions.stla`](../examples/demo/scenarios/stage_transitions.stla)，遮罩是仓库内可再分发的 synthetic SVG；测试和示例都不依赖任何宿主项目素材。
 
-高级 typed surface 由 `PresentationOperation`、`StagePresentationOperation`、`DialogueVisibilityPresentationOperation`、`DialogueClearPresentationOperation`、`ChapterIndicatorPresentationOperation`、`LoopSePresentationOperation`、`BgmPresentationOperation`、`PresentationOperationReceipt`、`PresentationBatchRequest` 和 `PresentationDirector` 组成。唯一 owner 是 `StellaRuntime.presentation_director`；项目不应自行 `new()` 第二个 Director，也不应调用 `_bind_authority()`、`_seal()` 或 `_settle()` 等下划线内部方法。`PresentationRequestReservation` 同样是 Runtime 内部的单次 capability，仅供 `@combine` 在同步 typed dispatch 前登记 exact owner，不是用裸 request ID 提交工作的公开 API。同一个 Director 支持 Stage、`@dialogue_visibility`、`@dialogue_clear`、`@chapter_indicator`、`@loop_se` 与 `@bgm` 的 mixed `@presentation_batch`，在任何 apply 前完成全批 preflight/seal，再按 authored child order dispatch。它只用于需要跨 channel 共享 JOIN/FNF boundary 的高级 composition；普通 chapter/dialogue clear/显隐与 loop-SE/BGM 保持各自 standalone 写法，并由 parser lowering 到同一条 canonical child 路径。
+高级 typed surface 由 `PresentationOperation`、`StagePresentationOperation`、`DialogueAvatarPresentationOperation`、`DialogueVisibilityPresentationOperation`、`DialogueClearPresentationOperation`、`ChapterIndicatorPresentationOperation`、`LoopSePresentationOperation`、`BgmPresentationOperation`、`PresentationOperationReceipt`、`PresentationBatchRequest` 和 `PresentationDirector` 组成。唯一 owner 是 `StellaRuntime.presentation_director`；项目不应自行 `new()` 第二个 Director，也不应调用 `_bind_authority()`、`_seal()` 或 `_settle()` 等下划线内部方法。`PresentationRequestReservation` 同样是 Runtime 内部的单次 capability，仅供 `@combine` 在同步 typed dispatch 前登记 exact owner，不是用裸 request ID 提交工作的公开 API。同一个 Director 支持 Stage、`@dialogue_avatar`、`@dialogue_visibility`、`@dialogue_clear`、`@chapter_indicator`、`@loop_se` 与 `@bgm` 的 mixed `@presentation_batch`，在任何 apply 前完成全批 preflight/seal，再按 authored child order dispatch。它只用于需要跨 channel 共享 JOIN/FNF boundary 的高级 composition；普通 avatar/chapter/dialogue clear/显隐与 loop-SE/BGM 保持各自 standalone 写法，并由 parser lowering 到同一条 canonical child 路径。
 
 公开的 `StellaRuntime.apply_stage_operations(operations, force_cut) -> void` 是 canonical programmatic Facade：它要求完整六字段 operation，不返回 receipt、不等待 Tween，也不等价于 authored `@stage_batch`。simple transition 保留同步 raw notification contract；projection transition 经 typed Director preflight 后才发布同一个 canonical notification。`@combine` 的 Stage cue 同样经 typed Director，且 parser 保留每条 cue 的 source line；segment sequencing 不因此变成 batch JOIN。
 

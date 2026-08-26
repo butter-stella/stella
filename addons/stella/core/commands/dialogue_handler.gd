@@ -43,9 +43,10 @@ func execute(data: CommandData, context: ScenarioContext) -> void:
 			"voice": data.get_string("voice", ""),
 			"voice_dsp": data.get_string("voice_dsp", ""),
 			"voice_dsp_line": data.get_int("voice_dsp_line", 0),
-			"stage_ops": data.params.get("stage_ops", []).duplicate(true),
-			"stage_operation_lines": data.params.get(
-				"stage_operation_lines", []).duplicate(),
+			"presentation_ops": data.params.get(
+				"presentation_ops", []).duplicate(true),
+			"presentation_operation_lines": data.params.get(
+				"presentation_operation_lines", []).duplicate(),
 		}]
 
 	var presentation_profile: Dictionary = data.params.get("presentation_profile", {})
