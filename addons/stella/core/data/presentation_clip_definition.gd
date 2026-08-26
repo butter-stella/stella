@@ -8,6 +8,8 @@ class_name PresentationClipDefinition extends Resource
 const MAX_DURATION_SECONDS := 120.0
 const MAX_CUES := 96
 const MAX_SCENE_NODES := 512
+const MAX_PARTICLE_LAYERS := 16
+const MAX_TOTAL_LIVE_PARTICLES := 1024
 const TRANSITIONS := [&"cut", &"turn"]
 const FIT_MODES := [&"contain", &"cover", &"stretch"]
 
@@ -24,6 +26,7 @@ const FIT_MODES := [&"contain", &"cover", &"stretch"]
 @export var suppress_quick_menu: bool = true
 @export var skippable: bool = true
 @export var cues: Array[PresentationClipCue] = []
+@export var particle_layers: Array[PresentationClipParticleLayer] = []
 
 
 static func is_logical_id(value: String) -> bool:
@@ -72,6 +75,61 @@ func validation_errors() -> PackedStringArray:
 		"exit", exit_transition, exit_duration, errors)
 	if cues.size() > MAX_CUES:
 		errors.append("cues exceeds the 96-cue limit")
+	if particle_layers.size() > MAX_PARTICLE_LAYERS:
+		errors.append(_particle_validation_diagnostic(
+			MAX_PARTICLE_LAYERS,
+			particle_layers[MAX_PARTICLE_LAYERS],
+			"particle_layers exceeds the 16-layer limit",
+		))
+	var particle_ids: Dictionary = {}
+	var total_live_particles := 0
+	var total_live_limit_reported := false
+	var logical_viewport_rect := Rect2(Vector2.ZERO, Vector2(logical_viewport_size))
+	for layer_index in range(particle_layers.size()):
+		var layer := particle_layers[layer_index]
+		if layer == null:
+			errors.append(_particle_validation_diagnostic(
+				layer_index, layer, "layer must not be null"))
+			continue
+		for detail: String in layer.validation_errors():
+			errors.append(_particle_validation_diagnostic(
+				layer_index, layer, detail))
+		var layer_id := String(layer.id)
+		if particle_ids.has(layer_id):
+			errors.append(_particle_validation_diagnostic(
+				layer_index, layer, "id contains duplicate id '%s'" % layer_id))
+		particle_ids[layer_id] = true
+		total_live_particles += layer.maximum_live_particles
+		if (
+			total_live_particles > MAX_TOTAL_LIVE_PARTICLES
+			and not total_live_limit_reported
+		):
+			errors.append(_particle_validation_diagnostic(
+				layer_index,
+				layer,
+				("maximum_live_particles makes the authored layers exceed "
+				+ "the 1024 total-live-particle limit"),
+			))
+			total_live_limit_reported = true
+		if not logical_viewport_rect.encloses(layer.spawn_rect):
+			errors.append(_particle_validation_diagnostic(
+				layer_index,
+				layer,
+				"spawn_rect must lie inside logical_viewport_size",
+			))
+		if not logical_viewport_rect.encloses(layer.projection_bounds):
+			errors.append(_particle_validation_diagnostic(
+				layer_index,
+				layer,
+				"projection_bounds must lie inside logical_viewport_size",
+			))
+		if layer.mask_mode != &"none" and not logical_viewport_rect.encloses(
+			layer.mask_rect):
+			errors.append(_particle_validation_diagnostic(
+				layer_index,
+				layer,
+				"mask_rect must lie inside logical_viewport_size",
+			))
 	var previous_offset := -1.0
 	for index in range(cues.size()):
 		var cue := cues[index]
@@ -120,6 +178,28 @@ func validation_errors() -> PackedStringArray:
 	return errors
 
 
+func _particle_validation_diagnostic(
+	index: int,
+	layer: PresentationClipParticleLayer,
+	detail: String,
+) -> String:
+	var definition_path := resource_path
+	if definition_path.is_empty():
+		definition_path = "<embedded PresentationClipDefinition>"
+	var provenance := " authored at <unavailable>"
+	if (
+		layer != null
+		and not layer.authored_source_path.is_empty()
+		and layer.authored_source_line > 0
+	):
+		provenance = " authored at %s:%d" % [
+			layer.authored_source_path, layer.authored_source_line,
+		]
+	return "%s particle_layers[%d]%s: %s" % [
+		definition_path, index, provenance, detail,
+	]
+
+
 func has_audio_cues() -> bool:
 	for cue: PresentationClipCue in cues:
 		if cue is PresentationClipAudioCue:
@@ -128,9 +208,12 @@ func has_audio_cues() -> bool:
 
 
 func canonical_value_snapshot() -> Dictionary:
-	var ordered_cues: Array[Dictionary] = []
+	var ordered_cues: Array = []
 	for cue_index in range(cues.size()):
 		var cue := cues[cue_index]
+		if cue == null:
+			ordered_cues.append(null)
+			continue
 		var cue_value := {
 			"ordinal": cue_index,
 			"offset_seconds": cue.offset_seconds,
@@ -149,6 +232,52 @@ func canonical_value_snapshot() -> Dictionary:
 				state_cue.animation_player_path)
 			cue_value["animation_name"] = String(state_cue.animation_name)
 		ordered_cues.append(cue_value)
+	var ordered_particle_layers: Array = []
+	for layer_index in range(particle_layers.size()):
+		var layer := particle_layers[layer_index]
+		if layer == null:
+			ordered_particle_layers.append(null)
+			continue
+		ordered_particle_layers.append({
+			"ordinal": layer_index,
+			"id": String(layer.id),
+			"texture_path": layer.texture.resource_path if layer.texture != null else "",
+			"texture_filter": String(layer.texture_filter),
+			"mask_texture_path": (
+				layer.mask_texture.resource_path if layer.mask_texture != null else ""),
+			"mask_filter": String(layer.mask_filter),
+			"mask_rect": layer.mask_rect,
+			"mask_mode": String(layer.mask_mode),
+			"blend_mode": String(layer.blend_mode),
+			"z_index": layer.z_index,
+			"color": layer.color,
+			"origin": layer.origin,
+			"emission_mode": String(layer.emission_mode),
+			"emission_start_seconds": layer.emission_start_seconds,
+			"emission_end_seconds": layer.emission_end_seconds,
+			"spawn_rate_min": layer.spawn_rate_min,
+			"spawn_rate_max": layer.spawn_rate_max,
+			"burst_count_min": layer.burst_count_min,
+			"burst_count_max": layer.burst_count_max,
+			"lifetime_seconds": layer.lifetime_seconds,
+			"maximum_live_particles": layer.maximum_live_particles,
+			"seed": layer.seed,
+			"spawn_rect": layer.spawn_rect,
+			"projection_bounds": layer.projection_bounds,
+			"offset_motion_keys": layer.offset_motion_keys,
+			"scaled_motion_keys": layer.scaled_motion_keys,
+			"opacity_keys": layer.opacity_keys,
+			"scale_keys": layer.scale_keys,
+			"rotation_keys": layer.rotation_keys,
+			"motion_scale_min": layer.motion_scale_min,
+			"motion_scale_max": layer.motion_scale_max,
+			"initial_scale_min": layer.initial_scale_min,
+			"initial_scale_max": layer.initial_scale_max,
+			"initial_rotation_min": layer.initial_rotation_min,
+			"initial_rotation_max": layer.initial_rotation_max,
+			"authored_source_path": layer.authored_source_path,
+			"authored_source_line": layer.authored_source_line,
+		})
 	return {
 		"animation_player_path": String(animation_player_path),
 		"animation_name": String(animation_name),
@@ -162,6 +291,7 @@ func canonical_value_snapshot() -> Dictionary:
 		"suppress_quick_menu": suppress_quick_menu,
 		"skippable": skippable,
 		"cues": ordered_cues,
+		"particle_layers": ordered_particle_layers,
 		"semantic_fingerprint": semantic_fingerprint(),
 	}
 

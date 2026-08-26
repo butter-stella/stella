@@ -360,3 +360,257 @@ func test_fit_modes_and_zero_canvas_group_margins_have_stable_pixels() -> void:
 	var stretch := await _fit_image(&"stretch")
 	_assert_color(stretch.get_pixel(0, 0), Color8(255, 0, 0), "stretch top-left")
 	_assert_color(stretch.get_pixel(319, 179), Color8(255, 0, 0), "stretch bottom-right")
+
+
+func _particle_image(size: Vector2i, color: Color) -> ImageTexture:
+	var image := Image.create(size.x, size.y, false, Image.FORMAT_RGBA8)
+	image.fill(color)
+	return ImageTexture.create_from_image(image)
+
+
+func _particle_mask_texture() -> ImageTexture:
+	var image := Image.create(64, 64, false, Image.FORMAT_RGBA8)
+	image.fill(Color(0, 0, 0, 0))
+	for y in range(64):
+		for x in range(32):
+			image.set_pixel(x, y, Color.WHITE)
+	return ImageTexture.create_from_image(image)
+
+
+func _particle_schedule(
+	blend_mode: StringName,
+	texture: Texture2D,
+	texture_filter: StringName = &"nearest",
+	mask_texture: Texture2D = null,
+	mask_filter: StringName = &"nearest",
+) -> Dictionary:
+	return {
+		"ordinal": 0,
+		"id": &"pixel_layer",
+		"texture": texture,
+		"texture_filter": texture_filter,
+		"mask_texture": mask_texture,
+		"mask_filter": mask_filter,
+		"mask_rect": Rect2(0, 0, 64, 64),
+		"mask_mode": &"alpha" if mask_texture != null else &"none",
+		"blend_mode": blend_mode,
+		"z_index": 10,
+		"color": Color.WHITE,
+		"origin": Vector2.ZERO,
+		"lifetime_seconds": 1.0,
+		"maximum_live_particles": 1,
+		"offset_motion_keys": PackedVector3Array([
+			Vector3(0, 0, 0), Vector3(1, 0, 0),
+		]),
+		"scaled_motion_keys": PackedVector3Array([
+			Vector3(0, 0, 0), Vector3(1, 0, 0),
+		]),
+		"opacity_keys": PackedVector2Array([
+			Vector2(0, 1), Vector2(1, 1),
+		]),
+		"scale_keys": PackedVector2Array([
+			Vector2(0, 1), Vector2(1, 1),
+		]),
+		"rotation_keys": PackedVector2Array([
+			Vector2(0, 0), Vector2(1, 0),
+		]),
+		"spawn_times": PackedFloat64Array([0.0]),
+		"spawn_x": PackedFloat64Array([16.0]),
+		"spawn_y": PackedFloat64Array([24.0]),
+		"motion_scales": PackedFloat64Array([1.0]),
+		"initial_scales": PackedFloat64Array([1.0]),
+		"initial_rotations": PackedFloat64Array([0.0]),
+	}
+
+
+func _particle_harness(schedule: Dictionary, background_color: Color) -> Dictionary:
+	return _particle_schedules_harness([schedule], background_color, 0.5)
+
+
+func _particle_schedules_harness(
+	schedules: Array,
+	background_color: Color,
+	position: float,
+) -> Dictionary:
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(64, 64)
+	viewport.transparent_bg = false
+	viewport.disable_3d = true
+	viewport.use_hdr_2d = false
+	viewport.canvas_item_default_texture_filter = (
+		Viewport.DEFAULT_CANVAS_ITEM_TEXTURE_FILTER_NEAREST)
+	viewport.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
+	viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	add_child_autoqfree(viewport)
+	var group := CanvasGroup.new()
+	group.fit_margin = 0.0
+	group.clear_margin = 0.0
+	viewport.add_child(group)
+	var background := ColorRect.new()
+	background.size = Vector2(64, 64)
+	background.color = background_color
+	group.add_child(background)
+	var particle_root := Node2D.new()
+	group.add_child(particle_root)
+	var presenter := PresentationClipPresenter.new()
+	var projections: Array = presenter.call(
+		"_install_particle_projections",
+		schedules,
+		particle_root,
+		Vector2i(64, 64),
+		Vector2i(64, 64),
+		&"stretch",
+	)
+	for projection_value: Variant in projections:
+		presenter.call("_project_particle_layer", projection_value, position)
+	presenter.free()
+	return {
+		"viewport": viewport,
+		"projection": projections[0] if projections.size() == 1 else {},
+		"projections": projections,
+	}
+
+
+func _reproject_particle_harness(harness: Dictionary, position: float) -> void:
+	var presenter := PresentationClipPresenter.new()
+	for projection_value: Variant in (harness.get("projections", []) as Array):
+		presenter.call("_project_particle_layer", projection_value, position)
+	presenter.free()
+
+
+func _render_particle_harness(harness: Dictionary) -> Image:
+	var viewport := harness.get("viewport") as SubViewport
+	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+	await RenderingServer.frame_post_draw
+	return viewport.get_texture().get_image()
+
+
+func test_particle_alpha_mask_uses_logical_coordinates_and_authored_filter() -> void:
+	var schedule := _particle_schedule(
+		&"mix",
+		_particle_image(Vector2i(32, 16), Color8(255, 0, 0)),
+		&"nearest",
+		_particle_mask_texture(),
+		&"linear",
+	)
+	var harness := _particle_harness(schedule, Color8(0, 0, 255))
+	var projection: Dictionary = harness.get("projection")
+	var instance := projection.get("instance") as MultiMeshInstance2D
+	var material := instance.material as ShaderMaterial
+	assert_eq(instance.texture_filter, CanvasItem.TEXTURE_FILTER_NEAREST)
+	assert_true(material.get_shader_parameter("linear_mask"))
+	var rendered := await _render_particle_harness(harness)
+	_assert_color(rendered.get_pixel(24, 32), Color8(255, 0, 0),
+		"alpha mask visible half")
+	_assert_color(rendered.get_pixel(40, 32), Color8(0, 0, 255),
+		"alpha mask clipped half")
+
+
+func test_particle_blend_modes_project_real_multimesh_pixels() -> void:
+	var expected := {
+		&"mix": Color8(64, 32, 16),
+		&"add": Color8(192, 160, 144),
+		&"sub": Color8(64, 96, 112),
+		&"mul": Color8(32, 16, 8),
+	}
+	for blend_mode: StringName in [&"mix", &"add", &"sub", &"mul"]:
+		var harness := _particle_harness(
+			_particle_schedule(
+				blend_mode,
+				_particle_image(Vector2i(8, 8), Color8(64, 32, 16)),
+			),
+			Color8(128, 128, 128),
+		)
+		var rendered := await _render_particle_harness(harness)
+		_assert_color(rendered.get_pixel(18, 26), expected[blend_mode],
+			"%s particle blend" % blend_mode)
+
+
+func test_particle_blend_modes_are_neutral_at_zero_opacity_and_zero_mask() -> void:
+	var background := Color8(80, 96, 112)
+	var transparent_mask := _particle_image(Vector2i(64, 64), Color(0, 0, 0, 0))
+	for blend_mode: StringName in [&"mix", &"add", &"sub", &"mul"]:
+		var opacity_schedule := _particle_schedule(
+			blend_mode,
+			_particle_image(Vector2i(8, 8), Color8(200, 160, 120)),
+		)
+		opacity_schedule["opacity_keys"] = PackedVector2Array([
+			Vector2(0, 0), Vector2(1, 0),
+		])
+		var opacity_image := await _render_particle_harness(
+			_particle_harness(opacity_schedule, background))
+		_assert_color(opacity_image.get_pixel(18, 26), background,
+			"%s zero-opacity neutral" % blend_mode)
+		var mask_schedule := _particle_schedule(
+			blend_mode,
+			_particle_image(Vector2i(8, 8), Color8(200, 160, 120)),
+			&"nearest",
+			transparent_mask,
+			&"nearest",
+		)
+		var mask_image := await _render_particle_harness(
+			_particle_harness(mask_schedule, background))
+		_assert_color(mask_image.get_pixel(18, 26), background,
+			"%s zero-mask neutral" % blend_mode)
+
+
+func test_public_sealed_particle_plan_has_seekable_start_curve_and_end_pixels() -> void:
+	var definition := load(
+		"res://tests/fixtures/presentation_clips/synthetic_particle_clip.tres"
+	) as PresentationClipDefinition
+	var presenter := PresentationClipPresenter.new()
+	var plan: Dictionary = presenter.call("_prepare_plan", definition)
+	assert_true(bool(plan.get("valid", false)), str(plan))
+	if not bool(plan.get("valid", false)):
+		presenter.free()
+		return
+	var schedules: Array = plan.get("particle_schedules", [])
+	var harness := _particle_schedules_harness(schedules, Color.BLACK, 0.0)
+	var start := await _render_particle_harness(harness)
+	_reproject_particle_harness(harness, 0.4)
+	var middle := await _render_particle_harness(harness)
+	_reproject_particle_harness(harness, 0.55)
+	var curve_boundary := await _render_particle_harness(harness)
+	_reproject_particle_harness(harness, 1.0)
+	var end := await _render_particle_harness(harness)
+	_reproject_particle_harness(harness, 0.4)
+	var reseek_middle := await _render_particle_harness(harness)
+	var expected_start := _solid_image(Vector2i(64, 64), Color.BLACK)
+	expected_start.convert(start.get_format())
+	var start_is_black := start.get_data() == expected_start.get_data()
+	var middle_changed := middle.get_data() != start.get_data()
+	var curve_changed := curve_boundary.get_data() != middle.get_data()
+	var end_is_black := end.get_data() == start.get_data()
+	var reseek_is_exact := reseek_middle.get_data() == middle.get_data()
+	assert_true(start_is_black, "clip start projects the sealed empty schedule")
+	assert_true(middle_changed, "mid-life projects real public particle pixels")
+	assert_true(curve_changed,
+		"the authored curve boundary projects different opacity/motion pixels")
+	assert_true(end_is_black, "bounded main end contains no late particle tail")
+	assert_true(reseek_is_exact,
+		"same main position reprojects byte-identical public particle pixels")
+	presenter.call("_release_plan", plan)
+	presenter.free()
+
+
+func test_particle_texture_filter_is_an_explicit_visual_contract() -> void:
+	var source := Image.create(2, 1, false, Image.FORMAT_RGBA8)
+	source.set_pixel(0, 0, Color.BLACK)
+	source.set_pixel(1, 0, Color.WHITE)
+	var texture := ImageTexture.create_from_image(source)
+	var nearest_schedule := _particle_schedule(&"mix", texture, &"nearest")
+	nearest_schedule["initial_scales"] = PackedFloat64Array([8.0])
+	var linear_schedule := _particle_schedule(&"mix", texture, &"linear")
+	linear_schedule["initial_scales"] = PackedFloat64Array([8.0])
+	var nearest_harness := _particle_harness(nearest_schedule, Color8(255, 0, 255))
+	var linear_harness := _particle_harness(linear_schedule, Color8(255, 0, 255))
+	var nearest := await _render_particle_harness(nearest_harness)
+	var linear := await _render_particle_harness(linear_harness)
+	var nearest_projection: Dictionary = nearest_harness.get("projection")
+	var linear_projection: Dictionary = linear_harness.get("projection")
+	var nearest_instance := nearest_projection.get("instance") as MultiMeshInstance2D
+	var linear_instance := linear_projection.get("instance") as MultiMeshInstance2D
+	assert_eq(nearest_instance.texture_filter, CanvasItem.TEXTURE_FILTER_NEAREST)
+	assert_eq(linear_instance.texture_filter, CanvasItem.TEXTURE_FILTER_LINEAR)
+	assert_ne(nearest.get_pixel(23, 28), linear.get_pixel(23, 28),
+		"nearest and linear authored sampling produce distinct boundary pixels")
