@@ -158,6 +158,7 @@ Timed `WaitHandler` 在同一个 Core handler 内把 `SceneTreeTimer.timeout`、
 core/scenario_engine/
 ├── scenario_engine.gd       -- 主引擎
 ├── scenario_context.gd      -- 运行时上下文（场景、指令指针、调用栈、变量存储）
+├── scenario_playback_context.gd -- Runtime-only story/recollection caller contract
 ├── wait_controller.gd       -- 等待控制（点击/动画/选择）
 └── expression_timeline.gd   -- 对话头像标记与打字机内联效果时间线
 ```
@@ -197,6 +198,12 @@ func run() -> void:
 
     scenario_ended.emit(context.scenario_data.id)
 ```
+
+`ScenarioPlaybackContext` 是每次 ScenarioContext execution 的 Runtime-only owner：story 没有 caller；recollection 只持有入口已验证的零参数 continuation。入口接受状态在 scene handoff 前封存；target 随后失效不能把已接受的 execution 降级成 story 或绕开 return cleanup，只会令 cleanup 后的最终 callback validation fail-close。它不进入 `ScenarioContext.capture_snapshot()`，因为 Callable 无法跨 scene/process/script revision 安全重建。`@recollection_exit` handler 在 story 中同步 no-op，在 recollection 中只标记当前 context terminal 并记录 authored line；它不直接调用项目代码。ScenarioEngine 仍从唯一的 canonical `scenario_ended` bridge 交回 Runtime，因此 DSL exit、自然耗尽和 `return_from_recollection()` 竞争同一 `ACTIVE → RETURNING → RETURNED|CANCELLED` exact-once claim。
+
+Return claim 必须先于任何可重入 cleanup signal。获胜 generation 取得现有 Runtime navigation ownership，退休 engine/choice execution，清 PresentationDirector、Stage、clip、chapter、dialogue、BGM/loop-SE、canonical state、Backlog/choice history 与 Auto/Skip，最后将 game state 置为 PAUSED 并结束该 navigation；之后才重新验证并调用 continuation。入口后 target 即使失效，也必须完成同样清理，再以触发位置 `source_path:line` fail-close。settlement 在 callback 前提交且 callback 是函数的最后一个副作用，因此 callback 同步启动 story、新 recollection 或 title 时，旧 return 没有 cleanup tail 能误杀新 owner。
+
+任何成功的 normal start/load/title replacement 都通过现有 navigation generation 取消 recollection caller，而不是调用它。Recollection 内禁止 manual/quick/auto save 与所有 rollback cursor mutation；Backlog read-only、Auto 与 Skip 则沿用普通 execution policy。实际正常完成的 Dialogue 仍按同一 source identity/command UID 写入 monotonic read flags；return cleanup 不回滚 read flags 或 UnlockManager，且 playback entry/exit 本身不猜测、创建任何 gallery unlock。Runtime 不保存 caller、不推导返回 scene、不引入 Timer/第二 scheduler，也不提供 KAG/legacy alias。
 
 ### 2.3 信号总线
 
@@ -370,6 +377,8 @@ func restore_snapshot(snapshot: Dictionary) -> void: ...
 ```
 
 `SaveManager` 维护 provider 列表，存档时遍历调用 `capture_snapshot()` 聚合为 JSON 写入 `user://saves/save_<slot>.json`，读档时反向恢复。Scenario snapshot 同时保存剧本 ID 与版本化来源 identity；scenario-aware 读取必须二者都与目标 `ScenarioData` 一致，缺少来源 identity 的旧存档由 Runtime 拒绝，不能仅凭同名文件猜测目标。`ScenarioContext` 还只保存 chapter indicator 的 authored visibility `bool`；chapter ID/title 始终从恢复后的执行 cursor 与 `TranslationServer` 重算，Tween、Presenter/Label identity 和 barrier ticket 都不进入 JSON。缺少该 bool 的旧快照按 hidden 恢复，存在但非 bool 的快照在 restore 前原子拒绝。除了变量系统，`PresentationState` 也作为 provider 捕获基础背景、动态舞台层、addressable dialogue avatar、BGM 与 persistent loop-SE 等表现层状态，实现真正的“所见即所存”。运行中读档、快读或回退会先把 `ScenarioEngine.context` 所有权交给新 context，再只通知转移前捕获的 abort audience，最后 hard hide 旧 Presenter；同步创建的替换 handler 不会收到旧代际的 abort。旧阻塞命令的同步取消因此只能观察到 stale owner，不能把取消误报为 `scenario_ended` 或抢回最终 context。导航会先 invalidate engine run generation，再取消 Director-owned generic blocking presentation waiter；winning context 按 reset-hidden → metadata → cut target → `engine.run()` 的顺序投影，failed/superseded navigation 则 cut 恢复保留 context。
+
+Recollection playback 是显式非持久 session：它的 continuation 不属于任何 provider，且 Runtime 在整个 session 中拒绝 manual/quick/auto save 及 Backlog/Choice/flowchart rollback mutation。不能通过“忽略 Callable 字段后照常存档”得到可恢复语义；若产品需要跨进程场景鉴赏进度，应持久化解锁/选择等业务 ID，再重新调用 `start_recollection()` 建立新的 caller contract。
 
 动态舞台层以 `stage_layers: Dictionary` 保存：键是稳定业务 ID，值是经过 `StageLayerState` 归一化的完整 JSON-safe 状态。人物、事件图和其他舞台图片都使用这一份状态，不存在第二套人物快照。`PresentationState` 与 `StagePresenter` 使用同一 reducer，所以 patch 语义不会漂移。JOIN 动画进行中仍可存档；存档只包含已原子提交的 final canonical `stage_layers` 和 scenario cursor，绝不保存 operation、policy、request/batch、receipt、token、generation、Tween、barrier 或 progress，也不新增 in-flight schema。恢复顺序是 cancel old generation → reset + atomic cut canonical target → same-cursor re-dispatch；已满足的 Stage 目标仍以 positive typed batch 重验 Presenter/provider/resource binding，但以零 receipt/token/Tween 同步完成，不重播旧动画。clear 同样经过 typed dispatch 取得 live projection ownership；它以 positive batch、同步 participant apply、零 transition receipt 完成。
 

@@ -15,6 +15,8 @@ const DIALOGUE_AVATAR_REFERENCE_PATH = \
 	"res://examples/demo/scenarios/dialogue_avatar.stla"
 const LOOP_SE_REFERENCE_PATH = "res://examples/demo/scenarios/loop_se.stla"
 const BGM_REFERENCE_PATH = "res://examples/demo/scenarios/bgm_lifecycle.stla"
+const RECOLLECTION_REFERENCE_PATH = \
+	"res://examples/demo/scenarios/recollection_playback.stla"
 const BGM_RESOURCE_PATH = "res://examples/demo/audio/bgm/synthetic_bgm.tres"
 const BGM_STEM_RESOURCE_PATH = \
 	"res://examples/demo/audio/bgm/synthetic_bgm_stems.tres"
@@ -85,6 +87,35 @@ func test_demo_every_scene_has_chapter_id():
 			continue
 		assert_ne(scene.chapter_id, "",
 			"scene '%s' should have a non-empty chapter_id" % scene.id)
+
+
+func test_recollection_public_reference_uses_shared_story_source() -> void:
+	assert_true(FileAccess.file_exists(RECOLLECTION_REFERENCE_PATH),
+		"issue #171 publishes one redistributable reference scenario")
+	if not FileAccess.file_exists(RECOLLECTION_REFERENCE_PATH):
+		return
+	var file := FileAccess.open(RECOLLECTION_REFERENCE_PATH, FileAccess.READ)
+	assert_not_null(file)
+	if file == null:
+		return
+	var source := file.get_as_text()
+	file.close()
+	var data := DslParser.parse(
+		DslLexer.tokenize(source),
+		"recollection_playback_demo",
+		RECOLLECTION_REFERENCE_PATH,
+	)
+	assert_eq(data.diagnostics, [], str(data.diagnostics))
+	var scene := data.get_scene("memory")
+	assert_not_null(scene)
+	if scene == null:
+		return
+	assert_eq(scene.commands.map(func(command: CommandData) -> String:
+		return command.type), [
+		"dialogue", "recollection_exit", "dialogue",
+	])
+	assert_eq(source.count("@recollection_exit"), 1,
+		"the public example uses the only canonical zero-argument spelling")
 
 
 func test_demo_cafe_flash_is_a_real_command_before_combined_dialogue():

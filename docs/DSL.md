@@ -87,6 +87,22 @@ sakura「真巧，我们又见面了。」
 
 可见性不会在 `@jump`、`@call`、顺序换 scene 或换 chapter 时隐式改变。运行时章节 ID/标题来自实际执行 cursor；标题交给 `TranslationServer` 解析。裸 `@chapter id` 以 ID 作为标题，显式空标题不会渲染 UI，但 authored 可见目标仍按命令与存档保留。
 
+#### 回想播放退出
+
+同一份场景剧本需要同时服务普通剧情与 Gallery/场景回想时，只写一个零参数退出点：
+
+```stla
+@chapter memory "Memory"
+@scene memory_start
+「普通剧情和回想都会执行这一行。」
+@recollection_exit
+「普通剧情继续；回想播放不会执行这一行。」
+```
+
+`@recollection_exit` 只有这一种写法。普通 story playback 中它是同步 no-op，随后命令按普通 cursor 恰好执行一次；通过 `StellaRuntime.start_recollection()` 进入时，它使当前 playback generation 终止，并由 Runtime 在完整清理后返回显式 caller。这样 importer 不需要复制剧本、注入运行时变量或猜测原作分支。
+
+指令必须位于有效 `@scene`；不能带参数，不能放进 `@parallel`、`@combine`、`@stage_batch` 或 `@presentation_batch`。非法写法以 `.stla` 的 `source_path:line` fail-close。它不是表现 operation，不使用 Timer、wall-clock wait 或第二 scheduler；自然耗尽、这条 DSL 指令和宿主的提前返回 API 共享同一个 exact-once Runtime return claim。
+
 ### 3.2 对话（最高频操作，语法最短）
 
 ```
@@ -986,6 +1002,7 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | 旁白 | `「文本」` | `「文本」` |
 | 独白 | `角色（文本）` | `角色（文本）` |
 | 章节标题指示器 | `@chapter_indicator show|hide transition=... duration=...` | `@chapter_indicator show` |
+| 回想播放退出 | `@recollection_exit` | `@recollection_exit` |
 | 背景 | `@bg asset transition duration` | `@bg asset` |
 | 显示舞台层 | `@stage id show key=value...` | `@stage id show` |
 | 更新舞台层 | `@stage id update key=value...` | — |
