@@ -4,8 +4,8 @@
 @scene stage_batch_start "Stage batch demo"
 
 @stage_batch policy=join
-@stage sakura show kind=character asset=character:sakura/smile position=480,80 origin=720,0 scale=0.8 z=10 transition=fade duration=0.3
-@stage senpai show kind=character asset=character:senpai/default position=1440,80 origin=720,0 scale=0.8 z=11 transition=fade duration=0.3
+@stage sakura show kind=character asset=character:sakura/smile position=480,80 origin=720,0 scale=0.8 z_index=25 depth_origin=-9000 transition=fade duration=0.3
+@stage senpai show kind=character asset=character:senpai/default position=1440,80 origin=720,0 scale=0.8 z_index=25 depth_origin=-8000 transition=fade duration=0.3
 @end
 
 「JOIN waits for both named layers before this line.」

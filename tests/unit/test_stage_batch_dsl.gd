@@ -77,8 +77,8 @@ func test_join_block_compiles_one_exact_ordered_command() -> void:
 	var data := _parse("""@chapter synthetic
 @scene start
 @stage_batch policy=join
-  @stage a show kind=background asset=stage:redraw_source transition=fade duration=2
-  @stage b update position=42,24 transition=move duration=1
+  @stage a show kind=background asset=stage:redraw_source z_index=25 depth_origin=-8000 transition=fade duration=2
+  @stage b update position=42,24 origin=6,8 depth_scale=0.8 z_index=25 depth_origin=-9000 transition=move duration=1
   @stage c hide transition=fade duration=0.5
 @end""")
 	assert_eq(data.source_path, SOURCE_PATH)
@@ -107,6 +107,10 @@ func test_join_block_compiles_one_exact_ordered_command() -> void:
 		])
 	assert_eq(operations[0]["action"], "show")
 	assert_eq(operations[1]["properties"]["position"], [42.0, 24.0])
+	assert_eq(operations[0]["properties"]["depth_origin"], -8000)
+	assert_eq(operations[1]["properties"]["depth_origin"], -9000)
+	assert_eq(operations[1]["properties"]["origin"], [6.0, 8.0])
+	assert_almost_eq(operations[1]["properties"]["depth_scale"], 0.8, 0.001)
 	assert_eq(operations[2]["action"], "hide")
 
 
@@ -311,6 +315,25 @@ func test_canonical_child_error_rejects_the_complete_block() -> void:
 		"standalone @stage keeps its legacy warning severity")
 	assert_false(_has_error_at(standalone, "opacity", 3),
 		"batch strictness must not change standalone diagnostics")
+
+
+func test_depth_origin_child_is_strict_and_rejects_the_complete_block() -> void:
+	var cases := [
+		["depth_origin=NaN", "depth_origin='NaN'"],
+		["depth_origin=INF", "depth_origin='INF'"],
+		["depth_origin=1 depth_origin=2", "duplicate @stage argument 'depth_origin'"],
+		["originz=-9000", "unknown @stage property 'originz'"],
+	]
+	for case_value: Variant in cases:
+		var case: Array = case_value
+		var data := _parse("""@chapter synthetic
+@scene start
+@stage_batch policy=join
+  @stage valid show asset=stage:redraw_source
+  @stage broken show asset=stage:must_not_apply %s
+@end""" % String(case[0]))
+		assert_eq(_all_commands(data).size(), 0, String(case[0]))
+		assert_true(_has_error_at(data, String(case[1]), 5), String(case[0]))
 
 
 func test_missing_end_owns_the_open_line_and_cannot_consume_next_scene() -> void:

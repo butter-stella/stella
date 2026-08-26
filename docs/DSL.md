@@ -504,7 +504,8 @@ Director 在任何 child apply 之前完成整批 typed schema/context preflight
 
 ```stla
 @stage base show kind=background asset=background:bg_room fit=cover z=-1000
-@stage hero show kind=character body=stage:hero/body face=stage:hero/smile x=960 y=1050 origin=500,1000 redraw=color_overlay(#355c7d80,soft_light) redraw=brightness_contrast(12,-20)
+@stage hero show kind=character body=stage:hero/body face=stage:hero/smile x=960 y=1050 origin=500,1000 z_index=25 depth_origin=-9000 redraw=color_overlay(#355c7d80,soft_light) redraw=brightness_contrast(12,-20)
+@stage foreground_effect show asset=stage:soft_light z_index=25 depth_origin=-8000
 @stage hero update face=stage:hero/sad transition=fade duration=0.3
 @stage hero hide transition=fade duration=0.2
 @stage hero show transition=fade duration=0.2
@@ -533,12 +534,15 @@ Director 在任何 child apply 之前完成整批 typed schema/context preflight
 | `scale` / `zoom` / `depth_scale` | 二维缩放、额外缩放和正数景深缩放 | `1` |
 | `rotation` | 顺时针角度（度） | `0` |
 | `z_index` | 舞台内绘制顺序，别名 `z`，范围 `-4096..4096` | `0` |
+| `depth_origin` | 独立的有限浮点深度排序偏移；不改变任何二维变换 | `0` |
 | `visible` / `opacity` | 可见性和 `0..1` 透明度 | `true` / `1` |
 | `fit` | `native`、`contain`、`cover` 或 `stretch` | `native` |
 | `redraw` | 可重复书写的有序像素操作；见下表 | `[]` |
 | `flip_x` / `flip_y` | 围绕 authored origin 翻转 | `false` |
 
-成对数值写成 `x,y`；`scale=0.75` 这样的标量会同时作用于两轴。布尔值只接受 `true` / `false`；`asset=none`、`body=none` 或 `face=none` 是唯一的显式清空写法。`depth_scale` 与 `rotation` 是各自唯一的属性名，不接受 `depth`、`rotation_degrees` 或其他兼容别名。任一属性、`transition` 或 `duration` 非法时，Parser 会生成带 STLA 行号的诊断并拒绝整条 `@stage`，不会保留同一行中的其他合法字段，也不会把错误值改写成默认值。
+成对数值写成 `x,y`；`scale=0.75` 这样的标量会同时作用于两轴。布尔值只接受 `true` / `false`；`asset=none`、`body=none` 或 `face=none` 是唯一的显式清空写法。`depth_scale`、`depth_origin` 与 `rotation` 是各自唯一的属性名，不接受 `depth`、`originz`、`rotation_degrees` 或其他兼容别名。任一属性、重复参数、`transition` 或 `duration` 非法时，Parser 会生成带 `source_path:line` 的诊断并拒绝整条 `@stage`，不会保留同一行中的其他合法字段，也不会把错误值改写成默认值；只有有序管线所需的 `redraw=` 可以重复。
+
+舞台层的完整排序键为 `float(z_index) + depth_origin`，值较小的层先绘制，值较大的层覆盖在上方。`z_index` 是整数基础平面，`depth_origin` 是同一深度坐标中的独立有限浮点偏移；它不会参与 `depth_scale`、`position`、二维 `origin`、scale/zoom、rotation、flip、fit、crop/clip 或通道合成。Presenter 在比较层和保存状态时保留完整浮点键；Godot CanvasItem 的整数 z bucket 即使需要 floor/clamp，也只作为物理投影，bucket 内的稳定 sibling ordering 继续保存小数与范围外差异。`move` 等变换转场连续插值完整排序键，cut、Skip、点击补全、restore 与 cancellation 则精确投影最终键。外部格式若把基础深度与深度原点分开编码，importer 必须分别解码为 `z_index` 与 `depth_origin`，不得把偏移烘焙进二维 origin、depth scale 或素材。
 
 `redraw=` 可在同一条命令中重复，执行顺序就是书写顺序，每层最多 16 个操作，其中最多 4 个 `blur`、1 个 `clip`。每次 `blur` 都读取前一操作输出并形成独立 pass。只要给出任意 `redraw=`，该命令就会原子替换该层的完整重绘管线；省略它会保留原管线，`redraw=clear` 则清空。函数参数内不能包含空格。
 
@@ -576,7 +580,7 @@ Rule 遮罩以 normalized viewport UV 拉伸到整个视口、nearest sample，�
 
 内置 provider 和项目注册的扩展 provider 都只负责同步 schema/resource validation 与 `ShaderMaterial`；Tween、JOIN/FNF receipt、Skip/click exact completion、abort/cancel 和 stale generation 仍由唯一 Runtime-owned Director/StagePresenter 生命周期拥有。资源、Shader、viewport/budget 与 source/target projection snapshot 必须在任何舞台 mutation 或 receipt claim 前通过 typed participant preflight；缺失 mask、未注册 provider 或超预算会以 child 的 `source_path:line` fail-close。每个 Presenter 的 mask/resource LRU 上限为 16，active transition snapshot 预算为 256 MiB，单轴还受设备 2D texture limit 与 8192 上限约束。
 
-每层拥有独立 Tween。快进、点击补全和读档会以强制 cut 一次投影已封存的最终 canonical state；存档不保存 Tween/progress/snapshot，读档、回滚、重启和 scene replacement 会先退休旧 token/generation，再 cut 恢复 target，旧 callback 不能覆盖新投影。
+每层拥有独立 Tween。快进、点击补全和读档会以强制 cut 一次投影已封存的最终 canonical state（包括 `depth_origin`）；存档不保存 Tween/progress/snapshot，读档、回滚、重启和 scene replacement 会先退休旧 token/generation，再 cut 恢复 target，旧 callback 不能覆盖新投影。
 
 资源引用可使用 `background:`、`character:`、`stage:` 或完整 `res://` 前缀。没有前缀的相对路径从 `[paths] stage` / `StellaRuntime.stage_assets_path` 解析；扩展名可省略。层 ID 应是稳定业务名称，而不是资源路径或场景节点路径。
 

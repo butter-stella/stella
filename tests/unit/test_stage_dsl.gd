@@ -37,7 +37,7 @@ func test_stage_show_and_update_parse_typed_properties():
 	var data := _parse("""@chapter test
 @scene start
 @stage base show kind=background asset=background:room fit=cover z=-1000
-@stage hero show kind=character body=stage:hero_body face=stage:smile x=960 y=120 origin=500,1000 scale=0.75 opacity=0.8 redraw=color_overlay(#2A5C8E40,soft_light) redraw=brightness_contrast(17,-24)
+@stage hero show kind=character body=stage:hero_body face=stage:smile x=960 y=120 origin=500,1000 scale=0.75 depth_scale=0.8 z_index=25 depth_origin=-9000.25 opacity=0.8 redraw=color_overlay(#2A5C8E40,soft_light) redraw=brightness_contrast(17,-24)
 @stage hero update face=stage:sad transition=fade duration=0.3""")
 	assert_eq(data.scenes[0].commands.size(), 3)
 	var show_command: CommandData = data.scenes[0].commands[1]
@@ -46,6 +46,8 @@ func test_stage_show_and_update_parse_typed_properties():
 	assert_eq(show_command.get_string("id"), "hero")
 	assert_eq(show_command.params["properties"]["origin"], [500.0, 1000.0])
 	assert_almost_eq(show_command.params["properties"]["scale"], 0.75, 0.001)
+	assert_almost_eq(show_command.params["properties"]["depth_origin"], -9000.25, 0.001)
+	assert_eq(show_command.params["properties"]["z_index"], 25)
 	assert_eq(show_command.params["properties"]["redraw"], [
 		{
 			"type": "color_overlay",
@@ -94,6 +96,8 @@ func test_stage_rejects_invalid_typed_values_and_transition():
 		["fit=warp", "fit 'warp'"],
 		["scale=0", "scale value"],
 		["depth_scale=-1", "depth_scale value"],
+		["depth_origin=NaN", "depth_origin='NaN'"],
+		["depth_origin=INF", "depth_origin='INF'"],
 		["z=99999", "z value"],
 		["z=1.5", "z value"],
 		["asset=", "asset cannot be empty"],
@@ -121,6 +125,7 @@ func test_stage_rejects_invalid_timing_and_empty_keys_atomically():
 		["duration=INF", "finite non-negative"],
 		["transition=cut duration=0.1", "cut/none transition requires duration=0"],
 		["=value", "property name cannot be empty"],
+		["depth_origin=1 depth_origin=2", "duplicate @stage argument 'depth_origin'"],
 	]
 	for invalid_case in invalid_arguments:
 		var argument: String = invalid_case[0]
@@ -215,11 +220,12 @@ func test_builtin_transition_params_fail_close_at_authored_line():
 func test_stage_accepts_only_the_documented_canonical_spellings():
 	var data := _parse("""@chapter test
 @scene start
-@stage hero show depth_scale=0.8 rotation=15 asset=none body=none face=none visible=true flip_x=false flip_y=true""")
+@stage hero show depth_scale=0.8 depth_origin=-9000.25 rotation=15 asset=none body=none face=none visible=true flip_x=false flip_y=true""")
 	assert_true(data.diagnostics.is_empty(), str(data.diagnostics))
 	assert_eq(data.scenes[0].commands.size(), 1)
 	var properties: Dictionary = data.scenes[0].commands[0].params["properties"]
 	assert_almost_eq(properties["depth_scale"], 0.8, 0.001)
+	assert_almost_eq(properties["depth_origin"], -9000.25, 0.001)
 	assert_eq(properties["rotation"], 15)
 	assert_eq(properties["asset"], "")
 	assert_eq(properties["body"], "")
@@ -232,6 +238,7 @@ func test_stage_accepts_only_the_documented_canonical_spellings():
 func test_stage_rejects_undocumented_property_and_value_aliases():
 	var aliases := [
 		["depth=0.8", "unknown @stage property 'depth'"],
+		["originz=-9000", "unknown @stage property 'originz'"],
 		["rotation_degrees=15", "unknown @stage property 'rotation_degrees'"],
 		["asset=null", "use 'none'"],
 		["asset=off", "use 'none'"],
@@ -422,7 +429,7 @@ func test_combine_binds_stage_operations_to_the_next_segment_only():
 @combine
 @stage hero update face=stage:sad transition=fade duration=0.3
 sakura「一」 #voice:v1
-@stage event show asset=stage:flash z=20
+@stage event show asset=stage:flash z_index=25 depth_origin=-8000.25
 @stage hero update face=stage:happy
 sakura「二」 #voice:v2
 @end""")
@@ -432,6 +439,15 @@ sakura「二」 #voice:v2
 	assert_eq(segments[0]["presentation_ops"][0]["payload"]["id"], "hero")
 	assert_eq(segments[1]["presentation_ops"].size(), 2)
 	assert_eq(segments[1]["presentation_ops"][0]["payload"]["id"], "event")
+	assert_eq(
+		segments[1]["presentation_ops"][0]["payload"]["properties"]["z_index"],
+		25,
+	)
+	assert_almost_eq(
+		float(segments[1]["presentation_ops"][0]["payload"]["properties"]["depth_origin"]),
+		-8000.25,
+		0.001,
+	)
 	assert_eq(segments[1]["presentation_ops"][1]["payload"]["properties"]["face"], "stage:happy")
 	assert_eq(segments[0]["presentation_operation_lines"], [4])
 	assert_eq(segments[1]["presentation_operation_lines"], [6, 7])

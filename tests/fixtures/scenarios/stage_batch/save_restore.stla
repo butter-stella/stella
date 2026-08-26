@@ -1,7 +1,7 @@
 @chapter stage_batch_save "Synthetic stage batch save and restore"
 @scene start
 @stage_batch policy=join
-  @stage saved show kind=character asset=stage:redraw_source transition=fade duration=10
+  @stage saved show kind=character asset=stage:redraw_source z_index=25 depth_origin=-9000.25 transition=fade duration=10
 @end
 「show tail」
 @stage_batch policy=join
