@@ -64,7 +64,7 @@ var _reserved_resource_bytes := 0
 
 
 func _ready() -> void:
-	layer = 90
+	layer = PresentationLayerOrder.FULLSCREEN_MEDIA
 	_participant_capability = StellaRuntime._register_presentation_clip_presenter(self)
 	if _participant_capability == null:
 		push_error("PresentationClipPresenter could not join the Runtime registry")
@@ -99,6 +99,14 @@ func _exit_tree() -> void:
 func _on_prepare_requested(request: PresentationClipOperationRequest) -> void:
 	if _participant_capability == null or request == null:
 		return
+	if SignalBus.has_active_movie_projection():
+		SignalBus.reject_presentation_clip_definition(
+			request,
+			self,
+			_participant_capability,
+			"a movie owns the mutually exclusive full-screen media surface",
+		)
+		return
 	var result := _resolve_definition_result(request.get_asset())
 	var definition: PresentationClipDefinition = result.get("definition")
 	if definition == null:
@@ -122,6 +130,10 @@ func _on_prepare_requested(request: PresentationClipOperationRequest) -> void:
 		return
 	SignalBus.prepare_presentation_clip_definition(
 		request, self, _participant_capability, definition)
+
+
+func _has_active_projection(capability: RefCounted) -> bool:
+	return capability == _participant_capability and not _active.is_empty()
 
 
 func _on_validate_requested(request: PresentationClipOperationRequest) -> void:
@@ -187,6 +199,15 @@ func _on_apply_readiness_requested(
 	var plan: Dictionary = (
 		_prepared_plans.get(request.get_instance_id(), {})
 		if request != null else {})
+	if request != null and SignalBus.has_active_movie_projection():
+		SignalBus.fail_presentation_clip_apply(
+			request,
+			self,
+			_participant_capability,
+			PresentationClipOperationRequest.ROLE_VISUAL,
+			"a movie claimed the mutually exclusive full-screen media surface after clip preflight",
+		)
+		return
 	if (
 		_participant_capability == null
 		or request == null
@@ -219,6 +240,16 @@ func _on_apply_requested(request: PresentationClipOperationRequest) -> void:
 		return
 	var plan: Dictionary = _prepared_plans.get(request.get_instance_id(), {})
 	_prepared_plans.erase(request.get_instance_id())
+	if SignalBus.has_active_movie_projection():
+		_release_plan(plan)
+		SignalBus.fail_presentation_clip_apply(
+			request,
+			self,
+			_participant_capability,
+			PresentationClipOperationRequest.ROLE_VISUAL,
+			"a movie claimed the mutually exclusive full-screen media surface during clip apply",
+		)
+		return
 	if not _plan_is_installable(plan):
 		_release_plan(plan)
 		SignalBus.fail_presentation_clip_apply(

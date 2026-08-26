@@ -13,6 +13,12 @@ func _input(event: InputEvent) -> void:
 	var dialogue = _get_dialogue()
 
 	if event.button_index == MOUSE_BUTTON_LEFT:
+		if (
+			StellaRuntime.game_state.is_playing()
+			and _consume_movie_input(&"advance")
+		):
+			get_viewport().set_input_as_handled()
+			return
 		# The published full-screen clip is the foremost story-input owner. This
 		# precedes choice, soft-hide, hovered GUI, Skip/Auto, and dialogue so one
 		# physical click can never operate content hidden behind the clip.
@@ -85,6 +91,9 @@ func _input(event: InputEvent) -> void:
 	elif event.button_index == MOUSE_BUTTON_RIGHT:
 		if not StellaRuntime.game_state.is_playing():
 			return
+		if _consume_movie_input(&"right_click"):
+			get_viewport().set_input_as_handled()
+			return
 		if dialogue:
 			if dialogue._ui_hidden:
 				dialogue._ui_hidden = false
@@ -101,6 +110,37 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not event is InputEventKey:
 		return
 	var dialogue = _get_dialogue()
+	# Ctrl release is unconditional cleanup. On press, a live movie is the
+	# foremost modal owner even when a Choice is visible underneath it. Record
+	# the central momentary intent before claiming the exact movie generation;
+	# the consumed edge can never reach the Choice or next dialogue owner.
+	if event.keycode == KEY_CTRL:
+		if not event.pressed:
+			if dialogue:
+				dialogue._ctrl_held = false
+				if not StellaRuntime.skip_controller.is_active:
+					dialogue.cancel_pending_skip()
+			return
+		if (
+			not event.echo
+			and StellaRuntime.game_state.is_playing()
+			and StellaRuntime.presentation_director != null
+			and StellaRuntime.presentation_director.has_active_movie_owner()
+		):
+			if dialogue:
+				dialogue._ctrl_held = true
+			_consume_movie_input(&"skip")
+			get_viewport().set_input_as_handled()
+			return
+	if (
+		event.pressed
+		and not event.echo
+		and event.keycode in [KEY_SPACE, KEY_ENTER]
+		and StellaRuntime.game_state.is_playing()
+		and _consume_movie_input(&"advance")
+	):
+		get_viewport().set_input_as_handled()
+		return
 	if (
 		event.pressed
 		and not event.echo
@@ -131,15 +171,9 @@ func _unhandled_input(event: InputEvent) -> void:
 					return
 				get_viewport().set_input_as_handled()
 			return
-	# Ctrl release is cleanup and remains unconditional. Ctrl press, however,
-	# must not reach the dialogue beneath a system overlay.
+	# Movie ownership was resolved before Choice. Remaining Ctrl presses retain
+	# the established clip/choice/dialogue ordering.
 	if event.keycode == KEY_CTRL:
-		if not event.pressed:
-			if dialogue:
-				dialogue._ctrl_held = false
-				if not StellaRuntime.skip_controller.is_active:
-					dialogue.cancel_pending_skip()
-			return
 		if not StellaRuntime.game_state.is_playing():
 			# Do not preserve a stale held flag if an overlay opened while Ctrl
 			# was already down; the underlying typewriter must remain untouched.
@@ -154,9 +188,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		if dialogue:
 			dialogue._ctrl_held = true
+		if _consume_presentation_clip_advance():
+			get_viewport().set_input_as_handled()
+			return
 			# Ctrl pressed while text fully shown: advance immediately to start skipping
-			if not dialogue._is_typing:
-				_request_dialogue_advance(dialogue)
+		if dialogue and not dialogue._is_typing:
+			_request_dialogue_advance(dialogue)
 		return
 	# Keyboard restore mirrors the hidden-state left click: the restoring key is
 	# consumed and must never also advance the scenario.
@@ -181,6 +218,12 @@ func _handle_joypad_advance(event: InputEventJoypadButton) -> void:
 	if not event.pressed or event.button_index != JOY_BUTTON_A:
 		return
 	var dialogue = _get_dialogue()
+	if (
+		StellaRuntime.game_state.is_playing()
+		and _consume_movie_input(&"advance")
+	):
+		get_viewport().set_input_as_handled()
+		return
 	if (
 		StellaRuntime.game_state.is_playing()
 		and _consume_presentation_clip_advance()
@@ -227,12 +270,24 @@ func _activate_focused_choice_option() -> bool:
 ## stop propagation before synchronous completion can expose a new UI/owner to
 ## the tail of the same physical event.
 func _handle_normal_advance(dialogue) -> void:
+	if _consume_movie_input(&"advance"):
+		get_viewport().set_input_as_handled()
+		return
 	if _consume_presentation_clip_advance():
 		get_viewport().set_input_as_handled()
 		return
 	if not _consume_typewriter_advance(dialogue):
 		_request_dialogue_advance(dialogue)
 	get_viewport().set_input_as_handled()
+
+
+## A movie is the foremost story-input owner. The Director resolves the exact
+## typed receipt while the Presenter applies operation and settings policy.
+func _consume_movie_input(kind: StringName) -> bool:
+	return (
+		StellaRuntime.presentation_director != null
+		and StellaRuntime.presentation_director.consume_active_movie_input(kind)
+	)
 
 
 ## A published clip is a modal presentation boundary even when its command was

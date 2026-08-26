@@ -1,0 +1,4 @@
+@chapter movie_lifecycle "Native movie lifecycle"
+@scene start
+@movie synthetic_movie
+narrator「movie completed」

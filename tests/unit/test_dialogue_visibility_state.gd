@@ -91,6 +91,7 @@ func _snapshot_with_dialogue(
 		"bg": "",
 		"stage_layers": {},
 		"bgm": {},
+		"movie": {},
 		"loop_se_channels": {},
 		"dialogue_visibility": visibility.duplicate(true),
 		"dialogue_content": content.duplicate(true),
@@ -396,7 +397,7 @@ func test_presentation_state_default_snapshot_has_exact_dialogue_projection() ->
 	var snapshot := state.capture_snapshot()
 	assert_eq(_sorted_keys(snapshot), [
 		"bg", "bgm", "dialogue_avatar", "dialogue_content", "dialogue_visibility",
-		"loop_se_channels", "stage_layers",
+		"loop_se_channels", "movie", "stage_layers",
 	])
 	_assert_dialogue_defaults(snapshot)
 
@@ -501,7 +502,7 @@ func test_missing_current_dialogue_envelope_fails_without_partial_restore() -> v
 		"stage_layers": {},
 	})
 	assert_push_warning(
-		"current snapshot requires the complete dialogue_visibility/dialogue_content/dialogue_avatar envelope")
+		"current snapshot requires movie and the complete dialogue_visibility/dialogue_content/dialogue_avatar envelope")
 	assert_eq(state.capture_snapshot(), before,
 		"missing current fields reject before any provider mutation")
 

@@ -13,6 +13,7 @@ independent presentation systems.
 - **Dialogue Avatars** — inline `[expr:expression]` markers update the cropped dialogue portrait without implicitly mutating the stage
 - **Background System** — double-buffered fade / dissolve / wipe transitions
 - **Audio System** — BGM/SE/voice with per-character volume, sequential voice queue, replay, voice progress signal
+- **Native Movies** — concise typed `@movie` playback for native OGV, with independent volume and exact save/load cursors
 - **Choice System** — abstract presenter, supports custom UI styles
 - **Variable System** — 3 scopes (global / scenario / temp), expression evaluator
 - **Save System** — snapshot-based save/load with multiple slots, auto-save, quick-save, continue
@@ -61,6 +62,7 @@ addons/stella/                        ← 框架插件（一般不需要修改�
 │   ├── stage/                         ← 动态命名舞台层 + 转场/滤镜
 │   ├── choice/                        ← 选项按钮
 │   ├── audio/                         ← BGM/SE/voice 播放
+│   ├── movie/                         ← Runtime-owned 原生 OGV 电影播放
 │   ├── effects/                       ← 屏幕淡入淡出 + shake/flash
 │   ├── input/                         ← 鼠标/键盘输入处理
 │   └── ui/                            ← 标题/存档/设置/Backlog 界面
@@ -71,6 +73,7 @@ addons/stella/                        ← 框架插件（一般不需要修改�
 stella.cfg                            ← 项目配置文件（标题/路径/功能开关）
 examples/demo/                         ← 示例项目
 ├── scenarios/                         ← .stla 剧本
+├── video/                             ← 原生电影资源（OGV）
 └── art/                               ← 素材（背景/头像/舞台层）
 
 tests/                                 ← GUT 测试

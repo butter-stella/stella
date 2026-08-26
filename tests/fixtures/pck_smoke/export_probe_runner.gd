@@ -8,6 +8,7 @@ const EXPECTED_GAME_TITLE = "Stella Demo"
 const EXPECTED_SCENARIO = "res://examples/demo/scenarios/demo.stla"
 const EXPECTED_BACKGROUNDS = "res://examples/demo/art/backgrounds/"
 const EXPECTED_CONFIG_SOURCE = "res://stella.cfg"
+const NATIVE_MOVIE = "res://tests/fixtures/movies/synthetic_movie.ogv"
 const UID_DEPENDENCY_SCRIPT = (
 	"res://tests/fixtures/pck_smoke/export_probe_runner.gd"
 )
@@ -63,6 +64,7 @@ func _probe_exported_config() -> void:
 
 	var failures := PackedStringArray()
 	_probe_relocated_uid_dependency(failures)
+	_probe_native_movie_resource(failures)
 	if StellaRuntime.config == null:
 		failures.append("StellaRuntime config is null")
 	else:
@@ -94,6 +96,7 @@ func _probe_selected_scenes_fallback() -> void:
 
 	var failures := PackedStringArray()
 	_probe_relocated_uid_dependency(failures)
+	_probe_native_movie_resource(failures)
 	var current_scene := get_tree().current_scene
 	if current_scene == null or current_scene.scene_file_path != BUILT_IN_TITLE_SCENE:
 		failures.append("fallback did not finish on the built-in title scene")
@@ -104,6 +107,23 @@ func _probe_selected_scenes_fallback() -> void:
 		failures.append("the fallback title consumer did not receive game.title")
 
 	_finish("fallback-ok", failures)
+
+
+func _probe_native_movie_resource(failures: PackedStringArray) -> void:
+	if not ResourceLoader.exists(NATIVE_MOVIE, "VideoStream"):
+		failures.append("export omitted the declared native movie resource")
+		return
+	var stream := ResourceLoader.load(NATIVE_MOVIE, "VideoStream")
+	if not stream is VideoStreamTheora:
+		failures.append("exported movie is not a native VideoStreamTheora")
+		return
+	var player := VideoStreamPlayer.new()
+	player.stream = stream
+	var length := player.get_stream_length()
+	player.stream = null
+	player.free()
+	if not is_finite(length) or length <= 0.0:
+		failures.append("exported native movie has no finite positive length")
 
 
 func _probe_source_fallback() -> void:

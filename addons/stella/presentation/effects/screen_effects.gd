@@ -12,7 +12,7 @@
 ##   compatibility with custom scenes that predate the explicit host setting.
 extends Node
 
-const DEFAULT_FLASH_CANVAS_LAYER := 100
+const DEFAULT_FLASH_CANVAS_LAYER := PresentationLayerOrder.SCREEN_FLASH
 const DEFAULT_MAX_SHAKE_INTENSITY := 4096.0
 const ABSOLUTE_MAX_SHAKE_INTENSITY := 4096.0
 const MIN_SHAKE_COVERAGE_SIDE := 1.0

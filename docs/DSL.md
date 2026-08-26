@@ -490,7 +490,7 @@ token、Tween 或 wall-clock wait。存档显式记录 cleared 状态，不能�
 @end
 ```
 
-`@presentation_batch` header 只接受一个严格小写的 `policy=join|fire_and_forget`。block 不能为空，合法 child 只有 canonical `@stage`、canonical `@dialogue_avatar`、canonical `@dialogue_visibility`、canonical `@dialogue_clear`、canonical `@chapter_indicator`、canonical `@loop_se` 与 canonical `@bgm`；child 与 standalone 共用各自唯一的 parser/canonicalization。每批最多一个 dialogue-avatar、dialogue-clear、chapter-indicator child 和一个 BGM child，因为它们分别共享固定 `dialogue:avatar`、`dialogue:content`、`chapter:indicator` / `bgm:main` channel；每个 loop-SE channel 也最多出现一次。解析器保留跨 kind 的 authored child 顺序，且 `operation_lines` 与 child 一一对应；duplicate Stage layer、duplicate avatar/visibility target（省略 visibility target 的 surface 与显式 surface 也视为重复）、duplicate clear/chapter/BGM/loop-SE target、nested batch/if/parallel/combine、scene gap、非法 child 与缺失 `@end` 都会令整块 fail-close。既有 `@stage_batch` 继续保持 Stage-only public contract，不会静默扩成 mixed alias。
+`@presentation_batch` header 只接受一个严格小写的 `policy=join|fire_and_forget`。block 不能为空，合法 child 只有 canonical `@stage`、canonical `@dialogue_avatar`、canonical `@dialogue_visibility`、canonical `@dialogue_clear`、canonical `@chapter_indicator`、canonical `@loop_se`、canonical `@bgm` 与 canonical `@movie`；child 与 standalone 共用各自唯一的 parser/canonicalization。每批最多一个 dialogue-avatar、dialogue-clear、chapter-indicator、BGM 和 movie child，因为它们分别共享固定 `dialogue:avatar`、`dialogue:content`、`chapter:indicator`、`bgm:main` / `movie:main` channel；每个 loop-SE channel 也最多出现一次。解析器保留跨 kind 的 authored child 顺序，且 `operation_lines` 与 child 一一对应；duplicate Stage layer、duplicate avatar/visibility target（省略 visibility target 的 surface 与显式 surface 也视为重复）、duplicate clear/chapter/BGM/movie/loop-SE target、同批 movie 与 presentation clip、nested batch/if/parallel/combine、scene gap、非法 child 与缺失 `@end` 都会令整块 fail-close。既有 `@stage_batch` 继续保持 Stage-only public contract，不会静默扩成 mixed alias。
 
 Director 在任何 child apply 之前完成整批 typed schema/context preflight，并把 chapter Presenter binding registry 与唯一 AudioPresenter 完整 validate、seal 与 accept；任何 child 的 preflight 在其 source line 失败时都不会留下 Stage、dialogue、chapter 或 audio 的部分 mutation。apply 按 authored child 顺序跨 kind 派发，JOIN 等待 seal 后的 exact receipt union，FNF 则在 seal 后继续。普通 `@chapter_indicator`、`@dialogue_visibility` 和 `@dialogue_clear` 仍应使用简短 standalone 写法；只有真正需要这个原子边界时才使用 batch。
 
@@ -1054,6 +1054,21 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | loop-SE 音量 / 淡变 | `1` / `0s` | standalone 默认 fire-and-forget；JOIN 只通过 `@presentation_batch` 选择 |
 | timed wait 可跳过 | `false` | 显式 `skippable=true` 才接受普通推进或 Skip |
 | 对话推进 | 等待点击 | 有语音时可配置等语音播完 |
+
+### Native movie
+
+普通电影只需一行：
+
+```stla
+@movie opening
+@movie stop
+```
+
+唯一 grammar 是 `@movie <logical-id> [loop=true|false] [skippable=true|false] [policy=join|fire_and_forget]` 或 `@movie stop`。默认 `loop=false`、`skippable=true`、`policy=join`；循环播放必须显式使用 fire-and-forget，之后可由 `@movie stop` 精确退休。`logical-id` 只从 `[paths] movies` 下解析同名 `.ogv` 原生 `VideoStreamTheora`，不接受文件路径、MP4/WMV、帧序列或 legacy alias。
+
+`@presentation_batch` child 复用相同 parser，但 policy 只属于外层 header，child 不接受 policy。一个 batch 最多一个 movie child，且 movie 与 presentation clip 不能同批出现；资源、格式或参数失败会在任一 sibling mutation 前按 movie child 的 `source_path:line` 拒绝整批。canonical typed payload 永远只有 `{action, asset, loop, skippable}`，channel 为 `movie:main`。
+
+活动电影存档保存 `{asset, loop, skippable, length, position, status="playing"}`；加载与回退会先重新验证同一资源/长度，再用 Godot 原生 cursor seek，物理 restore acknowledgement 成功后才继续。非循环 cursor 必须严格位于 `[0,length)`，循环 cursor 按 length 规范化。不存在 wall-clock、timer 或伪 resume。
 
 ## 7. 解析器架构
 
