@@ -501,14 +501,15 @@ Core → Presentation 的 canonical 对话与语音链均使用只读 typed DTO�
 
 ### 3.2 动态舞台系统
 
-`StagePresenter` 是背景碎片、人物、事件图、SD 和特效图片共用的单一动态渲染器。它按稳定 ID 创建任意数量的层，不预设位置或容量。每层包含稳定的 `Asset`、`Body`、`Face` Sprite；face-only patch 不会重建或重新加载未变化的 body/背景资源。
+`StagePresenter` 是背景碎片、人物、事件图、SD 和特效图片共用的单一动态渲染器。它按稳定 ID 创建任意数量的层，不预设位置或容量。每层包含稳定的 `Asset`、`Body`、`Face` Sprite；face-only patch 不会重建或重新加载未变化的 body/背景资源。外部格式的独立深度原点必须在 importer 边界显式映射到 canonical `depth_origin`，不能由项目 Presenter、素材烘焙或二维 transform 兼容。
 
-- 规范状态：素材引用、offset、position/origin、scale/zoom/depth_scale、rotation、z_index、visible、opacity、fit、有序 redraw 操作列表与 metadata
+- 规范状态：素材引用、offset、position/origin、scale/zoom/depth_scale、rotation、整数 `z_index`、独立有限浮点 `depth_origin`、visible、opacity、fit、有序 redraw 操作列表与 metadata
 - 生命周期：`show` / `update` / `hide` / `remove` / `clear`
 - 动画：每层独立 generation 与 Tween，支持 cut、fade/crossfade、move 和 slide；批量 cut 先归约最终状态再投影
 - redraw：按作者顺序复合 color_overlay（normal/soft-light）、brightness_contrast、byte-exact grayscale、tint、可重复的矩形 box-average blur 与 alpha-mask clip；每个 blur 都读取上一操作的输出，整列替换和 JSON 快照完整保留独立 pass 的顺序；单层上限为 16 个操作、4 个 blur 和 1 个 clip
 - 渲染：只有逐像素操作时，稳定 `Composite` CanvasGroup/ShaderMaterial 直接处理 `Source`；存在 blur 时，`Source` 进入按依赖反向嵌套的 SubViewport 链，每个 authored blur 都由 HDR 横向整数和与 RGBA8 纵向量化两个独立 pass 完成，最后由稳定的 output/material 显示；该结构不依赖多个 screen-read CanvasGroup 的非确定 backbuffer 顺序
 - 坐标：`flip_x` / `flip_y` 是围绕 authored origin 的几何变换；clip 在层合成空间中按遮罩 alpha 相乘，遮罩矩形外始终透明
+- 深度：唯一排序键为 `float(z_index) + depth_origin`。`depth_origin` 不进入二维 origin、position、scale/zoom、depth_scale、crop/clip 或通道状态；Presenter 保留并在 transform Tween 中连续插值完整浮点键，只把 floor/clamp 后的整数 bucket 写给 CanvasItem，再用稳定 sibling order 保存同 bucket 和超范围值的精确关系。cut、Skip、restore、abort、projection transition holder 与 stale-generation cleanup 都复用同一排序投影
 - 资源：素材与 clip 遮罩都用逻辑 ID 和 `ResourceLoader.CACHE_MODE_REUSE`；只改 face 或数值操作不重载未变的 body/背景/遮罩；blur 离屏目标受设备纹理轴上限、8192 轴上限、每层 256 MiB 估算预算，以及静态每次 268,435,456 / 连续每帧 67,108,864 次纹理采样预算共同约束，超限 fail-closed；隐藏层保留规范状态与源纹理但释放派生目标，动态源或遮罩尺寸变化时重新投影 bounds/fit/clip
 
 人物层与其他命名层使用完全相同的生命周期和状态；`kind=character` 只是用途标记，不会启用另一套 presenter、位置槽或存档结构。句内方括号表情只属于对话框头像，舞台上的 `Asset` / `Body` / `Face` 必须通过 `@stage` 更新。

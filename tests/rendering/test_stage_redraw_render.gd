@@ -119,6 +119,52 @@ func _assert_pixel(
 	assert_almost_eq(actual.a, expected.a, tolerance, "%s alpha" % position)
 
 
+func _update_depth(
+	presenter: StagePresenter,
+	layer_id: String,
+	depth_origin: float,
+) -> void:
+	presenter._apply_operations([{
+		"action": "update",
+		"id": layer_id,
+		"properties": {
+			"z_index": 25,
+			"depth_scale": 1.0,
+			"depth_origin": depth_origin,
+		},
+		"transition_params": {},
+		"transition": "cut",
+		"duration": 0.0,
+	}], true)
+
+
+func test_depth_origin_changes_occlusion_without_changing_depth_scale() -> void:
+	var harness := await _make_harness(Vector2i(4, 4))
+	var red := Image.create(4, 4, false, Image.FORMAT_RGBA8)
+	red.fill(Color.RED)
+	var blue := Image.create(4, 4, false, Image.FORMAT_RGBA8)
+	blue.fill(Color.BLUE)
+	_show_image(harness.presenter, "effect", red, [])
+	_show_image(harness.presenter, "character", blue, [])
+	# The synthetic textures stand in for already-resolved authored assets. Keep
+	# their resident channel identity stable while transform-only updates run.
+	for layer_id in ["effect", "character"]:
+		var record: Dictionary = harness.presenter._layers[layer_id]
+		(record["asset_ids"] as Dictionary)["asset"] = (
+			harness.presenter._states[layer_id] as Dictionary).get("asset", "")
+	_update_depth(harness.presenter, "effect", -8000.0)
+	_update_depth(harness.presenter, "character", -9000.0)
+
+	var image := await _render(harness.viewport)
+	_assert_pixel(image, Vector2i(2, 2), Color.RED, BYTE_EXACT_TOLERANCE)
+	assert_eq(harness.presenter._states["effect"]["depth_scale"], 1.0)
+	assert_eq(harness.presenter._states["character"]["depth_scale"], 1.0)
+
+	_update_depth(harness.presenter, "character", -7000.0)
+	image = await _render(harness.viewport)
+	_assert_pixel(image, Vector2i(2, 2), Color.BLUE, BYTE_EXACT_TOLERANCE)
+
+
 func test_noop_redraw_preserves_source_bytes_across_renderers() -> void:
 	var harness := await _make_harness()
 	_show(harness.presenter, "passthrough", SOURCE_PATH, [

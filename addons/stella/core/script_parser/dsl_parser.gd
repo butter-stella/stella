@@ -29,7 +29,7 @@ const _STAGE_NUMBER_KEYS := [
 	"x", "y", "origin_x", "origin_y", "scale_x", "scale_y",
 	"zoom_x", "zoom_y", "asset_x", "asset_y", "body_x", "body_y",
 	"face_x", "face_y", "depth_scale", "rotation", "z", "z_index",
-	"opacity",
+	"depth_origin", "opacity",
 ]
 const _STAGE_BOOL_KEYS := ["visible", "flip_x", "flip_y"]
 const _STAGE_STRING_KEYS := ["kind", "asset", "body", "face"]
@@ -2523,6 +2523,7 @@ static func _parse_stage_command(
 	var transition_params: Dictionary = {}
 	var duration := 0.0
 	var invalid_operation := false
+	var seen_argument_keys := {}
 	for index in range(property_start, parts.size()):
 		var encoded := str(parts[index])
 		var equals_at := encoded.find("=")
@@ -2547,6 +2548,17 @@ static func _parse_stage_command(
 			)
 			invalid_operation = true
 			continue
+		if key != "redraw" and seen_argument_keys.has(key):
+			_record_diagnostic(
+				data,
+				"error",
+				"DslParser: duplicate @stage argument '%s' (line %d)"
+				% [key, line],
+				line,
+			)
+			invalid_operation = true
+			continue
+		seen_argument_keys[key] = true
 		if key == "transition":
 			var parsed_transition := _parse_stage_transition_expression(
 				raw_value, line, data)

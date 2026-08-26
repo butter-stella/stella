@@ -365,6 +365,14 @@ func _assert_lifecycle_final() -> void:
 	var state: Dictionary = _runtime.presentation_state.stage_layers.get(
 		"lifecycle", {})
 	assert_eq(state.get("asset", ""), "stage:redraw_source")
+	if float(state.get("depth_origin", 0.0)) != 0.0:
+		assert_eq(state.get("z_index", 0), 25)
+		assert_almost_eq(float(state.get("depth_origin", 0.0)), -8000.25, 0.001)
+		assert_almost_eq(
+			float(_presenter._layers["lifecycle"].get("depth_sort_key", 0.0)),
+			-7975.25,
+			0.001,
+		)
 	assert_true(bool(state.get("visible", false)))
 
 
@@ -3704,6 +3712,11 @@ func test_a8_mid_join_save_contains_only_canonical_target_and_cursor() -> void:
 	assert_eq(_runtime.presentation_state.stage_layers["saved"]["asset"],
 		"stage:redraw_source",
 		"the final canonical target commits before the tween finishes")
+	assert_almost_eq(
+		float(_runtime.presentation_state.stage_layers["saved"]["depth_origin"]),
+		-9000.25,
+		0.001,
+	)
 	_runtime.save(SAVE_SLOT)
 	var saved_data: Variant = _runtime.save_manager.read_save_data(SAVE_SLOT)
 	assert_true(saved_data is Dictionary)
@@ -3837,6 +3850,11 @@ func test_a8_load_cancels_old_generation_then_dry_runs_without_tokens() -> void:
 	assert_not_null(_presenter.get_layer_node("saved"))
 	assert_eq(_runtime.presentation_state.stage_layers["saved"]["asset"],
 		"stage:redraw_source")
+	assert_almost_eq(
+		float(_runtime.presentation_state.stage_layers["saved"]["depth_origin"]),
+		-9000.25,
+		0.001,
+	)
 	assert_true(_dialogue_requests[0].get_activation().is_pending())
 	_finish_records([old_record])
 	await get_tree().process_frame

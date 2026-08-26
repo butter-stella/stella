@@ -30,6 +30,8 @@ func test_stage_operations_are_tracked_and_json_roundtrip_exactly() -> void:
 			"body": "stage:bg_cafe",
 			"face": "stage:bg_hallway",
 			"position": [640.0, 720.0],
+			"z_index": 25,
+			"depth_origin": -9000.25,
 			"redraw": [
 				{
 					"type": "color_overlay",
@@ -68,6 +70,9 @@ func test_stage_operations_are_tracked_and_json_roundtrip_exactly() -> void:
 	assert_eq(restored.stage_layers["hero"]["body"], "stage:bg_cafe")
 	assert_eq(restored.stage_layers["hero"]["face"], "stage:bg_outside")
 	assert_eq(restored.stage_layers["hero"]["position"], [640.0, 720.0])
+	assert_eq(restored.stage_layers["hero"]["z_index"], 25)
+	assert_almost_eq(
+		restored.stage_layers["hero"]["depth_origin"], -9000.25, 0.001)
 	assert_eq(restored.stage_layers["hero"]["redraw"], [
 		{
 			"type": "color_overlay",
