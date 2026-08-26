@@ -67,6 +67,7 @@ func _assert_voice_projection_empty() -> void:
 	assert_null(_audio._voice_player.stream)
 	assert_true(_audio._voice_dsp_tail_timer.is_stopped())
 	assert_eq(AudioServer.get_bus_effect_count(_bus_index()), 0)
+	assert_false(_audio._voice_group_raw_eligible)
 
 
 func _request(
@@ -376,6 +377,175 @@ func test_ordered_group_starts_together_and_finishes_layers_independently() -> v
 	SignalBus.voice_playback_event.disconnect(on_event)
 
 
+func test_multi_layer_group_never_projects_a_lossy_raw_lifecycle() -> void:
+	var raw_play: Array = []
+	var raw_started: Array = []
+	var raw_progress := [0]
+	var raw_finished := [0]
+	var on_play := func(asset: String, character: String) -> void:
+		raw_play.append([asset, character])
+	var on_started := func(character: String, asset: String) -> void:
+		raw_started.append([character, asset])
+	var on_progress := func(_position: float, _duration: float) -> void:
+		raw_progress[0] += 1
+	var on_finished := func() -> void:
+		raw_finished[0] += 1
+	SignalBus.voice_play.connect(on_play)
+	SignalBus.voice_started.connect(on_started)
+	SignalBus.voice_progress.connect(on_progress)
+	SignalBus.voice_finished.connect(on_finished)
+
+	var first := SignalBus.request_voice_layers([
+		_layer("lead", "narration_001", "lead"),
+		_layer("reply", "narration_002", "reply", "remote"),
+	], func() -> bool: return is_inside_tree())
+	assert_true(first.was_accepted())
+	_audio._process(0.0)
+	var replacement := SignalBus.request_voice_layers([
+		_layer("next_a", "narration_002", "lead"),
+		_layer("next_b", "narration_003", "reply"),
+	], func() -> bool: return is_inside_tree())
+	assert_true(replacement.was_accepted())
+	assert_true(first.get_completion().is_finished())
+	SignalBus.hide_dialogue.emit()
+	assert_true(replacement.get_completion().is_finished())
+
+	StellaRuntime.set_setting("character_voice_enabled", {
+		"muted_a": false,
+		"muted_b": false,
+	})
+	var disabled := SignalBus.request_voice_layers([
+		_layer("muted_a", "narration_001", "muted_a"),
+		_layer("muted_b", "narration_002", "muted_b"),
+	], func() -> bool: return is_inside_tree())
+	assert_true(disabled.was_accepted())
+	assert_true(disabled.get_completion().is_finished())
+	assert_eq(raw_play, [])
+	assert_eq(raw_started, [])
+	assert_eq(raw_progress[0], 0)
+	assert_eq(raw_finished[0], 0)
+	_assert_voice_projection_empty()
+
+	SignalBus.voice_play.disconnect(on_play)
+	SignalBus.voice_started.disconnect(on_started)
+	SignalBus.voice_progress.disconnect(on_progress)
+	SignalBus.voice_finished.disconnect(on_finished)
+
+
+func test_progress_pass_stops_when_same_ids_are_replaced_reentrantly() -> void:
+	var old := SignalBus.request_voice_layers([
+		_layer("a", "narration_001", "old_a"),
+		_layer("b", "narration_002", "old_b"),
+	], func() -> bool: return is_inside_tree())
+	assert_true(old.was_accepted())
+	var old_token := old.get_playback_token()
+	var progress: Array[String] = []
+	var replacement: Array[VoicePlaybackResponse] = []
+	var on_event := func(event: VoicePlaybackEvent) -> void:
+		if event.get_kind() != VoicePlaybackEvent.Kind.PROGRESS:
+			return
+		progress.append("%d:%s" % [event.get_playback_token(), event.get_layer_id()])
+		if event.get_playback_token() == old_token and replacement.is_empty():
+			replacement.append(SignalBus.request_voice_layers([
+				_layer("a", "narration_002", "new_a"),
+				_layer("b", "narration_003", "new_b"),
+			], func() -> bool: return is_inside_tree()))
+	SignalBus.voice_playback_event.connect(on_event)
+	_audio._process(0.0)
+	assert_eq(replacement.size(), 1)
+	assert_true(replacement[0].was_accepted())
+	assert_true(old.get_completion().is_finished())
+	assert_eq(progress, ["%d:a" % old_token],
+		"the retired outer pass cannot read a same-id layer from replacement state")
+
+	var replacement_token := replacement[0].get_playback_token()
+	_audio._process(0.0)
+	assert_eq(progress, [
+		"%d:a" % old_token,
+		"%d:a" % replacement_token,
+		"%d:b" % replacement_token,
+	], "the next legitimate pass emits the replacement authored order once")
+	SignalBus.voice_playback_event.disconnect(on_event)
+	SignalBus.hide_dialogue.emit()
+	assert_true(replacement[0].get_completion().is_finished())
+	_assert_voice_projection_empty()
+
+
+func test_single_layer_group_keeps_exact_public_raw_lifecycle() -> void:
+	var raw_play: Array = []
+	var raw_started: Array = []
+	var raw_progress := [0]
+	var raw_finished := [0]
+	var on_play := func(asset: String, character: String) -> void:
+		raw_play.append([asset, character])
+	var on_started := func(character: String, asset: String) -> void:
+		raw_started.append([character, asset])
+	var on_progress := func(_position: float, _duration: float) -> void:
+		raw_progress[0] += 1
+	var on_finished := func() -> void:
+		raw_finished[0] += 1
+	SignalBus.voice_play.connect(on_play)
+	SignalBus.voice_started.connect(on_started)
+	SignalBus.voice_progress.connect(on_progress)
+	SignalBus.voice_finished.connect(on_finished)
+
+	var response := SignalBus.request_voice_layers([
+		_layer("main", "narration_001", "speaker"),
+	], func() -> bool: return is_inside_tree())
+	assert_true(response.was_accepted())
+	assert_eq(raw_play, [["narration_001", "speaker"]])
+	assert_eq(raw_started, [["speaker", "narration_001"]])
+	_audio._process(0.0)
+	assert_eq(raw_progress[0], 1)
+	_audio._voice_player.stop()
+	_audio._on_voice_playback_finished()
+	assert_true(response.get_completion().is_finished())
+	assert_eq(raw_finished[0], 1)
+	_assert_voice_projection_empty()
+
+	SignalBus.voice_play.disconnect(on_play)
+	SignalBus.voice_started.disconnect(on_started)
+	SignalBus.voice_progress.disconnect(on_progress)
+	SignalBus.voice_finished.disconnect(on_finished)
+
+
+func test_disabled_single_keeps_request_notification_without_physical_raw_events() -> void:
+	StellaRuntime.set_setting("character_voice_enabled", {"muted": false})
+	var raw_play: Array = []
+	var raw_started := [0]
+	var raw_progress := [0]
+	var raw_finished := [0]
+	var on_play := func(asset: String, character: String) -> void:
+		raw_play.append([asset, character])
+	var on_started := func(_character: String, _asset: String) -> void:
+		raw_started[0] += 1
+	var on_progress := func(_position: float, _duration: float) -> void:
+		raw_progress[0] += 1
+	var on_finished := func() -> void:
+		raw_finished[0] += 1
+	SignalBus.voice_play.connect(on_play)
+	SignalBus.voice_started.connect(on_started)
+	SignalBus.voice_progress.connect(on_progress)
+	SignalBus.voice_finished.connect(on_finished)
+
+	var response := SignalBus.request_voice_layers([
+		_layer("main", "narration_001", "muted", "remote"),
+	], func() -> bool: return is_inside_tree())
+	assert_true(response.was_accepted())
+	assert_true(response.get_completion().is_finished())
+	assert_eq(raw_play, [["narration_001", "muted"]])
+	assert_eq(raw_started[0], 0)
+	assert_eq(raw_progress[0], 0)
+	assert_eq(raw_finished[0], 0,
+		"a physical FINISHED cannot exist without a physical STARTED")
+	_assert_voice_projection_empty()
+
+	SignalBus.voice_play.disconnect(on_play)
+	SignalBus.voice_started.disconnect(on_started)
+	SignalBus.voice_progress.disconnect(on_progress)
+	SignalBus.voice_finished.disconnect(on_finished)
+
+
 func test_group_settings_address_each_live_layer_without_changing_ownership() -> void:
 	StellaRuntime.set_setting("master_volume", 0.8)
 	StellaRuntime.set_setting("voice_volume", 0.5)
@@ -443,6 +613,47 @@ func test_group_replacement_reentry_cannot_commit_stale_outer_layers() -> void:
 	SignalBus.voice_playback_event.disconnect(on_finished)
 
 
+func test_group_snapshots_enabled_projection_after_reentrant_retirement() -> void:
+	var live := SignalBus.request_voice_layers([
+		_layer("old", "narration_001", "old"),
+	], func() -> bool: return is_inside_tree())
+	assert_true(live.was_accepted())
+	StellaRuntime.set_setting("character_voice_enabled", {
+		"promoted": false,
+		"demoted": true,
+		"stable": true,
+	})
+	var on_finished := func(event: VoicePlaybackEvent) -> void:
+		if event.get_kind() != VoicePlaybackEvent.Kind.FINISHED:
+			return
+		StellaRuntime.set_setting("character_voice_enabled", {
+			"promoted": true,
+			"demoted": false,
+			"stable": true,
+		})
+	SignalBus.voice_playback_event.connect(on_finished)
+	var replacement := SignalBus.request_voice_layers([
+		_layer("promoted", "narration_001", "promoted", "remote"),
+		_layer("demoted", "narration_002", "demoted", "memory"),
+		_layer("stable", "narration_003", "stable"),
+	], func() -> bool: return is_inside_tree())
+	SignalBus.voice_playback_event.disconnect(on_finished)
+
+	assert_true(live.get_completion().is_finished())
+	assert_true(replacement.was_accepted())
+	assert_false(replacement.get_completion().is_finished())
+	assert_eq(_audio._voice_layer_order, ["promoted", "stable"],
+		"the post-reentry settings snapshot controls the exact projection set")
+	assert_true((_audio._voice_layers["promoted"]["player"] as AudioStreamPlayer).playing)
+	assert_true((_audio._voice_layers["stable"]["player"] as AudioStreamPlayer).playing)
+	assert_false(_audio._voice_layers.has("demoted"))
+	assert_eq(AudioServer.bus_count, _original_audio_bus_count + 1,
+		"the disabled staged member releases its detached bus at commit")
+	SignalBus.hide_dialogue.emit()
+	assert_true(replacement.get_completion().is_finished())
+	_assert_voice_projection_empty()
+
+
 func test_group_waits_for_each_layer_dsp_tail_and_preserves_other_players() -> void:
 	var response := SignalBus.request_voice_layers([
 		_layer("memory", "narration_001", "lead", "memory"),
@@ -499,6 +710,48 @@ func test_group_preflight_is_atomic_even_for_disabled_layers() -> void:
 	assert_true(completed.get_completion().is_finished())
 	_assert_voice_projection_empty()
 	assert_eq(_audio._voice_playback_token, -1)
+	assert_eq(AudioServer.bus_count, _original_audio_bus_count)
+
+
+func test_second_layer_dsp_failures_are_exact_and_leave_live_group_untouched() -> void:
+	var live := _request("remote")
+	assert_true(live.was_accepted())
+	var live_token := _audio._voice_playback_token
+	var live_stream := _audio._voice_player.stream
+	var live_bus := _audio._voice_dsp_bus_name
+	var missing := SignalBus.request_voice_layers([
+		_layer("lead", "narration_002", "lead", "remote", 71),
+		_layer("reply", "narration_003", "reply", "missing", 72),
+	], func() -> bool: return is_inside_tree())
+	assert_false(missing.was_accepted())
+	assert_push_error(
+		"voice layer 'reply' DSP preset 'missing' is missing or is not a VoiceDspChainDefinition at res://tests/public_voice_layers.stla:72")
+	assert_eq(_audio._voice_playback_token, live_token)
+	assert_same(_audio._voice_player.stream, live_stream)
+	assert_eq(_audio._voice_dsp_bus_name, live_bus)
+	assert_eq(AudioServer.bus_count, _original_audio_bus_count)
+
+	var collision_name := StringName(
+		"__stella_voice_dsp_%d_%d"
+			% [_audio.get_instance_id(), _audio._voice_dsp_bus_serial + 2])
+	var collision_index := AudioServer.bus_count
+	AudioServer.add_bus(collision_index)
+	AudioServer.set_bus_name(collision_index, collision_name)
+	var staged := SignalBus.request_voice_layers([
+		_layer("lead", "narration_002", "lead", "remote", 81),
+		_layer("reply", "narration_003", "reply", "memory", 82),
+	], func() -> bool: return is_inside_tree())
+	assert_false(staged.was_accepted())
+	assert_push_error(
+		"voice layer 'reply' DSP private staging bus identity is ambiguous at res://tests/public_voice_layers.stla:82")
+	assert_eq(_audio._voice_playback_token, live_token)
+	assert_same(_audio._voice_player.stream, live_stream)
+	assert_eq(_audio._voice_dsp_bus_name, live_bus)
+	assert_eq(AudioServer.bus_count, _original_audio_bus_count + 1,
+		"the successfully staged first layer was released; only the fixture remains")
+	var exact_collision_index := AudioServer.get_bus_index(collision_name)
+	if exact_collision_index >= 0:
+		AudioServer.remove_bus(exact_collision_index)
 	assert_eq(AudioServer.bus_count, _original_audio_bus_count)
 
 

@@ -201,8 +201,7 @@ func request_voice_layers(
 	# The long-standing single-voice signal remains a read-only notification for
 	# a one-member canonical group. A simultaneous group has no lossless raw view;
 	# consumers use VoicePlaybackRequest/Event and their stable layer identities.
-	var emit_single_notification := (
-		request.is_valid() and request.get_layers().size() == 1)
+	var emit_single_notification := request.is_valid() and request.is_single_layer()
 	return _dispatch_voice_playback_request(request, emit_single_notification)
 
 

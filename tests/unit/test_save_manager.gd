@@ -107,6 +107,22 @@ func _make_valid_save_snapshot() -> Dictionary:
 	}
 
 
+func _nvl_voice_layer(
+	layer_id: String,
+	asset: String,
+	character: String,
+	dsp: String,
+	line: int,
+) -> Dictionary:
+	return {
+		"id": layer_id,
+		"asset": asset,
+		"character": character,
+		"dsp": dsp,
+		"line": line,
+	}
+
+
 func _make_valid_dialogue_save_snapshot(mode: String = "adv") -> Dictionary:
 	var snapshot := _make_valid_save_snapshot()
 	snapshot["presentation_state"]["dialogue_visibility"] = {
@@ -455,6 +471,88 @@ func test_dialogue_projection_adv_and_nvl_snapshots_validate_exactly() -> void:
 	assert_true(round_tripped is Dictionary)
 	if round_tripped is Dictionary:
 		assert_true(_manager.validate_data_for_scenario(round_tripped, scenario))
+
+
+func test_nvl_voice_layers_round_trip_preserves_authored_order() -> void:
+	var scenario := _make_validation_scenario()
+	var snapshot := _make_valid_save_snapshot()
+	var authored_layers := [
+		_nvl_voice_layer("lead", "voice/lead", "speaker_a", "remote", 11),
+		_nvl_voice_layer("reply", "voice/reply", "speaker_b", "", 12),
+	]
+	snapshot["scenario_context"]["nvl_page_entries"][0]["segments"][0][
+		"voice_layers"] = authored_layers.duplicate(true)
+	assert_true(_manager.validate_data_for_scenario(snapshot, scenario))
+
+	_manager._ensure_dir()
+	var file := FileAccess.open(_save_dir + "save_1.json", FileAccess.WRITE)
+	file.store_string(JSON.stringify(snapshot))
+	file.close()
+	var provider := MockProvider.new("scenario_context")
+	provider.data = {"preserved": true}
+	_manager.register_provider(provider)
+	assert_true(_manager.load_save(1, scenario))
+	var restored: Array = provider.data["nvl_page_entries"][0]["segments"][0][
+		"voice_layers"]
+	assert_eq(restored.size(), 2)
+	assert_eq(restored[0]["id"], "lead")
+	assert_eq(restored[0]["asset"], "voice/lead")
+	assert_eq(restored[0]["character"], "speaker_a")
+	assert_eq(restored[0]["dsp"], "remote")
+	assert_eq(int(restored[0]["line"]), 11)
+	assert_eq(restored[1]["id"], "reply")
+	assert_eq(restored[1]["asset"], "voice/reply")
+	assert_eq(int(restored[1]["line"]), 12)
+
+
+func test_nvl_voice_layers_schema_fails_before_provider_mutation() -> void:
+	var scenario := _make_validation_scenario()
+	var valid_layer := _nvl_voice_layer(
+		"lead", "voice/lead", "speaker", "remote", 11)
+	var too_many: Array = []
+	for index in range(VoicePlaybackRequest.MAX_LAYERS + 1):
+		too_many.append(_nvl_voice_layer(
+			"layer_%d" % index, "voice/lead", "speaker", "", 11 + index))
+	var invalid_segments: Array = [
+		{"text": "safe", "voice": "retired"},
+		{"text": "safe"},
+		{"text": "safe", "voice_layers": [], "future": true},
+		{"text": "safe", "voice_layers": "not-an-array"},
+		{"text": "safe", "voice_layers": too_many},
+		{"text": "safe", "voice_layers": ["not-a-layer"]},
+		{"text": "safe", "voice_layers": [valid_layer.merged({"future": true})]},
+		{"text": "safe", "voice_layers": [{
+			"id": "lead", "asset": "voice/lead", "character": "speaker",
+			"dsp": "remote",
+		}]},
+		{"text": "safe", "voice_layers": [valid_layer.merged({"id": 1}, true)]},
+		{"text": "safe", "voice_layers": [valid_layer.merged({"asset": 1}, true)]},
+		{"text": "safe", "voice_layers": [valid_layer.merged({"character": 1}, true)]},
+		{"text": "safe", "voice_layers": [valid_layer.merged({"dsp": 1}, true)]},
+		{"text": "safe", "voice_layers": [valid_layer.merged({"line": "11"}, true)]},
+		{"text": "safe", "voice_layers": [valid_layer.merged({"id": "1lead"}, true)]},
+		{"text": "safe", "voice_layers": [valid_layer.merged({"asset": "res://voice.ogg"}, true)]},
+		{"text": "safe", "voice_layers": [valid_layer.merged({"character": " speaker "}, true)]},
+		{"text": "safe", "voice_layers": [valid_layer.merged({"dsp": "bad preset"}, true)]},
+		{"text": "safe", "voice_layers": [valid_layer.merged({"line": -1}, true)]},
+		{"text": "safe", "voice_layers": [valid_layer.merged({"line": 1.5}, true)]},
+		{"text": "safe", "voice_layers": [valid_layer, valid_layer.duplicate(true)]},
+	]
+	var provider := MockProvider.new("scenario_context")
+	provider.data = {"preserved": true, "revision": 7}
+	_manager.register_provider(provider)
+	_manager._ensure_dir()
+	for invalid_segment: Dictionary in invalid_segments:
+		var snapshot := _make_valid_save_snapshot()
+		snapshot["scenario_context"]["nvl_page_entries"][0]["segments"] = [
+			invalid_segment]
+		assert_false(_manager.validate_data_for_scenario(snapshot, scenario))
+		var file := FileAccess.open(_save_dir + "save_1.json", FileAccess.WRITE)
+		file.store_string(JSON.stringify(snapshot))
+		file.close()
+		assert_false(_manager.load_save(1, scenario))
+		assert_eq(provider.data, {"preserved": true, "revision": 7},
+			"invalid NVL voice layers must fail before provider restore")
 
 
 func test_explicit_cleared_dialogue_projection_round_trips_without_text_inference() -> void:

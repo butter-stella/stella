@@ -190,23 +190,27 @@ static func is_logical_asset_id(value: String) -> bool:
 
 
 func get_asset() -> String:
-	return String(_layers[0].get("asset", "")) if not _layers.is_empty() else ""
+	return String(_layers[0].get("asset", "")) if is_single_layer() else ""
 
 
 func get_character() -> String:
-	return String(_layers[0].get("character", "")) if not _layers.is_empty() else ""
+	return String(_layers[0].get("character", "")) if is_single_layer() else ""
 
 
 func get_dsp_preset() -> String:
-	return String(_layers[0].get("dsp", "")) if not _layers.is_empty() else ""
+	return String(_layers[0].get("dsp", "")) if is_single_layer() else ""
 
 
 func get_source() -> Dictionary:
 	return (
 		(_layers[0].get("source", {}) as Dictionary).duplicate(true)
-		if not _layers.is_empty()
+		if is_single_layer()
 		else {}
 	)
+
+
+func is_single_layer() -> bool:
+	return _layers.size() == 1
 
 
 func get_layers() -> Array:
