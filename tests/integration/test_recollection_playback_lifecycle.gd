@@ -7,6 +7,7 @@ const NORMAL_REENTRY_PATH := \
 	"res://tests/fixtures/scenarios/dialogue/presentation_profile.stla"
 const RECOLLECTION_REENTRY_PATH := \
 	"res://examples/demo/scenarios/recollection_playback.stla"
+const CONFIGURED_TITLE_PROBE := "res://addons/stella/scenes/game.tscn"
 const SAVE_DIR := "user://tests/recollection_playback/"
 const SAVE_SLOT := 171
 
@@ -17,6 +18,7 @@ class ReturnTarget extends Node:
 	var normal_reentry_path := ""
 	var recollection_reentry_path := ""
 	var recollection_return: Callable
+	var title_reentry := false
 
 	func _init(owner: Node, call_sink: Array[String]) -> void:
 		runtime = owner
@@ -24,7 +26,9 @@ class ReturnTarget extends Node:
 
 	func return_to_gallery() -> void:
 		calls.append("returned")
-		if not recollection_reentry_path.is_empty():
+		if title_reentry:
+			runtime.return_to_title()
+		elif not recollection_reentry_path.is_empty():
 			runtime.start_recollection(
 				recollection_reentry_path,
 				recollection_return,
@@ -39,6 +43,7 @@ class ReturnTarget extends Node:
 
 var _runtime: Node
 var _owned_targets: Array[Node] = []
+var _original_title_scene_path := ""
 
 
 func before_each() -> void:
@@ -49,6 +54,7 @@ func before_each() -> void:
 	_runtime.delete_quick_save()
 	_runtime.delete_auto_save()
 	_runtime._navigation_scene_change_override = Callable()
+	_original_title_scene_path = _runtime.title_scene_path
 	_owned_targets.clear()
 
 
@@ -61,6 +67,7 @@ func after_each() -> void:
 			_runtime._navigation_scene_slot_active_serial, false)
 		await get_tree().process_frame
 	_runtime._navigation_scene_change_override = Callable()
+	_runtime.title_scene_path = _original_title_scene_path
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
 	for target: Node in _owned_targets:
 		if is_instance_valid(target):
@@ -364,6 +371,92 @@ func test_return_callback_can_start_new_recollection_without_old_cleanup_tail() 
 		ScenarioPlaybackContext.Status.ACTIVE)
 	assert_eq(_runtime._navigation_kind, "")
 	assert_eq(_runtime.game_state.current_state, GameStateMachine.State.PLAYING)
+
+
+func test_rejected_title_replacement_preserves_active_return_contract() -> void:
+	var calls: Array[String] = []
+	var target := _target(calls)
+	var installed := _install_recollection(
+		_scenario([_command("wait", 49, {"mode": "click"})]),
+		Callable(target, "return_to_gallery"),
+	)
+	var playback: ScenarioPlaybackContext = installed["playback"]
+	var retained_context: ScenarioContext = installed["context"]
+	_runtime.engine.run()
+	await get_tree().process_frame
+	_runtime.title_scene_path = CONFIGURED_TITLE_PROBE
+	_runtime._navigation_scene_change_override = \
+		func(_scene: PackedScene) -> int: return ERR_CANT_CREATE
+
+	_runtime.return_to_title()
+	assert_true(await _wait_until(
+		func() -> bool:
+			return (
+				_runtime._navigation_kind.is_empty()
+				and not _runtime._return_to_title_pending
+				and retained_context.is_runtime_owner_current()
+			)
+	))
+
+	assert_push_warning(
+		"auto save is unavailable during recollection playback")
+	assert_push_error("failed to request the configured title scene")
+	assert_push_error(
+		"failed to enter the configured title scene; falling back")
+	assert_push_error("failed to request the built-in title scene")
+	assert_push_error("failed to enter the built-in title scene")
+	assert_same(_runtime.engine.context, retained_context)
+	assert_false(retained_context.is_finished)
+	assert_true(retained_context.is_recollection_playback())
+	assert_eq(playback.get_status(), ScenarioPlaybackContext.Status.ACTIVE)
+	assert_same(_runtime._active_recollection_context, retained_context)
+	assert_same(_runtime._active_recollection_playback, playback)
+	assert_eq(calls, [])
+
+	assert_true(_runtime.return_from_recollection(),
+		"the restored recollection retains its exact caller settlement")
+	assert_eq(calls, ["returned"])
+	assert_eq(playback.get_status(), ScenarioPlaybackContext.Status.RETURNED)
+	_assert_return_cleanup()
+	assert_false(_runtime.return_from_recollection())
+	assert_eq(calls, ["returned"])
+
+
+func test_return_callback_can_start_title_without_old_cleanup_tail() -> void:
+	var calls: Array[String] = []
+	var target := _target(calls)
+	target.title_reentry = true
+	_runtime._navigation_scene_change_override = \
+		func(_scene: PackedScene) -> int: return OK
+	var installed := _install_recollection(
+		_scenario([_command("set", 50)]),
+		Callable(target, "return_to_gallery"),
+	)
+	var playback: ScenarioPlaybackContext = installed["playback"]
+
+	assert_true(_runtime.return_from_recollection())
+	assert_true(await _wait_until(
+		func() -> bool:
+			return _runtime._navigation_scene_slot_active_serial > 0))
+	var scene_serial: int = _runtime._navigation_scene_slot_active_serial
+	assert_eq(calls, ["returned"])
+	assert_eq(playback.get_status(), ScenarioPlaybackContext.Status.RETURNED)
+	assert_null(_runtime._active_recollection_context)
+	assert_null(_runtime._active_recollection_playback)
+	_runtime._settle_navigation_scene_slot(scene_serial, true)
+	assert_true(await _wait_until(
+		func() -> bool:
+			return (
+				_runtime.game_state.current_state
+					== GameStateMachine.State.TITLE
+				and _runtime._navigation_kind.is_empty()
+				and not _runtime._return_to_title_pending
+			)
+	))
+
+	assert_eq(calls, ["returned"])
+	assert_eq(playback.get_status(), ScenarioPlaybackContext.Status.RETURNED)
+	assert_null(_runtime.engine.context)
 
 
 func test_normal_replacement_cancels_caller_without_return() -> void:

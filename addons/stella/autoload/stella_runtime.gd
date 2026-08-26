@@ -2333,9 +2333,6 @@ func _resource_dependency_path(raw_dependency: String) -> String:
 func return_to_title() -> void:
 	if _return_to_title_pending:
 		return
-	# Explicit title navigation wins over a gallery return. The later confirmed
-	# title transaction still performs the normal full gameplay cleanup.
-	_cancel_recollection_for_replacement(engine.context if engine != null else null)
 	var navigation := _begin_navigation("return_to_title", true)
 	if not _owns_navigation(navigation):
 		return
