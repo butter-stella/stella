@@ -1441,7 +1441,7 @@ func test_overlay_marker_hides_on_advance_without_a_following_show() -> void:
 func test_indicator_does_not_mutate_text_segments_or_backlog() -> void:
 	var segments := [{
 		"text": "Original source text",
-		"voice": "",
+		"voice_layers": [],
 		"expression": "",
 	}]
 	var original_segments := segments.duplicate(true)
@@ -1802,7 +1802,7 @@ func test_finalize_signal_cannot_retire_a_synchronously_shown_replacement() -> v
 	SignalBus.emit_show_dialogue(
 		"speaker", [{
 			"text": "Typing before reentrant finalization[expr:retired-expression]",
-			"voice": "",
+			"voice_layers": [],
 			"expression": "",
 		}], "adv",
 		_texture_profile(), true)
@@ -1857,7 +1857,7 @@ func test_input_advance_is_atomic_when_finalize_signal_shows_replacement() -> vo
 	SignalBus.emit_show_dialogue(
 		"speaker", [{
 			"text": "Ready before input finalization[expr:retired-expression]",
-			"voice": "",
+			"voice_layers": [],
 			"expression": "",
 		}], "adv",
 		_texture_profile(), true)
@@ -1909,13 +1909,13 @@ func test_advance_tail_cannot_stop_voice_started_by_finalize_replacement() -> vo
 		did_replace[0] = true
 		SignalBus.emit_show_dialogue("replacement", [{
 			"text": "Replacement voice survives the retired advance",
-			"voice": "narration_002",
+			"voice_layers": [{"id": "main", "asset": "narration_002", "character": "", "dsp": "", "line": 0}],
 			"expression": "",
 		}], "adv", _texture_profile(), true)
 	SignalBus.dialogue_voice_finished.connect(on_dialogue_voice_finished)
 	SignalBus.emit_show_dialogue("retired", [{
 		"text": "Typing voice retired by a defensive advance",
-		"voice": "narration_001",
+		"voice_layers": [{"id": "main", "asset": "narration_001", "character": "", "dsp": "", "line": 0}],
 		"expression": "",
 	}], "adv", _texture_profile(), true)
 	assert_true(audio_presenter._voice_player.playing)
@@ -1946,7 +1946,7 @@ func test_voice_progress_consumer_rejects_retired_finished_tail() -> void:
 		did_replace[0] = true
 		SignalBus.emit_show_dialogue("replacement", [{
 			"text": "Replacement keeps its progress visible",
-			"voice": "narration_002",
+			"voice_layers": [{"id": "main", "asset": "narration_002", "character": "", "dsp": "", "line": 0}],
 			"expression": "",
 		}], "adv", _texture_profile(), true)
 	# Connect the reentrant extension before the real demo consumer so the native
@@ -1958,7 +1958,7 @@ func test_voice_progress_consumer_rejects_retired_finished_tail() -> void:
 	await get_tree().process_frame
 	SignalBus.emit_show_dialogue("retired", [{
 		"text": "Retired line closes its logical voice",
-		"voice": "narration_001",
+		"voice_layers": [{"id": "main", "asset": "narration_001", "character": "", "dsp": "", "line": 0}],
 		"expression": "",
 	}], "adv", _texture_profile(), true)
 	assert_true(progress_bar.visible)
@@ -1985,7 +1985,7 @@ func test_owned_dialogue_voice_started_tail_rejects_replacement() -> void:
 		did_replace[0] = true
 		SignalBus.emit_show_dialogue("replacement", [{
 			"text": "Replacement owns logical voice start",
-			"voice": "narration_002",
+			"voice_layers": [{"id": "main", "asset": "narration_002", "character": "", "dsp": "", "line": 0}],
 			"expression": "",
 		}], "adv", _texture_profile(), true)
 	var on_started_late := func(total_duration: float):
@@ -1996,7 +1996,7 @@ func test_owned_dialogue_voice_started_tail_rejects_replacement() -> void:
 
 	SignalBus.emit_show_dialogue("retired", [{
 		"text": "Retired logical voice start",
-		"voice": "narration_001",
+		"voice_layers": [{"id": "main", "asset": "narration_001", "character": "", "dsp": "", "line": 0}],
 		"expression": "",
 	}], "adv", _scene_profile(), true)
 	SignalBus.dialogue_voice_started.disconnect(on_started_early)
@@ -2031,7 +2031,7 @@ func test_typed_voice_progress_rejects_a_replaced_playback_owner() -> void:
 		did_replace[0] = true
 		SignalBus.emit_show_dialogue("replacement", [{
 			"text": "Replacement progress owner",
-			"voice": "narration_002",
+			"voice_layers": [{"id": "main", "asset": "narration_002", "character": "", "dsp": "", "line": 0}],
 			"expression": "",
 		}], "adv", _texture_profile(), true)
 	# This extension must precede the scene-local Presenter on the public signal.
@@ -2095,7 +2095,7 @@ func test_high_level_voice_progress_tail_rejects_replacement() -> void:
 		did_replace[0] = true
 		SignalBus.emit_show_dialogue("replacement", [{
 			"text": "Replacement owns the progress bar",
-			"voice": "narration_002",
+			"voice_layers": [{"id": "main", "asset": "narration_002", "character": "", "dsp": "", "line": 0}],
 			"expression": "",
 		}], "adv", _texture_profile(), true)
 	SignalBus.dialogue_voice_progress.connect(on_progress_early)
@@ -2125,7 +2125,7 @@ func test_voice_kickoff_cannot_overwrite_a_synchronously_shown_replacement() -> 
 	StellaRuntime.voice_path = "res://examples/demo/audio/voice/"
 	var replacement_segments: Array = [{
 		"text": "Replacement owns the voice generation",
-		"voice": "narration_002",
+		"voice_layers": [{"id": "main", "asset": "narration_002", "character": "replacement", "dsp": "", "line": 0}],
 		"expression": "replacement-expression",
 	}]
 	var did_replace := [false]
@@ -2154,7 +2154,7 @@ func test_voice_kickoff_cannot_overwrite_a_synchronously_shown_replacement() -> 
 
 	SignalBus.emit_show_dialogue("retired", [{
 		"text": "Retired voice kickoff must stop here",
-		"voice": "narration_001",
+		"voice_layers": [{"id": "main", "asset": "narration_001", "character": "", "dsp": "", "line": 0}],
 		"expression": "retired-expression",
 	}], "adv", _texture_profile(), true)
 	var completed := await _wait_for_typing_to_finish(_presenter)
@@ -2270,7 +2270,7 @@ func test_advance_during_owned_voice_emit_blocks_retired_audio_tail() -> void:
 
 	SignalBus.emit_show_dialogue("retired", [{
 		"text": "Advance retires this voice before later consumers",
-		"voice": "narration_001",
+		"voice_layers": [{"id": "main", "asset": "narration_001", "character": "", "dsp": "", "line": 0}],
 		"expression": "",
 	}], "adv", _texture_profile(), true)
 	SignalBus.voice_play.disconnect(on_voice_play)
@@ -2291,7 +2291,7 @@ func test_owned_voice_tail_cannot_restart_retired_audio() -> void:
 	StellaRuntime.voice_path = "res://examples/demo/audio/voice/"
 	var replacement_segments: Array = [{
 		"text": "Replacement audio remains authoritative",
-		"voice": "narration_002",
+		"voice_layers": [{"id": "main", "asset": "narration_002", "character": "replacement", "dsp": "", "line": 0}],
 		"expression": "",
 	}]
 	var did_replace := [false]
@@ -2312,7 +2312,7 @@ func test_owned_voice_tail_cannot_restart_retired_audio() -> void:
 
 	SignalBus.emit_show_dialogue("retired", [{
 		"text": "Retired audio must not restart after replacement",
-		"voice": "narration_001",
+		"voice_layers": [{"id": "main", "asset": "narration_001", "character": "", "dsp": "", "line": 0}],
 		"expression": "",
 	}], "adv", _scene_profile(), true)
 	SignalBus.voice_play.disconnect(on_voice_play)
@@ -2352,7 +2352,7 @@ func test_same_dialogue_replay_retires_the_previous_voice_tail() -> void:
 
 	SignalBus.emit_show_dialogue("retired", [{
 		"text": "Replay takes ownership without changing the dialogue",
-		"voice": "narration_001",
+		"voice_layers": [{"id": "main", "asset": "narration_001", "character": "", "dsp": "", "line": 0}],
 		"expression": "",
 	}], "adv", _texture_profile(), true)
 	SignalBus.voice_play.disconnect(on_voice_play)
@@ -2391,7 +2391,7 @@ func test_hide_during_compat_voice_notification_retires_dialogue_queue() -> void
 
 	SignalBus.emit_show_dialogue("retired", [{
 		"text": "Hide retires this voice before later consumers",
-		"voice": "narration_001",
+		"voice_layers": [{"id": "main", "asset": "narration_001", "character": "", "dsp": "", "line": 0}],
 		"expression": "",
 	}], "adv", _texture_profile(), true)
 	SignalBus.voice_play.disconnect(on_voice_play)
@@ -2443,7 +2443,7 @@ func test_nested_raw_different_voice_remains_legacy_compatible() -> void:
 
 	SignalBus.emit_show_dialogue("retired", [{
 		"text": "Nested raw voice remains public",
-		"voice": "narration_001",
+		"voice_layers": [{"id": "main", "asset": "narration_001", "character": "", "dsp": "", "line": 0}],
 		"expression": "",
 	}], "adv", _texture_profile(), true)
 	SignalBus.voice_play.disconnect(on_voice_play)
@@ -2466,12 +2466,12 @@ func test_empty_raw_show_does_not_retire_the_active_owned_queue() -> void:
 	var segments: Array = [
 		{
 			"text": "First segment. ",
-			"voice": "narration_001",
+			"voice_layers": [{"id": "main", "asset": "narration_001", "character": "", "dsp": "", "line": 0}],
 			"expression": "",
 		},
 		{
 			"text": "Second segment.",
-			"voice": "narration_002",
+			"voice_layers": [{"id": "main", "asset": "narration_002", "character": "", "dsp": "", "line": 0}],
 			"expression": "",
 		},
 	]
@@ -2725,7 +2725,7 @@ func _scene_profile(animation: String = "none") -> Dictionary:
 
 
 func _segment(text: String) -> Dictionary:
-	return {"text": text, "voice": "", "expression": ""}
+	return {"text": text, "voice_layers": [], "expression": ""}
 
 
 func _single_dialogue_scenario(scenario_id: String, text: String) -> ScenarioData:

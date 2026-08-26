@@ -4,7 +4,7 @@ extends GutTest
 
 
 func test_dialogue_request_returns_defensive_copies_to_every_listener() -> void:
-	var source_segments := [{"text": "original", "voice": ""}]
+	var source_segments := [{"text": "original", "voice_layers": []}]
 	var source_profile := {"line_spacing": 4}
 	var source_entries := [{"character": "a", "segments": source_segments}]
 	var request := DialogueRequest.new(
@@ -48,8 +48,8 @@ func test_signal_bus_assigns_stable_identity_to_direct_raw_dialogues() -> void:
 	var capture: Callable = func(request: DialogueRequest):
 		entry_ids.append(request.get_entry_id())
 	SignalBus.dialogue_requested.connect(capture)
-	SignalBus.show_dialogue.emit("", [{"text": "one", "voice": ""}], "adv")
-	SignalBus.show_dialogue.emit("", [{"text": "two", "voice": ""}], "adv")
+	SignalBus.show_dialogue.emit("", [{"text": "one", "voice_layers": []}], "adv")
+	SignalBus.show_dialogue.emit("", [{"text": "two", "voice_layers": []}], "adv")
 	SignalBus.dialogue_requested.disconnect(capture)
 
 	assert_eq(entry_ids.size(), 2)
@@ -61,13 +61,13 @@ func test_signal_bus_assigns_stable_identity_to_direct_raw_dialogues() -> void:
 func test_runtime_delayed_backlog_enrichment_updates_only_request_entry() -> void:
 	StellaRuntime.backlog_manager.clear()
 	StellaRuntime.backlog_manager.add_entry(
-		"a", [{"text": "first", "voice": ""}], 10,
+		"a", [{"text": "first", "voice_layers": []}], 10,
 		Callable(), [], "entry:a")
 	StellaRuntime.backlog_manager.add_entry(
-		"b", [{"text": "second", "voice": ""}], 11,
+		"b", [{"text": "second", "voice_layers": []}], 11,
 		Callable(), [], "entry:b")
 	var request_a := DialogueRequest.new(
-		"a", [{"text": "[custom amp=2]first[/custom]", "voice": ""}],
+		"a", [{"text": "[custom amp=2]first[/custom]", "voice_layers": []}],
 		"adv", {}, false, "", {}, [], "entry:a", 10)
 
 	# Simulate a custom Presenter resolving its effect registry after request B has
@@ -121,11 +121,12 @@ func test_voice_request_and_events_hide_mutable_protocol_fields() -> void:
 
 	_assert_getter_only(request, [
 		"asset", "character", "owner_validator", "handled", "accepted",
-		"playback_token", "completion_state", "dsp_preset", "source",
+		"playback_token", "completion_state", "dsp_preset", "source", "layers",
 	])
 	_assert_getter_only(physical, [
 		"kind", "playback_token", "character", "asset", "position",
-		"duration", "owner_validator", "legacy_raw",
+		"duration", "owner_validator", "legacy_raw", "layer_id",
+		"compatibility_notification",
 	])
 	_assert_getter_only(logical, [
 		"kind", "position", "total_duration", "owner_validator", "legacy_raw",

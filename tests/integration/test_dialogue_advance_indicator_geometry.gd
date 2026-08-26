@@ -391,7 +391,7 @@ func test_list_closing_newline_maps_following_expression_and_wait() -> void:
 
 	SignalBus.show_dialogue.emit("hero", [{
 		"text": "[ul]A[/ul][expr:happy]B{wait:160}",
-		"voice": "",
+		"voice_layers": [],
 		"expression": "",
 	}], "adv")
 	var reached_wait: bool = await wait_until(
@@ -520,7 +520,7 @@ func _place_current_layout(fixture: Dictionary) -> float:
 
 
 func _segment(text: String) -> Dictionary:
-	return {"text": text, "voice": "", "expression": ""}
+	return {"text": text, "voice_layers": [], "expression": ""}
 
 
 func _last_nonempty_line(label: RichTextLabel) -> int:

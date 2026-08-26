@@ -1899,6 +1899,19 @@ func test_runtime_audio_shutdown_quiesces_every_exact_owner_idempotently() -> vo
 	_audio._voice_player.stream = stream
 	_audio._voice_playback_token = 801
 	_audio._voice_playback_revision = _audio._voice_lifecycle_revision
+	_audio._voice_layers["main"] = {
+		"id": "main",
+		"asset": "synthetic_raw",
+		"character": "",
+		"dsp": "",
+		"source": {},
+		"player": _audio._voice_player,
+		"timer": _audio._voice_dsp_tail_timer,
+		"bus_name": _audio._voice_dsp_bus_name,
+		"tail_seconds": 0.0,
+		"primary": true,
+	}
+	_audio._voice_layer_order = ["main"]
 	_audio._voice_player.play()
 	var se_player := _audio._se_players[0] as AudioStreamPlayer
 	se_player.stream = stream

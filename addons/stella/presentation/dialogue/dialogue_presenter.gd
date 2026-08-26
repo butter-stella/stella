@@ -135,6 +135,7 @@ var _current_command_uid: int = -1
 var _current_dialogue_activation: DialogueActivation
 var _current_voice: String = ""  # current dialogue voice asset
 var _current_voice_character: String = ""
+var _voice_layer_progress: Dictionary = {}
 var _voice_playing: bool = false
 var _active_voice_token: int = -1
 var _current_character: String = ""  # current speaking character for avatar
@@ -828,7 +829,13 @@ func _on_dialogue_voice_replay_requested(voices: Array, character: String) -> vo
 	for v in voices:
 		segments.append({
 			"text": "",
-			"voice": String(v),
+			"voice_layers": [{
+				"id": "main",
+				"asset": String(v),
+				"character": character,
+				"dsp": "",
+				"line": 0,
+			}],
 		})
 	_request_voice_replay(character, segments, false)
 
@@ -841,18 +848,15 @@ func _on_dialogue_voice_segment_replay_requested(
 		return
 	var canonical_segments: Array = []
 	for segment_value: Variant in segments:
-		var selection := _voice_dsp_selection_for_segment(segment_value)
+		var selection := _voice_layers_for_segment(segment_value)
 		if not bool(selection.get("valid", false)):
 			return
-		var voice := String((segment_value as Dictionary).get("voice", ""))
-		if voice.is_empty():
+		var layers: Array = selection.get("segment_layers", [])
+		if layers.is_empty():
 			return
 		canonical_segments.append({
 			"text": "",
-			"voice": voice,
-			"voice_dsp": String(selection.get("preset", "")),
-			"voice_dsp_line": int(
-				(segment_value as Dictionary).get("voice_dsp_line", 0)),
+			"voice_layers": layers.duplicate(true),
 			"presentation_ops": [],
 			"presentation_operation_lines": [],
 		})
@@ -1159,18 +1163,22 @@ func _start_voice_playback(
 
 
 func _resolve_voice_segment_durations(
-	character: String,
+	_character: String,
 	segments: Array,
 ) -> Array:
 	var durations: Array = []
-	var character_voice_enabled := _is_character_voice_enabled(character)
-	for seg in segments:
-		var voice := String(seg.get("voice", ""))
+	for segment_value: Variant in segments:
 		var duration := 0.0
-		if not voice.is_empty() and character_voice_enabled:
-			var stream := _load_voice_stream(voice)
-			if stream != null:
-				duration = stream.get_length()
+		var selection := _voice_layers_for_segment(segment_value, false)
+		if bool(selection.get("valid", false)):
+			for layer_value: Variant in selection.get("request_layers", []):
+				var layer: Dictionary = layer_value
+				if not _is_character_voice_enabled(
+					String(layer.get("character", ""))):
+					continue
+				var stream := _load_voice_stream(String(layer.get("asset", "")))
+				if stream != null:
+					duration = maxf(duration, stream.get_length())
 		durations.append(duration)
 	return durations
 
@@ -1603,6 +1611,13 @@ func _on_dialogue_requested(dialogue_request: DialogueRequest) -> void:
 		return
 	if not is_inside_tree() or is_queued_for_deletion():
 		return
+	# The whole request is validated before replacement can retire the previous
+	# dialogue or voice group. A later malformed segment therefore cannot cause a
+	# partial visible/dialogue mutation.
+	for segment_value: Variant in dialogue_request.get_segments():
+		if not bool(_voice_layers_for_segment(segment_value).get("valid", false)):
+			dialogue_request.abort()
+			return
 	var effect_names := _collect_backlog_custom_effect_names()
 	var custom_effect_registry := _effect_name_registry(effect_names)
 	SignalBus.dialogue_backlog_effects_resolved.emit(dialogue_request, effect_names)
@@ -1875,8 +1890,12 @@ func _show_dialogue_now(
 		full_text += seg_clean
 
 	_current_voice_character = character
-	var first_voice := String(segments[0].get("voice", ""))
-	_current_voice = first_voice
+	var first_voice_selection := _voice_layers_for_segment(segments[0], false)
+	var first_layers: Array = first_voice_selection.get("request_layers", [])
+	_current_voice = (
+		String(first_layers[0].get("asset", ""))
+		if not first_layers.is_empty()
+		else "")
 
 	visible = true
 	_current_mode = mode
@@ -2664,27 +2683,20 @@ func _run_voice_queue(
 		if not _voice_queue_is_current(owner_gen, queue_gen):
 			_retire_voice_queue_if_current(queue_gen)
 			return
-		var voice := String(seg.get("voice", ""))
-		var dsp_selection := _voice_dsp_selection_for_segment(seg)
-		if not bool(dsp_selection.get("valid", false)):
+		var voice_selection := _voice_layers_for_segment(seg)
+		if not bool(voice_selection.get("valid", false)):
 			_retire_voice_queue_if_current(queue_gen)
 			return
-		var voice_dsp := String(dsp_selection.get("preset", ""))
+		var request_layers: Array = voice_selection.get("request_layers", [])
 		var should_request_voice := (
-			voice != "" and not _should_skip_current())
+			not request_layers.is_empty() and not _should_skip_current())
 		previous_voice_token = -1
 		previous_completion_state = null
 		_playback_voice_token = -1
 		if should_request_voice:
-			_current_voice = voice
-			var voice_response := SignalBus.request_voice_playback(
-				voice,
-				character,
-				owner_validator,
-				true,
-				voice_dsp,
-				dsp_selection.get("source", {}),
-			)
+			_current_voice = String(request_layers[0].get("asset", ""))
+			var voice_response := SignalBus.request_voice_layers(
+				request_layers, owner_validator)
 			if not _voice_queue_is_current(owner_gen, queue_gen):
 				_retire_voice_queue_if_current(queue_gen)
 				return
@@ -2718,28 +2730,23 @@ func _run_voice_queue(
 				return
 
 
-func _voice_dsp_selection_for_segment(segment: Variant) -> Dictionary:
+func _voice_layers_for_segment(
+	segment: Variant,
+	report_error: bool = true,
+) -> Dictionary:
 	if not segment is Dictionary:
-		push_error("DialoguePresenter: voice segment must be a Dictionary")
+		if report_error:
+			push_error("DialoguePresenter: voice segment must be a Dictionary")
 		return {"valid": false}
-	var voice_value: Variant = (segment as Dictionary).get("voice", "")
-	var preset_value: Variant = (segment as Dictionary).get("voice_dsp", "")
-	if not voice_value is String or not preset_value is String:
-		push_error(
-			"DialoguePresenter: voice and voice_dsp segment fields must be Strings")
+	var segment_dictionary: Dictionary = segment
+	if not segment_dictionary.has("voice_layers"):
+		if report_error:
+			push_error("DialoguePresenter: voice segment requires canonical voice_layers")
 		return {"valid": false}
-	var preset := String(preset_value)
-	if preset.is_empty():
-		return {"valid": true, "preset": "", "source": {}}
-	if String(voice_value).is_empty():
-		push_error("DialoguePresenter: voice_dsp requires a voice asset")
-		return {"valid": false}
-	if not VoiceDspChainDefinition.is_logical_preset_id(preset):
-		push_error("DialoguePresenter: voice_dsp must be a Stella logical preset id")
-		return {"valid": false}
-	var line_value: Variant = (segment as Dictionary).get("voice_dsp_line", 0)
-	if not line_value is int or int(line_value) < 0:
-		push_error("DialoguePresenter: voice_dsp source line must be a nonnegative int")
+	var layers_value: Variant = segment_dictionary["voice_layers"]
+	if not layers_value is Array:
+		if report_error:
+			push_error("DialoguePresenter: voice_layers must be an Array")
 		return {"valid": false}
 	var source_path := ""
 	var scenario_id := ""
@@ -2748,14 +2755,68 @@ func _voice_dsp_selection_for_segment(segment: Variant) -> Dictionary:
 	if context != null and context.scenario_data != null:
 		source_path = context.scenario_data.source_path
 		scenario_id = context.scenario_data.id
+	var request_layers: Array = []
+	var segment_layers: Array = []
+	if (layers_value as Array).is_empty():
+		return {
+			"valid": true,
+			"segment_layers": [],
+			"request_layers": [],
+		}
+	for layer_value: Variant in layers_value:
+		if not layer_value is Dictionary:
+			if report_error:
+				push_error("DialoguePresenter: voice layer must be a Dictionary")
+			return {"valid": false}
+		var layer: Dictionary = layer_value
+		var expected_keys := ["id", "asset", "character", "dsp", "line"]
+		for key_value: Variant in layer.keys():
+			if not String(key_value) in expected_keys:
+				if report_error:
+					push_error(
+						"DialoguePresenter: voice layer has unknown field '%s'"
+							% String(key_value))
+				return {"valid": false}
+		for required_key in expected_keys:
+			if not layer.has(required_key):
+				if report_error:
+					push_error(
+						"DialoguePresenter: voice layer is missing '%s'" % required_key)
+				return {"valid": false}
+		if not layer["line"] is int or int(layer["line"]) < 0:
+			if report_error:
+				push_error("DialoguePresenter: voice layer source line is invalid")
+			return {"valid": false}
+		segment_layers.append(layer.duplicate(true))
+		request_layers.append({
+			"id": layer["id"],
+			"asset": layer["asset"],
+			"character": layer["character"],
+			"dsp": layer["dsp"],
+			"source": {
+				"source_path": source_path,
+				"scenario_id": scenario_id,
+				"line": int(layer["line"]),
+			},
+		})
+	var canonical := VoicePlaybackRequest.canonicalize_layers(request_layers)
+	if not String(canonical.get("error", "")).is_empty():
+		if report_error:
+			var source_line := (
+				int(segment_layers[0].get("line", 0))
+				if not segment_layers.is_empty()
+				else 0)
+			var location := source_path if not source_path.is_empty() else "<runtime>"
+			if source_line > 0:
+				location = "%s:%d" % [location, source_line]
+			push_error(
+				"DialoguePresenter: invalid voice_layers at %s: %s"
+					% [location, String(canonical.get("error", ""))])
+		return {"valid": false}
 	return {
 		"valid": true,
-		"preset": preset,
-		"source": {
-			"source_path": source_path,
-			"scenario_id": scenario_id,
-			"line": int(line_value),
-		},
+		"segment_layers": segment_layers,
+		"request_layers": canonical.get("layers", []),
 	}
 
 
@@ -3269,18 +3330,34 @@ func _on_voice_playback_event(event: VoicePlaybackEvent) -> void:
 				):
 					_active_voice_token = event.get_playback_token()
 					_voice_playing = true
+				if event.get_playback_token() >= 0:
+					_voice_layer_progress[event.get_layer_id()] = {
+						"position": 0.0,
+						"duration": 0.0,
+					}
 			VoicePlaybackEvent.Kind.PROGRESS:
 				if not (
 					event.get_playback_token() < 0
 					and _playback_voice_token >= 0
 				):
+					_voice_layer_progress[event.get_layer_id()] = {
+						"position": event.get_position(),
+						"duration": event.get_duration(),
+					}
+					var group_position := 0.0
+					var group_duration := 0.0
+					for progress_value: Variant in _voice_layer_progress.values():
+						if progress_value is Dictionary:
+							group_position = maxf(group_position, float(
+								(progress_value as Dictionary).get("position", 0.0)))
+							group_duration = maxf(group_duration, float(
+								(progress_value as Dictionary).get("duration", 0.0)))
 					_relay_voice_progress(
-						event.get_position(),
-						event.get_duration(),
-						event.get_playback_token(),
-					)
+						group_position, group_duration, event.get_playback_token())
 			VoicePlaybackEvent.Kind.FINISHED:
 				_on_voice_playback_finished(event.get_playback_token())
+			VoicePlaybackEvent.Kind.LAYER_FINISHED:
+				pass
 	_settle_voice_event_entry_snapshot(entry_waiter_ids, event)
 
 
@@ -3291,6 +3368,7 @@ func _on_voice_playback_finished(playback_token: int) -> void:
 		return
 	_active_voice_token = -1
 	_voice_playing = false
+	_voice_layer_progress.clear()
 	if playback_token < 0 or playback_token == _playback_voice_token:
 		_playback_voice_token = -1
 
@@ -4889,6 +4967,7 @@ func _apply_visual_only_dialogue_restore(
 		_restore_authored_presentation()
 	_current_voice = ""
 	_current_voice_character = ""
+	_voice_layer_progress.clear()
 	_voice_playing = false
 	_active_voice_token = -1
 	_playback_queue_active = false

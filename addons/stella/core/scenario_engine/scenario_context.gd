@@ -333,7 +333,8 @@ func _sanitize_nvl_page_entry(raw_entry: Dictionary) -> Dictionary:
 		if raw_segment is Dictionary:
 			clean_segments.append({
 				"text": String(raw_segment.get("text", "")),
-				"voice": String(raw_segment.get("voice", "")),
+				"voice_layers": raw_segment.get(
+					"voice_layers", []).duplicate(true),
 			})
 	return {
 		"command_uid": int(raw_entry.get("command_uid", -1)),

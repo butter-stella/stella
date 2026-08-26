@@ -82,7 +82,7 @@ func _nvl_context() -> ScenarioContext:
 		"command_index": 0,
 		"profile_name": "novel",
 		"character": "narrator",
-		"segments": [{"text": "retained in backlog only", "voice": ""}],
+		"segments": [{"text": "retained in backlog only", "voice_layers": []}],
 	}]
 	return context
 
@@ -247,7 +247,7 @@ func test_clear_does_not_mutate_durable_backlog() -> void:
 	var backlog := BacklogManager.new()
 	backlog.add_entry("narrator", [{
 		"text": "durable line",
-		"voice": "voice_001",
+		"voice_layers": [{"id": "main", "asset": "voice_001", "character": "", "dsp": "", "line": 0}],
 	}], 1)
 	var before := backlog.get_entries()
 	var context := _nvl_context()

@@ -372,7 +372,7 @@ func test_force_cut_combine_still_validates_projection_and_sidecar() -> void:
 func test_owned_stage_reentrant_show_retires_old_lifecycle_and_transition() -> void:
 	var presenter := _game_scene.get_node("StageLayer") as StagePresenter
 	SignalBus.show_dialogue.emit("", [{
-		"text": "old", "voice": "", "presentation_ops": [],
+		"text": "old", "voice_layers": [], "presentation_ops": [],
 	}], "adv")
 	_open_synthetic_dialogue_voice_session()
 	SignalBus.emit_stage_operations([
@@ -389,7 +389,7 @@ func test_owned_stage_reentrant_show_retires_old_lifecycle_and_transition() -> v
 			return
 		replacement_requested[0] = true
 		SignalBus.show_dialogue.emit("", [{
-			"text": "winner", "voice": "", "presentation_ops": [],
+			"text": "winner", "voice_layers": [], "presentation_ops": [],
 		}], "adv")
 	var logical_finish_count := [0]
 	var on_logical_finish: Callable = func():
@@ -446,7 +446,7 @@ func test_owned_stage_reentrant_hide_unwinds_before_following_show() -> void:
 	SignalBus.stage_operations_requested.connect(early_hide)
 	SignalBus.stage_operations_requested.connect(presenter_callback)
 	SignalBus.show_dialogue.emit("", [{
-		"text": "old", "voice": "", "presentation_ops": [],
+		"text": "old", "voice_layers": [], "presentation_ops": [],
 	}], "adv")
 
 	_dialogue._apply_segment_presentation({
@@ -466,7 +466,7 @@ func test_owned_stage_reentrant_hide_unwinds_before_following_show() -> void:
 	assert_true(_dialogue._presentation_dispatch_generations.is_empty())
 	assert_true(_dialogue._stage_operation_request_owners.is_empty())
 	SignalBus.show_dialogue.emit("", [{
-		"text": "after hide", "voice": "", "presentation_ops": [],
+		"text": "after hide", "voice_layers": [], "presentation_ops": [],
 	}], "adv")
 	assert_true(_dialogue.visible)
 	assert_eq(_dialogue.text_label.text, "after hide")
@@ -476,12 +476,12 @@ func test_owned_stage_reentrant_hide_unwinds_before_following_show() -> void:
 
 func test_finalization_queued_show_beats_finished_listener_backlog_replay() -> void:
 	SignalBus.show_dialogue.emit("", [{
-		"text": "old", "voice": "", "presentation_ops": [],
+		"text": "old", "voice_layers": [], "presentation_ops": [],
 	}], "adv")
 	_open_synthetic_dialogue_voice_session()
 	_dialogue._dialogue_segments = [{
 		"text": "old",
-		"voice": "",
+		"voice_layers": [],
 		"presentation_ops": [_stage_op(
 			"show",
 			"final_owned",
@@ -502,7 +502,7 @@ func test_finalization_queued_show_beats_finished_listener_backlog_replay() -> v
 			return
 		show_requested[0] = true
 		SignalBus.show_dialogue.emit("", [{
-			"text": "winner", "voice": "", "presentation_ops": [],
+			"text": "winner", "voice_layers": [], "presentation_ops": [],
 		}], "adv")
 	var finish_count := [0]
 	var on_logical_finish: Callable = func():
@@ -533,13 +533,13 @@ func test_finalization_queued_show_beats_finished_listener_backlog_replay() -> v
 func test_exit_during_final_stage_dispatch_retires_deferred_lifecycle() -> void:
 	SignalBus.show_dialogue.emit("", [{
 		"text": "detached during finalization",
-		"voice": "",
+		"voice_layers": [],
 		"presentation_ops": [],
 	}], "adv")
 	_open_synthetic_dialogue_voice_session()
 	_dialogue._dialogue_segments = [{
 		"text": "detached during finalization",
-		"voice": "",
+		"voice_layers": [],
 		"presentation_ops": [_stage_op(
 			"show",
 			"exit_owned",
@@ -625,8 +625,8 @@ func test_replay_does_not_dispatch_remaining_stage_until_advance() -> void:
 			received_ids.append(String(operation.get("id", "")))
 	SignalBus.stage_operations_requested.connect(on_stage)
 	_dialogue._dialogue_segments = [
-		{"text": "one", "voice": "narration_001", "presentation_ops": []},
-		{"text": "two", "voice": "", "presentation_ops": [
+		{"text": "one", "voice_layers": [{"id": "main", "asset": "narration_001", "character": "", "dsp": "", "line": 0}], "presentation_ops": []},
+		{"text": "two", "voice_layers": [], "presentation_ops": [
 			_stage_op("show", "remaining", {"asset": "background:bg_cafe"}),
 			_avatar_op("show", {"asset": "background:bg_cafe"}),
 		], "presentation_operation_lines": [493, 494]},
@@ -666,12 +666,12 @@ func test_stage_dispatch_defers_replay_and_queued_show_wins() -> void:
 		SignalBus.dialogue_voice_replay_requested.emit(["narration_001"], "")
 		assert_false(_dialogue._queued_voice_replay_request.is_empty())
 		SignalBus.show_dialogue.emit("", [{
-			"text": "winner", "voice": "", "presentation_ops": [],
+			"text": "winner", "voice_layers": [], "presentation_ops": [],
 		}], "adv")
 	SignalBus.voice_play.connect(on_voice)
 	SignalBus.stage_operations_requested.connect(on_stage)
 	SignalBus.show_dialogue.emit("", [{
-		"text": "old", "voice": "", "presentation_ops": [
+		"text": "old", "voice_layers": [], "presentation_ops": [
 			_stage_op("show", "dispatching", {"asset": "background:bg_cafe"}),
 		],
 		"presentation_operation_lines": [534],
@@ -699,7 +699,7 @@ func test_segment_stage_batch_is_emitted_before_voice():
 	SignalBus.voice_play.connect(voice_callback)
 	var segments := [{
 		"text": "cue",
-		"voice": "sakura_013",
+		"voice_layers": [{"id": "main", "asset": "sakura_013", "character": "", "dsp": "", "line": 0}],
 		"presentation_ops": [_stage_op("show", "hero", {"asset": "background:bg_cafe"})],
 		"presentation_operation_lines": [561],
 	}]
@@ -720,10 +720,10 @@ func test_missing_or_muted_voice_cannot_block_later_stage_cues():
 			received_ids.append(operation["id"])
 	SignalBus.stage_operations_requested.connect(callback)
 	var segments := [
-		{"text": "one", "voice": "__missing", "presentation_ops": [
+		{"text": "one", "voice_layers": [{"id": "main", "asset": "__missing", "character": "sakura", "dsp": "", "line": 0}], "presentation_ops": [
 			_stage_op("show", "first", {"asset": "background:bg_cafe"}),
 		], "presentation_operation_lines": [581]},
-		{"text": "two", "voice": "sakura_013", "presentation_ops": [
+		{"text": "two", "voice_layers": [{"id": "main", "asset": "sakura_013", "character": "sakura", "dsp": "", "line": 0}], "presentation_ops": [
 			_stage_op("show", "second", {"asset": "background:bg_cafe"}),
 		], "presentation_operation_lines": [584]},
 	]
@@ -731,6 +731,7 @@ func test_missing_or_muted_voice_cannot_block_later_stage_cues():
 
 	_dialogue._start_voice_playback(
 		"sakura", segments, _dialogue._dialogue_gen, false, true)
+	assert_push_error("stage_dialogue_cues.stla")
 
 	assert_eq(received_ids, ["first", "second"])
 	assert_false(_dialogue._playback_queue_active)
@@ -827,7 +828,7 @@ func test_normal_advance_force_cuts_an_already_dispatched_final_tween():
 func test_synchronous_completion_cannot_replay_the_current_segment():
 	var segments := [{
 		"text": "",
-		"voice": "",
+		"voice_layers": [],
 		"presentation_ops": [_stage_op("show", "newcomer", {"opacity": 0.2})],
 		"presentation_operation_lines": [676],
 	}]
@@ -873,7 +874,7 @@ func test_early_stage_listener_defers_finalize_until_presenter_consumes_batch():
 	SignalBus.stage_operations_requested.connect(presenter_callback)
 	var segments := [{
 		"text": "",
-		"voice": "",
+		"voice_layers": [],
 		"presentation_ops": [_stage_op(
 			"show", "hero", {"asset": "background:bg_cafe"}, "fade", 1.0
 		)],
@@ -907,7 +908,7 @@ func test_complete_typewriter_during_stage_dispatch_finishes_late_tween() -> voi
 	SignalBus.stage_operations_requested.connect(presenter_callback)
 	SignalBus.show_dialogue.emit("", [{
 		"text": "typing",
-		"voice": "",
+		"voice_layers": [],
 		"presentation_ops": [_stage_op(
 			"show",
 			"completion_owned",
@@ -948,7 +949,7 @@ func test_raw_advance_finalizes_retiring_stage_before_queued_show() -> void:
 		showed_replacement[0] = true
 		SignalBus.show_dialogue.emit("", [{
 			"text": "replacement",
-			"voice": "",
+			"voice_layers": [],
 			"presentation_ops": [],
 		}], "adv")
 	SignalBus.advance_requested.connect(advance_callback)
@@ -956,7 +957,7 @@ func test_raw_advance_finalizes_retiring_stage_before_queued_show() -> void:
 	SignalBus.show_dialogue.emit("", [
 		{
 			"text": "retiring",
-			"voice": "",
+			"voice_layers": [],
 			"presentation_ops": [_stage_op(
 				"show",
 				"retiring_stage",
@@ -968,7 +969,7 @@ func test_raw_advance_finalizes_retiring_stage_before_queued_show() -> void:
 		},
 		{
 			"text": "tail",
-			"voice": "",
+			"voice_layers": [],
 			"presentation_ops": [_stage_op(
 				"show",
 				"retiring_tail",
@@ -1021,7 +1022,7 @@ func test_queued_batch_keeps_dispatch_guard_until_late_presenter_finishes() -> v
 		opened[0] = true
 		SignalBus.show_dialogue.emit("", [{
 			"text": "queued",
-			"voice": "",
+			"voice_layers": [],
 			"presentation_ops": [_stage_op(
 				"show",
 				"queued_owned",
@@ -1060,7 +1061,7 @@ func test_reset_cancellation_stops_queued_dialogue_stage_and_voice() -> void:
 		submitted[0] = true
 		_dialogue._start_voice_playback("sakura", [{
 			"text": "stale",
-			"voice": "sakura_013",
+			"voice_layers": [{"id": "main", "asset": "sakura_013", "character": "", "dsp": "", "line": 0}],
 			"presentation_ops": [_stage_op(
 				"show",
 				"must_not_land",
@@ -1125,7 +1126,7 @@ func test_animated_clear_tracks_and_finishes_a_pending_remove_visual():
 	assert_false(StellaRuntime.presentation_state.stage_layers.has("ghost"))
 	var segments := [{
 		"text": "",
-		"voice": "",
+		"voice_layers": [],
 		"presentation_ops": [_stage_op("clear", "", {}, "fade", 1.0)],
 		"presentation_operation_lines": [956],
 	}]
@@ -1218,14 +1219,14 @@ func test_reentrant_new_dialogue_prevents_stale_avatar_and_ui_projection():
 		reentered[0] = true
 		SignalBus.show_dialogue.emit("sakura", [{
 			"text": "[expr:smile]NEW",
-			"voice": "",
+			"voice_layers": [],
 			"presentation_ops": [],
 		}], "adv")
 	SignalBus.stage_operations_requested.connect(stage_callback)
 
 	SignalBus.show_dialogue.emit("sakura", [{
 		"text": "[expr:sad]OLD",
-		"voice": "",
+		"voice_layers": [],
 		"presentation_ops": [_stage_op(
 			"show", "old_stage", {"asset": "background:bg_cafe"}, "fade", 10.0
 		)],
@@ -1256,7 +1257,7 @@ func test_stale_outer_dispatch_drains_new_dialogue_pending_finalization():
 			reentered[0] = true
 			SignalBus.show_dialogue.emit("", [{
 				"text": "NEW",
-				"voice": "",
+				"voice_layers": [],
 				"presentation_ops": [_stage_op(
 					"show",
 					"new_stage",
@@ -1273,7 +1274,7 @@ func test_stale_outer_dispatch_drains_new_dialogue_pending_finalization():
 
 	SignalBus.show_dialogue.emit("", [{
 		"text": "OLD",
-		"voice": "",
+		"voice_layers": [],
 		"presentation_ops": [_stage_op(
 			"show",
 			"outer_stage",
@@ -1303,14 +1304,14 @@ func test_reentrant_voice_started_cannot_run_stale_segment_presentation():
 		reentered[0] = true
 		SignalBus.show_dialogue.emit("sakura", [{
 			"text": "[expr:smile]NEW",
-			"voice": "",
+			"voice_layers": [],
 			"presentation_ops": [],
 		}], "adv")
 	SignalBus.dialogue_voice_started.connect(voice_started_callback)
 
 	SignalBus.show_dialogue.emit("sakura", [{
 		"text": "[expr:sad]OLD",
-		"voice": "sakura_013",
+		"voice_layers": [{"id": "main", "asset": "sakura_013", "character": "", "dsp": "", "line": 0}],
 		"presentation_ops": [_stage_op(
 			"show",
 			"stale_stage",
@@ -1345,7 +1346,7 @@ func test_early_reentrant_show_waits_for_late_stage_presenter_listener():
 		reentered[0] = true
 		SignalBus.show_dialogue.emit("", [{
 			"text": "NEW",
-			"voice": "",
+			"voice_layers": [],
 			"presentation_ops": [_stage_op(
 				"update",
 				"shared",
@@ -1360,7 +1361,7 @@ func test_early_reentrant_show_waits_for_late_stage_presenter_listener():
 
 	SignalBus.show_dialogue.emit("", [{
 		"text": "OLD",
-		"voice": "",
+		"voice_layers": [],
 		"presentation_ops": [_stage_op(
 			"show",
 			"shared",
@@ -1407,7 +1408,7 @@ func test_dialogue_batch_queued_by_external_stage_dispatch_keeps_ownership():
 		opened_dialogue[0] = true
 		SignalBus.show_dialogue.emit("", [{
 			"text": "queued",
-			"voice": "",
+			"voice_layers": [],
 			"presentation_ops": [_stage_op(
 				"update",
 				"hero",
@@ -1446,7 +1447,7 @@ func test_finalize_folds_a_dialogue_batch_that_has_not_dispatched_yet():
 			return
 		SignalBus.show_dialogue.emit("", [{
 			"text": "queued then finalized",
-			"voice": "",
+			"voice_layers": [],
 			"presentation_ops": [_stage_op(
 				"show",
 				"authored_final",

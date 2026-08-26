@@ -1012,9 +1012,8 @@ static func parse(
 								% [combine_character, char_name, token.line], token.line)
 						combine_segments.append({
 							"text": cmd.get_string("text", ""),
-							"voice": cmd.get_string("voice", ""),
-							"voice_dsp": cmd.get_string("voice_dsp", ""),
-							"voice_dsp_line": cmd.get_int("voice_dsp_line", 0),
+							"voice_layers": cmd.params.get(
+								"voice_layers", []).duplicate(true),
 							"presentation_ops": combine_pending_presentation_ops.duplicate(true),
 							"presentation_operation_lines": (
 								combine_pending_presentation_operation_lines.duplicate()),
@@ -1044,9 +1043,8 @@ static func parse(
 								% [combine_character, token.line], token.line)
 						combine_segments.append({
 							"text": cmd.get_string("text", ""),
-							"voice": cmd.get_string("voice", ""),
-							"voice_dsp": cmd.get_string("voice_dsp", ""),
-							"voice_dsp_line": cmd.get_int("voice_dsp_line", 0),
+							"voice_layers": cmd.params.get(
+								"voice_layers", []).duplicate(true),
 							"presentation_ops": combine_pending_presentation_ops.duplicate(true),
 							"presentation_operation_lines": (
 								combine_pending_presentation_operation_lines.duplicate()),
@@ -1229,10 +1227,13 @@ static func _semantic_command(
 				continue
 			var segment := (segment_value as Dictionary).duplicate(true)
 			segment.erase("presentation_operation_lines")
-			segment.erase("voice_dsp_line")
+			segment["voice_layers"] = _semantic_voice_layers(
+				segment.get("voice_layers", []))
 			semantic_segments.append(segment)
 		semantic_params["segments"] = semantic_segments
-	semantic_params.erase("voice_dsp_line")
+	if semantic_params.has("voice_layers"):
+		semantic_params["voice_layers"] = _semantic_voice_layers(
+			semantic_params["voice_layers"])
 	return [
 		command.type,
 		_semantic_value(semantic_params, synthetic_scene_ids),
@@ -1243,8 +1244,22 @@ static func _semantic_command(
 		_semantic_value(
 			command.dialogue_mode_events_on_true_branch, synthetic_scene_ids),
 		_semantic_value(
-			command.dialogue_mode_events_on_false_branch, synthetic_scene_ids),
+		command.dialogue_mode_events_on_false_branch, synthetic_scene_ids),
 	]
+
+
+static func _semantic_voice_layers(value: Variant) -> Variant:
+	if not value is Array:
+		return value
+	var result: Array = []
+	for layer_value: Variant in value:
+		if not layer_value is Dictionary:
+			result.append(layer_value)
+			continue
+		var layer := (layer_value as Dictionary).duplicate(true)
+		layer.erase("line")
+		result.append(layer)
+	return result
 
 
 static func _semantic_value(
@@ -3676,16 +3691,15 @@ static func _parse_dialogue(token: DslToken, data: ScenarioData) -> CommandData:
 	var character = raw.substr(0, bracket_start).strip_edges()
 	var text = raw.substr(bracket_start + 1, bracket_end - bracket_start - 1)
 
-	var metadata := _parse_dialogue_metadata(raw, bracket_end, token, data)
+	var metadata := _parse_dialogue_metadata(
+		raw, bracket_end, character, token, data)
 	if not bool(metadata["valid"]):
 		return null
 
 	var params := {
 		"character": character,
 		"text": text,
-		"voice": metadata["voice"],
-		"voice_dsp": metadata["voice_dsp"],
-		"voice_dsp_line": metadata["voice_dsp_line"],
+		"voice_layers": metadata["voice_layers"],
 		"presentation_from_context": true,
 	}
 	var command := _make_cmd("dialogue", params)
@@ -3702,16 +3716,14 @@ static func _parse_narration(token: DslToken, data: ScenarioData) -> CommandData
 		return null
 
 	var text = raw.substr(bracket_start + 1, bracket_end - bracket_start - 1)
-	var metadata := _parse_dialogue_metadata(raw, bracket_end, token, data)
+	var metadata := _parse_dialogue_metadata(raw, bracket_end, "", token, data)
 	if not bool(metadata["valid"]):
 		return null
 
 	var params := {
 		"character": "",
 		"text": text,
-		"voice": metadata["voice"],
-		"voice_dsp": metadata["voice_dsp"],
-		"voice_dsp_line": metadata["voice_dsp_line"],
+		"voice_layers": metadata["voice_layers"],
 		"presentation_from_context": true,
 	}
 	var command := _make_cmd("dialogue", params)
@@ -3729,16 +3741,15 @@ static func _parse_monologue(token: DslToken, data: ScenarioData) -> CommandData
 
 	var character = raw.substr(0, paren_start).strip_edges()
 	var text = raw.substr(paren_start + 1, paren_end - paren_start - 1)
-	var metadata := _parse_dialogue_metadata(raw, paren_end, token, data)
+	var metadata := _parse_dialogue_metadata(
+		raw, paren_end, character, token, data)
 	if not bool(metadata["valid"]):
 		return null
 
 	var command := _make_cmd("dialogue", {
 		"character": character,
 		"text": text,
-		"voice": metadata["voice"],
-		"voice_dsp": metadata["voice_dsp"],
-		"voice_dsp_line": metadata["voice_dsp_line"],
+		"voice_layers": metadata["voice_layers"],
 		"mode": "monologue",
 	})
 	command.declared_line = token.line
@@ -3748,6 +3759,7 @@ static func _parse_monologue(token: DslToken, data: ScenarioData) -> CommandData
 static func _parse_dialogue_metadata(
 	raw: String,
 	closing_index: int,
+	default_character: String,
 	token: DslToken,
 	data: ScenarioData,
 ) -> Dictionary:
@@ -3755,33 +3767,41 @@ static func _parse_dialogue_metadata(
 		raw.substr(closing_index + 1).strip_edges())
 	var result := {
 		"valid": true,
-		"voice": "",
-		"voice_dsp": "",
-		"voice_dsp_line": 0,
+		"voice_layers": [],
 	}
 	if trailing.is_empty():
 		return result
 	var seen_voice := false
 	var seen_dsp := false
+	var shorthand_dsp := ""
+	var explicit_layers: Array = []
 	for token_value in _split_args(trailing):
 		var metadata_token := String(token_value)
 		if metadata_token.begins_with("#voice:"):
-			if seen_voice:
+			if seen_voice or not explicit_layers.is_empty():
 				_record_dialogue_metadata_error(
-					data, token, "duplicate #voice metadata")
+					data, token,
+					"#voice shorthand cannot be duplicated or mixed with #voice_layer")
 				result["valid"] = false
 				continue
 			var voice := metadata_token.substr("#voice:".length())
-			if voice.is_empty():
+			if not VoicePlaybackRequest.is_logical_asset_id(voice):
 				_record_dialogue_metadata_error(
-					data, token, "#voice asset cannot be empty")
+					data, token, "#voice asset must use a bounded Stella logical id")
 				result["valid"] = false
 			seen_voice = true
-			result["voice"] = voice
+			result["voice_layers"] = [{
+				"id": "main",
+				"asset": voice,
+				"character": default_character,
+				"dsp": shorthand_dsp,
+				"line": token.line,
+			}]
 		elif metadata_token.begins_with("#voice_dsp:"):
-			if seen_dsp:
+			if seen_dsp or not explicit_layers.is_empty():
 				_record_dialogue_metadata_error(
-					data, token, "duplicate #voice_dsp metadata")
+					data, token,
+					"#voice_dsp cannot be duplicated or mixed with #voice_layer")
 				result["valid"] = false
 				continue
 			var preset := metadata_token.substr("#voice_dsp:".length())
@@ -3791,8 +3811,45 @@ static func _parse_dialogue_metadata(
 					"#voice_dsp must use a bounded Stella logical preset id")
 				result["valid"] = false
 			seen_dsp = true
-			result["voice_dsp"] = preset
-			result["voice_dsp_line"] = token.line
+			shorthand_dsp = preset
+			if not (result["voice_layers"] as Array).is_empty():
+				(result["voice_layers"] as Array)[0]["dsp"] = preset
+		elif metadata_token.begins_with("#voice_layer:"):
+			if seen_voice or seen_dsp:
+				_record_dialogue_metadata_error(
+					data, token,
+					"#voice_layer cannot be mixed with #voice/#voice_dsp shorthand")
+				result["valid"] = false
+				continue
+			var parsed_layer := _parse_voice_layer_metadata_token(
+				metadata_token, token.line)
+			if not bool(parsed_layer.get("valid", false)):
+				_record_dialogue_metadata_error(
+					data, token, String(parsed_layer.get("error", "invalid #voice_layer")))
+				result["valid"] = false
+				continue
+			var layer: Dictionary = parsed_layer["layer"]
+			var duplicate_layer := false
+			for existing_value: Variant in explicit_layers:
+				var existing: Dictionary = existing_value
+				if String(existing.get("id", "")) == String(layer.get("id", "")):
+					duplicate_layer = true
+					break
+			if duplicate_layer:
+				_record_dialogue_metadata_error(
+					data, token,
+					"duplicate #voice_layer id '%s'" % String(layer.get("id", "")))
+				result["valid"] = false
+				continue
+			if explicit_layers.size() >= VoicePlaybackRequest.MAX_LAYERS:
+				_record_dialogue_metadata_error(
+					data, token,
+					"voice layer count exceeds the bounded limit of %d"
+						% VoicePlaybackRequest.MAX_LAYERS)
+				result["valid"] = false
+				continue
+			explicit_layers.append(layer)
+			result["voice_layers"] = explicit_layers
 		else:
 			_record_dialogue_metadata_error(
 				data, token,
@@ -3803,6 +3860,78 @@ static func _parse_dialogue_metadata(
 			data, token, "#voice_dsp requires #voice on the same dialogue")
 		result["valid"] = false
 	return result
+
+
+static func _parse_voice_layer_metadata_token(
+	metadata_token: String,
+	line: int,
+) -> Dictionary:
+	var body := metadata_token.substr("#voice_layer:".length())
+	var open_paren := body.find("(")
+	if open_paren <= 0 or not body.ends_with(")"):
+		return {
+			"valid": false,
+			"error": "#voice_layer must use id(character=...,asset=...[,dsp=...])",
+		}
+	var layer_id := body.substr(0, open_paren)
+	if not VoicePlaybackRequest.is_layer_id(layer_id):
+		return {"valid": false, "error": "#voice_layer id is not canonical"}
+	var params_text := body.substr(
+		open_paren + 1, body.length() - open_paren - 2)
+	if params_text.is_empty():
+		return {"valid": false, "error": "#voice_layer parameters cannot be empty"}
+	var params: Dictionary = {}
+	for part_value: Variant in params_text.split(",", true):
+		var part := String(part_value)
+		if part.is_empty() or part.count("=") != 1:
+			return {"valid": false, "error": "#voice_layer parameters are malformed"}
+		var equals := part.find("=")
+		var key := part.substr(0, equals)
+		var value := part.substr(equals + 1)
+		if not key in ["character", "asset", "dsp"]:
+			return {
+				"valid": false,
+				"error": "#voice_layer has unknown parameter '%s'" % key,
+			}
+		if params.has(key):
+			return {
+				"valid": false,
+				"error": "#voice_layer duplicates parameter '%s'" % key,
+			}
+		if value.is_empty():
+			return {
+				"valid": false,
+				"error": "#voice_layer parameter '%s' cannot be empty" % key,
+			}
+		params[key] = value
+	for required_key in ["character", "asset"]:
+		if not params.has(required_key):
+			return {
+				"valid": false,
+				"error": "#voice_layer requires '%s'" % required_key,
+			}
+	var character := String(params["character"])
+	if (
+		character != character.strip_edges()
+		or character.length() > VoicePlaybackRequest.MAX_LOGICAL_ID_LENGTH
+	):
+		return {"valid": false, "error": "#voice_layer character is not canonical"}
+	var asset := String(params["asset"])
+	if not VoicePlaybackRequest.is_logical_asset_id(asset):
+		return {"valid": false, "error": "#voice_layer asset is not a Stella logical id"}
+	var dsp := String(params.get("dsp", ""))
+	if not dsp.is_empty() and not VoiceDspChainDefinition.is_logical_preset_id(dsp):
+		return {"valid": false, "error": "#voice_layer DSP is not a Stella logical preset id"}
+	return {
+		"valid": true,
+		"layer": {
+			"id": layer_id,
+			"asset": asset,
+			"character": character,
+			"dsp": dsp,
+			"line": line,
+		},
+	}
 
 
 static func _record_dialogue_metadata_error(
@@ -3955,12 +4084,9 @@ static func _build_combine_command(
 	var full_text := ""
 	for seg in segments:
 		full_text += String(seg.get("text", ""))
-	# Primary voice = first segment's voice (used by #voice: field / replay button)
-	var primary_voice := String(segments[0].get("voice", ""))
 	var params := {
 		"character": character,
 		"text": full_text,
-		"voice": primary_voice,
 		"segments": segments.duplicate(true),
 		"presentation_from_context": true,
 	}

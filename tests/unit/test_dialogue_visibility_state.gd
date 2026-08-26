@@ -533,7 +533,10 @@ func test_invalid_direct_restore_zeros_the_whole_dialogue_projection() -> void:
 	empty_active["segments"] = []
 	invalid_cases.append(empty_active)
 	var voice_segment := _adv_content()
-	voice_segment["segments"] = [{"text": "safe", "voice": "forbidden"}]
+	voice_segment["segments"] = [{"text": "safe", "voice_layers": [{
+		"id": "main", "asset": "forbidden", "character": "",
+		"dsp": "", "line": 0,
+	}]}]
 	invalid_cases.append(voice_segment)
 	var bad_nvl_tail := _nvl_content()
 	bad_nvl_tail["segments"] = [{"text": "does not match tail"}]
@@ -565,7 +568,10 @@ func test_record_dialogue_content_captures_text_only_and_final_expression() -> v
 		"sakura",
 		[{
 			"text": "Before[expr:happy]After",
-			"voice": "must_not_persist",
+			"voice_layers": [{
+				"id": "main", "asset": "must_not_persist",
+				"character": "sakura", "dsp": "", "line": 0,
+			}],
 			"expression": "",
 			"stage": [{"action": "clear"}],
 			"presentation_ops": [{
@@ -594,7 +600,7 @@ func test_record_dialogue_content_captures_text_only_and_final_expression() -> v
 	assert_eq(content.get("profile_name"), "message")
 	var serialized := JSON.stringify(content)
 	for forbidden: String in [
-		"voice", "stage", "presentation_ops", "presentation_operation_lines",
+		"voice_layers", "stage", "presentation_ops", "presentation_operation_lines",
 		"dialogue_avatar", "activation", "token", "tween", "generation",
 	]:
 		assert_false(forbidden in serialized,
@@ -617,19 +623,28 @@ func test_record_nvl_content_uses_context_page_not_presenter_cache() -> void:
 		{
 			"profile_name": "novel_first",
 			"character": "sakura",
-			"segments": [{"text": "First entry", "voice": "old_voice"}],
+			"segments": [{"text": "First entry", "voice_layers": [{
+				"id": "main", "asset": "old_voice",
+				"character": "sakura", "dsp": "", "line": 0,
+			}]}],
 		},
 		{
 			"profile_name": "novel_second",
 			"character": "senpai",
 			"segments": [{
-				"text": "Second entry[expr:smile]", "voice": "new_voice",
+				"text": "Second entry[expr:smile]", "voice_layers": [{
+					"id": "main", "asset": "new_voice",
+					"character": "senpai", "dsp": "", "line": 0,
+				}],
 			}],
 		},
 	]
 	var request := DialogueRequest.new(
 		"senpai",
-		[{"text": "Second entry[expr:smile]", "voice": "new_voice"}],
+		[{"text": "Second entry[expr:smile]", "voice_layers": [{
+			"id": "main", "asset": "new_voice",
+			"character": "senpai", "dsp": "", "line": 0,
+		}]}],
 		"nvl",
 		{},
 		true,

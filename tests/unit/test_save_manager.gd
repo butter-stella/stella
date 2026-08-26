@@ -81,7 +81,7 @@ func _make_valid_save_snapshot() -> Dictionary:
 				"command_index": 1,
 				"profile_name": "",
 				"character": "probe",
-				"segments": [{"text": "safe", "voice": ""}],
+				"segments": [{"text": "safe", "voice_layers": []}],
 			}],
 		},
 		"variable_store": {"scenario": {}, "global": {}},
@@ -658,7 +658,10 @@ func test_dialogue_content_exact_schema_rejects_transient_or_malformed_data() ->
 	invalid_contents.append(empty_active)
 	var bad_segment := extra_key.duplicate(true)
 	bad_segment.erase("token")
-	bad_segment["segments"] = [{"text": "safe", "voice": "forbidden"}]
+	bad_segment["segments"] = [{"text": "safe", "voice_layers": [{
+		"id": "main", "asset": "forbidden", "character": "",
+		"dsp": "", "line": 0,
+	}]}]
 	invalid_contents.append(bad_segment)
 	var non_string_text := extra_key.duplicate(true)
 	non_string_text.erase("token")

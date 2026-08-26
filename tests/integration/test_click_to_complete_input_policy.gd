@@ -589,7 +589,7 @@ func _disconnect_tracked(signal_value: Signal, callback: Callable) -> void:
 
 
 func _segment(text: String) -> Dictionary:
-	return {"text": text, "voice": "", "presentation_ops": []}
+	return {"text": text, "voice_layers": [], "presentation_ops": []}
 
 
 func _single_dialogue_scenario(scenario_id: String, text: String) -> ScenarioData:

@@ -94,21 +94,21 @@ func test_avatar_hidden_initially():
 
 
 func test_avatar_hidden_in_nvl_mode():
-	SignalBus.show_dialogue.emit("sakura", [{"text": "Hello", "voice": ""}], "nvl")
+	SignalBus.show_dialogue.emit("sakura", [{"text": "Hello", "voice_layers": []}], "nvl")
 	await get_tree().process_frame
 	var container = _get_avatar_container()
 	assert_false(container.visible, "avatar should be hidden in NVL mode")
 
 
 func test_avatar_hidden_in_overlay_mode():
-	SignalBus.show_dialogue.emit("sakura", [{"text": "Hello", "voice": ""}], "overlay")
+	SignalBus.show_dialogue.emit("sakura", [{"text": "Hello", "voice_layers": []}], "overlay")
 	await get_tree().process_frame
 	var container = _get_avatar_container()
 	assert_false(container.visible, "avatar should be hidden in overlay mode")
 
 
 func test_avatar_hidden_for_narrator():
-	SignalBus.show_dialogue.emit("", [{"text": "Narration text", "voice": ""}], "adv")
+	SignalBus.show_dialogue.emit("", [{"text": "Narration text", "voice_layers": []}], "adv")
 	await get_tree().process_frame
 	var container = _get_avatar_container()
 	assert_false(container.visible, "avatar should be hidden for narrator (empty character)")
@@ -116,7 +116,7 @@ func test_avatar_hidden_for_narrator():
 
 func test_avatar_hidden_when_no_avatar_rect():
 	# Character without avatar_rect config — avatar should stay hidden
-	SignalBus.show_dialogue.emit("nonexistent_char", [{"text": "Hello", "voice": ""}], "adv")
+	SignalBus.show_dialogue.emit("nonexistent_char", [{"text": "Hello", "voice_layers": []}], "adv")
 	await get_tree().process_frame
 	var container = _get_avatar_container()
 	var avatar = _get_avatar()
@@ -133,7 +133,7 @@ func test_inline_expression_updates_only_dialogue_avatar_state():
 
 	SignalBus.show_dialogue.emit("sakura", [{
 		"text": "[expr:angry]Hello",
-		"voice": "",
+		"voice_layers": [],
 		"presentation_ops": [],
 	}], "adv")
 	SignalBus.stage_operations_requested.disconnect(callback)
@@ -148,7 +148,7 @@ func test_trailing_inline_expression_applies_after_natural_typewriter() -> void:
 	presenter._char_interval = 0.001
 	SignalBus.show_dialogue.emit(
 		"sakura",
-		[{"text": "Hello[expr:sad]", "voice": ""}],
+		[{"text": "Hello[expr:sad]", "voice_layers": []}],
 		"adv",
 	)
 	await get_tree().process_frame
@@ -181,7 +181,7 @@ func test_wait_effect_pauses_before_the_following_character() -> void:
 	presenter._char_interval = 0.001
 	SignalBus.show_dialogue.emit(
 		"sakura",
-		[{"text": "a{wait:80}b", "voice": ""}],
+		[{"text": "a{wait:80}b", "voice_layers": []}],
 		"adv",
 	)
 	assert_true(await wait_until(
@@ -199,7 +199,7 @@ func test_speed_effect_persists_until_another_speed_effect() -> void:
 	presenter._char_interval = 0.001
 	SignalBus.show_dialogue.emit(
 		"sakura",
-		[{"text": "a{speed:80}bcd", "voice": ""}],
+		[{"text": "a{speed:80}bcd", "voice_layers": []}],
 		"adv",
 	)
 	assert_true(await wait_until(
@@ -218,7 +218,7 @@ func test_typewriter_snapshots_character_interval_for_the_active_line() -> void:
 	StellaRuntime.settings_manager.set_value("punctuation_pause", 0)
 	SignalBus.show_dialogue.emit(
 		"",
-		[{"text": "AB", "voice": ""}],
+		[{"text": "AB", "voice_layers": []}],
 		"adv",
 	)
 	await get_tree().process_frame
@@ -237,7 +237,7 @@ func test_typewriter_snapshots_character_interval_for_the_active_line() -> void:
 
 	SignalBus.show_dialogue.emit(
 		"",
-		[{"text": "CD", "voice": ""}],
+		[{"text": "CD", "voice_layers": []}],
 		"adv",
 	)
 	await get_tree().process_frame
@@ -274,7 +274,7 @@ func test_punctuation_pause_is_additive_and_ordinary_text_has_no_pause() -> void
 	StellaRuntime.settings_manager.set_value("punctuation_pause", 80)
 	SignalBus.show_dialogue.emit(
 		"",
-		[{"text": "A。B", "voice": ""}],
+		[{"text": "A。B", "voice_layers": []}],
 		"adv",
 	)
 	await get_tree().process_frame
@@ -292,7 +292,7 @@ func test_punctuation_pause_is_additive_and_ordinary_text_has_no_pause() -> void
 
 	SignalBus.show_dialogue.emit(
 		"",
-		[{"text": "ABC", "voice": ""}],
+		[{"text": "ABC", "voice_layers": []}],
 		"adv",
 	)
 	await get_tree().process_frame
@@ -305,7 +305,7 @@ func test_nvl_accumulation_counts_literal_bracket_text_exactly() -> void:
 	presenter._char_interval = 0.001
 	SignalBus.show_dialogue.emit(
 		"",
-		[{"text": "[b]A[/b]", "voice": ""}],
+		[{"text": "[b]A[/b]", "voice_layers": []}],
 		"nvl",
 	)
 	await get_tree().process_frame
@@ -316,7 +316,7 @@ func test_nvl_accumulation_counts_literal_bracket_text_exactly() -> void:
 	))
 	SignalBus.show_dialogue.emit(
 		"",
-		[{"text": "B", "voice": ""}],
+		[{"text": "B", "voice_layers": []}],
 		"nvl",
 	)
 	# The default label enables BBCode, so only A plus the NVL newline are part
@@ -334,7 +334,7 @@ func test_plain_nvl_growth_uses_incremental_label_and_offset_paths() -> void:
 		SignalBus.show_dialogue.emit(
 			"",
 			[{"text": "entry-%03d %s" % [index, "plain text ".repeat(4)],
-				"voice": ""}],
+				"voice_layers": []}],
 			"nvl",
 		)
 		await get_tree().process_frame
@@ -373,7 +373,7 @@ func test_repeated_characters_do_not_recreate_unchanged_avatar_texture() -> void
 	presenter._char_interval = 0.001
 	SignalBus.show_dialogue.emit(
 		"sakura",
-		[{"text": "[expr:sad]unchanged avatar", "voice": ""}],
+		[{"text": "[expr:sad]unchanged avatar", "voice_layers": []}],
 		"adv",
 	)
 	var initial_texture: Texture2D = presenter._avatar_texture.texture
@@ -390,7 +390,7 @@ func test_skip_projects_new_speaker_avatar_without_inline_marker() -> void:
 	var presenter = _get_presenter()
 	SignalBus.show_dialogue.emit(
 		"senpai",
-		[{"text": "old", "voice": ""}],
+		[{"text": "old", "voice_layers": []}],
 		"adv",
 	)
 	assert_eq(presenter._current_character, "senpai")
@@ -398,7 +398,7 @@ func test_skip_projects_new_speaker_avatar_without_inline_marker() -> void:
 	presenter._ctrl_held = true
 	SignalBus.show_dialogue.emit(
 		"sakura",
-		[{"text": "new", "voice": ""}],
+		[{"text": "new", "voice_layers": []}],
 		"adv",
 	)
 	await get_tree().process_frame
@@ -419,13 +419,13 @@ func test_each_dialogue_avatar_starts_from_default_without_hidden_history() -> v
 	var presenter = _get_presenter()
 	SignalBus.show_dialogue.emit(
 		"sakura",
-		[{"text": "[expr:sad]first", "voice": ""}],
+		[{"text": "[expr:sad]first", "voice_layers": []}],
 		"adv",
 	)
 	assert_eq(presenter._current_avatar_expression, "sad")
 	SignalBus.show_dialogue.emit(
 		"sakura",
-		[{"text": "second", "voice": ""}],
+		[{"text": "second", "voice_layers": []}],
 		"adv",
 	)
 	assert_eq(presenter._avatar_expressions.get("sakura"), "default")

@@ -737,6 +737,7 @@ owner，再发布旧 choice HIDE，因此同步回调不能推进旧剧情或误
 sakura「台词」
 sakura「台词」 #voice:voice_id
 sakura「电话里的台词」 #voice:voice_id #voice_dsp:telephone
+ensemble「同时发声」 #voice_layer:lead(character=sakura,asset=sakura_001) #voice_layer:reply(character=senpai,asset=senpai_001,dsp=telephone)
 「旁白」
 sakura（内心独白）
 
@@ -808,6 +809,12 @@ sakura「[expr:surprised]但是听说下周要期中考...」 #voice:sakura_018
 sakura「[expr:sad]我数学肯定完蛋了。」 #voice:sakura_019
 @end
 ```
+
+绝大多数对话只写 `#voice`；`#voice_dsp` 与它前后顺序均可。只有一个 segment
+确实需要多条独立语音同一 mix boundary 开始时才重复写 `#voice_layer`（最多 8 层）。
+每层必须给稳定 id、character、逻辑 asset，可选 dsp；不得与 `#voice` shorthand
+混用。Stella 保留 authored layer 顺序并对全组资源/DSP 原子预检，Backlog/Auto/Skip/
+load/rollback 都复用同一 group lifecycle，不会预混或串行播放。
 
 Timed wait 默认不可由玩家截短；`skippable=true` 是唯一可选项，适合仍需保留最长演出时长、但允许左键、Space、Enter、手柄 A 或 Skip 提前继续的场景。Auto 保持 authored duration。`@wait click` 是独立模式，不接受 option。无论是否 skippable，读档、回退、重启、返回标题和 scenario replacement 都会取消旧 execution generation；迟到 timer 或输入不会影响恢复后的命令。完整 grammar 与诊断见 [DSL 文档](DSL.md#314-等待)。
 

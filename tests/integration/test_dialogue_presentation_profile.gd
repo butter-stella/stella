@@ -203,7 +203,7 @@ func test_nvl_backlog_rollback_preserves_each_entrys_original_profile_format() -
 		return
 	var backlog := BacklogManager.new()
 	backlog.add_entry(
-		"", [{"text": "Two", "voice": ""}], 2,
+		"", [{"text": "Two", "voice_layers": []}], 2,
 		func(): return _engine.context.capture_snapshot(), [], "rollback:two")
 	var rollback_snapshot: Dictionary = backlog.jump_to(0).get("snapshot", {})
 	_assert_cross_profile_snapshot_is_authored_only(rollback_snapshot)
@@ -389,7 +389,7 @@ func test_nvl_prefix_is_the_first_typed_character_and_avatar_marker_is_local() -
 
 	SignalBus.emit_show_dialogue(
 		"narrator",
-		[{"text": "[expr:thoughtful]Text", "voice": ""}],
+		[{"text": "[expr:thoughtful]Text", "voice_layers": []}],
 		"nvl",
 		{"entry_prefix": "・", "entry_separator": ""},
 		true,
@@ -420,7 +420,7 @@ func test_nvl_typewriter_keeps_history_visible_and_types_only_the_new_entry() ->
 	_presenter._char_interval = 1.0
 	SignalBus.emit_show_dialogue(
 		"",
-		[{"text": "New", "voice": ""}],
+		[{"text": "New", "voice_layers": []}],
 		"nvl",
 		profile,
 		true,
@@ -481,7 +481,7 @@ func test_nvl_decoration_does_not_mutate_segments_or_backlog_text() -> void:
 	_presenter._char_interval = 1.0
 	var segments := [{
 		"text": "Original source text",
-		"voice": "",
+		"voice_layers": [],
 	}]
 
 	SignalBus.emit_show_dialogue(
@@ -702,7 +702,7 @@ func test_stla_properties_are_independent_and_preserve_unwritten_authored_values
 
 	SignalBus.emit_show_dialogue(
 		"",
-		[{"text": ""}],
+		[{"text": "", "voice_layers": []}],
 		"nvl",
 		{"horizontal_alignment": HORIZONTAL_ALIGNMENT_CENTER},
 		true,
@@ -737,7 +737,7 @@ func test_profile_state_is_restored_before_unprofiled_legacy_mode() -> void:
 	var adv_chrome: Control = _presenter.get_node("AdvChrome")
 	SignalBus.emit_show_dialogue(
 		"",
-		[{"text": ""}],
+		[{"text": "", "voice_layers": []}],
 		"nvl",
 		{
 			"horizontal_alignment": HORIZONTAL_ALIGNMENT_CENTER,
@@ -750,7 +750,7 @@ func test_profile_state_is_restored_before_unprofiled_legacy_mode() -> void:
 	assert_false(background.visible)
 	assert_false(adv_chrome.visible)
 
-	SignalBus.emit_show_dialogue("", [{"text": ""}], "overlay")
+	SignalBus.emit_show_dialogue("", [{"text": "", "voice_layers": []}], "overlay")
 	assert_eq(_rect_anchors(_presenter), Vector4(0.15, 0.3, 0.85, 0.7))
 	assert_eq(text_label.horizontal_alignment, HORIZONTAL_ALIGNMENT_LEFT)
 	assert_true(background.visible)
@@ -854,7 +854,7 @@ func test_hiding_dialogue_restores_profile_state_and_clears_active_profile() -> 
 	var adv_chrome: Control = _presenter.get_node("AdvChrome")
 	SignalBus.emit_show_dialogue(
 		"",
-		[{"text": "Before hide"}],
+		[{"text": "Before hide", "voice_layers": []}],
 		"nvl",
 		{
 			"horizontal_alignment": HORIZONTAL_ALIGNMENT_CENTER,
@@ -1143,7 +1143,7 @@ func test_stla_can_configure_adv_and_restore_it_after_nvl() -> void:
 
 
 func _show_dialogue(text: String, mode: String) -> void:
-	await _presenter._on_show_dialogue("", [{"text": text}], mode)
+	await _presenter._on_show_dialogue("", [{"text": text, "voice_layers": []}], mode)
 
 
 func _emit_profiled_dialogue(
@@ -1155,7 +1155,7 @@ func _emit_profiled_dialogue(
 ) -> bool:
 	SignalBus.emit_show_dialogue(
 		character,
-		[{"text": entry_text, "voice": ""}],
+		[{"text": entry_text, "voice_layers": []}],
 		mode,
 		profile,
 		true,

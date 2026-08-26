@@ -68,3 +68,26 @@ func test_voice_request_snapshots_preset_and_source() -> void:
 	var observed := request.get_source()
 	observed["line"] = 42
 	assert_eq(request.get_source().get("line"), 7)
+
+
+func test_voice_layer_request_is_bounded_ordered_and_defensive() -> void:
+	var source := {"source_path": "res://public/layers.stla", "line": 8}
+	var layers := [
+		{"id": "lead", "asset": "a", "character": "alice", "dsp": "remote", "source": source},
+		{"id": "reply", "asset": "b", "character": "bob", "dsp": "", "source": {"line": 8}},
+	]
+	var request := VoicePlaybackRequest.from_layers(layers)
+	source["line"] = 99
+	assert_true(request.is_valid())
+	assert_eq(request.get_layers().map(func(layer): return layer["id"]), ["lead", "reply"])
+	assert_eq(request.get_layers()[0]["source"]["line"], 8)
+	var observed: Array = request.get_layers()
+	observed[0]["asset"] = "changed"
+	assert_eq(request.get_layers()[0]["asset"], "a")
+
+	for invalid_layers: Variant in [
+		[layers[0], layers[0]],
+		[{"id": "9bad", "asset": "a", "character": "a", "dsp": "", "source": {}}],
+		[{"id": "ok", "asset": "../a", "character": "a", "dsp": "", "source": {}}],
+	]:
+		assert_false(VoicePlaybackRequest.from_layers(invalid_layers).is_valid())

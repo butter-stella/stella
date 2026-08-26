@@ -717,7 +717,7 @@ func _prepare_manual_dialogue(
 	var profile: Dictionary = context.scenario_data.get_dialogue_profile(
 		profile_name)
 	var segments := (
-		[{"text": text, "voice": ""}]
+		[{"text": text, "voice_layers": []}]
 		if segments_override.is_empty()
 		else segments_override.duplicate(true)
 	)
@@ -883,7 +883,7 @@ func test_issue169_clear_retires_owned_inline_stage_callback_without_finishing_t
 		[],
 		[{
 			"text": "Inline cue ownership probe.",
-			"voice": "",
+			"voice_layers": [],
 			"presentation_ops": [{
 				"kind": "stage",
 				"payload": {
@@ -950,14 +950,14 @@ func test_issue169_nvl_clear_advances_page_epoch_without_changing_mode() -> void
 		"command_index": 0,
 		"profile_name": "novel_first",
 		"character": "sakura",
-		"segments": [{"text": "First NVL entry.", "voice": ""}],
+		"segments": [{"text": "First NVL entry.", "voice_layers": []}],
 	}, {
 		"command_uid": 169,
 		"scene_index": 8,
 		"command_index": 1,
 		"profile_name": "novel_second",
 		"character": "senpai",
-		"segments": [{"text": "Second NVL entry.", "voice": ""}],
+		"segments": [{"text": "Second NVL entry.", "voice_layers": []}],
 	}]
 	var dialogue := _prepare_manual_dialogue(
 		"nvl", "novel_second", "senpai", "Second NVL entry.", entries)
@@ -2370,9 +2370,7 @@ func test_f_mid_fnf_save_load_uses_canonical_checkpoint_and_same_cursor_no_work(
 	)
 	assert_eq(new_dialogue_segments, [[{
 		"text": "FNF save tail.",
-		"voice": "",
-		"voice_dsp": "",
-		"voice_dsp_line": 0,
+		"voice_layers": [],
 		"presentation_ops": [],
 		"presentation_operation_lines": [],
 	}]], "load fresh-dispatches the authored tail exactly once")

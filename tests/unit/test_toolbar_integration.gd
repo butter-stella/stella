@@ -22,9 +22,9 @@ func test_skip_toggle():
 
 func test_backlog_records_dialogue():
 	var blm = BacklogManager.new()
-	blm.add_entry("sakura", [{"text": "Hello!", "voice": "voice_001"}])
-	blm.add_entry("kaito", [{"text": "Hey.", "voice": ""}])
-	blm.add_entry("", [{"text": "Narration text.", "voice": ""}])
+	blm.add_entry("sakura", [{"text": "Hello!", "voice_layers": [{"id": "main", "asset": "voice_001", "character": "", "dsp": "", "line": 0}]}])
+	blm.add_entry("kaito", [{"text": "Hey.", "voice_layers": []}])
+	blm.add_entry("", [{"text": "Narration text.", "voice_layers": []}])
 	var entries = blm.get_entries()
 	assert_eq(entries.size(), 3)
 	assert_eq(entries[0]["character"], "sakura")
