@@ -7,6 +7,7 @@ signal _navigation_scene_slot_settled
 const CONFIG_PATH = "res://stella.cfg"
 const LOCAL_CONFIG_PATH = "res://stella.local.cfg"
 const DISABLE_LOCAL_CONFIG_ENV = "STELLA_DISABLE_LOCAL_CONFIG"
+const DISABLE_IMPLICIT_SETTINGS_LOAD_ENV = "STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD"
 const DEFAULT_TITLE_SCENE = "res://addons/stella/scenes/title.tscn"
 const DEFAULT_TITLE_PACKED_SCENE: PackedScene = preload(
 	"res://addons/stella/scenes/title.tscn"
@@ -474,7 +475,19 @@ func _ready():
 	get_tree().scene_changed.connect(_on_navigation_scene_changed)
 	save_manager = SaveManager.new()
 	settings_manager = SettingsManager.new()
-	settings_manager.load_settings()
+	if config.settings_schema_path != "":
+		var schema_error := settings_manager.configure_project_schema(
+			config.settings_schema_path)
+		if schema_error != OK:
+			push_error(
+				"StellaRuntime: failed to load project settings schema %s at %s: %s"
+				% [
+					settings_manager.last_error_source,
+					settings_manager.last_error_field,
+					settings_manager.last_error_detail,
+				])
+	if not _is_implicit_settings_load_disabled():
+		settings_manager.load_settings()
 	DisplayHelper.apply(settings_manager.settings)
 	settings_manager.settings_changed.connect(func(key, val): SignalBus.settings_changed.emit(key, val))
 	backlog_manager = BacklogManager.new()
@@ -626,6 +639,17 @@ func _is_implicit_local_config_disabled() -> bool:
 	if not OS.has_environment(DISABLE_LOCAL_CONFIG_ENV):
 		return false
 	var raw_value := OS.get_environment(DISABLE_LOCAL_CONFIG_ENV).strip_edges().to_lower()
+	return raw_value not in ["", "0", "false", "no", "off"]
+
+
+## Hermetic automation can skip only the startup read of user://settings.json.
+## Explicit load/save calls remain available and exercise the same production
+## SettingsManager contract.
+func _is_implicit_settings_load_disabled() -> bool:
+	if not OS.has_environment(DISABLE_IMPLICIT_SETTINGS_LOAD_ENV):
+		return false
+	var raw_value := OS.get_environment(
+		DISABLE_IMPLICIT_SETTINGS_LOAD_ENV).strip_edges().to_lower()
 	return raw_value not in ["", "0", "false", "no", "off"]
 
 
@@ -4596,20 +4620,27 @@ func _rollback_snapshot_has_valid_audio_choice(raw_snapshot: Variant) -> bool:
 
 ## Get a setting value by key.
 func get_setting(key: String) -> Variant:
-	var val = settings_manager.settings.get(key)
-	if val == null and not key in settings_manager.settings.to_dict():
-		push_warning("StellaRuntime.get_setting: unknown key '%s'" % key)
-	return val
+	return settings_manager.get_value(key)
 
 
 ## Set a setting value by key.
-func set_setting(key: String, value: Variant) -> void:
-	settings_manager.set_value(key, value)
+func set_setting(key: String, value: Variant) -> bool:
+	return settings_manager.set_value(key, value)
+
+
+## Read the declarative definition used by project settings UI.
+func get_setting_definition(key: String) -> Dictionary:
+	return settings_manager.get_definition(key)
+
+
+## Registered built-in keys followed by sorted project-defined keys.
+func get_registered_settings() -> PackedStringArray:
+	return settings_manager.get_registered_keys()
 
 
 ## Persist settings to disk.
-func save_settings() -> void:
-	settings_manager.save()
+func save_settings() -> Error:
+	return settings_manager.save()
 
 
 ## Reset all settings to defaults.

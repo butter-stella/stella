@@ -38,7 +38,10 @@ func _write_json(value: Dictionary) -> void:
 	var file := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	assert_not_null(file)
 	if file != null:
-		file.store_string(JSON.stringify(value))
+		file.store_string(JSON.stringify({
+			"schema_version": 1,
+			"values": value,
+		}))
 		file.close()
 
 
@@ -80,7 +83,7 @@ func test_invalid_movie_candidate_rejects_all_sibling_changes() -> void:
 		_manager.settings.movie_volume = 0.6
 		_write_json({"master_volume": 0.1, "movie_volume": invalid})
 		_manager.load_settings()
-		assert_push_warning("movie_volume has an invalid type or range")
+		assert_push_warning("$.values.movie_volume")
 		assert_eq(_manager.settings.master_volume, 0.8)
 		assert_eq(_manager.settings.movie_volume, 0.6)
 
@@ -90,7 +93,7 @@ func test_invalid_movie_candidate_rejects_all_sibling_changes() -> void:
 		candidate[key] = 1
 		_write_json(candidate)
 		_manager.load_settings()
-		assert_push_warning("%s has an invalid type or range" % key)
+		assert_push_warning("$.values.%s" % key)
 		assert_eq(_manager.settings.master_volume, 0.8)
 
 	# JSON has no non-finite number representation. Exercise the same public

@@ -88,13 +88,14 @@ relevant test; before handoff, run the full applicable suite when practical.
 godot --audio-driver Dummy --headless --import
 
 # Full GUT suite; .gutconfig.json includes unit and integration directories.
-STELLA_DISABLE_LOCAL_CONFIG=1 \
+STELLA_DISABLE_LOCAL_CONFIG=1 STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD=1 \
   godot --audio-driver Dummy -s addons/gut/gut_cmdln.gd --headless
 
 # Example targeted file.
-STELLA_DISABLE_LOCAL_CONFIG=1 \
+STELLA_DISABLE_LOCAL_CONFIG=1 STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD=1 \
   godot --audio-driver Dummy -s addons/gut/gut_cmdln.gd --headless \
-  -gtest=res://tests/unit/test_scenario_engine.gd
+  -gconfig= -gpost_run_script=res://tests/helpers/gut_post_run.gd \
+  -gtest=res://tests/unit/test_scenario_engine.gd -gexit
 
 # Godot 4.6.1 export-pack smoke (binary tokens, compressed binary tokens,
 # selected-scenes fallback), run with no project export_presets.cfg present.

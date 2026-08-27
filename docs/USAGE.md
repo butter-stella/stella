@@ -98,6 +98,9 @@ cg_gallery = false
 backlog = true
 save_slots = 8
 
+[settings]
+schema = "res://settings/project_settings.json"
+
 [overrides]
 title_scene = "res://scenes/my_title.tscn"
 game_scene = "res://scenes/my_game.tscn"
@@ -150,7 +153,7 @@ voice_dsp = "res://private_preview/audio/voice_dsp/"
 game_scene = "res://private_preview/ui/preview_game.tscn"
 ```
 
-配置按 key 独立解析，优先级为“内置默认值 < `stella.cfg` < `stella.local.cfg`”。这套规则一致覆盖 `[game]`、`[paths]`、`[features]`、`[system_se]` 和 `[overrides]`；后一个文件只覆盖其中明确写出的 key，例如上面的本地文件不会改变基础配置中的 `game.title`。
+配置按 key 独立解析，优先级为“内置默认值 < `stella.cfg` < `stella.local.cfg`”。这套规则一致覆盖 `[game]`、`[paths]`、`[features]`、`[settings]`、`[system_se]` 和 `[overrides]`；后一个文件只覆盖其中明确写出的 key，例如上面的本地文件不会改变基础配置中的 `game.title`。
 
 配置语法使用 Stella schema 所需的常用子集：文件必须是 UTF-8 且不能含 NUL 字节；字符串必须用双引号包围，布尔值写作 `true` / `false`，整数使用十进制。完整行和行尾注释都使用分号 `;`；`#` 不属于 Stella 注释语法，出现在完成的 section header 或赋值后会使整个来源被拒绝。字符串转义兼容 Godot 4.6 `ConfigFile`，包括 `\\`、`\"`、`\n`、`\uXXXX`、`\UXXXXXX` 及 UTF-16 surrogate pair；未知转义也沿用其“去掉反斜杠、保留后一字符”的行为。显式写入空字符串也是一次有效覆盖。单个来源最多 1 MiB，单个 quoted String 的原始 UTF-8 表示最多 256 KiB；超限、NUL 和非法 UTF-8 都会按无部分提交的错误处理。
 
@@ -167,17 +170,19 @@ var sources: PackedStringArray = StellaRuntime.get_applied_config_sources()
 # 典型结果：["res://stella.cfg", "res://stella.local.cfg"]
 ```
 
-自动化、CI 或一次性诊断应通过通用环境变量显式禁用本地层，避免当前机器的 `res://stella.local.cfg` 污染结果：
+自动化、CI 或一次性诊断应显式禁用本地层和启动时隐式读取的
+`user://settings.json`，避免当前机器状态污染结果：
 
 ```bash
-STELLA_DISABLE_LOCAL_CONFIG=1 godot --audio-driver Dummy --headless --path /path/to/project --quit
+STELLA_DISABLE_LOCAL_CONFIG=1 STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD=1 \
+  godot --audio-driver Dummy --headless --path /path/to/project --quit
 ```
 
-该环境变量只跳过启动时隐式加载的本地文件；测试代码显式传入的 synthetic 配置路径仍可用于验证分层行为。
+前者只跳过启动时隐式加载的本地文件，后者只跳过启动时隐式加载设置；测试代码显式传入的 synthetic 配置/设置路径和显式 `load_settings()` / `save_settings()` 仍可验证同一 production contract。
 
 发布公共构建时，请在每个 Godot Export Preset 的资源过滤规则中显式包含 `stella.cfg`，并显式排除 `stella.local.cfg` 以及实际存放私有或生成内容的目录（例如上面的 `private_preview/`）。`.gitignore` 只控制 Git 是否跟踪文件，**不会**阻止 Godot 将它打包进导出产物。
 
-Godot 无法从字符串形式的动态路径自动发现 `[overrides]` 中的场景依赖。使用 **Export All Resources** 时应确认这些资源没有被 exclude filter 排除；使用 **Export Selected Scenes/Resources** 时，必须把配置引用的 `title_scene`、`game_scene`、`settings_scene`、`save_load_scene`、`backlog_scene` 和 `flowchart_scene` 全部加入导出资源集。无效或遗漏的自定义标题会回退内置标题，但遗漏 game/overlay 仍会让对应功能不可用。
+Godot 无法从字符串形式的动态路径自动发现 `[overrides]` 中的场景依赖和 `[settings] schema` 引用的 JSON。使用 **Export All Resources** 时应确认这些资源没有被 exclude filter 排除；使用 **Export Selected Scenes/Resources** 时，必须把 settings schema 以及配置引用的 `title_scene`、`game_scene`、`settings_scene`、`save_load_scene`、`backlog_scene` 和 `flowchart_scene` 全部加入导出资源集。无效或遗漏的自定义标题会回退内置标题，但遗漏 settings schema、game/overlay 会让对应功能不可用并产生带路径的诊断。
 
 导出后应从源码目录外启动 PCK 或发布包并走一遍标题、开始游戏及各 overlay，而不只检查导出命令的退出码。仓库维护者可在安装 Godot 4.6.1 后运行标准 smoke；脚本会拒绝覆盖已有 `export_presets.cfg` 或 `stella.local.cfg`，创建一个必须被 export exclude filter 剔除的 synthetic local poison，临时使用 CI fixture，并验证三种 PCK 都看不到该文件，同时覆盖 Binary Tokens、Compressed Binary Tokens 及 Selected Scenes fallback 的真实配置 consumer：
 
@@ -763,23 +768,111 @@ StellaRuntime.get_unlocked_cgs()     # 获取已解锁 CG 的副本
 
 ### 设置
 
-```gdscript
-StellaRuntime.get_setting(key)       # 读取设置值
-StellaRuntime.set_setting(key, val)  # 修改设置值
-StellaRuntime.save_settings()        # 保存设置到磁盘
+不声明项目设置时无需任何新配置；内置设置仍由同一个 `SettingsManager` registry
+管理。要增加一个项目设置，在 `stella.cfg` 指向 JSON schema：
+
+```ini
+[settings]
+schema = "res://settings/project_settings.json"
 ```
 
-`SettingsManager.load_settings()` 对有效 JSON object 先完成整份候选合并，再按
-`GameSettings.to_dict()` 的规范顺序只通知真实变化；每个通知都携带触发时的当前值，
-监听器不会看到半载入状态。省略项保留当前值，未知项忽略。`effect_enabled` 只接受
-布尔值：direct set 的非法值会被拒绝，持久化候选中的非法值会拒绝整次载入，均不产生
-伪通知或部分写入。
+普通 schema 只需要 `version` 和 `settings`。例如，下面注册一个与内置
+`auto_play_delay` 完全独立的 `0..100` 整数：
+
+```json
+{
+  "version": 1,
+  "settings": {
+    "project.auto_base_wait": {
+      "type": "integer",
+      "default": 50,
+      "minimum": 0,
+      "maximum": 100
+    }
+  }
+}
+```
+
+项目 key 必须是小写 namespaced identifier，不能覆盖内置 key。项目设置支持
+`boolean`、`integer`、`number`、`enum` 和 `dictionary`；integer/number 可声明有限
+`minimum` / `maximum`，enum 声明唯一非空 `values`，dictionary 还声明
+`value_type=boolean|integer|number|string|enum` 及适用的 range/values。要覆盖内置
+reset 默认值，使用可选的顶层 `defaults`，且只能精确命中已注册内置 key：
+
+integer（包括 dictionary 的 integer value）使用单一 JSON-safe 闭区间
+`[-9007199254740991, 9007199254740991]`。schema default/range、direct set、save/load 和
+migration 都经过同一检查；边界外数值一律视为非法，不截断、取整或创建第二种编码。
+项目定义的 integer 会 fail-close；内置 typewriter 毫秒项继续使用下文既有的
+warning + authored-default invalid-input 行为，但同样绝不接受或保存舍入后的整数。
+
+```json
+{
+  "version": 1,
+  "defaults": {"bgm_volume": 0.7},
+  "settings": {}
+}
+```
+
+省略 `defaults`、`settings` 或 `migrations` 等同空值；因此只覆盖内置默认值时也不必
+写空的其他段。schema 会在注册前整份校验，未知字段、非法类型/range、非 namespaced
+key、内置 shadow 或坏默认值都会带 schema 资源路径与 JSON field/index 原子拒绝。
+
+```gdscript
+var wait := StellaRuntime.get_setting("project.auto_base_wait")
+var changed := StellaRuntime.set_setting("project.auto_base_wait", 75)
+var definition := StellaRuntime.get_setting_definition("project.auto_base_wait")
+var keys := StellaRuntime.get_registered_settings()
+var save_error := StellaRuntime.save_settings()
+StellaRuntime.reset_settings()  # 恢复 schema authored defaults
+```
+
+`get`、definition 和 signal 中的 Dictionary 都是 defensive deep copy。direct set 的未知
+key 或非法值会 warning 并返回 `false`，不发生写入；成功 set 沿用内置设置既有通知语义。
+definition 中的 `default` 是 effective authored default，因此自定义 UI 不必复制 schema
+覆盖规则。
+reset 先原子恢复全部 authored defaults，再按“内置规范顺序、项目 key 排序”对实际变化
+exact-once 发布 `SignalBus.settings_changed(key, value)`，同步监听器不会看到半重置状态。
+
+持久化使用 `user://settings.json`，格式严格为
+`{"schema_version": <int>, "values": {...}}`。load 先读取、迁移和校验整份候选，再原子
+提交 present registered keys；省略项保持当前值，未知/unregistered key、未来 schema
+version、旧 flat JSON 或任一被对应 setting contract 拒绝的值都会拒绝整次载入，零写入、零通知。成功载入只按 registry
+顺序通知实际变化，且每个 payload 都是通知时的完整当前值。
+
+#### 高级：设置迁移
+
+schema version 大于 1 时，必须为每个旧 version 提供一条连续的 `rename` / `remove`
+迁移；没有猜测、跳步或项目 callback：
+
+```json
+{
+  "version": 2,
+  "settings": {
+    "project.auto_base_wait": {
+      "type": "integer", "default": 50, "minimum": 0, "maximum": 100
+    }
+  },
+  "migrations": [
+    {
+      "from": 1,
+      "to": 2,
+      "rename": {"project.auto_delay": "project.auto_base_wait"},
+      "remove": ["project.obsolete"]
+    }
+  ]
+}
+```
+
+rename target 必须由当前 schema 注册且不能冲突或形成同一步 chain；rename/remove 不能
+重叠。迁移只作用于 detached candidate，任何冲突都在 live settings mutation 前
+fail-close。Stella 不保留旧 flat JSON 的读取分支；需要跨越该明确格式边界的项目，应在采用
+schema 版本化存储前自行完成一次离线转换。
 
 `character_interval` 与 `punctuation_pause` 都是非负整数毫秒，默认分别为
 `50` 和 `200`，`0` 合法且不设上限。前者是每个可见字符的基础间隔；后者只对
 固定集合 `，。！？；：、,.!?;:…—` 中的每个 Unicode codepoint 增加额外停顿。
 通过 `set_setting()` 或持久化 load 提供负数、非整数或非数值时，框架会 warning
-并把对应项恢复为其独立默认值；JSON 中可无损表示整数毫秒的数值会归一化为整数。
+并把对应项恢复为其独立 authored 默认值；JSON 中可无损表示整数毫秒的数值会归一化为整数。
 Presenter 在一条对话真正开始显示时快照两项设置，因此当前行中途调用
 `set_setting()`、恢复默认或载入设置不会改变剩余字符，下一条 active 对话才采用
 新值；启动时在创建游戏场景/DialoguePresenter 前载入的值会用于首行。句内
