@@ -24,11 +24,20 @@ const TOOLBAR_ACTION_IDS: Array[StringName] = [
 var _runtime: Node
 var _game: Node
 var _saved_action_registry: StellaActionRegistry
+var _saved_scenario_path: String
+var _saved_settings_scene: String
+var _saved_navigation_override: Callable
+var _saved_save_dir: String
+const ACTION_TEST_SAVE_DIR := "user://issue144_action_registry_e2e/"
 
 
 func before_each() -> void:
 	_runtime = get_tree().root.get_node("StellaRuntime")
 	_saved_action_registry = _runtime.action_registry
+	_saved_scenario_path = _runtime.config.scenario_path
+	_saved_settings_scene = _runtime.config.settings_scene
+	_saved_navigation_override = _runtime._navigation_scene_change_override
+	_saved_save_dir = _runtime.save_manager.save_dir
 	await RuntimeTestSupport.reset_for_test(_runtime, get_tree())
 	_runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	_game = load("res://addons/stella/scenes/game.tscn").instantiate()
@@ -39,6 +48,16 @@ func before_each() -> void:
 func after_each() -> void:
 	if _runtime.action_registry != _saved_action_registry:
 		_runtime.action_registry = _saved_action_registry
+	_runtime.config.scenario_path = _saved_scenario_path
+	_runtime.config.settings_scene = _saved_settings_scene
+	_runtime._navigation_scene_change_override = _saved_navigation_override
+	_runtime.save_manager.save_dir = _saved_save_dir
+	var action_test_dir := ProjectSettings.globalize_path(ACTION_TEST_SAVE_DIR)
+	var quick_path := action_test_dir.path_join("quicksave.json")
+	if FileAccess.file_exists(quick_path):
+		DirAccess.remove_absolute(quick_path)
+	if DirAccess.dir_exists_absolute(action_test_dir):
+		DirAccess.remove_absolute(action_test_dir)
 	if is_instance_valid(_game):
 		_game.queue_free()
 		await _game.tree_exited
@@ -98,6 +117,7 @@ func test_setup_toolbar_preserves_authored_identity_skin_and_geometry() -> void:
 	var authored_icon := GradientTexture1D.new()
 	auto_button.icon = authored_icon
 	auto_button.custom_minimum_size = Vector2(137, 41)
+	auto_button.modulate = Color(0.2, 0.4, 0.6, 0.35)
 
 	dialogue._setup_toolbar()
 
@@ -108,6 +128,136 @@ func test_setup_toolbar_preserves_authored_identity_skin_and_geometry() -> void:
 		assert_eq(child.text, before_text[index])
 	assert_same(auto_button.icon, authored_icon)
 	assert_eq(auto_button.custom_minimum_size, Vector2(137, 41))
+	_runtime.toggle_auto_play()
+	assert_eq(auto_button.modulate, Color(0.2, 0.4, 0.6, 0.35),
+		"Presenter toggle edges never tint an authored Button")
+
+	var buttons := _buttons_by_action()
+	var voice_button := buttons[StellaActionRegistry.ACTION_VOICE_REPLAY] as Button
+	var voice_binding := voice_button.get_node("StellaAction") as StellaAction
+	voice_binding.sync_availability = false
+	voice_binding.hide_when_unavailable = false
+	voice_button.disabled = false
+	voice_button.visible = true
+	voice_button.text = "AUTHORED VOICE"
+	voice_button.modulate = Color(0.7, 0.1, 0.3, 0.45)
+	dialogue._dialogue_total_duration = 0.0
+	_runtime.notify_action_state_changed(StellaActionRegistry.ACTION_VOICE_REPLAY)
+	assert_false(voice_button.disabled)
+	assert_true(voice_button.visible)
+	assert_eq(voice_button.text, "AUTHORED VOICE")
+	assert_eq(voice_button.modulate, Color(0.7, 0.1, 0.3, 0.45))
+
+	var prev_button := buttons[StellaActionRegistry.ACTION_PREV_CHOICE] as Button
+	var prev_binding := prev_button.get_node("StellaAction") as StellaAction
+	prev_binding.sync_availability = false
+	prev_button.disabled = false
+	dialogue._notify_prev_choice_state_changed()
+	assert_false(prev_button.disabled,
+		"Presenter state edges respect binding availability opt-out")
+
+
+func _authored_action_button(action_id: StringName) -> Button:
+	var button := Button.new()
+	var binding := StellaAction.new()
+	binding.action_id = action_id
+	button.add_child(binding)
+	add_child_autoqfree(button)
+	return button
+
+
+func test_predicate_dependencies_publish_binding_edges_without_polling() -> void:
+	var dialogue := _dialogue()
+	var hide_button := _authored_action_button(
+		StellaActionRegistry.ACTION_HIDE_UI)
+	dialogue.visible = true
+	dialogue._ui_hidden = false
+	dialogue._set_is_typing(true)
+	assert_true(hide_button.disabled)
+	dialogue._set_is_typing(false)
+	assert_false(hide_button.disabled)
+
+	var advance_button := _authored_action_button(
+		StellaActionRegistry.ACTION_ADVANCE)
+	assert_false(advance_button.disabled)
+	var choice_session: int = _runtime._begin_choice_policy_session()
+	assert_gt(choice_session, 0)
+	assert_true(advance_button.disabled)
+	assert_true(_runtime._resolve_choice_policy_session(choice_session))
+	assert_false(advance_button.disabled)
+
+	var flowchart_button := _authored_action_button(
+		StellaActionRegistry.ACTION_FLOWCHART)
+	_runtime._set_scenario_graph(null)
+	assert_true(flowchart_button.disabled)
+	_runtime._set_scenario_graph(ScenarioGraph.new())
+	assert_false(flowchart_button.disabled)
+
+	var quit_button := _authored_action_button(StellaActionRegistry.ACTION_QUIT)
+	assert_false(quit_button.disabled)
+	var old_quit_requested: bool = _runtime._quit_requested
+	var old_quit_code: int = _runtime._quit_exit_code
+	assert_true(_runtime._begin_quit_request(0))
+	assert_true(quit_button.disabled)
+	_runtime._quit_requested = old_quit_requested
+	_runtime._quit_exit_code = old_quit_code
+	_runtime.notify_action_state_changed(StellaActionRegistry.ACTION_QUIT)
+
+
+func test_builtin_dispatch_reports_preflight_failure_and_async_admission() -> void:
+	_runtime.game_state.transition_to(GameStateMachine.State.TITLE)
+	_runtime.config.scenario_path = "res://tests/fixtures/missing/action_registry.stla"
+	assert_true(_runtime.can_execute_action(StellaActionRegistry.ACTION_START_GAME),
+		"nonempty authored path passes the side-effect-free catalog predicate")
+	assert_eq(
+		_runtime.execute_action(StellaActionRegistry.ACTION_START_GAME),
+		StellaActionRegistry.ExecuteResult.FAILED,
+		"the execute callback propagates the facade's real parse rejection",
+	)
+	assert_push_error("StellaRuntime: cannot open res://tests/fixtures/missing/action_registry.stla")
+
+	_runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	_runtime.config.settings_scene = (
+		"res://tests/fixtures/missing/action_registry_settings.tscn")
+	assert_eq(
+		_runtime.execute_action(StellaActionRegistry.ACTION_SETTINGS),
+		StellaActionRegistry.ExecuteResult.FAILED,
+		"an unloadable overlay is never reported as executed",
+	)
+	assert_push_error("StellaRuntime: overlay scene is not available")
+
+	_runtime.game_state.transition_to(GameStateMachine.State.TITLE)
+	_runtime.config.scenario_path = "res://examples/demo/scenarios/demo.stla"
+	_runtime.save_manager.save_dir = ACTION_TEST_SAVE_DIR
+	DirAccess.make_dir_recursive_absolute(
+		ProjectSettings.globalize_path(ACTION_TEST_SAVE_DIR))
+	var corrupt := FileAccess.open(
+		ACTION_TEST_SAVE_DIR + "quicksave.json", FileAccess.WRITE)
+	assert_not_null(corrupt)
+	corrupt.store_string('{"scenario_context":"corrupt"}')
+	corrupt.close()
+	assert_true(_runtime.can_execute_action(
+		StellaActionRegistry.ACTION_QUICK_LOAD))
+	assert_eq(
+		_runtime.execute_action(StellaActionRegistry.ACTION_QUICK_LOAD),
+		StellaActionRegistry.ExecuteResult.FAILED,
+		"a corrupt save fails before navigation admission",
+	)
+
+	_runtime.game_state.transition_to(GameStateMachine.State.TITLE)
+	_runtime.config.scenario_path = "res://examples/demo/scenarios/demo.stla"
+	_runtime._navigation_scene_change_override = (
+		func(_scene: PackedScene) -> int: return OK)
+	assert_eq(
+		_runtime.execute_action(StellaActionRegistry.ACTION_START_GAME),
+		StellaActionRegistry.ExecuteResult.EXECUTED,
+		"successful synchronous preflight reports accepted before async settlement",
+	)
+	var slot := int(_runtime._navigation_scene_slot_active_serial)
+	assert_gt(slot, 0)
+	_runtime._settle_navigation_scene_slot(slot, false)
+	await wait_until(
+		func() -> bool: return _runtime._navigation_kind.is_empty(), 2.0)
 
 
 func test_authored_buttons_follow_live_availability_and_active_events() -> void:

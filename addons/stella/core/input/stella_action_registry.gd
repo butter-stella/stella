@@ -83,6 +83,7 @@ var _next_confirmation_token: int = 0
 var _accepting_initial_builtins: bool = false
 var _construction_valid: bool = true
 var _construction_capability_ref: WeakRef
+var _sealed_builtin_owner_id: int = 0
 
 
 ## Runtime construction is one synchronous, sealed operation. The temporary
@@ -132,6 +133,7 @@ func _init(
 			_fail_construction(
 				"runtime action catalog is missing a canonical built-in ID")
 			return
+	_sealed_builtin_owner_id = builtin_owner.get_instance_id()
 	_accepting_initial_builtins = true
 	_construction_capability_ref = weakref(construction_capability)
 	for definition: Dictionary in definitions:
@@ -231,14 +233,14 @@ func _register_action(
 		)
 		return false
 	if (
-		not owner is Node
-		or not is_instance_valid(owner)
-		or not (owner as Node).is_inside_tree()
-		or (owner as Node).is_queued_for_deletion()
+		not _owner_is_live(owner)
 	):
 		last_error = "action owner must be a live tree-bound Node"
 		return false
 	var owner_id := (owner as Node).get_instance_id()
+	if not builtin and owner_id == _sealed_builtin_owner_id:
+		last_error = "built-in action owner is sealed"
+		return false
 	if (
 		_retiring_owner_ids.has(owner_id)
 		or (
@@ -251,8 +253,18 @@ func _register_action(
 	if not execute_callback.is_valid():
 		last_error = "action execute callback is invalid"
 		return false
+	if execute_callback.get_argument_count() != 1:
+		last_error = "action execute callback must accept exactly one context argument"
+		return false
 	if not _callback_belongs_to_owner(execute_callback, owner as Node):
 		last_error = "action execute callback must belong to its owner"
+		return false
+	if (
+		can_execute_callback.is_valid()
+		and can_execute_callback.get_argument_count() != 1
+	):
+		last_error = (
+			"action can_execute callback must accept exactly one context argument")
 		return false
 	if (
 		can_execute_callback.is_valid()
@@ -260,6 +272,13 @@ func _register_action(
 			can_execute_callback, owner as Node)
 	):
 		last_error = "action can_execute callback must belong to its owner"
+		return false
+	if (
+		is_active_callback.is_valid()
+		and is_active_callback.get_argument_count() != 1
+	):
+		last_error = (
+			"action is_active callback must accept exactly one context argument")
 		return false
 	if (
 		is_active_callback.is_valid()
@@ -283,7 +302,7 @@ func _register_action(
 	_entries[action_id] = {
 		"generation": _next_generation,
 		"execution_count": 0,
-		"pending_confirmation_token": 0,
+		"pending_confirmation_tokens": {},
 		"owner_id": owner.get_instance_id(),
 		"owner_ref": weakref(owner),
 		"metadata": normalized,
@@ -398,50 +417,56 @@ func execute(
 	var entry := _get_live_entry(action_id)
 	if entry.is_empty():
 		return ExecuteResult.NOT_FOUND
+	var metadata: Dictionary = entry["metadata"]
+	var policy := StringName(metadata.get(
+		"confirmation_policy", CONFIRMATION_NONE))
+	var confirmation_granted := false
+	if policy != CONFIRMATION_NONE:
+		var confirmation_granted_value: Variant = context.get(
+			"confirmation_granted", false)
+		if not confirmation_granted_value is bool:
+			return ExecuteResult.FAILED
+		confirmation_granted = bool(confirmation_granted_value)
+		if confirmation_granted:
+			var supplied_token_value: Variant = context.get(
+				CONFIRMATION_TOKEN_CONTEXT_KEY, 0)
+			if typeof(supplied_token_value) != TYPE_INT:
+				return ExecuteResult.FAILED
+			var supplied_token := int(supplied_token_value)
+			var pending_tokens: Dictionary = entry["pending_confirmation_tokens"]
+			if (
+				supplied_token <= 0
+				or not pending_tokens.has(supplied_token)
+			):
+				return ExecuteResult.FAILED
+			# A valid confirmation attempt retires its exact receipt before the
+			# availability callback. If availability changed or that callback
+			# replaces the entry, this user decision cannot become valid again later.
+			pending_tokens.erase(supplied_token)
 	if not _query_can_execute(action_id, entry, context):
 		if not _entry_receipt_is_current(action_id, entry):
 			return ExecuteResult.FAILED
 		return ExecuteResult.UNAVAILABLE
 	if not _entry_receipt_is_current(action_id, entry):
 		return ExecuteResult.FAILED
-	var metadata: Dictionary = entry["metadata"]
-	var policy := StringName(metadata.get(
-		"confirmation_policy", CONFIRMATION_NONE))
-	if policy != CONFIRMATION_NONE:
-		var confirmation_granted: Variant = context.get(
-			"confirmation_granted", false)
-		if not confirmation_granted is bool:
+	if policy != CONFIRMATION_NONE and not confirmation_granted:
+		_next_confirmation_token += 1
+		var requested_token := _next_confirmation_token
+		var pending_tokens: Dictionary = entry["pending_confirmation_tokens"]
+		pending_tokens[requested_token] = true
+		var confirmation_context := context.duplicate(true)
+		confirmation_context[CONFIRMATION_TOKEN_CONTEXT_KEY] = requested_token
+		var execution_count := int(entry["execution_count"])
+		confirmation_requested.emit(action_id, policy, confirmation_context)
+		if not _entry_receipt_is_current(action_id, entry):
 			return ExecuteResult.FAILED
-		if bool(confirmation_granted):
-			var supplied_token_value: Variant = context.get(
-				CONFIRMATION_TOKEN_CONTEXT_KEY, 0)
-			if typeof(supplied_token_value) != TYPE_INT:
-				return ExecuteResult.FAILED
-			var supplied_token := int(supplied_token_value)
-			if (
-				supplied_token <= 0
-				or supplied_token != int(entry["pending_confirmation_token"])
-			):
-				return ExecuteResult.FAILED
-			# Consume before the callback; nested or competing consumers fail closed.
-			entry["pending_confirmation_token"] = 0
-		else:
-			_next_confirmation_token += 1
-			entry["pending_confirmation_token"] = _next_confirmation_token
-			var confirmation_context := context.duplicate(true)
-			confirmation_context[CONFIRMATION_TOKEN_CONTEXT_KEY] = (
-				_next_confirmation_token)
-			var execution_count := int(entry["execution_count"])
-			confirmation_requested.emit(
-				action_id, policy, confirmation_context)
-			if not _entry_receipt_is_current(action_id, entry):
-				return ExecuteResult.FAILED
-			var current := _get_live_entry(action_id)
-			if int(current["execution_count"]) != execution_count:
-				return ExecuteResult.EXECUTED
-			if int(current["pending_confirmation_token"]) == 0:
-				return ExecuteResult.FAILED
-			return ExecuteResult.CONFIRMATION_REQUIRED
+		var current := _get_live_entry(action_id)
+		if int(current["execution_count"]) != execution_count:
+			return ExecuteResult.EXECUTED
+		var current_tokens: Dictionary = current["pending_confirmation_tokens"]
+		if not current_tokens.has(requested_token):
+			return ExecuteResult.FAILED
+		return ExecuteResult.CONFIRMATION_REQUIRED
 	var callback: Callable = entry["execute"]
 	if not callback.is_valid():
 		_prune_invalid_owners()
@@ -487,7 +512,15 @@ func _get_live_entry(action_id: StringName) -> Dictionary:
 	var entry: Dictionary = _entries[action_id]
 	var owner_ref: WeakRef = entry["owner_ref"]
 	var owner := owner_ref.get_ref()
-	if owner == null or not is_instance_valid(owner):
+	var owner_id := int(entry["owner_id"])
+	if (
+		not _owner_is_live(owner)
+		or _retiring_owner_ids.has(owner_id)
+		or (
+			_owners.has(owner_id)
+			and bool((_owners[owner_id] as Dictionary).get("exiting", false))
+		)
+	):
 		_erase_entry(action_id, true)
 		return {}
 	return entry
@@ -498,7 +531,15 @@ func _prune_invalid_owners() -> void:
 		var entry: Dictionary = _entries[action_id]
 		var owner_ref: WeakRef = entry["owner_ref"]
 		var owner := owner_ref.get_ref()
-		if owner == null or not is_instance_valid(owner):
+		var owner_id := int(entry["owner_id"])
+		if (
+			not _owner_is_live(owner)
+			or _retiring_owner_ids.has(owner_id)
+			or (
+				_owners.has(owner_id)
+				and bool((_owners[owner_id] as Dictionary).get("exiting", false))
+			)
+		):
 			_erase_entry(action_id, true)
 
 
@@ -622,6 +663,15 @@ func _callback_belongs_to_owner(callback: Callable, owner: Node) -> bool:
 	return callback.get_object_id() == owner.get_instance_id()
 
 
+func _owner_is_live(owner: Variant) -> bool:
+	return (
+		owner is Node
+		and is_instance_valid(owner)
+		and (owner as Node).is_inside_tree()
+		and not (owner as Node).is_queued_for_deletion()
+	)
+
+
 func _normalize_metadata(
 	action_id: StringName,
 	metadata: Dictionary,
@@ -668,7 +718,7 @@ func _is_valid_action_id(action_id: String, builtin: bool) -> bool:
 		or action_id.ends_with(".")
 	):
 		return false
-	var segments := action_id.split(".", false)
+	var segments := action_id.split(".", true)
 	if not builtin and segments.size() < 2:
 		return false
 	for segment: String in segments:

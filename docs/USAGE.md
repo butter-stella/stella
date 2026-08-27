@@ -350,6 +350,31 @@ Presenter owner 实时计算：
 | `flowchart` | 打开流程图 | 否 | `none` |
 | `cancel` | 关闭当前 overlay | 否 | `none` |
 
+所有内建 predicate 的状态依赖都有唯一的同步事件源；registry 不在 frame 中轮询：
+
+| action | availability / active 依赖与刷新边界 |
+|---|---|
+| `start_game` | TITLE state；启动时解析的 scenario 配置 |
+| `continue_game` | TITLE state；quick/auto save 创建、删除 |
+| `return_to_title` | game state；return-navigation admission/settlement latch |
+| `voice_replay` | game state；exact Presenter admission/exit；当前 dialogue voice session |
+| `auto` / `skip` | game state；两个 controller 的 synchronous active edge |
+| `backlog` | game state；启动时解析的 backlog 配置 |
+| `prev_choice` | game state、recollection；choice history record/commit/clear 与 command edge |
+| `quick_save` | game state、recollection；native-movie operation/receipt/completion stability |
+| `quick_load` | game state、recollection；quick-save 创建/删除与 scenario owner 安装 |
+| `save` / `load` | game state；recollection enter/exit |
+| `settings` | game state |
+| `advance` | game state；choice ownership begin/resolve/cancel/hard boundary |
+| `hide_ui` | game state；exact Presenter、visibility、typing start/complete、hide/restore |
+| `flowchart` | game state、recollection；scenario graph install/clear |
+| `cancel` | overlay install/retire 与 game state |
+| `quit` | graceful-quit admission latch |
+
+这些边界先更新 canonical state，再发 `action_state_changed`；因此 Button listener 同步读取到的
+`can_execute` / `is_active` 已经是新状态。startup-only 配置如果要改变，应按配置生命周期重启
+Runtime，而不是在项目代码里静默改字段。
+
 可枚举与 dispatcher Facade 都在同一个 registry 上：
 
 ```gdscript
@@ -402,7 +427,9 @@ func _execute_codex(_context: Dictionary) -> bool:
 ID 冲突、内建 ID、invalid callback 和非 tree-bound owner 都会 fail-close；callback 必须是
 该 exact owner 的方法。owner 离开 SceneTree 时其全部 action 自动注销并断开 lifecycle
 连接，也可提前调用 `unregister_action(id, owner)`。`can_execute` / `is_active` 必须无副作用并
-严格返回 `bool`；execute 也必须以 `true` 表示已完成，否则 dispatcher 返回 `FAILED`。
+严格返回 `bool`；execute 也必须以 `true` 表示同步工作已经完成，或异步 transaction 已通过
+全部 preflight 并取得 admission。parser、save 或 overlay 在 admission 前失败时必须返回
+`false`，dispatcher 才会返回 `FAILED`，不能把同步 no-op 报成 `EXECUTED`。
 所有 callback 接收 context 的副本。项目状态变化后调用
 `notify_action_state_changed(id)`；registry 的 `catalog_changed` / `action_state_changed` 会
 事件驱动刷新所有 Binding。
@@ -423,8 +450,9 @@ func _on_confirmation_requested(
 	action_id: StringName, _policy: StringName, context: Dictionary,
 ) -> void:
 	# 旧 Inspector enum 的精确兼容 adapter 会自己消费该 receipt。
-	if bool(context.get(
-		StellaActionRegistry.CONFIRMATION_AUTO_CONFIRM_CONTEXT_KEY, false)):
+	var marker: Variant = context.get(
+		StellaActionRegistry.CONFIRMATION_AUTO_CONFIRM_CONTEXT_KEY, null)
+	if typeof(marker) == TYPE_BOOL and marker == true:
 		return
 	_pending_action = action_id
 	_pending_context = context.duplicate(true)

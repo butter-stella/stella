@@ -84,17 +84,21 @@ func get_save_list() -> Array:
 
 ## --- Quick Save (separate from manual slots) ---
 
-func quick_save() -> void:
+func quick_save() -> bool:
 	var captured: Variant = _capture_save_data()
 	if captured == null:
-		return
+		return false
 	_ensure_dir()
 	var data: Dictionary = captured
 
 	var path = save_dir + "quicksave.json"
 	var file = FileAccess.open(path, FileAccess.WRITE)
-	if file:
-		file.store_string(JSON.stringify(data))
+	if file == null:
+		return false
+	file.store_string(JSON.stringify(data))
+	var write_error := file.get_error()
+	file.close()
+	return write_error == OK
 
 
 func quick_load(scenario_data: ScenarioData = null) -> bool:

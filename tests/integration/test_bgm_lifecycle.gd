@@ -2080,7 +2080,7 @@ func test_graceful_quit_latch_and_mix_boundary_fail_close_are_bounded() -> void:
 		"auto_save()\n\t\trequest_quit()"),
 		"OS close preserves autosave then reuses the public graceful boundary")
 	assert_true(runtime_source.contains(
-		"func _action_execute_quit(_context: Dictionary) -> bool:\n\trequest_quit()"),
+		"func _action_execute_quit(_context: Dictionary) -> bool:\n\treturn request_quit()"),
 		"the canonical quit action terminates only through the graceful boundary")
 	for path: String in [
 		"res://addons/stella/presentation/ui/title_screen.gd",

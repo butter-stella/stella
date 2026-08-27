@@ -384,10 +384,10 @@ func test_backlog_replay_from_voice_started_does_not_strand_show() -> void:
 		0.001,
 		"toolbar duration belongs to the original SHOW, not backlog replay",
 	)
-	assert_not_null(dialogue._voice_replay_btn)
-	if dialogue._voice_replay_btn != null:
-		assert_true(dialogue._voice_replay_btn.visible,
-			"the original voiced SHOW must retain toolbar replay visibility")
+	var replay_button := dialogue.get_node("Toolbar/VoiceReplay") as Button
+	assert_not_null(replay_button)
+	assert_true(replay_button.visible,
+		"the original voiced SHOW must retain toolbar replay visibility")
 
 	SignalBus.hide_dialogue.emit()
 	var audio_presenter := StellaRuntime.get_node_or_null("AudioPresenter")
@@ -606,10 +606,7 @@ func test_replay_button_visible_when_only_later_segment_has_voice():
 	# A combine where seg[0] is voice-less but seg[1] has a voice would hide
 	# the button even though replay would play the later voice.
 	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
-	# Create the replay button via the toolbar setup the presenter expects
-	if dialogue._voice_replay_btn == null:
-		dialogue._voice_replay_btn = Button.new()
-		add_child_autoqfree(dialogue._voice_replay_btn)
+	var replay_button := dialogue.get_node("Toolbar/VoiceReplay") as Button
 
 	var segments = [
 		{"text": "一", "voice_layers": []},
@@ -618,7 +615,7 @@ func test_replay_button_visible_when_only_later_segment_has_voice():
 	SignalBus.show_dialogue.emit("sakura", segments, "adv")
 	await get_tree().process_frame
 
-	assert_true(dialogue._voice_replay_btn.visible,
+	assert_true(replay_button.visible,
 		"replay button should show whenever ANY segment has a voice")
 
 

@@ -406,10 +406,11 @@ func _notification(what: int) -> void:
 ## and OS close. AudioStreamPlayer.stop() is not a synchronous retirement
 ## boundary in Godot 4.6.1, so quit is deferred until the unique AudioPresenter
 ## has quiesced and AudioServer reports a subsequent real mix rollover.
-func request_quit(exit_code: int = 0) -> void:
+func request_quit(exit_code: int = 0) -> bool:
 	if not _begin_quit_request(exit_code):
-		return
+		return false
 	_complete_graceful_quit.call_deferred()
+	return true
 
 
 func _begin_quit_request(exit_code: int) -> bool:
@@ -417,6 +418,7 @@ func _begin_quit_request(exit_code: int) -> bool:
 		return false
 	_quit_requested = true
 	_quit_exit_code = exit_code
+	notify_action_state_changed(StellaActionRegistry.ACTION_QUIT)
 	return true
 
 
@@ -607,6 +609,18 @@ func _ready():
 		_on_dialogue_backlog_effects_resolved)
 	# Wire choice presentation to choice-history (rewind-to-previous-choice).
 	SignalBus.choice_show.connect(_on_choice_for_history)
+	# Native-movie capture stability is part of quick-save availability. Every
+	# mutation that can open or settle that boundary publishes synchronously;
+	# declarative bindings therefore never need a process callback or timer.
+	SignalBus.movie_operation_committed.connect(_on_movie_operation_state_changed)
+	SignalBus.movie_transition_receipt_started.connect(
+		_on_movie_transition_receipt_state_changed)
+	SignalBus.movie_transition_terminal.connect(
+		_on_movie_transition_terminal_state_changed)
+	SignalBus.movie_projection_reset_requested.connect(
+		_on_movie_projection_state_changed)
+	SignalBus.movie_completion_committed.connect(_on_movie_completion_state_changed)
+	SignalBus.movie_save_boundary_changed.connect(_on_movie_save_boundary_changed)
 
 	# Play title BGM after AudioPresenter is ready
 	if config.title_bgm != "":
@@ -893,6 +907,91 @@ func _connect_action_registry_state_sources() -> void:
 		skip_controller.active_changed.connect(_on_action_skip_state_changed)
 
 
+func _navigation_was_admitted(previous_generation: int, kind: String) -> bool:
+	return (
+		_navigation_generation == previous_generation + 1
+		and (_navigation_kind == kind or _navigation_kind.is_empty())
+	)
+
+
+func _notify_quick_save_state() -> void:
+	notify_action_state_changed(StellaActionRegistry.ACTION_QUICK_SAVE)
+
+
+func _on_movie_operation_state_changed(
+	_operation: MoviePresentationOperation,
+	_state: Dictionary,
+) -> void:
+	_notify_quick_save_state()
+
+
+func _on_movie_transition_receipt_state_changed(
+	_presenter_instance_id: int,
+	_token: int,
+	_operation_request_id: int,
+	_generation: int,
+) -> void:
+	_notify_quick_save_state()
+
+
+func _on_movie_transition_terminal_state_changed(
+	_presenter_instance_id: int,
+	_token: int,
+	_operation_request_id: int,
+	_generation: int,
+	_outcome: StringName,
+) -> void:
+	_notify_quick_save_state()
+
+
+func _on_movie_projection_state_changed(_epoch: int) -> void:
+	_notify_quick_save_state()
+
+
+func _on_movie_completion_state_changed() -> void:
+	_notify_quick_save_state()
+
+
+func _on_movie_save_boundary_changed(_stable: bool) -> void:
+	_notify_quick_save_state()
+
+
+func _set_return_to_title_pending(value: bool) -> void:
+	if _return_to_title_pending == value:
+		return
+	_return_to_title_pending = value
+	notify_action_state_changed(StellaActionRegistry.ACTION_RETURN_TO_TITLE)
+
+
+func _set_active_recollection(
+	playback: ScenarioPlaybackContext,
+	context: ScenarioContext,
+) -> void:
+	if (
+		_active_recollection_playback == playback
+		and _active_recollection_context == context
+	):
+		return
+	_active_recollection_playback = playback
+	_active_recollection_context = context
+	for action_id: StringName in [
+		StellaActionRegistry.ACTION_PREV_CHOICE,
+		StellaActionRegistry.ACTION_QUICK_SAVE,
+		StellaActionRegistry.ACTION_QUICK_LOAD,
+		StellaActionRegistry.ACTION_SAVE,
+		StellaActionRegistry.ACTION_LOAD,
+		StellaActionRegistry.ACTION_FLOWCHART,
+	]:
+		notify_action_state_changed(action_id)
+
+
+func _set_scenario_graph(value: ScenarioGraph) -> void:
+	if scenario_graph == value:
+		return
+	scenario_graph = value
+	notify_action_state_changed(StellaActionRegistry.ACTION_FLOWCHART)
+
+
 func _on_action_auto_state_changed(_active: bool) -> void:
 	notify_action_state_changed(StellaActionRegistry.ACTION_AUTO)
 	notify_action_state_changed(StellaActionRegistry.ACTION_SKIP)
@@ -942,8 +1041,9 @@ func _get_dialogue_action_presenter() -> Control:
 
 
 func _action_execute_start_game(_context: Dictionary) -> bool:
+	var generation := _navigation_generation
 	start_game()
-	return true
+	return _navigation_was_admitted(generation, "start_game")
 
 
 func _action_can_start_game(_context: Dictionary) -> bool:
@@ -955,8 +1055,9 @@ func _action_can_start_game(_context: Dictionary) -> bool:
 
 
 func _action_execute_continue_game(_context: Dictionary) -> bool:
+	var generation := _navigation_generation
 	continue_game()
-	return true
+	return _navigation_was_admitted(generation, "continue_game")
 
 
 func _action_can_continue_game(_context: Dictionary) -> bool:
@@ -968,8 +1069,7 @@ func _action_can_continue_game(_context: Dictionary) -> bool:
 
 
 func _action_execute_return_to_title(_context: Dictionary) -> bool:
-	return_to_title()
-	return true
+	return return_to_title()
 
 
 func _action_can_return_to_title(_context: Dictionary) -> bool:
@@ -1021,8 +1121,7 @@ func _action_is_skip_active(_context: Dictionary) -> bool:
 
 
 func _action_execute_backlog(_context: Dictionary) -> bool:
-	show_backlog()
-	return true
+	return show_backlog()
 
 
 func _action_can_backlog(_context: Dictionary) -> bool:
@@ -1042,8 +1141,7 @@ func _action_can_prev_choice(_context: Dictionary) -> bool:
 
 
 func _action_execute_quick_save(_context: Dictionary) -> bool:
-	quick_save()
-	return true
+	return quick_save()
 
 
 func _action_can_quick_save(_context: Dictionary) -> bool:
@@ -1056,8 +1154,9 @@ func _action_can_quick_save(_context: Dictionary) -> bool:
 
 
 func _action_execute_quick_load(_context: Dictionary) -> bool:
+	var generation := _navigation_generation
 	quick_load()
-	return true
+	return _navigation_was_admitted(generation, "quick_load")
 
 
 func _action_can_quick_load(_context: Dictionary) -> bool:
@@ -1074,8 +1173,7 @@ func _action_can_quick_load(_context: Dictionary) -> bool:
 
 
 func _action_execute_save(_context: Dictionary) -> bool:
-	show_save_load("save")
-	return true
+	return show_save_load("save")
 
 
 func _action_can_save(_context: Dictionary) -> bool:
@@ -1087,8 +1185,7 @@ func _action_can_save(_context: Dictionary) -> bool:
 
 
 func _action_execute_load(_context: Dictionary) -> bool:
-	show_save_load("load")
-	return true
+	return show_save_load("load")
 
 
 func _action_can_load(_context: Dictionary) -> bool:
@@ -1103,8 +1200,7 @@ func _action_can_load(_context: Dictionary) -> bool:
 
 
 func _action_execute_settings(_context: Dictionary) -> bool:
-	show_settings()
-	return true
+	return show_settings()
 
 
 func _action_can_settings(_context: Dictionary) -> bool:
@@ -1161,8 +1257,7 @@ func _action_is_ui_hidden(_context: Dictionary) -> bool:
 
 
 func _action_execute_flowchart(_context: Dictionary) -> bool:
-	show_flowchart()
-	return true
+	return show_flowchart()
 
 
 func _action_can_flowchart(_context: Dictionary) -> bool:
@@ -1170,14 +1265,12 @@ func _action_can_flowchart(_context: Dictionary) -> bool:
 		game_state != null
 		and game_state.is_playing()
 		and scenario_graph != null
+		and not _is_recollection_context_active()
 	)
 
 
 func _action_execute_cancel(_context: Dictionary) -> bool:
-	if _current_overlay == null:
-		return false
-	close_overlay()
-	return true
+	return close_overlay()
 
 
 func _action_can_cancel(_context: Dictionary) -> bool:
@@ -1185,8 +1278,7 @@ func _action_can_cancel(_context: Dictionary) -> bool:
 
 
 func _action_execute_quit(_context: Dictionary) -> bool:
-	request_quit()
-	return true
+	return request_quit()
 
 
 func _action_can_quit(_context: Dictionary) -> bool:
@@ -1677,7 +1769,7 @@ func _begin_navigation(kind: String, defer_scene_ownership: bool = false) -> int
 		else null
 	)
 	if kind != "return_to_title":
-		_return_to_title_pending = false
+		_set_return_to_title_pending(false)
 	if not defer_scene_ownership:
 		_acquire_navigation_runtime_ownership(navigation, true)
 	return navigation
@@ -1972,7 +2064,7 @@ func _retire_navigation_business_owner_after_context_replacement(
 		return
 	_navigation_generation += 1
 	_navigation_kind = ""
-	_return_to_title_pending = false
+	_set_return_to_title_pending(false)
 	_navigation_projection_committed = false
 	_navigation_runtime_ownership_generation = 0
 	_navigation_presentation_reset_generation = 0
@@ -2220,7 +2312,7 @@ func _finish_navigation(generation: int) -> void:
 	var presentation_was_reset := (
 		_navigation_presentation_reset_generation == generation)
 	_navigation_kind = ""
-	_return_to_title_pending = false
+	_set_return_to_title_pending(false)
 	_navigation_projection_committed = false
 	_navigation_runtime_ownership_generation = 0
 	_navigation_presentation_reset_generation = 0
@@ -2309,8 +2401,7 @@ func _cancel_recollection_for_replacement(
 	):
 		return
 	_active_recollection_playback.cancel()
-	_active_recollection_playback = null
-	_active_recollection_context = null
+	_set_active_recollection(null, null)
 
 
 func _recollection_source_location(
@@ -2394,8 +2485,7 @@ func _complete_recollection_return(
 	if not _cancel_active_gameplay(navigation):
 		playback.cancel()
 		if _active_recollection_playback == playback:
-			_active_recollection_playback = null
-			_active_recollection_context = null
+			_set_active_recollection(null, null)
 		push_error(
 			"StellaRuntime: recollection return cleanup lost ownership at %s"
 			% location)
@@ -2403,8 +2493,7 @@ func _complete_recollection_return(
 	if not presentation_clip_audio_choice_authority.clear_to_unstarted():
 		playback.cancel()
 		if _active_recollection_playback == playback:
-			_active_recollection_playback = null
-			_active_recollection_context = null
+			_set_active_recollection(null, null)
 		push_error(
 			"StellaRuntime: recollection audio-choice cleanup failed at %s"
 			% location)
@@ -2423,8 +2512,7 @@ func _complete_recollection_return(
 	if not _reset_presentation(navigation, null, true):
 		playback.cancel()
 		if _active_recollection_playback == playback:
-			_active_recollection_playback = null
-			_active_recollection_context = null
+			_set_active_recollection(null, null)
 		push_error(
 			"StellaRuntime: recollection presentation cleanup failed at %s"
 			% location)
@@ -2443,8 +2531,7 @@ func _complete_recollection_return(
 	if not _owns_navigation_context(navigation, null):
 		playback.cancel()
 		return false
-	_active_recollection_playback = null
-	_active_recollection_context = null
+	_set_active_recollection(null, null)
 	_navigation_projection_committed = true
 	_finish_navigation(navigation)
 
@@ -3087,14 +3174,15 @@ func _resource_dependency_path(raw_dependency: String) -> String:
 ## safe from a scene root's _ready(), where the parent is still busy. Cleanup
 ## and TITLE state are committed only after SceneTree.scene_changed confirms
 ## the resolved (or built-in fallback) scene became current_scene.
-func return_to_title() -> void:
+func return_to_title() -> bool:
 	if _return_to_title_pending:
-		return
+		return false
 	var navigation := _begin_navigation("return_to_title", true)
 	if not _owns_navigation(navigation):
-		return
-	_return_to_title_pending = true
+		return false
+	_set_return_to_title_pending(true)
 	_return_to_title_transaction.call_deferred(navigation)
+	return true
 
 
 func _return_to_title_transaction(navigation: int) -> void:
@@ -3349,17 +3437,17 @@ func _install_scenario(
 			"StellaRuntime: invalid scenario playback context at %s:entry"
 			% scenario_path)
 		engine.context.request_cancellation()
-	_active_recollection_playback = (
-		installed_playback if installed_playback.is_recollection() else null)
-	_active_recollection_context = (
-		engine.context if installed_playback.is_recollection() else null)
+	_set_active_recollection(
+		installed_playback if installed_playback.is_recollection() else null,
+		engine.context if installed_playback.is_recollection() else null,
+	)
 	save_manager.register_provider(engine.context)
 	save_manager.register_provider(engine.context.variable_store)
 	backlog_manager.clear()
 	_clear_choice_history()
 
 	# Issue #97: build scenario graph and prepare flowchart state for new run.
-	scenario_graph = ScenarioGraphBuilder.build(data)
+	_set_scenario_graph(ScenarioGraphBuilder.build(data))
 	for d in scenario_graph.diagnostics:
 		var msg = "[%s graph] %s" % [scenario_id, d.get("message", "")]
 		if d.get("level") == "error":
@@ -4080,17 +4168,19 @@ func _movie_save_admitted() -> bool:
 	return false
 
 ## Quick save (separate from manual save slots).
-func quick_save() -> void:
+func quick_save() -> bool:
 	if _is_recollection_context_active():
 		push_warning(
 			"StellaRuntime: quick save is unavailable during recollection playback")
-		return
+		return false
 	if not _movie_save_admitted():
-		return
+		return false
 	_refresh_current_flowchart_chapter_snapshot_for_save()
-	save_manager.quick_save()
+	if not save_manager.quick_save():
+		return false
 	notify_action_state_changed(StellaActionRegistry.ACTION_QUICK_LOAD)
 	notify_action_state_changed(StellaActionRegistry.ACTION_CONTINUE_GAME)
+	return true
 
 
 ## Quick load (separate from manual save slots).
@@ -4437,6 +4527,7 @@ func _begin_choice_policy_session() -> int:
 	_choice_session_serial += 1
 	var session_id := _choice_session_serial
 	_active_choice_session = session_id
+	notify_action_state_changed(StellaActionRegistry.ACTION_ADVANCE)
 	_active_choice_auto_suspension = pause_auto
 	if _active_choice_auto_suspension:
 		auto_play.acquire_suspension(session_id)
@@ -4457,6 +4548,7 @@ func _resolve_choice_policy_session(session_id: int) -> bool:
 	if session_id < 0 or session_id != _active_choice_session:
 		return false
 	_active_choice_session = -1
+	notify_action_state_changed(StellaActionRegistry.ACTION_ADVANCE)
 	var had_auto_suspension := _active_choice_auto_suspension
 	_active_choice_auto_suspension = false
 	if had_auto_suspension:
@@ -4472,6 +4564,7 @@ func _cancel_choice_policy_session(session_id: int) -> bool:
 	if session_id < 0 or session_id != _active_choice_session:
 		return false
 	_active_choice_session = -1
+	notify_action_state_changed(StellaActionRegistry.ACTION_ADVANCE)
 	var had_auto_suspension := _active_choice_auto_suspension
 	_active_choice_auto_suspension = false
 	auto_play.stop()
@@ -4572,6 +4665,8 @@ func _begin_choice_hard_boundary() -> int:
 	var retired_session := _active_choice_session
 	_active_choice_session = -1
 	_active_choice_auto_suspension = false
+	if retired_session >= 0:
+		notify_action_state_changed(StellaActionRegistry.ACTION_ADVANCE)
 	return retired_session
 
 
@@ -4762,43 +4857,54 @@ func _emit_stage_operation(
 # ─── Facade API: UI Overlays ───
 
 ## Show the backlog overlay.
-func show_backlog() -> void:
+func show_backlog() -> bool:
 	if not config.backlog:
-		return
+		return false
 	var scene_path = config.backlog_scene if config.backlog_scene != "" else DEFAULT_BACKLOG_SCENE
 	if _open_overlay(scene_path):
 		game_state.transition_to(GameStateMachine.State.BACKLOG)
+		return true
+	return false
 
 
 ## Show the save/load overlay.
-func show_save_load(mode: String = "save") -> void:
+func show_save_load(mode: String = "save") -> bool:
 	var scene_path = config.save_load_scene if config.save_load_scene != "" else DEFAULT_SAVE_LOAD_SCENE
 	if _open_overlay(scene_path):
 		if _current_overlay and _current_overlay.has_method("set_mode"):
 			_current_overlay.set_mode(mode)
 		game_state.transition_to(GameStateMachine.State.SAVE_LOAD)
+		return true
+	return false
 
 
 ## Show the settings overlay.
-func show_settings() -> void:
+func show_settings() -> bool:
 	var scene_path = config.settings_scene if config.settings_scene != "" else DEFAULT_SETTINGS_SCENE
 	if _open_overlay(scene_path):
 		game_state.transition_to(GameStateMachine.State.SETTINGS)
+		return true
+	return false
 
 
 ## Show the flowchart overlay (issue #97 PR-D).
-func show_flowchart() -> void:
+func show_flowchart() -> bool:
 	var scene_path = config.flowchart_scene if config.flowchart_scene != "" else DEFAULT_FLOWCHART_SCENE
 	if _open_overlay(scene_path):
 		game_state.transition_to(GameStateMachine.State.FLOWCHART)
+		return true
+	return false
 
 
 ## Close the current overlay and return to previous state.
-func close_overlay() -> void:
+func close_overlay() -> bool:
+	if _current_overlay == null or not is_instance_valid(_current_overlay):
+		return false
 	if config.se_cancel != "":
 		SignalBus.system_se_play.emit(config.se_cancel)
 	_close_current_overlay()
 	game_state.return_to_previous()
+	return true
 
 
 func _open_overlay(scene_path: String) -> bool:
@@ -4814,6 +4920,7 @@ func _open_overlay(scene_path: String) -> bool:
 		push_warning("StellaRuntime: opening overlay while another is active — closing previous")
 		_close_current_overlay()
 	_current_overlay = overlay
+	notify_action_state_changed(StellaActionRegistry.ACTION_CANCEL)
 	# Add as CanvasLayer child so it renders above game content
 	var overlay_layer = CanvasLayer.new()
 	overlay_layer.layer = 10
@@ -4826,6 +4933,7 @@ func _open_overlay(scene_path: String) -> bool:
 func _close_current_overlay() -> void:
 	var overlay := _current_overlay
 	_current_overlay = null
+	notify_action_state_changed(StellaActionRegistry.ACTION_CANCEL)
 	if not is_instance_valid(overlay):
 		return
 	var layer := overlay.get_parent()

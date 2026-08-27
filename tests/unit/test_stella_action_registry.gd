@@ -14,6 +14,7 @@ class ActionOwner extends Node:
 	var available: bool = true
 	var active: bool = false
 	var execute_count: int = 0
+	var arity_callback_count: int = 0
 
 	func execute_action(_context: Dictionary) -> Variant:
 		execute_count += 1
@@ -44,6 +45,14 @@ class ActionOwner extends Node:
 
 	func is_active_action(_context: Dictionary) -> Variant:
 		return active if active_result == null else active_result
+
+	func zero_arg_action() -> bool:
+		arity_callback_count += 1
+		return true
+
+	func two_arg_action(_context: Dictionary, _bound: Variant) -> bool:
+		arity_callback_count += 1
+		return true
 
 	func _test_metadata() -> Dictionary:
 		return {
@@ -146,6 +155,15 @@ func test_custom_action_requires_namespaced_id_and_tree_bound_owner() -> void:
 		&"open_codex", _metadata(), owner,
 		Callable(owner, "execute_action")))
 	assert_string_contains(registry.last_error, "namespaced")
+	for malformed_id: StringName in [
+		&".project.open_codex",
+		&"project.open_codex.",
+		&"project..open_codex",
+	]:
+		assert_false(registry.register_action(
+			malformed_id, _metadata(), owner,
+			Callable(owner, "execute_action")))
+		assert_string_contains(registry.last_error, "namespaced")
 
 	var ref_owner := RefCounted.new()
 	assert_false(registry.register_action(
@@ -180,6 +198,61 @@ func test_custom_action_requires_namespaced_id_and_tree_bound_owner() -> void:
 	assert_eq(owner.execute_count, 1)
 
 
+func test_custom_callbacks_require_one_effective_context_argument() -> void:
+	var registry := StellaActionRegistry.new()
+	var owner := _owner(registry, &"project.callback_arity")
+	assert_false(registry.register_action(
+		owner.action_id,
+		_metadata(),
+		owner,
+		Callable(owner, "zero_arg_action"),
+	))
+	assert_string_contains(registry.last_error, "exactly one context")
+	assert_false(registry.register_action(
+		owner.action_id,
+		_metadata(),
+		owner,
+		Callable(owner, "two_arg_action"),
+	))
+	assert_string_contains(registry.last_error, "exactly one context")
+	assert_false(registry.register_action(
+		owner.action_id,
+		_metadata(),
+		owner,
+		Callable(owner, "execute_action"),
+		Callable(owner, "zero_arg_action"),
+	))
+	assert_string_contains(registry.last_error, "exactly one context")
+	assert_false(registry.register_action(
+		owner.action_id,
+		_metadata(),
+		owner,
+		Callable(owner, "execute_action"),
+		Callable(),
+		Callable(owner, "two_arg_action"),
+	))
+	assert_string_contains(registry.last_error, "exactly one context")
+	assert_eq(owner.arity_callback_count, 0,
+		"registration validation must not invoke malformed callbacks")
+
+	assert_true(registry.register_action(
+		owner.action_id,
+		_metadata(),
+		owner,
+		Callable(owner, "two_arg_action").bind(&"execute"),
+		Callable(owner, "two_arg_action").bind(&"can"),
+		Callable(owner, "two_arg_action").bind(&"active"),
+	))
+	assert_true(registry.can_execute(owner.action_id))
+	assert_true(registry.is_active(owner.action_id))
+	assert_eq(
+		registry.execute(owner.action_id),
+		StellaActionRegistry.ExecuteResult.EXECUTED,
+	)
+	assert_eq(owner.arity_callback_count, 4,
+		"explicit can query plus execute admission each invoke the bound predicate")
+
+
 func test_custom_action_conflict_unregister_and_owner_tree_exit() -> void:
 	var registry := StellaActionRegistry.new()
 	var first := _owner(registry, &"project.lifecycle")
@@ -199,6 +272,44 @@ func test_custom_action_conflict_unregister_and_owner_tree_exit() -> void:
 		registry.execute(action_id),
 		StellaActionRegistry.ExecuteResult.NOT_FOUND,
 	)
+
+
+func test_queued_or_detached_owner_fails_closed_before_the_next_frame() -> void:
+	var registry := StellaActionRegistry.new()
+	var queued := _owner(registry, &"project.lifecycle.queued")
+	queued.active = true
+	assert_true(_register(registry, queued, true, true))
+	var queued_owner_id := queued.get_instance_id()
+	var queued_record: Dictionary = registry._owners[queued_owner_id]
+	var queued_exit_callback: Callable = queued_record["tree_exit_callback"]
+	assert_true(queued.tree_exiting.is_connected(queued_exit_callback))
+
+	queued.queue_free()
+	assert_true(registry.get_action(queued.action_id).is_empty())
+	assert_false(registry.can_execute(queued.action_id))
+	assert_false(registry.is_active(queued.action_id))
+	assert_eq(
+		registry.execute(queued.action_id),
+		StellaActionRegistry.ExecuteResult.NOT_FOUND,
+	)
+	assert_eq(queued.execute_count, 0)
+	assert_false(registry._owners.has(queued_owner_id))
+	assert_false(queued.tree_exiting.is_connected(queued_exit_callback))
+
+	var detached := _owner(registry, &"project.lifecycle.detached")
+	assert_true(_register(registry, detached))
+	var detached_owner_id := detached.get_instance_id()
+	var detached_record: Dictionary = registry._owners[detached_owner_id]
+	var detached_exit_callback: Callable = detached_record["tree_exit_callback"]
+	remove_child(detached)
+	assert_true(registry.get_action(detached.action_id).is_empty())
+	assert_eq(
+		registry.execute(detached.action_id),
+		StellaActionRegistry.ExecuteResult.NOT_FOUND,
+	)
+	assert_false(registry._owners.has(detached_owner_id))
+	assert_false(detached.tree_exiting.is_connected(detached_exit_callback))
+	assert_true(registry._retiring_owner_ids.is_empty())
 
 
 func test_owner_exit_reentry_cannot_leave_multi_action_zombies() -> void:
@@ -401,12 +512,103 @@ func test_confirmation_context_types_fail_closed_without_consuming_token() -> vo
 		registry.execute(owner.action_id, non_int),
 		StellaActionRegistry.ExecuteResult.FAILED,
 	)
+	var wrong_token := exact_context.duplicate(true)
+	wrong_token["confirmation_granted"] = true
+	wrong_token[StellaActionRegistry.CONFIRMATION_TOKEN_CONTEXT_KEY] = (
+		int(exact_context[
+			StellaActionRegistry.CONFIRMATION_TOKEN_CONTEXT_KEY]) + 1)
+	assert_eq(
+		registry.execute(owner.action_id, wrong_token),
+		StellaActionRegistry.ExecuteResult.FAILED,
+	)
 	exact_context["confirmation_granted"] = true
 	assert_eq(
 		registry.execute(owner.action_id, exact_context),
 		StellaActionRegistry.ExecuteResult.EXECUTED,
 	)
 	assert_eq(owner.execute_count, 1)
+
+
+func test_valid_confirmation_is_retired_when_availability_changes() -> void:
+	var registry := StellaActionRegistry.new()
+	var owner := _owner(registry, &"project.confirm_availability")
+	assert_true(_register(
+		registry, owner, true, false,
+		StellaActionRegistry.CONFIRMATION_DESTRUCTIVE))
+	var contexts: Array[Dictionary] = []
+	registry.confirmation_requested.connect(func(
+		_action_id: StringName,
+		_policy: StringName,
+		context: Dictionary,
+	) -> void: contexts.append(context.duplicate(true)))
+	assert_eq(
+		registry.execute(owner.action_id),
+		StellaActionRegistry.ExecuteResult.CONFIRMATION_REQUIRED,
+	)
+	assert_eq(contexts.size(), 1)
+	var stale_context := contexts[0].duplicate(true)
+	stale_context["confirmation_granted"] = true
+	owner.available = false
+	assert_eq(
+		registry.execute(owner.action_id, stale_context),
+		StellaActionRegistry.ExecuteResult.UNAVAILABLE,
+	)
+	owner.available = true
+	assert_eq(
+		registry.execute(owner.action_id, stale_context),
+		StellaActionRegistry.ExecuteResult.FAILED,
+		"availability recovery cannot revive a consumed user decision",
+	)
+	assert_eq(owner.execute_count, 0)
+
+	assert_eq(
+		registry.execute(owner.action_id),
+		StellaActionRegistry.ExecuteResult.CONFIRMATION_REQUIRED,
+	)
+	assert_eq(contexts.size(), 2)
+	assert_ne(
+		contexts[0][StellaActionRegistry.CONFIRMATION_TOKEN_CONTEXT_KEY],
+		contexts[1][StellaActionRegistry.CONFIRMATION_TOKEN_CONTEXT_KEY],
+	)
+	var fresh_context := contexts[1].duplicate(true)
+	fresh_context["confirmation_granted"] = true
+	assert_eq(
+		registry.execute(owner.action_id, fresh_context),
+		StellaActionRegistry.ExecuteResult.EXECUTED,
+	)
+	assert_eq(owner.execute_count, 1)
+
+
+func test_confirmed_can_reentry_cannot_transfer_receipt_to_replacement() -> void:
+	var registry := StellaActionRegistry.new()
+	var owner := _owner(registry, &"project.confirm_can_replace")
+	var replacement := _owner(registry, owner.action_id)
+	owner.replacement = replacement
+	assert_true(_register(
+		registry, owner, true, false,
+		StellaActionRegistry.CONFIRMATION_DESTRUCTIVE))
+	var contexts: Array[Dictionary] = []
+	registry.confirmation_requested.connect(func(
+		_action_id: StringName,
+		_policy: StringName,
+		context: Dictionary,
+	) -> void: contexts.append(context.duplicate(true)))
+	assert_eq(
+		registry.execute(owner.action_id),
+		StellaActionRegistry.ExecuteResult.CONFIRMATION_REQUIRED,
+	)
+	owner.can_mode = &"replace"
+	var confirmed_context := contexts[0].duplicate(true)
+	confirmed_context["confirmation_granted"] = true
+	assert_eq(
+		registry.execute(owner.action_id, confirmed_context),
+		StellaActionRegistry.ExecuteResult.FAILED,
+	)
+	assert_eq(owner.execute_count, 0)
+	assert_eq(replacement.execute_count, 0)
+	var replacement_entry := registry._get_live_entry(owner.action_id)
+	assert_true((replacement_entry["pending_confirmation_tokens"] as Dictionary).is_empty())
+	assert_same(replacement_entry["owner_ref"].get_ref(), replacement)
 
 
 func test_confirmation_listener_replacement_invalidates_outer_receipt() -> void:
@@ -430,6 +632,47 @@ func test_confirmation_listener_replacement_invalidates_outer_receipt() -> void:
 	)
 	assert_eq(owner.execute_count, 0)
 	assert_eq(replacement.execute_count, 0)
+	registry.confirmation_requested.disconnect(confirmation_listener)
+
+
+func test_nested_confirmation_requests_keep_independent_exact_tokens() -> void:
+	var registry := StellaActionRegistry.new()
+	var owner := _owner(registry, &"project.confirm_nested")
+	assert_true(_register(
+		registry, owner, false, false,
+		StellaActionRegistry.CONFIRMATION_DESTRUCTIVE))
+	var reentered := [false]
+	var nested_results: Array[int] = []
+	var nested_contexts: Array[Dictionary] = []
+	var confirmation_listener := func(
+		action_id: StringName,
+		_policy: StringName,
+		context: Dictionary,
+	) -> void:
+		if not reentered[0]:
+			reentered[0] = true
+			nested_results.append(registry.execute(action_id, {}))
+		else:
+			nested_contexts.append(context.duplicate(true))
+	registry.confirmation_requested.connect(confirmation_listener)
+
+	assert_eq(
+		registry.execute(owner.action_id),
+		StellaActionRegistry.ExecuteResult.CONFIRMATION_REQUIRED,
+		"a nested request does not retire the still-pending outer decision",
+	)
+	assert_eq(nested_results, [
+		StellaActionRegistry.ExecuteResult.CONFIRMATION_REQUIRED,
+	])
+	assert_eq(owner.execute_count, 0)
+	assert_eq(nested_contexts.size(), 1)
+	var confirmed_context := nested_contexts[0].duplicate(true)
+	confirmed_context["confirmation_granted"] = true
+	assert_eq(
+		registry.execute(owner.action_id, confirmed_context),
+		StellaActionRegistry.ExecuteResult.EXECUTED,
+	)
+	assert_eq(owner.execute_count, 1)
 	registry.confirmation_requested.disconnect(confirmation_listener)
 
 
@@ -501,6 +744,13 @@ func test_runtime_registry_rejects_hostile_builtin_registration() -> void:
 		StellaRuntime,
 		Callable(StellaRuntime, "_action_execute_auto"),
 	))
+	assert_false(registry.register_action(
+		&"host.quit_now",
+		_metadata(),
+		StellaRuntime,
+		Callable(StellaRuntime, "_action_execute_quit"),
+	))
+	assert_string_contains(registry.last_error, "owner is sealed")
 	assert_false(registry._register_action(
 		&"hostile_builtin",
 		_metadata(),
@@ -567,6 +817,42 @@ func test_legacy_destructive_enum_button_consumes_exact_receipt_once() -> void:
 		button.free()
 
 
+func test_legacy_enum_binding_is_presentation_passive() -> void:
+	var owner := _owner(StellaActionRegistry.new(), &"project.legacy_visual_probe")
+	var fake_registry := StellaActionRegistry._create_runtime_registry(
+		owner, _builtin_definitions(owner))
+	assert_true(fake_registry.is_ready())
+	_saved_runtime_registry = StellaRuntime.action_registry
+	StellaRuntime.action_registry = fake_registry
+	var button := Button.new()
+	button.text = "Authored legacy"
+	button.disabled = true
+	button.visible = false
+	button.toggle_mode = true
+	button.button_pressed = true
+	button.modulate = Color(0.2, 0.4, 0.6, 0.35)
+	var binding := StellaAction.new()
+	binding.action = StellaAction.Action.TOGGLE_AUTO_PLAY
+	button.add_child(binding)
+	add_child(button)
+	_fake_registry_nodes.append(button)
+
+	fake_registry.notify_all_action_states_changed()
+	fake_registry.catalog_changed.emit()
+	assert_eq(button.text, "Authored legacy")
+	assert_true(button.disabled)
+	assert_false(button.visible)
+	assert_true(button.toggle_mode)
+	assert_true(button.button_pressed)
+	assert_eq(button.modulate, Color(0.2, 0.4, 0.6, 0.35))
+	button.pressed.emit()
+	assert_eq(owner.execute_count, 1,
+		"legacy presentation remains passive while dispatch stays one-to-one")
+
+	_fake_registry_nodes.erase(button)
+	button.free()
+
+
 func test_default_title_quit_confirms_exact_registry_receipt_once() -> void:
 	var owner := _owner(StellaActionRegistry.new(), &"project.title_probe")
 	var fake_registry := StellaActionRegistry._create_runtime_registry(
@@ -612,10 +898,9 @@ func test_legacy_auto_confirm_marker_prevents_stale_project_popup() -> void:
 		_policy: StringName,
 		context: Dictionary,
 	) -> void:
-		if not bool(context.get(
-			StellaActionRegistry.CONFIRMATION_AUTO_CONFIRM_CONTEXT_KEY,
-			false,
-		)):
+		var marker: Variant = context.get(
+			StellaActionRegistry.CONFIRMATION_AUTO_CONFIRM_CONTEXT_KEY, null)
+		if typeof(marker) != TYPE_BOOL or marker != true:
 			popup_count[0] += 1
 	fake_registry.confirmation_requested.connect(project_confirmation_listener)
 
@@ -634,6 +919,154 @@ func test_legacy_auto_confirm_marker_prevents_stale_project_popup() -> void:
 	button.free()
 	fake_registry.confirmation_requested.disconnect(
 		project_confirmation_listener)
+
+
+func test_legacy_button_does_not_consume_reentrant_ordinary_receipt() -> void:
+	var owner := _owner(StellaActionRegistry.new(), &"project.reentrant_probe")
+	var fake_registry := StellaActionRegistry._create_runtime_registry(
+		owner, _builtin_definitions(owner))
+	assert_true(fake_registry.is_ready())
+	_saved_runtime_registry = StellaRuntime.action_registry
+	StellaRuntime.action_registry = fake_registry
+	var reentered := [false]
+	var nested_results: Array[int] = []
+	var ordinary_contexts: Array[Dictionary] = []
+	var project_confirmation_listener := func(
+		action_id: StringName,
+		_policy: StringName,
+		context: Dictionary,
+	) -> void:
+		var marker: Variant = context.get(
+			StellaActionRegistry.CONFIRMATION_AUTO_CONFIRM_CONTEXT_KEY, null)
+		if typeof(marker) == TYPE_BOOL and marker == true and not reentered[0]:
+			reentered[0] = true
+			nested_results.append(fake_registry.execute(action_id, {}))
+		elif typeof(marker) != TYPE_BOOL or marker != true:
+			ordinary_contexts.append(context.duplicate(true))
+	fake_registry.confirmation_requested.connect(project_confirmation_listener)
+
+	var button := Button.new()
+	var binding := StellaAction.new()
+	binding.action = StellaAction.Action.QUIT
+	button.add_child(binding)
+	add_child(button)
+	_fake_registry_nodes.append(button)
+	button.pressed.emit()
+	assert_eq(nested_results, [
+		StellaActionRegistry.ExecuteResult.CONFIRMATION_REQUIRED,
+	])
+	assert_eq(owner.execute_count, 1,
+		"legacy executes its marked receipt without consuming the nested ordinary one")
+	assert_eq(ordinary_contexts.size(), 1)
+	assert_false(ordinary_contexts[0].has(
+		StellaActionRegistry.CONFIRMATION_AUTO_CONFIRM_CONTEXT_KEY))
+	var confirmed_context := ordinary_contexts[0].duplicate(true)
+	confirmed_context["confirmation_granted"] = true
+	assert_eq(
+		fake_registry.execute(
+			StellaActionRegistry.ACTION_QUIT, confirmed_context),
+		StellaActionRegistry.ExecuteResult.EXECUTED,
+	)
+	assert_eq(owner.execute_count, 2,
+		"the ordinary receipt remains available to the project confirmation UI")
+
+	_fake_registry_nodes.erase(button)
+	button.free()
+	fake_registry.confirmation_requested.disconnect(
+		project_confirmation_listener)
+
+
+func test_legacy_button_rejects_truthy_non_boolean_marker() -> void:
+	var owner := _owner(StellaActionRegistry.new(), &"project.marker_probe")
+	var fake_registry := StellaActionRegistry._create_runtime_registry(
+		owner, _builtin_definitions(owner))
+	assert_true(fake_registry.is_ready())
+	_saved_runtime_registry = StellaRuntime.action_registry
+	StellaRuntime.action_registry = fake_registry
+	var reentered := [false]
+	var malformed_contexts: Array[Dictionary] = []
+	var project_confirmation_listener := func(
+		action_id: StringName,
+		_policy: StringName,
+		context: Dictionary,
+	) -> void:
+		var marker: Variant = context.get(
+			StellaActionRegistry.CONFIRMATION_AUTO_CONFIRM_CONTEXT_KEY, null)
+		if typeof(marker) == TYPE_BOOL and marker == true and not reentered[0]:
+			reentered[0] = true
+			fake_registry.execute(action_id, {
+				StellaActionRegistry.CONFIRMATION_AUTO_CONFIRM_CONTEXT_KEY: "true",
+			})
+		elif typeof(marker) != TYPE_BOOL:
+			malformed_contexts.append(context.duplicate(true))
+	fake_registry.confirmation_requested.connect(project_confirmation_listener)
+
+	var button := Button.new()
+	var binding := StellaAction.new()
+	binding.action = StellaAction.Action.QUIT
+	button.add_child(binding)
+	add_child(button)
+	_fake_registry_nodes.append(button)
+	button.pressed.emit()
+	assert_eq(owner.execute_count, 1,
+		"legacy confirms only its strict boolean-marked outer receipt")
+	assert_eq(malformed_contexts.size(), 1)
+	assert_eq(
+		malformed_contexts[0][
+			StellaActionRegistry.CONFIRMATION_AUTO_CONFIRM_CONTEXT_KEY],
+		"true",
+	)
+	var confirmed_context := malformed_contexts[0].duplicate(true)
+	confirmed_context["confirmation_granted"] = true
+	assert_eq(
+		fake_registry.execute(
+			StellaActionRegistry.ACTION_QUIT, confirmed_context),
+		StellaActionRegistry.ExecuteResult.EXECUTED,
+	)
+	assert_eq(owner.execute_count, 2)
+
+	_fake_registry_nodes.erase(button)
+	button.free()
+	fake_registry.confirmation_requested.disconnect(
+		project_confirmation_listener)
+
+
+func test_title_consumers_treat_malformed_marker_as_ordinary() -> void:
+	var owner := _owner(StellaActionRegistry.new(), &"project.title_marker_probe")
+	var fake_registry := StellaActionRegistry._create_runtime_registry(
+		owner, _builtin_definitions(owner))
+	assert_true(fake_registry.is_ready())
+	_saved_runtime_registry = StellaRuntime.action_registry
+	StellaRuntime.action_registry = fake_registry
+	var expected_execute_count := 0
+	for scene_path: String in [
+		"res://addons/stella/scenes/title.tscn",
+		"res://examples/demo/scenes/title.tscn",
+	]:
+		var title: Node = load(scene_path).instantiate()
+		add_child(title)
+		_fake_registry_nodes.append(title)
+		assert_eq(
+			fake_registry.execute(StellaActionRegistry.ACTION_QUIT, {
+				StellaActionRegistry.CONFIRMATION_AUTO_CONFIRM_CONTEXT_KEY: "true",
+			}),
+			StellaActionRegistry.ExecuteResult.CONFIRMATION_REQUIRED,
+		)
+		var dialog: ConfirmationDialog = null
+		var title_screen := title.get_node("TitleScreen")
+		for child: Node in title_screen.get_children():
+			if child is ConfirmationDialog:
+				dialog = child as ConfirmationDialog
+				break
+		assert_not_null(dialog)
+		if dialog != null:
+			assert_true(dialog.visible,
+				"truthy non-bool marker must not suppress normal confirmation")
+			dialog.confirmed.emit()
+		expected_execute_count += 1
+		assert_eq(owner.execute_count, expected_execute_count)
+		_fake_registry_nodes.erase(title)
+		title.free()
 
 
 func test_binding_reprojects_toggle_and_label_when_builtin_id_changes() -> void:

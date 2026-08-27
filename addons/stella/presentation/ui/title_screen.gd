@@ -57,13 +57,11 @@ func _on_confirmation_requested(
 	_policy: StringName,
 	context: Dictionary,
 ) -> void:
-	if (
-		action_id != StellaActionRegistry.ACTION_QUIT
-		or bool(context.get(
-			StellaActionRegistry.CONFIRMATION_AUTO_CONFIRM_CONTEXT_KEY,
-			false,
-		))
-	):
+	if action_id != StellaActionRegistry.ACTION_QUIT:
+		return
+	var auto_confirm_marker: Variant = context.get(
+		StellaActionRegistry.CONFIRMATION_AUTO_CONFIRM_CONTEXT_KEY, null)
+	if typeof(auto_confirm_marker) == TYPE_BOOL and auto_confirm_marker == true:
 		return
 	_pending_confirmation_action = action_id
 	_pending_confirmation_context = context.duplicate(true)

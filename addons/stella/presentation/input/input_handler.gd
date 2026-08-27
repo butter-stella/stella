@@ -42,13 +42,10 @@ func _input(event: InputEvent) -> void:
 				StellaRuntime.skip_controller.stop()
 				if dialogue:
 					dialogue._ctrl_held = false
-					dialogue._update_toggle_buttons()
 					dialogue.cancel_pending_skip()
 			elif StellaRuntime.auto_play.is_active:
 				if StellaRuntime.get_setting("auto_play_click_interrupt"):
 					StellaRuntime.auto_play.stop()
-					if dialogue:
-						dialogue._update_toggle_buttons()
 			get_viewport().set_input_as_handled()
 			return
 		# UI hidden: restore
@@ -67,7 +64,6 @@ func _input(event: InputEvent) -> void:
 			StellaRuntime.skip_controller.stop()
 			if dialogue:
 				dialogue._ctrl_held = false
-				dialogue._update_toggle_buttons()
 				dialogue.cancel_pending_skip()
 			get_viewport().set_input_as_handled()
 			return
@@ -80,8 +76,6 @@ func _input(event: InputEvent) -> void:
 				return
 			# Setting enabled: stop auto mode
 			StellaRuntime.auto_play.stop()
-			if dialogue:
-				dialogue._update_toggle_buttons()
 			_handle_normal_advance(dialogue)
 			return
 

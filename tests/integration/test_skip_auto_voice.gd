@@ -737,7 +737,7 @@ func test_skip_only_read_setting_default_true():
 	assert_true(val, "skip_only_read should default to true")
 
 
-# --- _on_skip_pressed mid-typewriter snap behavior ---
+# --- canonical skip action mid-typewriter snap behavior ---
 # Fix for round-2 Opus UX concern: when the user presses the toolbar skip
 # button while the typewriter is running, snap the text to end immediately
 # (like click-to-complete). Without this the button highlights but the
@@ -748,11 +748,11 @@ func test_skip_press_while_typing_snaps_text():
 	if dialogue == null:
 		pending("DialoguePanel not available in test scene")
 		return
-	# Leave skip off at test start so _on_skip_pressed toggles it ON.
+	# Leave skip off at test start so the canonical action toggles it ON.
 	StellaRuntime.skip_controller.is_active = false
 	dialogue._is_typing = true
 	dialogue.text_label.visible_characters = 3
-	dialogue._on_skip_pressed()
+	StellaRuntime.execute_action(StellaActionRegistry.ACTION_SKIP)
 	assert_false(dialogue._is_typing, "pressing skip while typing must stop the typewriter")
 	assert_eq(dialogue.text_label.visible_characters, -1, "pressing skip while typing must snap text to full")
 	# Cleanup
@@ -768,7 +768,7 @@ func test_skip_press_toggle_off_leaves_state_alone():
 	StellaRuntime.skip_controller.is_active = true
 	dialogue._is_typing = true
 	dialogue.text_label.visible_characters = 5
-	dialogue._on_skip_pressed()
+	StellaRuntime.execute_action(StellaActionRegistry.ACTION_SKIP)
 	assert_false(StellaRuntime.is_skipping(), "pressing skip while active must toggle off")
 	assert_true(dialogue._is_typing, "toggling skip off must not disturb in-flight typewriter")
 	assert_eq(dialogue.text_label.visible_characters, 5, "toggling skip off must not snap text")

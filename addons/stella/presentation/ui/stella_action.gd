@@ -139,6 +139,13 @@ func _on_legacy_confirmation_requested(
 ) -> void:
 	if requested_id != expected_id:
 		return
+	var auto_confirm_marker: Variant = context.get(
+		StellaActionRegistry.CONFIRMATION_AUTO_CONFIRM_CONTEXT_KEY, null)
+	if (
+		typeof(auto_confirm_marker) != TYPE_BOOL
+		or auto_confirm_marker != true
+	):
+		return
 	var confirmed_context := context.duplicate(true)
 	confirmed_context["confirmation_granted"] = true
 	StellaRuntime.execute_action(requested_id, confirmed_context)
@@ -155,6 +162,11 @@ func _on_action_state_changed(changed_id: StringName) -> void:
 
 func _refresh_button_state() -> void:
 	if _button == null or not is_instance_valid(_button):
+		return
+	# Legacy Inspector scenes predate state projection and were dispatch-only.
+	# Keep their authored/current presentation byte-for-byte passive even though
+	# the new canonical binding defaults opt in to availability and active state.
+	if action_id.is_empty():
 		return
 	var resolved_id := get_action_id()
 	var metadata := StellaRuntime.get_action(resolved_id)
