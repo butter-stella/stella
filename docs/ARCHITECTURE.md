@@ -484,6 +484,21 @@ Stella 的常规创作边界是：`.stla` 是唯一编程界面。布局和演�
 
 Profile 可声明 panel anchors/offsets、文字矩形与 margin、对齐/行距/溢出、背景可见性/颜色、场景内命名分组的显示策略、仅用于 NVL 累积显示的 entry prefix/separator，以及可选的 end-of-text advance indicator。Presenter 就绪时捕获场景编排基线，并在每次声明式模式切换前恢复，再叠加当前模式的 opt-in 覆盖；`off` 因而能精确恢复 ADV。未声明 Profile 时使用内置兼容布局，NVL 条目使用空前缀和换行分隔，也不会创建 indicator 节点。
 
+对话背景只有一个场景声明式 ownership：`DialoguePresenter.dialogue_background_path`
+必须显式指向该 Presenter 后代中的 `Control`，默认空值不按 `DialogueBg` 名称、group 或
+其他 scene-tree 路径猜测。内置场景、demo 与 custom-scene public fixture 都显式 author
+这条 binding；空、失效或类型错误只产生带 scene resource 与 authored NodePath 的确定诊断，
+并禁用背景专属 Profile/设置投影。Presenter ready 时一次捕获该 Control 的 authored
+`self_modulate`，`GameSettings.text_window_opacity` 仅把 alpha 投影为
+`authored_self_alpha * setting`；Profile 的 `background_modulate` 继续独立占有
+`modulate`。最终背景 alpha 因而是 theme/style alpha、Profile/authored `modulate.a`、
+authored `self_modulate.a` 与 setting 的乘积，`setting=1` 保留 authored 透明度，反复
+profile restore/live change 不会累乘。panel、正文、姓名、avatar 与 focusable controls
+不在这个 target 上，因此设置为 `0` 时也保持各自 authored alpha。Presenter 在 ready（包括 settings
+隐式 load 已完成后的首个 scene）读取初值，并通过唯一 `settings_changed` 链响应 active
+direct set、显式 load 与 reset；退场时断开该订阅，新 scene/Presenter 实例从 live registry
+重投影，不保留旧 UI owner、callback、Timer 或第二 scheduler。
+
 NVL 的前缀和分隔符属于表现元数据：Presenter 按“记录间分隔符 → 当前记录前缀 → 可选角色名 → 正文”拼装屏幕累积文本，并把新增装饰字符纳入打字机可见字符偏移。纯文本页通过 `RichTextLabel.append_text()` 只解析新增 entry 并沿用累计的 parsed-character boundary；含 BBCode 或存档重建时才进入完整引擎解析路径。它不会把这些装饰写回 Core 的 segment、CommandData 正文或 Backlog 记录，`@combine` 也只构成一条 NVL 记录。Backlog 保存正文的玩家可见纯文本：BBCode 只贡献可见字符、段落/列表结构，不保存格式标签；expression 与 typewriter effect marker 也不保存。离开 NVL 会清除 ScenarioContext 的 canonical page；运行时 hard hide 会退休 Presenter 的派生显示状态，并 abort 仍由该 UI 持有的 typed owner；存读档或 Backlog 回退仍可从同一 page key 的 authored entries 恢复完整当前页。右键临时隐藏 UI 不会清页。`DialoguePresentationProfile` Resource 和 `set_presentation_profile()` 只保留为高级程序化兜底，不是普通项目的必需入口。完整语法见 [DSL.md](DSL.md#33-对话框模式切换)。
 
 Advance indicator 同样只存在于 Presentation 层。Canonical `DialogueRequest` 在 Core → Presentation 主链中自包含 Profile、provenance、NVL page state、内容版本化的 authored identity，以及只属于该命令激活的 `DialogueActivation`。Presenter、自动播放、快进和无界面 consumer 必须调用当前 request 的 `advance()` / `abort()`；同步 SHOW 回调也不会丢确认。`ScenarioContext` 同时校验 engine owner 与 active activation；context 替换会取消旧 activation，同一 context 的重入则拒绝新 activation，避免窃取仍在执行的 command owner。Presenter 对 current、queued、incoming 和 lifecycle 使用同一退休原则：typed SHOW 被更新的 typed/raw SHOW 替换、被 hard hide、场景切换或节点退出时，都会在丢失引用前明确 abort 尚未完成的 activation；清引用先于回调，因此同步发布的新 owner 不会被旧退休路径误取消。如果退休 A 的回调同步发布 C 并使外层 incoming B 失去接受资格，B 也必须在确认自己不属于 current/queue 后 abort，不能留下 pending Handler。正常推进先验证 owner、写入已读并释放 owner，再发送带 activation ID 的 `dialogue_advance_committed` 给内建 Presenter，最后广播无参数 `advance_requested` 兼容通知；因此兼容 listener 的同步重入不能改变提交结果，旧通知也不能 finalize 另一条 typed request。`request.abort()` 会终止当前 context，不会被 Engine 当作成功完成而跳到下一条。没有 pending dialogue owner 时，输入层会退回无参通知，以解除 `@wait click` 或声明了 `skippable=true` 的定时 `@wait`。公开三参数 `show_dialogue` 与无参数 `advance_requested` 仍是兼容 adapter，raw advance 不拥有 DialogueHandler 的命令完成权。文字完成后等待布局边界（threaded label 等到排版完成并跨过一次完整绘制帧），再使用一个透明、非交互且不改动 live label 状态的 `RichTextLabel` 镜像；镜像使用相同 BBCode、theme、尺寸与滚动条占宽，并以 no-op `RichTextEffect` 从 Godot 最终 glyph transform 捕获逻辑末端。纯文本 NVL 复用镜像并只追加新条目；BBCode、自定义效果或布局输入变化会触发完整重建。由此 `[indent]`、列表前缀、段落对齐、BiDi shaping 与内部滚动条占宽都由引擎本身计算，纵向行度量、滚动位置和裁剪可见范围再由 live label 校验。动态 RichTextEffect 在每次 ready/reflow 边界采样一次，marker 在该 ready 周期内保持稳定。一个懒创建的 holder 在 ADV、NVL 和 overlay 间复用并负责 `none/pulse/bob` 动画，切换 source 时才替换内容，Presenter 退出树时终止 tween；helper 的 mutation revision 保证自定义 `set_advance_ready()` 同步重入时以新 SHOW/HIDE 为准。marker 从不拼入 `RichTextLabel.text`，因此也不会进入 segment、Backlog 或存档；系统 overlay 和右键 soft hide 保留 ready 状态，而对话式 `@overlay off` 由前一行的 advance 同步隐藏。
