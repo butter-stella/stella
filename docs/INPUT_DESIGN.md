@@ -20,7 +20,7 @@ _input:
   3. 鼠标下有交互控件（Button/Slider）？→ return，让 GUI 处理
   4. 非 PLAYING？→ return；否则执行 Skip/Auto 的既有点击策略
   5. 普通模式且打字中？→ 实时读取 click_to_complete；true 时原子补全，false 时保持打字状态；两者都 set_input_as_handled（消费事件）
-  6. 否则 → 当前 pending `DialogueRequest.advance()`；若没有 Dialogue owner，广播一次语义 advance，交给当前 Stage/Presentation JOIN、chapter indicator、loop-SE、BGM 或 `@wait click`/可跳过定时 `@wait`
+  6. 否则 → dispatch 稳定 action ID `advance`；Runtime 把它交给当前 exact DialoguePresenter，若没有 Dialogue owner，再广播一次兼容 advance，交给当前 Stage/Presentation JOIN、chapter indicator、loop-SE、BGM 或 `@wait click`/可跳过定时 `@wait`
 
 _unhandled_input:
   active choice 先消费未被 GUI option Button 的 ui_accept 接受的空格/回车/手柄 A；否则键盘与手柄 A 在 UI 隐藏时先恢复并消费输入，再检查 PLAYING，最后进入与左键相同的 live click_to_complete 门槛或推进。Ctrl 沿用独立的快进按下/释放策略
@@ -51,7 +51,9 @@ _unhandled_input:
 
 - `_input`：处理所有鼠标事件（左键进入正常推进门槛、右键隐藏 UI）
 - `_unhandled_input`：处理键盘与手柄事件（隐藏时先恢复 UI；否则空格/回车/手柄 A 进入同一推进门槛、Ctrl 快进）
-- 通过 `%DialoguePanel` 访问 DialoguePresenter 的状态
+- 仅为 Ctrl/Auto/Skip 的既有物理输入 policy 取得 game scene 的 `%DialoguePanel`；normal
+  semantic advance、hide UI 和 flowchart 都通过 `StellaRuntime` 的 action dispatcher，不按
+  项目节点名、callback 或私有方法猜测 dispatch target
 
 InputHandler 还在所有 story fallback 之前查询当前 choice policy session。Option/toolbar
 Button 和 Slider 继续由 GUI 处理；其余四种 normal advance 输入由 modal choice 消费，
@@ -59,7 +61,15 @@ Button 和 Slider 继续由 GUI 处理；其余四种 normal advance 输入由 m
 
 ### DialoguePresenter (`presentation/dialogue/dialogue_presenter.gd`)
 
-纯展示，零输入处理代码。暴露打字、临时隐藏和 Ctrl 快进状态；InputHandler 把事件时的策略传给 `consume_typewriter_advance(allow_completion)`，由 Presenter 在一次同步调用中判断当前是否仍在打字。允许补全时，它统一退休尚未结束的字符基础间隔、标点停顿与 `{wait}` 计时，应用最终表情并进入 ready；不允许时只确认当前 typewriter 拥有这次输入，不修改 visible boundary、generation 或 timer。`complete_typewriter()` 仍是 Skip 和扩展代码使用的强制完成 API，不读取 `click_to_complete`。字符间隔和标点停顿在每条 active SHOW 开始时从 settings-backed cache 一次性快照，因此输入完成与设置变更都不会让旧行的 timer 穿越到下一句。
+纯展示，零输入处理代码。Presenter 只有在通过 Runtime 的 exact-script clear/avatar/clip
+admission、背景和 Profile 校验后，才进入 action dispatcher 的弱视图。`advance` action 由
+Runtime 调用该 exact Presenter 的 canonical gate，在一次同步调用中判断当前是否仍在打字。
+允许补全时，它统一退休尚未结束的字符基础间隔、标点停顿与 `{wait}` 计时，应用最终表情并
+进入 ready；不允许时只确认当前 typewriter 拥有这次输入，不修改 visible boundary、
+generation 或 timer。`complete_typewriter()` 仍是 Skip 和扩展代码使用的强制完成 API，
+不读取 `click_to_complete`。字符间隔和标点停顿在每条 active SHOW 开始时从
+settings-backed cache 一次性快照，因此输入完成与设置变更都不会让旧行的 timer 穿越到
+下一句。
 
 Presenter 同时观察 `AutoPlayController` / `SkipController` 的状态变化，因此内置工具栏、`StellaAction` 与 `StellaRuntime.toggle_auto_play()` / `toggle_skip()` 共享同一条完成路径：ready 状态开启快进会在允许跳过时立即确认当前 request；`skip_only_read=true` 时 ready 但尚未确认的行仍属未读，快进会停在该行。开启自动播放会进入配置的 voice-wait 与 delay tail，而不是只改变按钮高亮。
 
@@ -72,7 +82,28 @@ Presenter 在 active choice gate 下绝不让旧 ready/typewriter 建立推进 t
 
 `_input` 处理 ESC/右键关闭。Overlay 打开时 `game_state` 不是 `PLAYING`，InputHandler 的 `is_playing()` 守卫阻断键盘推进。鼠标推进被 `gui_get_hovered_control()` 检测到 overlay 上的控件而跳过。
 
-`StellaAction.QUIT` 不进入 advance dispatch；它与标题按钮、宿主显式退出和 OS close 一样调用 `StellaRuntime.request_quit()`。OS close 先 autosave，随后 Runtime 通过唯一 AudioPresenter 退休所有音频 owner，并等待真实 AudioServer mix + 主线程 cleanup boundary；重复 UI/OS 请求不会创建第二个退出或等待 owner。
+稳定 ID `quit` 不进入 advance dispatch；它与标题按钮、legacy `StellaAction.QUIT` adapter、
+宿主显式退出和 OS close 一样调用 `StellaRuntime.request_quit()`。OS close 先 autosave，随后
+Runtime 通过唯一 AudioPresenter 退休所有音频 owner，并等待真实 AudioServer mix + 主线程
+cleanup boundary；重复 UI/OS 请求不会创建第二个退出或等待 owner。
+
+### Action registry 与 Button 边界
+
+物理输入的固定映射和 scene-authored Button 共用 Runtime-owned
+`StellaActionRegistry`。InputHandler dispatch `advance`、`hide_ui`、`flowchart`；Toolbar
+Button 的 `StellaAction` dispatch `voice_replay`、`auto`、`skip`、`backlog`、
+`prev_choice`、`quick_save`、`quick_load`、`save`、`load`、`settings`。标题 Button 同样使用
+`start_game`、`continue_game`、`return_to_title`、`quit`。这些是 semantic action，不是
+#133 的持久可重绑物理输入配置。
+
+Binding 的 label、disabled、visible 和 toggle active 状态只由 registry 的 catalog/state
+signal 刷新。Runtime 在 game state、Auto/Skip、存档、choice、voice 和 admitted Presenter
+状态变化时发出精确通知；项目 action owner 自己调用
+`notify_action_state_changed(action_id)`。不存在 `_process`、timer 或第二条 action match。
+disruptive/destructive action 先发 confirmation request；只有携带该次 single-use opaque
+token 的 confirmed context 才能执行，因此一次 Button click 不会双派发。legacy Inspector
+enum 只是一对一 canonical ID adapter；其同步 auto-confirm receipt 带专用 marker，正常确认
+UI 必须忽略，避免动作已经执行后仍留下失效 popup。
 
 ### 回想播放的返回边界
 

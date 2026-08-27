@@ -1003,6 +1003,7 @@ func test_reset_for_test_cancels_a_delayed_skip_advance() -> void:
 
 
 func test_real_input_routes_dialogue_then_click_wait_then_dialogue() -> void:
+	_runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	var game: Node = load("res://addons/stella/scenes/game.tscn").instantiate()
 	_add_owned_node(game)
 	await get_tree().process_frame

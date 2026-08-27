@@ -42,6 +42,7 @@ func test_does_not_crash_on_non_button_parent():
 	node.add_child(action)
 	add_child(node)
 	# Should not crash, just warn
+	assert_push_warning("parent is not a BaseButton")
 	assert_true(true)
 	WarningTestSupport.assert_exact_warnings(
 		self,
@@ -60,6 +61,7 @@ func test_default_action_is_none():
 
 func test_toggle_auto_play():
 	var runtime = get_tree().root.get_node("StellaRuntime")
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	_action.action = StellaAction.Action.TOGGLE_AUTO_PLAY
 	var was_active = runtime.is_auto_playing()
 
@@ -68,10 +70,12 @@ func test_toggle_auto_play():
 
 	# Restore
 	runtime.toggle_auto_play()
+	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
 
 
 func test_toggle_skip():
 	var runtime = get_tree().root.get_node("StellaRuntime")
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	_action.action = StellaAction.Action.TOGGLE_SKIP
 	var was_active = runtime.is_skipping()
 
@@ -80,6 +84,7 @@ func test_toggle_skip():
 
 	# Restore
 	runtime.toggle_skip()
+	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
 
 
 ## --- UI State ---
@@ -141,6 +146,7 @@ func test_show_backlog_transitions_state():
 
 func test_quick_save_creates_save():
 	var runtime = get_tree().root.get_node("StellaRuntime")
+	runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	_action.action = StellaAction.Action.QUICK_SAVE
 
 	_btn.pressed.emit()
@@ -148,12 +154,14 @@ func test_quick_save_creates_save():
 
 	# Clean up
 	runtime.delete_quick_save()
+	runtime.game_state.transition_to(GameStateMachine.State.TITLE)
 
 
 func test_none_action_does_nothing():
 	_action.action = StellaAction.Action.NONE
 	# Should not crash, just warn
 	_btn.pressed.emit()
+	assert_push_warning("no action selected")
 	assert_true(true)
 	WarningTestSupport.assert_exact_warnings(
 		self,

@@ -379,8 +379,9 @@ func test_gamepad_accept_is_blocked_by_overlay_state() -> void:
 	handler.queue_free()
 
 
-func test_resolved_dialogue_falls_back_to_click_wait_notification() -> void:
+func test_semantic_advance_ignores_project_dialogue_and_releases_click_wait() -> void:
 	var handler = _make_handler()
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	var dialogue := ResolvedDialogueStub.new()
 	var wait_handler := WaitHandler.new()
 	var wait_command := CommandData.new()
@@ -395,7 +396,8 @@ func test_resolved_dialogue_falls_back_to_click_wait_notification() -> void:
 	handler._request_dialogue_advance(dialogue)
 	await get_tree().process_frame
 
-	assert_eq(dialogue.request_count, 1)
+	assert_eq(dialogue.request_count, 0,
+		"canonical input does not guess or call a project dialogue node")
 	assert_true(wait_done[0],
 		"a stale resolved dialogue owner must not swallow @wait click input")
 	dialogue.free()

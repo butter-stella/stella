@@ -417,13 +417,37 @@ func _ready():
 	visible = false
 	_adv_anchor_top = anchor_top
 	_adv_offset_top = offset_top
+	_capture_authored_presentation()
+	_capture_dialogue_visibility_nodes()
+	_validate_configured_profiles()
+	if not StellaRuntime._publish_dialogue_action_presenter(
+		self,
+		_dialogue_clear_participant_capability,
+		_dialogue_avatar_participant_capability,
+		_presentation_clip_participant_capability,
+	):
+		push_error(
+			"DialoguePresenter could not join the public action dispatcher")
+		# Public action publication is part of the same admission transaction.
+		# Never leave a half-connected clear/avatar/clip participant live when the
+		# final publication step rejects this Presenter.
+		StellaRuntime._unregister_presentation_clip_composition_participant(
+			self,
+			_presentation_clip_participant_capability,
+			PresentationClipOperationRequest.ROLE_DIALOGUE,
+		)
+		_presentation_clip_participant_capability = null
+		StellaRuntime._unregister_dialogue_avatar_presenter(
+			self, _dialogue_avatar_participant_capability)
+		_dialogue_avatar_participant_capability = null
+		StellaRuntime._unregister_dialogue_clear_presenter(
+			self, _dialogue_clear_participant_capability)
+		_dialogue_clear_participant_capability = null
+		return
 	_setup_toolbar()
 	# A replacement Presenter may enter the tree after the public controllers
 	# were already enabled, so there may be no active_changed edge to repaint it.
 	_update_toggle_buttons()
-	_capture_authored_presentation()
-	_capture_dialogue_visibility_nodes()
-	_validate_configured_profiles()
 	text_label.resized.connect(_on_indicator_layout_changed)
 	text_label.theme_changed.connect(_on_indicator_layout_changed)
 	text_label.get_v_scroll_bar().value_changed.connect(
@@ -862,64 +886,98 @@ func _setup_toolbar():
 		return
 
 	var buttons = [
-		{"id": "voice_replay", "text": "重听", "callback": _on_voice_replay_pressed},
-		{"id": "auto", "text": "自动", "callback": _on_auto_pressed},
-		{"id": "skip", "text": "快进", "callback": _on_skip_pressed},
-		{"id": "backlog", "text": "记录", "callback": _on_backlog_pressed},
-		{"id": "prev_choice", "text": "回选项", "callback": _on_prev_choice_pressed},
-		{"id": "quick_save", "text": "快存", "callback": _on_quick_save_pressed},
-		{"id": "quick_load", "text": "快读", "callback": _on_quick_load_pressed},
-		{"id": "save", "text": "存档", "callback": _on_save_pressed},
-		{"id": "load", "text": "读档", "callback": _on_load_pressed},
-		{"id": "settings", "text": "设置", "callback": _on_settings_pressed},
+		{"id": StellaActionRegistry.ACTION_VOICE_REPLAY, "text": "重听"},
+		{"id": StellaActionRegistry.ACTION_AUTO, "text": "自动"},
+		{"id": StellaActionRegistry.ACTION_SKIP, "text": "快进"},
+		{"id": StellaActionRegistry.ACTION_BACKLOG, "text": "记录"},
+		{"id": StellaActionRegistry.ACTION_PREV_CHOICE, "text": "回选项"},
+		{"id": StellaActionRegistry.ACTION_QUICK_SAVE, "text": "快存"},
+		{"id": StellaActionRegistry.ACTION_QUICK_LOAD, "text": "快读"},
+		{"id": StellaActionRegistry.ACTION_SAVE, "text": "存档"},
+		{"id": StellaActionRegistry.ACTION_LOAD, "text": "读档"},
+		{"id": StellaActionRegistry.ACTION_SETTINGS, "text": "设置"},
 	]
 
-	for child in toolbar.get_children():
-		child.queue_free()
+	# Scene-authored controls are authoritative. An empty toolbar receives the
+	# built-in default product UI, whose buttons use the same declarative binding
+	# component as project scenes; authored children are never cleared/rebuilt.
+	if toolbar.get_child_count() == 0:
+		for btn_info in buttons:
+			if (
+				btn_info["id"] == StellaActionRegistry.ACTION_BACKLOG
+				and not StellaRuntime.config.backlog
+			):
+				continue
+			var btn := Button.new()
+			btn.flat = true
+			btn.custom_minimum_size = Vector2(60, 30)
+			btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+			btn.mouse_entered.connect(func():
+				if not _is_toggle_active(btn_info["id"]):
+					btn.modulate = Color(1.2, 1.2, 1.2))
+			btn.mouse_exited.connect(
+				func(): _update_button_modulate(btn, btn_info["id"]))
 
-	for btn_info in buttons:
-		if btn_info["id"] == "backlog" and not StellaRuntime.config.backlog:
-			continue
-		var btn = Button.new()
-		btn.flat = true
-		btn.custom_minimum_size = Vector2(60, 30)
-		btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-		btn.pressed.connect(btn_info["callback"])
-		btn.mouse_entered.connect(func(): btn.modulate = Color(1.2, 1.2, 1.2) if not _is_toggle_active(btn_info["id"]) else btn.modulate)
-		btn.mouse_exited.connect(func(): _update_button_modulate(btn, btn_info["id"]))
-
-		var icon_path = toolbar_icons.get(btn_info["id"], "")
-		if icon_path != "" and FileAccess.file_exists(icon_path):
-			var icon = load(icon_path) as Texture2D
-			if icon:
-				btn.icon = icon
-				btn.text = ""
+			var icon_path = toolbar_icons.get(btn_info["id"], "")
+			if icon_path != "" and FileAccess.file_exists(icon_path):
+				var icon = load(icon_path) as Texture2D
+				if icon:
+					btn.icon = icon
+					btn.text = ""
+				else:
+					btn.text = btn_info["text"]
 			else:
 				btn.text = btn_info["text"]
-		else:
-			btn.text = btn_info["text"]
+			var binding := StellaAction.new()
+			binding.action_id = btn_info["id"]
+			binding.hide_when_unavailable = (
+				btn_info["id"] == StellaActionRegistry.ACTION_VOICE_REPLAY)
+			btn.add_child(binding)
+			toolbar.add_child(btn)
 
-		toolbar.add_child(btn)
+	for child: Node in toolbar.find_children("*", "BaseButton", true, false):
+		_track_toolbar_action_button(child as BaseButton)
 
-		if btn_info["id"] == "voice_replay":
-			_voice_replay_btn = btn
-			btn.visible = false
-		elif btn_info["id"] == "auto":
-			_auto_btn = btn
-		elif btn_info["id"] == "skip":
-			_skip_btn = btn
-		elif btn_info["id"] == "prev_choice":
-			_prev_choice_btn = btn
-			btn.disabled = true  # no history at startup
+
+func _track_toolbar_action_button(button: BaseButton) -> void:
+	if button == null:
+		return
+	for child: Node in button.get_children():
+		if not child is StellaAction:
+			continue
+		var id := (child as StellaAction).get_action_id()
+		if id == StellaActionRegistry.ACTION_VOICE_REPLAY:
+			_voice_replay_btn = button
+		elif id == StellaActionRegistry.ACTION_AUTO:
+			_auto_btn = button
+		elif id == StellaActionRegistry.ACTION_SKIP:
+			_skip_btn = button
+		elif id == StellaActionRegistry.ACTION_PREV_CHOICE:
+			_prev_choice_btn = button
+		return
 
 
 func _on_voice_replay_pressed():
+	StellaRuntime.execute_action(StellaActionRegistry.ACTION_VOICE_REPLAY)
+
+
+func _execute_voice_replay_action() -> bool:
 	# Replay the CURRENT dialogue's segments (read from dialogue state, never
 	# from playback state — so an in-flight backlog replay can't corrupt this).
-	if _dialogue_segments.size() == 0:
-		return
+	if not _can_execute_voice_replay_action():
+		return false
 	_request_voice_replay(
 		_dialogue_voice_character, _dialogue_segments, true)
+	return true
+
+
+func _can_execute_voice_replay_action() -> bool:
+	return (
+		_dialogue_segments.size() > 0
+		and _dialogue_total_duration > 0.0
+		and is_inside_tree()
+		and not is_queued_for_deletion()
+	)
 
 
 ## External entry point for the backlog (or any other UI) to request replaying
@@ -1351,7 +1409,7 @@ func _voice_session_identity_is_current(
 
 
 func _on_auto_pressed():
-	StellaRuntime.toggle_auto_play()
+	StellaRuntime.execute_action(StellaActionRegistry.ACTION_AUTO)
 
 
 func _on_auto_play_active_changed(active: bool) -> void:
@@ -1403,7 +1461,7 @@ func _on_choice_modal_started(_prompt: String, _options: Array) -> void:
 
 
 func _on_skip_pressed():
-	StellaRuntime.toggle_skip()
+	StellaRuntime.execute_action(StellaActionRegistry.ACTION_SKIP)
 
 
 func _on_skip_active_changed(active: bool) -> void:
@@ -1543,6 +1601,36 @@ func consume_typewriter_advance(allow_completion: bool) -> bool:
 	return true
 
 
+## Canonical semantic input implementation used by the public action registry
+## and the physical InputHandler path. It acts only on this exact admitted
+## built-in Presenter and never searches the project scene tree.
+func _execute_advance_action() -> bool:
+	if _ui_hidden:
+		_ui_hidden = false
+		visible = true
+		StellaRuntime.notify_action_state_changed(
+			StellaActionRegistry.ACTION_HIDE_UI)
+		return true
+	if consume_typewriter_advance(
+		bool(StellaRuntime.get_setting("click_to_complete"))):
+		return true
+	return request_current_dialogue_advance()
+
+
+func _can_execute_hide_ui_action() -> bool:
+	return _ui_hidden or (visible and not _is_typing)
+
+
+func _execute_hide_ui_action() -> bool:
+	if not _can_execute_hide_ui_action():
+		return false
+	_ui_hidden = not _ui_hidden
+	visible = not _ui_hidden
+	StellaRuntime.notify_action_state_changed(
+		StellaActionRegistry.ACTION_HIDE_UI)
+	return true
+
+
 ## Complete the active typewriter synchronously, including any remaining
 ## @combine presentation cues.
 func complete_current_dialogue() -> void:
@@ -1573,44 +1661,43 @@ func finalize_current_dialogue_for_advance() -> void:
 
 
 func _on_backlog_pressed():
-	StellaRuntime.show_backlog()
+	StellaRuntime.execute_action(StellaActionRegistry.ACTION_BACKLOG)
 
 
 func _on_prev_choice_pressed():
-	StellaRuntime.jump_to_previous_choice()
+	StellaRuntime.execute_action(StellaActionRegistry.ACTION_PREV_CHOICE)
 
 
 func _refresh_prev_choice_btn():
-	if _prev_choice_btn == null:
-		return
-	_prev_choice_btn.disabled = not StellaRuntime.can_jump_to_previous_choice()
+	if _prev_choice_btn != null:
+		_prev_choice_btn.disabled = not StellaRuntime.can_execute_action(
+			StellaActionRegistry.ACTION_PREV_CHOICE)
+	StellaRuntime.notify_action_state_changed(
+		StellaActionRegistry.ACTION_PREV_CHOICE)
 
 
 func _on_quick_save_pressed():
-	StellaRuntime.quick_save()
+	StellaRuntime.execute_action(StellaActionRegistry.ACTION_QUICK_SAVE)
 
 
 func _on_quick_load_pressed():
-	StellaRuntime.quick_load()
+	StellaRuntime.execute_action(StellaActionRegistry.ACTION_QUICK_LOAD)
 
 
 func _on_save_pressed():
-	StellaRuntime.show_save_load("save")
+	StellaRuntime.execute_action(StellaActionRegistry.ACTION_SAVE)
 
 
 func _on_load_pressed():
-	StellaRuntime.show_save_load("load")
+	StellaRuntime.execute_action(StellaActionRegistry.ACTION_LOAD)
 
 
 func _on_settings_pressed():
-	StellaRuntime.show_settings()
+	StellaRuntime.execute_action(StellaActionRegistry.ACTION_SETTINGS)
 
 
 func _is_toggle_active(btn_id: String) -> bool:
-	match btn_id:
-		"auto": return StellaRuntime.auto_play.is_active
-		"skip": return StellaRuntime.is_skipping()
-	return false
+	return StellaRuntime.is_action_active(StringName(btn_id))
 
 
 func _update_button_modulate(btn: Button, btn_id: String):
@@ -1958,6 +2045,8 @@ func _show_dialogue_now(
 	if _ui_hidden:
 		_ui_hidden = false
 		visible = true
+		StellaRuntime.notify_action_state_changed(
+			StellaActionRegistry.ACTION_HIDE_UI)
 
 	# Snapshot dialogue state. _start_voice_playback later writes _playback_*
 	# but never touches _dialogue_*, so a backlog replay can run in parallel
@@ -1976,6 +2065,8 @@ func _show_dialogue_now(
 	_dialogue_total_duration = 0.0
 	if _voice_replay_btn:
 		_voice_replay_btn.visible = false
+	StellaRuntime.notify_action_state_changed(
+		StellaActionRegistry.ACTION_VOICE_REPLAY)
 
 	# Process all segments: concat text, merge inline markers + effects with offsets
 	var full_text := ""
@@ -2172,6 +2263,8 @@ func _show_dialogue_now(
 		dialogue_voice_durations)
 	if _voice_replay_btn:
 		_voice_replay_btn.visible = (_dialogue_total_duration > 0.0)
+	StellaRuntime.notify_action_state_changed(
+		StellaActionRegistry.ACTION_VOICE_REPLAY)
 	var kickoff_queue_gen := _playback_queue_gen + 1
 	var kickoff_survived := _start_voice_playback(
 		character, segments, gen, true, true, dialogue_voice_durations)
@@ -5636,6 +5729,8 @@ func _apply_visual_only_dialogue_restore(
 	_dialogue_total_duration = 0.0
 	if _voice_replay_btn != null:
 		_voice_replay_btn.visible = false
+	StellaRuntime.notify_action_state_changed(
+		StellaActionRegistry.ACTION_VOICE_REPLAY)
 	_segment_presentation_complete = false
 	_next_stage_segment_index = 0
 	if not bool(content.get("active", false)):
@@ -6080,6 +6175,10 @@ func _apply_hide_dialogue_boundary(revision: int) -> void:
 	_dialogue_segments = []
 	_dialogue_voice_character = ""
 	_dialogue_total_duration = 0.0
+	StellaRuntime.notify_action_state_changed(
+		StellaActionRegistry.ACTION_VOICE_REPLAY)
+	StellaRuntime.notify_action_state_changed(
+		StellaActionRegistry.ACTION_HIDE_UI)
 	_segment_presentation_complete = false
 	_next_stage_segment_index = 0
 	_stage_transition_records.clear()

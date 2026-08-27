@@ -94,13 +94,12 @@ func _input(event: InputEvent) -> void:
 		if _consume_movie_input(&"right_click"):
 			get_viewport().set_input_as_handled()
 			return
-		if dialogue:
-			if dialogue._ui_hidden:
-				dialogue._ui_hidden = false
-				dialogue.visible = true
-			elif dialogue.visible and not dialogue._is_typing:
-				dialogue._ui_hidden = true
-				dialogue.visible = false
+		if StellaRuntime.can_execute_action(
+			StellaActionRegistry.ACTION_HIDE_UI
+		):
+			StellaRuntime.execute_action(
+				StellaActionRegistry.ACTION_HIDE_UI)
+			get_viewport().set_input_as_handled()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -205,8 +204,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	# F9: open flowchart overlay (issue #97). Works from PLAYING state only.
 	if event.keycode == KEY_F9:
-		if StellaRuntime.game_state.is_playing() and StellaRuntime.scenario_graph != null:
-			StellaRuntime.show_flowchart()
+		StellaRuntime.execute_action(StellaActionRegistry.ACTION_FLOWCHART)
 		return
 	if not StellaRuntime.game_state.is_playing():
 		return
@@ -269,15 +267,8 @@ func _activate_focused_choice_option() -> bool:
 ## Resolve one accepted normal advance event to exactly one owner/result, then
 ## stop propagation before synchronous completion can expose a new UI/owner to
 ## the tail of the same physical event.
-func _handle_normal_advance(dialogue) -> void:
-	if _consume_movie_input(&"advance"):
-		get_viewport().set_input_as_handled()
-		return
-	if _consume_presentation_clip_advance():
-		get_viewport().set_input_as_handled()
-		return
-	if not _consume_typewriter_advance(dialogue):
-		_request_dialogue_advance(dialogue)
+func _handle_normal_advance(_dialogue) -> void:
+	StellaRuntime.execute_action(StellaActionRegistry.ACTION_ADVANCE)
 	get_viewport().set_input_as_handled()
 
 
@@ -301,45 +292,19 @@ func _consume_presentation_clip_advance() -> bool:
 	)
 
 
-## Give the active typewriter first ownership of each normal advance event.
-## click_to_complete is intentionally read here, at the input boundary, so a
-## direct set/reset/load applies to the next event even on the current line.
-func _consume_typewriter_advance(dialogue) -> bool:
-	if dialogue == null:
-		return false
-	var allow_completion := bool(StellaRuntime.get_setting("click_to_complete"))
-	if dialogue.has_method("consume_typewriter_advance"):
-		return bool(dialogue.consume_typewriter_advance(allow_completion))
-	# Custom dialogue scenes may implement the established
-	# _is_typing/complete_typewriter presentation seam without the atomic helper.
-	# Disabled completion still consumes the input instead of leaking it onward.
-	if not dialogue._is_typing:
-		return false
-	if allow_completion:
-		dialogue.complete_typewriter()
-	return true
-
-
-func _request_dialogue_advance(dialogue) -> void:
-	if dialogue != null and dialogue.has_method("request_current_dialogue_advance"):
-		if bool(dialogue.request_current_dialogue_advance()):
-			get_viewport().set_input_as_handled()
-			return
-	# Custom scenes may expose only the public global input notification; it also
-	# owns non-dialogue blockers such as @wait click.
-	# New DialogueHandler commands require request.advance().
-	SignalBus.emit_advance_requested()
+func _request_dialogue_advance(_dialogue = null) -> void:
+	StellaRuntime.execute_action(StellaActionRegistry.ACTION_ADVANCE)
 	get_viewport().set_input_as_handled()
 
 
-func _restore_soft_hidden_dialogue(dialogue) -> bool:
-	if (
-		dialogue == null
-		or not dialogue._ui_hidden
-		or not StellaRuntime.game_state.is_playing()
+func _restore_soft_hidden_dialogue(_dialogue = null) -> bool:
+	if not StellaRuntime.is_action_active(
+		StellaActionRegistry.ACTION_HIDE_UI
 	):
 		return false
-	dialogue._ui_hidden = false
-	dialogue.visible = true
+	if StellaRuntime.execute_action(
+		StellaActionRegistry.ACTION_HIDE_UI
+	) != StellaActionRegistry.ExecuteResult.EXECUTED:
+		return false
 	get_viewport().set_input_as_handled()
 	return true

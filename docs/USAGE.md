@@ -257,7 +257,8 @@ Game
 
 完整属性表和诊断规则见 [DSL.md](DSL.md#33-对话框模式切换)。内置场景已经提供可定位文字区域、`DialogueBg` 和 `quick_menu` 分组，常规 ADV、透明 NVL、书信、独白等版式都能只用 STLA 完成。Presenter 在就绪时保存 ADV 基线；配置过 `@adv profile=name` 时，`@nvl off` / `@overlay off` 恢复该 ADV Profile，否则恢复场景原始 ADV，并精确还原 panel、文字区域、文字样式、背景和分组 UI。
 
-自定义 `DialoguePresenter` scene 还必须在 Inspector 中显式设置
+使用插件 exact `dialogue_presenter.gd` script 的自定义 `DialoguePresenter` scene 还必须在
+Inspector 中显式设置
 `dialogue_background_path`，指向这个 Presenter 后代中真正绘制对话窗背景的
 `Control`；解析结果必须是 Presenter 的严格后代，不能是 Presenter 自身、ancestor、sibling
 或 subtree 外的 target。例如背景节点名为 `DialogueBackdrop` 时，scene 属性应保存为：
@@ -270,6 +271,8 @@ dialogue_background_path = NodePath("DialogueBackdrop")
 `GameSettings.text_window_opacity`；默认空值不会按节点名、group 或 scene-tree 扫描猜测。
 空路径、失效路径、非 `Control` target 或逃逸 ownership 的路径会给出带 scene resource、
 authored field/path 的诊断；ownership 诊断还列出 resolved target。它们只禁用背景专属投影。
+项目不得用继承脚本替换内建 Presenter；布局、皮肤、工具栏和 ADV/NVL/overlay 差异分别由
+scene-authored 节点、下文 `StellaAction` 和 `@dialogue_profile` 表达。
 请把正文、姓名、avatar 和 toolbar/Button 放在该背景节点之外；
 设置只修改目标 Control 自己的 `self_modulate`，不会继承到这些 UI。最终背景 alpha 为
 Theme/style alpha、Profile/场景 `modulate.a`、场景 authored `self_modulate.a` 与
@@ -289,6 +292,155 @@ Theme/style alpha、Profile/场景 `modulate.a`、场景 authored `self_modulate
 ## Facade API
 
 `StellaRuntime` 提供简洁的 API，用户搭建自己的 UI 时只需要调用这些方法：
+
+### 声明式 UI action
+
+项目按钮不需要为每个 action 编写脚本，也不应调用 Presenter 的 `_on_*` 私有方法。在
+任意 `BaseButton` 下添加一个 `StellaAction` 子节点，并在 Inspector 中填写稳定的
+`action_id` 即可：
+
+```ini
+[ext_resource type="Script" path="res://addons/stella/presentation/ui/stella_action.gd" id="1_action"]
+
+[node name="Auto" type="Button" parent="DialoguePanel/Toolbar"]
+text = "AUTO"
+custom_minimum_size = Vector2(96, 36)
+
+[node name="StellaAction" type="Node" parent="DialoguePanel/Toolbar/Auto"]
+script = ExtResource("1_action")
+action_id = &"auto"
+```
+
+这是普通项目的完整用法。Button 自己 authored 的 theme、texture、icon、文字、anchors 和
+geometry 都会保留；绑定只在 registry 事件到来时同步状态，不使用 `_process`、polling 或
+timer。`sync_availability=true`（默认）投影 `disabled`；`hide_when_unavailable` 可同时隐藏；
+`sync_active_state=true`（默认）只为 metadata 中的 toggle action 投影
+`toggle_mode/button_pressed`，动态改成 non-toggle action 时会同步清除旧高亮。
+`sync_label=false` 默认保留场景文字；设为 `true` 后使用 `label_key` 的翻译或 fallback
+`label`，action 消失时恢复该 Binding 首次 ready 时保存的 authored Button 文字，不会保留
+已经失效的旧 action label。
+
+内建 `DialoguePresenter` 的 Toolbar 也遵守同一规则：场景已 authored 的 Button 是权威，
+不会在 `_ready()` 中被清空或重建；只有 Toolbar 完全为空时才生成默认产品工具栏，而且
+这些默认 Button 仍使用相同的 `StellaAction`。项目可以复制、排列和换肤默认 scene，但
+game scene 中的 `DialoguePresenter` 节点必须继续使用插件提供的 exact
+`dialogue_presenter.gd` script；不要继承它来重建工具栏。Runtime 先完成
+clear/avatar/clip 三项 typed admission、背景和 Profile 校验，
+然后才绑定 authored children。默认 scene 与 demo 都展示了十个无需项目脚本的 toolbar
+action。
+
+稳定的内建 ID 如下；不可用条件由当前 game state、overlay、存档、voice、choice 和 exact
+Presenter owner 实时计算：
+
+| ID | 用途 | toggle | confirmation |
+|---|---|---:|---|
+| `voice_replay` | 重听当前语音 | 否 | `none` |
+| `auto` | 自动播放 | 是 | `none` |
+| `skip` | 快进 | 是 | `none` |
+| `backlog` | 打开 Backlog | 否 | `none` |
+| `prev_choice` | 回到上一选择 | 否 | `none` |
+| `quick_save` / `quick_load` | 快存 / 快读 | 否 | `none` |
+| `save` / `load` | 打开存档 / 读档 | 否 | `none` |
+| `settings` | 打开设置 | 否 | `none` |
+| `start_game` / `continue_game` | 新游戏 / 继续游戏 | 否 | `none` |
+| `return_to_title` | 返回标题 | 否 | `destructive` |
+| `quit` | graceful 退出 | 否 | `destructive` |
+| `advance` | 推进当前 semantic owner | 否 | `none` |
+| `hide_ui` | 临时隐藏 / 恢复对话 UI | 是 | `none` |
+| `flowchart` | 打开流程图 | 否 | `none` |
+| `cancel` | 关闭当前 overlay | 否 | `none` |
+
+可枚举与 dispatcher Facade 都在同一个 registry 上：
+
+```gdscript
+var catalog: Array[Dictionary] = StellaRuntime.get_actions()
+var metadata: Dictionary = StellaRuntime.get_action(&"auto")
+var label: String = StellaRuntime.get_action_label(&"auto")
+var available: bool = StellaRuntime.can_execute_action(&"auto")
+var active: bool = StellaRuntime.is_action_active(&"auto")
+var result := StellaRuntime.execute_action(&"auto")
+```
+
+catalog 依 `order`、ID 稳定排序，返回值都是 defensive copy。metadata 字段为 `id`、
+`label`、`label_key`、`description`、`description_key`、`category`、`toggle`、
+`confirmation_policy`、`order` 和 `builtin`；项目可为 `label_key` / `description_key`
+提供 Godot 翻译。执行结果为 `EXECUTED`、`UNAVAILABLE`、`CONFIRMATION_REQUIRED`、
+`NOT_FOUND` 或 `FAILED`。
+
+项目 action 必须是小写 namespaced ID，并由已经进入 SceneTree 的 `Node` 注册：
+
+```gdscript
+extends Node
+
+const ACTION_CODEX := &"my_game.open_codex"
+
+func _ready() -> void:
+	var ok := StellaRuntime.register_action(
+		ACTION_CODEX,
+		{
+			"label": "资料库",
+			"label_key": "my_game.action.open_codex",
+			"category": "interface",
+			"order": 500,
+		},
+		self,
+		Callable(self, "_execute_codex"),
+		Callable(self, "_can_execute_codex"),
+	)
+	if not ok:
+		push_error(StellaRuntime.action_registry.last_error)
+
+func _can_execute_codex(_context: Dictionary) -> bool:
+	return not $Codex.visible
+
+func _execute_codex(_context: Dictionary) -> bool:
+	$Codex.show()
+	StellaRuntime.notify_action_state_changed(ACTION_CODEX)
+	return true
+```
+
+ID 冲突、内建 ID、invalid callback 和非 tree-bound owner 都会 fail-close；callback 必须是
+该 exact owner 的方法。owner 离开 SceneTree 时其全部 action 自动注销并断开 lifecycle
+连接，也可提前调用 `unregister_action(id, owner)`。`can_execute` / `is_active` 必须无副作用并
+严格返回 `bool`；execute 也必须以 `true` 表示已完成，否则 dispatcher 返回 `FAILED`。
+所有 callback 接收 context 的副本。项目状态变化后调用
+`notify_action_state_changed(id)`；registry 的 `catalog_changed` / `action_state_changed` 会
+事件驱动刷新所有 Binding。
+
+`disruptive` / `destructive` action 第一次执行只发出 confirmation request，不执行动作。
+确认 UI 必须保存该次 context 中的 opaque single-use token，在用户真实确认后以同一份
+context 增加 `confirmation_granted=true` 并再次调用同一 dispatcher：
+
+```gdscript
+var _pending_action: StringName
+var _pending_context: Dictionary
+
+func _ready() -> void:
+	StellaRuntime.action_registry.confirmation_requested.connect(
+		_on_confirmation_requested)
+
+func _on_confirmation_requested(
+	action_id: StringName, _policy: StringName, context: Dictionary,
+) -> void:
+	# 旧 Inspector enum 的精确兼容 adapter 会自己消费该 receipt。
+	if bool(context.get(
+		StellaActionRegistry.CONFIRMATION_AUTO_CONFIRM_CONTEXT_KEY, false)):
+		return
+	_pending_action = action_id
+	_pending_context = context.duplicate(true)
+	$ConfirmationDialog.popup_centered()
+
+func _on_confirmation_dialog_confirmed() -> void:
+	_pending_context["confirmation_granted"] = true
+	StellaRuntime.execute_action(_pending_action, _pending_context)
+```
+
+token 不能伪造或复用；多个同步/异步 listener 竞争时只有第一个有效确认能执行，其他请求
+fail-close。`quit` 的 execute 最终进入 `StellaRuntime.request_quit()`，绝不直接调用
+`SceneTree.quit()`。旧 Inspector `action` enum 保留严格的一对一 canonical adapter
+（例如 `TOGGLE_AUTO_PLAY → auto`、`SHOW_SAVE → save`、`QUIT → quit`）；新场景应只填写
+`action_id`。legacy destructive enum 会同步消费本次专用 receipt 以维持既有行为，正常
+confirmation UI 必须按上例忽略带 auto-confirm marker 的请求。
 
 ### 自定义对话 consumer / handler 迁移
 
