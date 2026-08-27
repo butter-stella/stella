@@ -89,6 +89,7 @@ grow_horizontal = 2
 grow_vertical = 0
 mouse_filter = 2
 script = ExtResource("3")
+dialogue_background_path = NodePath("DialogueBg")
 text_rect_target_path = NodePath("HBox")
 
 [node name="DialogueBg" type="Panel" parent="UILayer/DialoguePanel" groups=["dialogue_surface"]]
