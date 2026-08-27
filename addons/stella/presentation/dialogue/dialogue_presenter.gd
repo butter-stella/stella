@@ -512,6 +512,13 @@ func _resolve_text_window_background() -> Control:
 			+ "resolve to Control, got %s; text_window_opacity projection is disabled"
 		) % [scene_source, dialogue_background_path, candidate.get_class()])
 		return null
+	if candidate == self or not is_ancestor_of(candidate):
+		push_warning((
+			"DialoguePresenter scene '%s': dialogue_background_path '%s' resolves "
+			+ "to '%s' outside strict Presenter descendant ownership; background-only "
+			+ "Profile and text_window_opacity projection are disabled"
+		) % [scene_source, dialogue_background_path, candidate.get_path()])
+		return null
 	return candidate as Control
 
 
