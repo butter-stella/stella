@@ -10,6 +10,8 @@ jobs:
   test:
     name: GUT Tests
     runs-on: ubuntu-latest
+    env:
+      STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD: "1"
 
     steps:
       - name: Checkout
@@ -89,6 +91,8 @@ jobs:
             'cg_gallery = true' \
             'backlog = false' \
             'save_slots = 3' \
+            '[settings]' \
+            'schema = "res://tests/fixtures/startup/project_settings.json"' \
             '[system_se]' \
             'select = "se_cancel"' \
             'cancel = "se_select"' \
@@ -314,6 +318,8 @@ jobs:
   rendering:
     name: Rendering Pixel Tests
     runs-on: ubuntu-latest
+    env:
+      STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD: "1"
 
     steps:
       - name: Checkout
@@ -364,5 +370,6 @@ jobs:
           xvfb-run -a godot --path . --rendering-method mobile
           --audio-driver Dummy
           -s addons/gut/gut_cmdln.gd -gconfig=
+          -gpost_run_script=res://tests/helpers/gut_post_run.gd
           -gdir=res://tests/rendering -gexit 2>&1
         timeout-minutes: 5

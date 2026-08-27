@@ -108,9 +108,16 @@ Core 的 `TextResourceInspector.inspect()` 是源码 `.tscn` / `.tres` 无副作
 
 `ScenarioEngine` 自己也为每次 `run()` 维护独立世代。`scenario_started`、`scene_changed`、`command_executed` 等外部可重入 signal 返回后，以及最终发送 `scenario_ended` 前，都必须复查同一 context 与世代；Runtime 只接受 engine 正在为当前 active run 同步发送的 end event，并在公开 `SignalBus.scenario_ended_event` 返回后再次复查再决定是否返回标题。这样 signal callback 内发起的新导航可以立即取消旧控制流，旧 run 或 bridge tail 都不会覆盖新 owner。
 
-测试隔离属于同一启动边界。CI 和标准测试命令必须显式设置 `STELLA_DISABLE_LOCAL_CONFIG=1`；该开关只跳过隐式的 `res://stella.local.cfg`，显式传给测试辅助路径的 synthetic 配置仍正常解析。CI 的 GUT 与 rendering job 都会在项目根创建合法的 poison local 配置并带此变量运行；完整 GUT 还直接断言 Runtime 的 `game_title` 未采用 poison 值，而不是只依赖来源记录。
+测试隔离属于同一启动边界。CI 和标准测试命令必须显式设置
+`STELLA_DISABLE_LOCAL_CONFIG=1` 与 `STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD=1`；两者只跳过
+隐式的 `res://stella.local.cfg` 和 `user://settings.json`，显式传给测试辅助路径的 synthetic
+配置及显式 settings load/save 仍正常走 production parser/manager。CI 的 GUT 与 rendering job
+都会在项目根创建合法的 poison local 配置；完整 GUT 还直接断言 Runtime 的 `game_title` 未采用
+poison 值，而不是只依赖来源记录。
 
-配置中的 scene override 是字符串形式的动态依赖，Selected Scenes/Resources 导出无法自动追踪它们；宿主导出 preset 必须显式收录 title/game/各 overlay scene。bootstrap 对内置 fallback title 使用静态 PackedScene 依赖，确保即使只选择 bootstrap 也能安全回退。CI 另以 Godot 4.6.1 把 Binary Tokens、Compressed Binary Tokens 和 Selected Scenes 三种 PCK 导出后从源码目录外启动；export 前会创建被 include filter 选中、必须由 exclude filter 剔除的 synthetic `stella.local.cfg`，每个运行态 probe 都直接断言包内不存在该文件，再检查最终 `current_scene` 与配置 consumer 的真实值。Compressed Binary Tokens 还运行 UID/superseding/失败事务/lifecycle-reentrancy 导航探针，以及 existing-but-wrong-type 与 existing-but-unloadable 私有依赖 fallback 探针，避免“导出成功但运行态配置、导航或依赖校验损坏”的假绿。
+配置中的 scene override 与 settings schema 是字符串形式的动态依赖，Selected
+Scenes/Resources 导出无法自动追踪；宿主导出 preset 必须显式收录 schema JSON 和
+title/game/各 overlay scene。bootstrap 对内置 fallback title 使用静态 PackedScene 依赖，确保即使只选择 bootstrap 也能安全回退。CI 另以 Godot 4.6.1 把 Binary Tokens、Compressed Binary Tokens 和 Selected Scenes 三种 PCK 导出后从源码目录外启动；export 前会创建被 include filter 选中、必须由 exclude filter 剔除的 synthetic `stella.local.cfg`，每个运行态 probe 都直接断言包内不存在该文件，再检查最终 `current_scene` 与配置 consumer 的真实值。Compressed Binary Tokens 还运行 UID/superseding/失败事务/lifecycle-reentrancy 导航探针，以及 existing-but-wrong-type 与 existing-but-unloadable 私有依赖 fallback 探针，避免“导出成功但运行态配置、导航或依赖校验损坏”的假绿。
 
 Compressed PCK 的真实进程回归同时覆盖 signed、int64 边界外、exponent、non-finite、quoted 空 ExtResource/SubResource ID，以及 finite big / negative small numeric 与 canonical quoted resource ID 的双向匹配；还覆盖 binary `.scn` nested child 的 property override，以及 unknown native type、无效 parent/owner/attribute 的 title、game 与 overlay 目标。失败路径断言旧 scene/context/overlay/state owner 不变，外层日志 gate 则确认私有 sentinel 没有进入 Godot parser。
 
@@ -549,7 +556,12 @@ standalone `@chapter_indicator` 由 parser lowering 为单 child JOIN，和 mixe
 
 ### 3.5 游戏设置
 
-框架提供设置数据模型 `GameSettings`、持久化 `SettingsManager`、信号通知。UI 由游戏项目自行实现（或使用 `addons/stella/scenes/settings.tscn` 默认场景）。
+`SettingsManager` 是唯一设置 registry、live value owner、validator 与 JSON persistence
+owner。它始终注册全部 `GameSettings` built-ins；可选的 project schema 只以数据形式贡献
+authored built-in defaults、namespaced typed definitions 和 contiguous rename/remove
+migrations，不创建另一套 manager、callback 或存储模型。UI 由游戏项目自行实现（或使用
+`addons/stella/scenes/settings.tscn` 默认场景），并通过 Runtime Facade 查询 definition 和
+registered key，而不是 introspect 项目脚本。
 
 ```gdscript
 # core/settings/game_settings.gd
@@ -592,11 +604,25 @@ var resolution: String = "1920x1080"
 var effect_enabled: bool = true
 ```
 
-持久化使用 `user://settings.json`，各子系统订阅 `SignalBus.settings_changed` 动态响应。信号的 `value` 始终是触发通知时该设置的完整当前值；字典设置发送独立的完整快照，而不是单角色 patch。监听器可以在同步回调中再次修改设置，后续通知也会重新读取当前值，不会发送已过期的缓存值。成功的 Dictionary load 会先原子提交完整候选，再按 `GameSettings.to_dict()` 的规范顺序只通知真实变化；省略项保留、未知项忽略。`effect_enabled` 在 direct set 和持久化边界都只接受 bool，持久化候选若违反该类型则整次 load 零写入、零通知。
+`stella.cfg [settings] schema` 指向最多 1 MiB 的严格 JSON schema。普通 schema 为
+`{version, settings}`；optional `defaults` 只能命中 exact built-in key，project setting key
+必须是 lowercase namespace 且不能 shadow built-in。支持 boolean/integer/number/enum/
+dictionary；range 必须有限，dictionary value 使用同一 scalar validator。schema 在 composition
+root 创建 Presenter 和加载 live values 前整份验证；无 schema 时也构造相同的 built-in
+registry，不存在 compatibility manager 分支。
+
+持久化使用 `user://settings.json` 的 exact `{schema_version, values}` envelope，各子系统订阅
+`SignalBus.settings_changed` 动态响应。信号的 `value` 始终是触发通知时该设置的完整当前值；
+字典的 get/set/default/persistence/signal 都使用 defensive deep copy。load 先在 detached map
+完成 strict shape、future-version、contiguous rename/remove migration 和 typed validation，随后
+原子提交 present registered values；省略项保留，unknown/unregistered 或任一非法 sibling
+使整份候选零写入、零通知。成功 load/reset 按 built-in canonical order 后接 sorted project
+keys，只通知真实变化；同步 listener 重入时 payload 重新读取 live current value。旧 flat JSON
+位于明确 clean version boundary 之外，不保留 legacy read branch。
 
 `character_interval` 与 `punctuation_pause` 都是不设游戏上限的非负整数毫秒，
 `0` 合法。SettingsManager 在 direct set 与持久化 load 的原始值边界校验这两项；
-非法的负数、非整数或非数值会产生 warning，并分别写回 `GameSettings` 的
+非法的负数、非整数或非数值会产生 warning，并分别写回 registry 的 authored
 50 / 200ms 默认值。JSON load 中可无损表示整数毫秒的浮点数会先归一化为整数，
 保持 save/load roundtrip。DialoguePresenter 在 active SHOW 边界原子协调两项
 settings-backed cache、转换为秒并再次做防御性校验，因此 reset 的同步重入不会
@@ -795,6 +821,7 @@ stella/
 │       │   │   └── presentation_state.gd
 │       │   ├── settings/
 │       │   │   ├── game_settings.gd
+│       │   │   ├── settings_schema.gd
 │       │   │   ├── settings_manager.gd
 │       │   │   └── display_helper.gd
 │       │   ├── playback/

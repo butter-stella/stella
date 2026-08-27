@@ -22,6 +22,20 @@ func _ready() -> void:
 		failures.append("resolved game title did not reach the title consumer")
 	if StellaRuntime.config.scenario_path != EXPECTED_SCENARIO:
 		failures.append("resolved scenario did not reach the first scene")
+	if not is_equal_approx(float(StellaRuntime.get_setting("bgm_volume")), 0.65):
+		failures.append("authored built-in settings default was not composed")
+	if not is_equal_approx(float(
+		StellaRuntime.get_setting_definition("bgm_volume")["default"]), 0.65):
+		failures.append("authored built-in default was absent from its definition")
+	if StellaRuntime.get_setting("project.auto_base_wait") != 50:
+		failures.append("project setting default was not registered before title ready")
+	if not StellaRuntime.set_setting("project.auto_base_wait", 80):
+		failures.append("registered project setting could not be changed")
+	if not is_equal_approx(float(StellaRuntime.get_setting("auto_play_delay")), 1.5):
+		failures.append("project setting was aliased to a built-in setting")
+	StellaRuntime.reset_settings()
+	if StellaRuntime.get_setting("project.auto_base_wait") != 50:
+		failures.append("project setting reset did not use its authored default")
 
 	# Exercise the production feature consumers before the first title frame is
 	# presented. A disabled backlog must neither open UI nor change state.

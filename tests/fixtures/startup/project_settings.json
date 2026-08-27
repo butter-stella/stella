@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "defaults": {
+    "bgm_volume": 0.65
+  },
+  "settings": {
+    "project.auto_base_wait": {
+      "type": "integer",
+      "default": 50,
+      "minimum": 0,
+      "maximum": 100
+    }
+  }
+}

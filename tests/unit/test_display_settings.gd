@@ -51,6 +51,11 @@ func test_resolution_roundtrip_via_manager():
 	assert_eq(m2.settings.resolution, "1280x720")
 
 
+func test_project_specific_resolution_string_remains_backward_compatible():
+	assert_true(_manager.set_value("resolution", "2560x1440"))
+	assert_eq(_manager.settings.resolution, "2560x1440")
+
+
 func test_fullscreen_roundtrip_via_manager():
 	_manager.set_value("fullscreen", true)
 	_manager.save()
