@@ -595,10 +595,29 @@ func test_get_setting():
 func test_set_setting():
 	var runtime = get_tree().root.get_node("StellaRuntime")
 	var orig = runtime.get_setting("bgm_volume")
-	runtime.set_setting("bgm_volume", 0.42)
+	assert_true(runtime.set_setting("bgm_volume", 0.42))
 	assert_almost_eq(runtime.get_setting("bgm_volume"), 0.42, 0.001)
 	# Restore
 	runtime.set_setting("bgm_volume", orig)
+
+
+func test_setting_registry_facade_is_typed_and_unknown_keys_fail_closed() -> void:
+	var runtime = get_tree().root.get_node("StellaRuntime")
+	var registered: PackedStringArray = runtime.get_registered_settings()
+	assert_true("bgm_volume" in registered)
+	var definition: Dictionary = runtime.get_setting_definition("bgm_volume")
+	assert_eq(definition["type"], "number")
+	assert_almost_eq(float(definition["default"]), 0.8, 0.000001)
+	definition["default"] = 0.1
+	assert_almost_eq(
+		float(runtime.get_setting_definition("bgm_volume")["default"]),
+		0.8,
+		0.000001,
+	)
+	assert_false(runtime.set_setting("project.unregistered", true))
+	assert_push_warning("unknown or unregistered setting 'project.unregistered'")
+	assert_null(runtime.get_setting("project.unregistered"))
+	assert_push_warning("unknown or unregistered setting 'project.unregistered'")
 
 
 ## --- Overlay Lifecycle ---

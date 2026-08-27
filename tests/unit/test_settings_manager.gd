@@ -26,6 +26,12 @@ func test_default_values():
 	assert_true(s.effect_enabled)
 
 
+func test_builtin_registry_matches_the_complete_game_settings_model():
+	var defaults := GameSettings.new().to_dict()
+	assert_eq(Array(_manager.get_registered_keys()), defaults.keys())
+	assert_eq(_manager.to_dict(), defaults)
+
+
 func test_set_and_get():
 	_manager.set_value("character_interval", 30)
 	assert_eq(_manager.settings.character_interval, 30)
@@ -42,6 +48,19 @@ func test_set_emits_signal():
 	assert_almost_eq(float(changed[0]["value"]), 0.5, 0.01)
 
 
+func test_per_character_builtin_children_keep_consumer_validation_ownership():
+	assert_true(_manager.set_value(
+		"character_voice_enabled", {"guide": "consumer-validates"}))
+	assert_true(_manager.set_value(
+		"character_voice_volume", {"guide": NAN}))
+	assert_eq(
+		_manager.settings.character_voice_enabled,
+		{"guide": "consumer-validates"},
+	)
+	assert_true(is_nan(float(
+		_manager.settings.character_voice_volume["guide"])))
+
+
 func test_save_and_load():
 	_manager.set_value("character_interval", 30)
 	_manager.set_value("bgm_volume", 0.3)
@@ -56,7 +75,7 @@ func test_save_and_load():
 	assert_almost_eq(manager2.settings.bgm_volume, 0.3, 0.01)
 
 
-func test_load_applies_changed_present_keys_atomically_and_notifies_current_values():
+func test_load_applies_registered_present_keys_atomically_and_notifies_current_values():
 	_manager.set_value("character_interval", 77)
 	_manager.settings.character_voice_volume["sakura"] = 0.5
 	var retained_character_volumes := _manager.settings.character_voice_volume
@@ -66,9 +85,11 @@ func test_load_applies_changed_present_keys_atomically_and_notifies_current_valu
 		changed_keys.append(key)
 		snapshots.append(_manager.settings.to_dict())
 	)
-	_write_settings_text(
-		'{"future_setting":"ignored","effect_enabled":false,'
-		+ '"click_to_complete":true,"bgm_volume":0.25}')
+	_write_settings_values({
+		"effect_enabled": false,
+		"click_to_complete": true,
+		"bgm_volume": 0.25,
+	})
 
 	_manager.load_settings()
 
@@ -85,6 +106,19 @@ func test_load_applies_changed_present_keys_atomically_and_notifies_current_valu
 			"all loaded fields must be committed before the first notification")
 
 
+func test_unknown_persisted_key_rejects_the_whole_candidate() -> void:
+	_manager.settings.character_interval = 77
+	var baseline := _manager.to_dict()
+	_write_settings_values({
+		"bgm_volume": 0.25,
+		"project.unregistered": true,
+	})
+
+	assert_eq(_manager.load_settings(), ERR_INVALID_DATA)
+	assert_push_warning("$.values.project.unregistered")
+	assert_eq(_manager.to_dict(), baseline)
+
+
 func test_invalid_effect_enabled_rejects_the_whole_load_candidate() -> void:
 	_manager.settings.character_interval = 77
 	var baseline := _manager.settings.to_dict()
@@ -95,13 +129,14 @@ func test_invalid_effect_enabled_rejects_the_whole_load_candidate() -> void:
 	for invalid_value in [0, 1]:
 		_manager.settings.from_dict(baseline)
 		changed_keys.clear()
-		_write_settings_text(JSON.stringify({
+		_write_settings_values({
 			"bgm_volume": 0.25,
 			"effect_enabled": invalid_value,
-		}))
+		})
 
 		_manager.load_settings()
 
+		assert_push_warning("$.values.effect_enabled")
 		assert_eq(_manager.settings.to_dict(), baseline,
 			"effect_enabled accepts bool only; no sibling field may apply")
 		assert_eq(changed_keys, [],
@@ -140,7 +175,8 @@ func test_missing_or_non_dictionary_load_is_an_atomic_noop_without_notifications
 	assert_eq(changed_keys, [], "a missing file cannot publish settings changes")
 
 	_write_settings_text("[]")
-	_manager.load_settings()
+	assert_eq(_manager.load_settings(), ERR_INVALID_DATA)
+	assert_push_warning("settings root must be an object")
 	assert_eq(_manager.settings.to_dict(), baseline)
 	assert_eq(changed_keys, [], "a non-object settings document is rejected atomically")
 
@@ -298,3 +334,10 @@ func _write_settings_text(contents: String) -> void:
 		return
 	file.store_string(contents)
 	file.close()
+
+
+func _write_settings_values(values: Dictionary, version: int = 1) -> void:
+	_write_settings_text(JSON.stringify({
+		"schema_version": version,
+		"values": values,
+	}))

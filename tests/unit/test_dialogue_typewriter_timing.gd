@@ -123,8 +123,11 @@ func test_public_settings_direct_and_load_paths_reject_invalid_raw_values() -> v
 	if file == null:
 		return
 	file.store_string(JSON.stringify({
-		"character_interval": 80.5,
-		"punctuation_pause": -1,
+		"schema_version": 1,
+		"values": {
+			"character_interval": 80.5,
+			"punctuation_pause": -1,
+		},
 	}))
 	file.close()
 	manager.settings.character_interval = 10
@@ -141,7 +144,13 @@ func test_public_settings_direct_and_load_paths_reject_invalid_raw_values() -> v
 	assert_not_null(file)
 	if file == null:
 		return
-	file.store_string('{"character_interval":80.0,"punctuation_pause":120.0}')
+	file.store_string(JSON.stringify({
+		"schema_version": 1,
+		"values": {
+			"character_interval": 80.0,
+			"punctuation_pause": 120.0,
+		},
+	}))
 	file.close()
 	manager.load_settings()
 	assert_eq(manager.settings.character_interval, 80,

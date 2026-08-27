@@ -213,9 +213,39 @@ func test_defaults_when_no_file():
 	assert_eq(config.cg_gallery, false)
 	assert_eq(config.backlog, true)
 	assert_eq(config.save_slots, 8)
+	assert_eq(config.settings_schema_path, "")
 
 	assert_eq(config.title_scene, "")
 	assert_eq(config.game_scene, "")
+
+
+func test_settings_schema_path_is_explicit_and_strict() -> void:
+	var path := "user://test_stella.cfg"
+	_write_raw_project_config(path, (
+		"[settings]\n"
+		+ 'schema = "res://settings/project_settings.json"\n'
+	))
+	assert_eq(config.load_from_path(path), OK)
+	assert_eq(
+		config.settings_schema_path,
+		"res://settings/project_settings.json",
+	)
+
+	for invalid: String in [
+		"user://project_settings.json",
+		"res://settings/project_settings.tres",
+		"res://settings/../project_settings.json",
+	]:
+		config.reset()
+		_write_raw_project_config(path, (
+			"[settings]\n"
+			+ 'schema = "%s"\n' % invalid
+		))
+		assert_eq(config.load_from_path(path), ERR_INVALID_DATA)
+		assert_eq(config.settings_schema_path, "")
+		assert_string_contains(config.last_error_detail, "normalized res:// JSON path")
+	assert_false(config._settings_schema_path_is_valid(
+		"res://settings\\project_settings.json"))
 
 
 func test_load_from_config_file():

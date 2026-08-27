@@ -58,6 +58,13 @@ const _CONFIG_SCHEMA := {
 			"maximum": 100,
 		},
 	},
+	"settings": {
+		"schema": {
+			"property": "settings_schema_path",
+			"type": TYPE_STRING,
+			"settings_schema_path": true,
+		},
+	},
 	"system_se": {
 		"select": {"property": "se_select", "type": TYPE_STRING},
 		"cancel": {"property": "se_cancel", "type": TYPE_STRING},
@@ -173,6 +180,9 @@ var cg_gallery: bool = false
 var backlog: bool = true
 var save_slots: int = 8
 
+# [settings]
+var settings_schema_path: String = ""
+
 # [system_se] — file names (without extension) for UI sound effects
 var se_select: String = ""      # choice / menu selection
 var se_cancel: String = ""      # cancel / close overlay
@@ -285,6 +295,7 @@ func reset() -> void:
 	cg_gallery = false
 	backlog = true
 	save_slots = 8
+	settings_schema_path = ""
 	se_select = ""
 	se_cancel = ""
 	title_scene = ""
@@ -457,6 +468,18 @@ func _parse_assignment(cursor: _ConfigCursor, section: String) -> Dictionary:
 				value_line,
 				value_column,
 			)
+	if (
+		expected_type == TYPE_STRING
+		and entry.get("settings_schema_path", false)
+		and not _settings_schema_path_is_valid(String(value))
+	):
+		return _parse_failure(
+			ERR_INVALID_DATA,
+			"value for [%s] %s must be empty or a normalized res:// JSON path" % [
+				section, key],
+			value_line,
+			value_column,
+		)
 
 	var line_result := _finish_config_line(cursor, "value")
 	if line_result["error"] != OK:
@@ -901,6 +924,18 @@ func _is_ascii_digit(character: String) -> bool:
 		return false
 	var codepoint := character.unicode_at(0)
 	return codepoint >= 48 and codepoint <= 57
+
+
+func _settings_schema_path_is_valid(path: String) -> bool:
+	return (
+		path == ""
+		or (
+			path.begins_with("res://")
+			and not path.contains("\\")
+			and path.get_extension().to_lower() == "json"
+			and path.simplify_path() == path
+		)
+	)
 
 
 func _hex_digit_value(character: String) -> int:

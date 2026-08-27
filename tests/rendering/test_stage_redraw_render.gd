@@ -588,9 +588,20 @@ func test_numeric_update_reuses_the_complete_blur_pipeline_and_resources() -> vo
 		"id": "reused",
 		"properties": {"position": [3.0, 2.0], "opacity": 0.75},
 		"transition": "cut",
+		"transition_params": {},
 		"duration": 0.0,
 	}], true)
 	var updated: Dictionary = harness.presenter._layers["reused"]
+	assert_eq(
+		harness.presenter.get_layer_state("reused")["position"],
+		[3.0, 2.0],
+		"the canonical numeric update must apply before reuse is inspected",
+	)
+	assert_eq(
+		(updated["root"] as Node2D).position,
+		Vector2(3.0, 2.0),
+		"the live layer must project the canonical numeric update",
+	)
 	assert_same(updated["source"], source)
 	assert_same(
 		((updated["sprites"] as Dictionary)["asset"] as Sprite2D).texture,

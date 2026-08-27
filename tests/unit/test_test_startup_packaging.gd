@@ -7,6 +7,8 @@ const AUDIO_STATE_SOURCES := [
 ]
 const GUT_PLUGIN_PATH := "res://addons/gut/gut_plugin.gd"
 const GUT_ROOT := "res://addons/gut"
+const AGENT_INSTRUCTIONS_PATH := "res://AGENTS.md"
+const CI_WORKFLOW_PATH := "res://.github/workflows/tests.yml"
 
 
 func _collect_gut_text_resources(root: String) -> Array[String]:
@@ -54,3 +56,14 @@ func test_gut_editor_gui_dependencies_are_deferred_after_the_headless_gate() -> 
 	assert_gt(first_gui_dependency, headless_gate,
 		"headless import must return before loading editor-only GUT dependencies")
 	assert_false("preload('res://addons/gut/gui/GutBottomPanel.tscn')" in source)
+
+
+func test_hermetic_test_entry_points_keep_settings_and_audio_cleanup_gates() -> void:
+	var instructions := FileAccess.get_file_as_string(AGENT_INSTRUCTIONS_PATH)
+	assert_true("STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD=1" in instructions)
+	assert_true(
+		"-gpost_run_script=res://tests/helpers/gut_post_run.gd" in instructions)
+	var workflow := FileAccess.get_file_as_string(CI_WORKFLOW_PATH)
+	assert_true('STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD: "1"' in workflow)
+	assert_true(
+		"-gpost_run_script=res://tests/helpers/gut_post_run.gd" in workflow)
