@@ -171,6 +171,61 @@ func test_invalid_explicit_bindings_fail_closed_without_tree_guessing() -> void:
 	presenter.free()
 
 
+func test_self_ancestor_sibling_and_absolute_bindings_fail_strict_ownership() -> void:
+	var host := Control.new()
+	host.name = "BindingHost"
+	host.self_modulate = Color(0.2, 0.3, 0.4, 0.7)
+	add_child_autoqfree(host)
+	var external := ColorRect.new()
+	external.name = "ExternalControl"
+	external.offset_left = 12.0
+	external.offset_top = 14.0
+	external.offset_right = 112.0
+	external.offset_bottom = 74.0
+	external.modulate = Color(0.9, 0.8, 0.7, 0.6)
+	external.self_modulate = Color(0.5, 0.4, 0.3, 0.8)
+	host.add_child(external)
+	var host_state := _capture_control_state(host)
+	var external_state := _capture_control_state(external)
+	var bindings: Array[NodePath] = [
+		NodePath("."),
+		NodePath(".."),
+		NodePath("../ExternalControl"),
+		external.get_path(),
+	]
+	var opacity_changes: Array[float] = [0.0, 1.0, 0.5, 0.25]
+
+	for index: int in range(bindings.size()):
+		var presenter := FIXTURE.instantiate() as Control
+		presenter.dialogue_background_path = bindings[index]
+		host.add_child(presenter)
+		var resolved_path := presenter.get_path()
+		if index == 1:
+			resolved_path = host.get_path()
+		elif index > 1:
+			resolved_path = external.get_path()
+		assert_push_warning((
+			"DialoguePresenter scene 'res://tests/integration/fixtures/"
+			+ "dialogue_window_opacity.tscn': dialogue_background_path '%s' "
+			+ "resolves to '%s' outside strict "
+			+ "Presenter descendant ownership"
+		) % [bindings[index], resolved_path])
+		assert_null(presenter.get("_dialogue_bg"))
+		var presenter_self_modulate := presenter.self_modulate
+		var internal_background := _background(presenter)
+		assert_true(StellaRuntime.set_setting(
+			"text_window_opacity", opacity_changes[index]))
+		assert_eq(presenter.self_modulate, presenter_self_modulate,
+			"a self binding never projects opacity onto the Presenter")
+		assert_eq(internal_background.self_modulate,
+			AUTHORED_BACKGROUND_SELF_MODULATE,
+			"an invalid owner never falls back to a background-looking descendant")
+		_assert_control_state(host, host_state)
+		_assert_control_state(external, external_state)
+		host.remove_child(presenter)
+		presenter.free()
+
+
 func _add_presenter() -> Control:
 	var presenter := FIXTURE.instantiate() as Control
 	_presenters.append(presenter)
@@ -202,6 +257,44 @@ func _capture_canvas_state(nodes: Array[CanvasItem]) -> Array[Dictionary]:
 			"self_modulate": node.self_modulate,
 		})
 	return states
+
+
+func _capture_control_state(control: Control) -> Dictionary:
+	return {
+		"visible": control.visible,
+		"modulate": control.modulate,
+		"self_modulate": control.self_modulate,
+		"anchors": Vector4(
+			control.anchor_left,
+			control.anchor_top,
+			control.anchor_right,
+			control.anchor_bottom,
+		),
+		"offsets": Vector4(
+			control.offset_left,
+			control.offset_top,
+			control.offset_right,
+			control.offset_bottom,
+		),
+	}
+
+
+func _assert_control_state(control: Control, state: Dictionary) -> void:
+	assert_eq(control.visible, state["visible"])
+	assert_eq(control.modulate, state["modulate"])
+	assert_eq(control.self_modulate, state["self_modulate"])
+	assert_eq(Vector4(
+		control.anchor_left,
+		control.anchor_top,
+		control.anchor_right,
+		control.anchor_bottom,
+	), state["anchors"])
+	assert_eq(Vector4(
+		control.offset_left,
+		control.offset_top,
+		control.offset_right,
+		control.offset_bottom,
+	), state["offsets"])
 
 
 func _assert_canvas_state(

@@ -259,7 +259,8 @@ Game
 
 自定义 `DialoguePresenter` scene 还必须在 Inspector 中显式设置
 `dialogue_background_path`，指向这个 Presenter 后代中真正绘制对话窗背景的
-`Control`。例如背景节点名为 `DialogueBackdrop` 时，scene 属性应保存为：
+`Control`；解析结果必须是 Presenter 的严格后代，不能是 Presenter 自身、ancestor、sibling
+或 subtree 外的 target。例如背景节点名为 `DialogueBackdrop` 时，scene 属性应保存为：
 
 ```ini
 dialogue_background_path = NodePath("DialogueBackdrop")
@@ -267,8 +268,9 @@ dialogue_background_path = NodePath("DialogueBackdrop")
 
 该路径同时归属 Profile 的背景布局/显隐/调制和
 `GameSettings.text_window_opacity`；默认空值不会按节点名、group 或 scene-tree 扫描猜测。
-空路径、失效路径或非 `Control` target 会给出带 scene resource 与 NodePath 的诊断，
-并只禁用背景专属投影。请把正文、姓名、avatar 和 toolbar/Button 放在该背景节点之外；
+空路径、失效路径、非 `Control` target 或逃逸 ownership 的路径会给出带 scene resource、
+authored field/path 的诊断；ownership 诊断还列出 resolved target。它们只禁用背景专属投影。
+请把正文、姓名、avatar 和 toolbar/Button 放在该背景节点之外；
 设置只修改目标 Control 自己的 `self_modulate`，不会继承到这些 UI。最终背景 alpha 为
 Theme/style alpha、Profile/场景 `modulate.a`、场景 authored `self_modulate.a` 与
 `text_window_opacity` 的乘积；因此值 `1` 保留场景/Profile 透明度，`0` 只让背景完全透明，

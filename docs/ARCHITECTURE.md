@@ -485,10 +485,13 @@ Stella 的常规创作边界是：`.stla` 是唯一编程界面。布局和演�
 Profile 可声明 panel anchors/offsets、文字矩形与 margin、对齐/行距/溢出、背景可见性/颜色、场景内命名分组的显示策略、仅用于 NVL 累积显示的 entry prefix/separator，以及可选的 end-of-text advance indicator。Presenter 就绪时捕获场景编排基线，并在每次声明式模式切换前恢复，再叠加当前模式的 opt-in 覆盖；`off` 因而能精确恢复 ADV。未声明 Profile 时使用内置兼容布局，NVL 条目使用空前缀和换行分隔，也不会创建 indicator 节点。
 
 对话背景只有一个场景声明式 ownership：`DialoguePresenter.dialogue_background_path`
-必须显式指向该 Presenter 后代中的 `Control`，默认空值不按 `DialogueBg` 名称、group 或
-其他 scene-tree 路径猜测。内置场景、demo 与 custom-scene public fixture 都显式 author
-这条 binding；空、失效或类型错误只产生带 scene resource 与 authored NodePath 的确定诊断，
-并禁用背景专属 Profile/设置投影。Presenter ready 时一次捕获该 Control 的 authored
+必须显式指向该 Presenter 的严格后代 `Control`（不含 Presenter 自身），默认空值不按
+`DialogueBg` 名称、group 或其他 scene-tree 路径猜测；解析结果为 Presenter 自身（`.`）、
+ancestor（如 `..`）、sibling 或 Presenter subtree 外节点的路径都 fail-close。内置场景、
+demo 与 custom-scene public fixture 都显式 author
+这条 binding；空、失效、类型错误或 ownership 逃逸只产生带 scene resource 与 authored
+field/path 的确定诊断，ownership 诊断还列出 resolved target，并禁用背景专属 Profile/设置
+投影。Presenter ready 时一次捕获该 Control 的 authored
 `self_modulate`，`GameSettings.text_window_opacity` 仅把 alpha 投影为
 `authored_self_alpha * setting`；Profile 的 `background_modulate` 继续独立占有
 `modulate`。最终背景 alpha 因而是 theme/style alpha、Profile/authored `modulate.a`、
