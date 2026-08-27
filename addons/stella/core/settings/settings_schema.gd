@@ -10,8 +10,8 @@ const MAX_PROJECT_SETTINGS := 256
 const MAX_ENUM_VALUES := 256
 const MAX_DICTIONARY_ENTRIES := 1024
 const MAX_KEY_LENGTH := 128
-const MIN_INTEGER_AS_FLOAT := -9223372036854775808.0
-const EXCLUSIVE_MAX_INTEGER_AS_FLOAT := 9223372036854775808.0
+const MIN_SAFE_INTEGER := -9007199254740991
+const MAX_SAFE_INTEGER := 9007199254740991
 
 var version: int = 1
 var default_overrides: Dictionary = {}
@@ -598,7 +598,9 @@ func _require_exact_keys(
 static func _is_namespaced_key(key: String) -> bool:
 	if key.length() > MAX_KEY_LENGTH or key.count(".") < 1:
 		return false
-	for segment: String in key.split(".", false):
+	# Keep empty pieces: leading, trailing, or repeated separators are invalid
+	# authored keys, not aliases for another registered key.
+	for segment: String in key.split(".", true):
 		if segment.is_empty() or not _is_lower_identifier(segment):
 			return false
 	return true
@@ -629,19 +631,23 @@ static func _dictionary_value_definition(definition: Dictionary) -> Dictionary:
 
 static func _normalize_integer(value: Variant, serialized: bool) -> Dictionary:
 	if typeof(value) == TYPE_INT:
-		return _valid_value(int(value))
+		var integer_value := int(value)
+		if integer_value >= MIN_SAFE_INTEGER and integer_value <= MAX_SAFE_INTEGER:
+			return _valid_value(integer_value)
 	if serialized and typeof(value) == TYPE_FLOAT:
 		var number := float(value)
 		if (
 			is_finite(number)
 			and number == floor(number)
-			and number >= MIN_INTEGER_AS_FLOAT
-			and number < EXCLUSIVE_MAX_INTEGER_AS_FLOAT
+			and number >= float(MIN_SAFE_INTEGER)
+			and number <= float(MAX_SAFE_INTEGER)
 		):
 			var integer_value := int(number)
 			if float(integer_value) == number:
 				return _valid_value(integer_value)
-	return _invalid_value("must be an integer")
+	return _invalid_value(
+		"must be a JSON-safe integer between %d and %d" % [
+			MIN_SAFE_INTEGER, MAX_SAFE_INTEGER])
 
 
 ## Normalize an integer read through JSON, which represents some integral

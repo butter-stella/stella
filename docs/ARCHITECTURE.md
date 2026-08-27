@@ -611,6 +611,12 @@ dictionary；range 必须有限，dictionary value 使用同一 scalar validator
 root 创建 Presenter 和加载 live values 前整份验证；无 schema 时也构造相同的 built-in
 registry，不存在 compatibility manager 分支。
 
+integer scalar（含 dictionary child）只允许 JSON-safe 闭区间
+`[-9007199254740991, 9007199254740991]`；schema default/range、live write、save validation、
+load 与迁移后的 target validation 共用同一 normalizer。边界外或已被 JSON 浮点解析落到
+`±2^53` 的 token 都是 invalid，不能静默舍入或分叉出字符串整数格式；内置 typewriter
+毫秒项仍在这次统一 invalid 判定后走其既有 warning + authored-default policy。
+
 持久化使用 `user://settings.json` 的 exact `{schema_version, values}` envelope，各子系统订阅
 `SignalBus.settings_changed` 动态响应。信号的 `value` 始终是触发通知时该设置的完整当前值；
 字典的 get/set/default/persistence/signal 都使用 defensive deep copy。load 先在 detached map

@@ -799,6 +799,12 @@ schema = "res://settings/project_settings.json"
 `value_type=boolean|integer|number|string|enum` 及适用的 range/values。要覆盖内置
 reset 默认值，使用可选的顶层 `defaults`，且只能精确命中已注册内置 key：
 
+integer（包括 dictionary 的 integer value）使用单一 JSON-safe 闭区间
+`[-9007199254740991, 9007199254740991]`。schema default/range、direct set、save/load 和
+migration 都经过同一检查；边界外数值一律视为非法，不截断、取整或创建第二种编码。
+项目定义的 integer 会 fail-close；内置 typewriter 毫秒项继续使用下文既有的
+warning + authored-default invalid-input 行为，但同样绝不接受或保存舍入后的整数。
+
 ```json
 {
   "version": 1,

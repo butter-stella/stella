@@ -3,6 +3,8 @@ extends GutTest
 
 const SCHEMA_PATH := "user://tests/settings_schema/project_settings.json"
 const SETTINGS_PATH := "user://tests/settings_schema/settings.json"
+const MIN_SAFE_INTEGER := -9007199254740991
+const MAX_SAFE_INTEGER := 9007199254740991
 
 var _manager: SettingsManager
 
@@ -104,24 +106,181 @@ func test_invalid_direct_values_and_unknown_keys_fail_closed() -> void:
 	assert_eq(_manager.to_dict(), baseline)
 
 
-func test_serialized_integer_conversion_rejects_out_of_range_exponents() -> void:
-	var baseline := _manager.to_dict()
+func test_integer_contract_is_json_safe_across_schema_set_save_load_and_migration() -> void:
+	_write_schema(_safe_integer_schema())
+	var manager := SettingsManager.new()
+	manager.settings_path = SETTINGS_PATH
+	assert_eq(manager.configure_project_schema(SCHEMA_PATH), OK)
+	assert_eq(
+		manager.get_definition("project.counter")["minimum"],
+		MIN_SAFE_INTEGER,
+	)
+	assert_eq(
+		manager.get_definition("project.counter")["maximum"],
+		MAX_SAFE_INTEGER,
+	)
+	assert_true(manager.set_value(
+		"project.integer_map", {"maximum": MAX_SAFE_INTEGER}))
+
+	assert_true(manager.set_value("project.counter", MAX_SAFE_INTEGER))
+	assert_eq(manager.save(), OK)
+	var loaded := SettingsManager.new()
+	loaded.settings_path = SETTINGS_PATH
+	assert_eq(loaded.configure_project_schema(SCHEMA_PATH), OK)
+	assert_eq(loaded.load_settings(), OK)
+	assert_eq(loaded.get_value("project.counter"), MAX_SAFE_INTEGER)
+	assert_eq(
+		loaded.get_value("project.integer_map"),
+		{"maximum": MAX_SAFE_INTEGER},
+	)
+	assert_true(manager.set_value("project.counter", MIN_SAFE_INTEGER))
+	assert_eq(manager.save(), OK)
+	assert_eq(loaded.load_settings(), OK)
+	assert_eq(loaded.get_value("project.counter"), MIN_SAFE_INTEGER)
+
+	for invalid: int in [
+		9007199254740992,
+		9007199254740993,
+		-9007199254740992,
+		-9007199254740993,
+	]:
+		assert_false(manager.set_value("project.counter", invalid))
+		assert_push_warning("JSON-safe integer")
+	assert_eq(manager.get_value("project.counter"), MIN_SAFE_INTEGER)
+	assert_false(manager.set_value(
+		"project.integer_map", {"outside": 9007199254740992}))
+	assert_push_warning("JSON-safe integer")
+	assert_eq(
+		manager.get_value("project.integer_map"),
+		{"maximum": MAX_SAFE_INTEGER},
+	)
+
+	# Godot 4.6.1 rounds the authored +2^53+1 token to +2^53 while parsing.
+	# Rejecting the closed boundary also rejects that already-rounded candidate.
+	var rounded: Dictionary = JSON.parse_string((
+		'{"schema_version":2,"values":'
+		+ '{"project.counter":9007199254740993}}'
+	))
+	assert_eq(
+		float((rounded["values"] as Dictionary)["project.counter"]),
+		9007199254740992.0,
+	)
+	for raw_value: String in [
+		"9007199254740992",
+		"9007199254740993",
+		"-9007199254740992",
+		"-9007199254740993",
+	]:
+		_write_raw((
+			'{"schema_version":2,"values":{"project.counter":'
+			+ raw_value
+			+ "}}"
+		))
+		assert_eq(loaded.load_settings(), ERR_INVALID_DATA)
+		assert_push_warning("$.values.project.counter")
+		assert_eq(loaded.get_value("project.counter"), MIN_SAFE_INTEGER)
 	_write_raw((
-		'{"schema_version":3,"values":'
-		+ '{"project.auto_base_wait":9.223372036854776e18}}'
+		'{"schema_version":2,"values":'
+		+ '{"project.integer_map":{"outside":9007199254740993}}}'
 	))
+	assert_eq(loaded.load_settings(), ERR_INVALID_DATA)
+	assert_push_warning("$.values.project.integer_map")
+	assert_eq(
+		loaded.get_value("project.integer_map"),
+		{"maximum": MAX_SAFE_INTEGER},
+	)
 
-	assert_eq(_manager.load_settings(), ERR_INVALID_DATA)
-	assert_push_warning("$.values.project.auto_base_wait")
-	assert_eq(_manager.to_dict(), baseline)
-
-	_write_schema_raw((
-		'{"version":1,"settings":{"project.count":'
-		+ '{"type":"integer","default":9.223372036854776e18}}}'
+	_write_persistence(1, {"project.old_counter": MAX_SAFE_INTEGER})
+	assert_eq(loaded.load_settings(), OK)
+	assert_eq(loaded.get_value("project.counter"), MAX_SAFE_INTEGER)
+	_write_raw((
+		'{"schema_version":1,"values":'
+		+ '{"project.old_counter":9007199254740993}}'
 	))
-	var candidate := SettingsSchema.new()
-	assert_eq(candidate.load_from_path(SCHEMA_PATH), ERR_INVALID_DATA)
-	assert_eq(candidate.last_error_field, "$.settings.project.count.default")
+	assert_eq(loaded.load_settings(), ERR_INVALID_DATA)
+	assert_push_warning("$.values.project.counter")
+	assert_eq(loaded.get_value("project.counter"), MAX_SAFE_INTEGER)
+
+
+func test_schema_integer_default_and_range_reject_outside_json_safe_domain() -> void:
+	for field: String in ["default", "minimum", "maximum"]:
+		var definition := {
+			"type": "integer",
+			"default": 0,
+			"minimum": MIN_SAFE_INTEGER,
+			"maximum": MAX_SAFE_INTEGER,
+		}
+		definition[field] = (
+			-9007199254740992 if field == "minimum" else 9007199254740992)
+		_write_schema({
+			"version": 1,
+			"settings": {"project.counter": definition},
+		})
+		var candidate := SettingsSchema.new()
+		assert_eq(candidate.load_from_path(SCHEMA_PATH), ERR_INVALID_DATA)
+		assert_eq(
+			candidate.last_error_field,
+			"$.settings.project.counter.%s" % field,
+		)
+
+
+func test_namespaced_keys_reject_empty_segments_without_canonicalizing() -> void:
+	var invalid_keys: Array[String] = [
+		".project",
+		"project.",
+		"project..confirm_quit",
+		"project...confirm_quit",
+	]
+	for invalid_key: String in invalid_keys:
+		_write_schema({
+			"version": 1,
+			"settings": {
+				invalid_key: {"type": "boolean", "default": true},
+			},
+		})
+		var definition_candidate := SettingsSchema.new()
+		assert_eq(
+			definition_candidate.load_from_path(SCHEMA_PATH),
+			ERR_INVALID_DATA,
+		)
+		assert_eq(
+			definition_candidate.last_error_field,
+			"$.settings.%s" % invalid_key,
+		)
+
+	var migration_cases: Array[Dictionary] = []
+	for invalid_key: String in invalid_keys:
+		migration_cases.append({
+			"rename": {invalid_key: "project.current"},
+			"remove": [],
+		})
+		migration_cases.append({
+			"rename": {"project.old": invalid_key},
+			"remove": [],
+		})
+		migration_cases.append({
+			"rename": {},
+			"remove": [invalid_key],
+		})
+	for migration_case: Dictionary in migration_cases:
+		_write_schema({
+			"version": 2,
+			"settings": {
+				"project.current": {"type": "boolean", "default": true},
+			},
+			"migrations": [{
+				"from": 1,
+				"to": 2,
+				"rename": migration_case["rename"],
+				"remove": migration_case["remove"],
+			}],
+		})
+		var migration_candidate := SettingsSchema.new()
+		assert_eq(
+			migration_candidate.load_from_path(SCHEMA_PATH),
+			ERR_INVALID_DATA,
+		)
+		assert_ne(migration_candidate.last_error_field, "")
 
 
 func test_minimal_version_and_settings_schema_uses_one_unified_registry() -> void:
@@ -404,6 +563,32 @@ func _valid_schema() -> Dictionary:
 				"remove": ["project.obsolete"],
 			},
 		],
+	}
+
+
+func _safe_integer_schema() -> Dictionary:
+	return {
+		"version": 2,
+		"settings": {
+			"project.counter": {
+				"type": "integer",
+				"default": 0,
+				"minimum": MIN_SAFE_INTEGER,
+				"maximum": MAX_SAFE_INTEGER,
+			},
+			"project.integer_map": {
+				"type": "dictionary",
+				"default": {},
+				"value_type": "integer",
+				"minimum": MIN_SAFE_INTEGER,
+				"maximum": MAX_SAFE_INTEGER,
+			},
+		},
+		"migrations": [{
+			"from": 1,
+			"to": 2,
+			"rename": {"project.old_counter": "project.counter"},
+		}],
 	}
 
 
