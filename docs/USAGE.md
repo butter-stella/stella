@@ -257,6 +257,25 @@ Game
 
 完整属性表和诊断规则见 [DSL.md](DSL.md#33-对话框模式切换)。内置场景已经提供可定位文字区域、`DialogueBg` 和 `quick_menu` 分组，常规 ADV、透明 NVL、书信、独白等版式都能只用 STLA 完成。Presenter 在就绪时保存 ADV 基线；配置过 `@adv profile=name` 时，`@nvl off` / `@overlay off` 恢复该 ADV Profile，否则恢复场景原始 ADV，并精确还原 panel、文字区域、文字样式、背景和分组 UI。
 
+自定义 `DialoguePresenter` scene 还必须在 Inspector 中显式设置
+`dialogue_background_path`，指向这个 Presenter 后代中真正绘制对话窗背景的
+`Control`；解析结果必须是 Presenter 的严格后代，不能是 Presenter 自身、ancestor、sibling
+或 subtree 外的 target。例如背景节点名为 `DialogueBackdrop` 时，scene 属性应保存为：
+
+```ini
+dialogue_background_path = NodePath("DialogueBackdrop")
+```
+
+该路径同时归属 Profile 的背景布局/显隐/调制和
+`GameSettings.text_window_opacity`；默认空值不会按节点名、group 或 scene-tree 扫描猜测。
+空路径、失效路径、非 `Control` target 或逃逸 ownership 的路径会给出带 scene resource、
+authored field/path 的诊断；ownership 诊断还列出 resolved target。它们只禁用背景专属投影。
+请把正文、姓名、avatar 和 toolbar/Button 放在该背景节点之外；
+设置只修改目标 Control 自己的 `self_modulate`，不会继承到这些 UI。最终背景 alpha 为
+Theme/style alpha、Profile/场景 `modulate.a`、场景 authored `self_modulate.a` 与
+`text_window_opacity` 的乘积；因此值 `1` 保留场景/Profile 透明度，`0` 只让背景完全透明，
+反复在 ADV/NVL/overlay 间切换也不会重复相乘。内置场景与 demo 已声明该 binding。
+
 只有项目加入自定义 frame、logo 等专属 UI 时，才需要在 Godot 的 Node > Groups 中给节点增加语义分组，并在 STLA 的 `show` / `hide` 中引用。极少数需要程序动态注入样式的项目仍可在 Inspector 中使用 `DialoguePresentationProfile` / `DialogueModeProfile` Resource，或调用 `DialoguePresenter.set_presentation_profile()`；这是高级兜底接口，不是常规创作流程。
 
 完全不写 `@dialogue_profile` 时，`@nvl` / `@overlay` 使用内置兼容布局，旧项目不需要迁移。离开 NVL 后，下一次进入会开始新的累积文本；这一规则也适用于 `@jump` 循环、重复 `@call` 和条件分支的实际执行路径。不同分支可以保留不同 Profile 到共同 continuation；若希望汇合后统一布局，再显式写一次模式选择。未离开 NVL 时重复 `@nvl` 不会另起一页。存档记录当前与 ADV 的 Profile 名称、声明式选择状态，以及当前 NVL 页每条记录的 Profile 名、原始角色/segment 输入；读档或 Backlog 回退后从当前剧本的 Profile registry 逐条重建页面，所以同一页中途换 Profile 不会改写更早记录的 prefix/separator。存档不保存已解析 Profile、诊断 provenance 或渲染后的 `RichTextLabel.text`。
@@ -878,6 +897,12 @@ Presenter 在一条对话真正开始显示时快照两项设置，因此当前�
 新值；启动时在创建游戏场景/DialoguePresenter 前载入的值会用于首行。句内
 `{speed:...}` 只覆盖当前行的基础间隔，`{wait:...}` 保持为字符前的独立 authored
 停顿，两者均与标点停顿相加。
+
+`text_window_opacity` 是 `0..1` 的数字，默认 `0.8`。Presenter ready 时读取已完成
+启动载入的当前值；direct set、成功的显式 load 与 reset 会立即更新当前 active 对话背景，
+无需重新打开 scene。scene replacement/rebuild 由新 Presenter 从同一个 live registry
+重投影，旧 Presenter 退场后不再订阅设置。该设置只消费上文显式绑定的背景 Control，
+不修改 panel、正文、姓名、avatar、toolbar 或其他 focusable control。
 
 `click_to_complete` 是布尔设置，默认 `true`。左键、Space、Enter 和手柄 A 每次
 进入正常推进路径时都会实时读取它：打字中且为 `true` 时，该次输入只补全当前句；

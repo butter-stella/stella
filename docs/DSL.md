@@ -252,7 +252,7 @@ owned private bus effects 与 tail Timer；不属于对话 UI 的旧 dry program
 | `autowrap_mode` | `off/arbitrary/word/word_smart` | 自动换行策略 |
 | `clip_contents` | `true/false` | 是否裁剪超出文字区域的内容 |
 | `background_visible` | `true/false` | 对话背景是否可见 |
-| `background_modulate` | `#RRGGBBAA` | 对话背景颜色；alpha `00` 为透明 |
+| `background_modulate` | `#RRGGBBAA` | 对话背景颜色；alpha `00` 为透明；运行时再与 `text_window_opacity` 相乘 |
 | `show` / `hide` | 逗号分隔的分组名 | 显示或隐藏附属 UI 分组 |
 | `entry_prefix` | 引号纯文本字符串 | 每条 NVL 记录的前缀；默认 `""` |
 | `entry_separator` | 引号纯文本字符串 | 相邻 NVL 记录之间的分隔符；默认 `"\n"` |
@@ -272,6 +272,11 @@ Advance indicator 是可选的、按 Profile 独立配置的表现节点。`adva
 标记只在当前对话完整显示、可以推进时出现。新记录开始打字、推进、快进、`hide_dialogue`、对话式 overlay 结束、场景或剧本生命周期切换时会立即隐藏；右键临时隐藏以及打开 Backlog/设置等系统 overlay 会保留同一句的 ready 状态。ADV、overlay 和累积 NVL 都按 `RichTextLabel` 实际换行后的最新端点重新定位，最后一个段落的 left/center/right/fill 对齐也会计入；若最终行被滚动或裁剪到可见区域外，标记保持隐藏，并在滚动到端点后重新出现。标记是独立节点，不会追加到 `RichTextLabel.text`、正文、Backlog 或存档数据。完全不配置 source 时不会创建节点，旧项目视觉保持不变。
 
 内置场景已提供 `quick_menu` 分组，并将默认文字布局根作为可定位区域，所以常见 NVL/overlay 版式只需要写 STLA。只有项目新增了特殊 frame、logo 或其他自定义 UI 时，才需要在 Godot 场景里给这些节点分组，例如 `adv_chrome`。
+
+`text_window_opacity` 不是第二套 Profile 字段。它由 Presenter 只乘到场景显式绑定的
+`dialogue_background_path` Control；`background_modulate` 的颜色/alpha、Theme 与场景
+authored alpha 保持各自语义。设置为 `0` 不会降低正文、姓名、avatar 或可聚焦控件的
+alpha；自定义 scene 的 typed binding 规则见[使用指南](USAGE.md#声明式配置-adv--nvl--overlay-对话布局)。
 
 无效数字、越界/倒置 anchors、负 margin、非法枚举、未知属性、不完整的引号字符串、非法字符串转义、entry format 中的 BBCode 方括号、不存在/类型不符的 indicator 资源、同时配置 texture 与 scene，或不存在的 Profile，都会生成包含 STLA 行号的解析诊断，并让对应 Profile 声明整体失效。无法实例化、根节点不是 `CanvasItem`，或 `Control` 根使用非左上角锚点的 indicator scene，会在运行时给出一次性警告并仅禁用标记。该 warning 会列出准确的 Profile 名、`.stla` 来源路径、当前 indicator 字段及资源路径、该字段的声明行和可执行修复动作；多个 Profile 即使使用同一模式和同一错误场景也会分别报告。编译器把 Profile 与 provenance 分开保存在当前 `ScenarioData`，运行时 sidecar 只携带 mode、Profile 名和 ADV 恢复动作；存档保存当前/ADV 的 Profile 名与声明式状态，并为当前 NVL 页的每条 authored entry 单独保存当时的 Profile 名。恢复时从当前 scenario registry 逐条解析，因此一页中途换 Profile、分支、存读档、Backlog 回退、`@jump` 与 `@call` 都遵循实际执行路径；resolved Profile、provenance 和渲染字符串不进入存档。`off` 会恢复该路径配置的 ADV 场景基线。
 

@@ -90,6 +90,10 @@ class DialogueNextFrameWaiter:
 @export_group("Dialogue Presentation")
 ## Advanced scene-side fallback. Normal projects declare profiles in STLA.
 @export var presentation_profile: DialoguePresentationProfile
+## Exact scene-authored Control that owns dialogue background layout, Profile
+## overrides, visibility, and GameSettings.text_window_opacity projection.
+## An empty or invalid binding disables these background-only capabilities.
+@export_node_path("Control") var dialogue_background_path: NodePath
 ## Optional Control that receives the profile's text rectangle. When empty,
 ## the TextLabel itself is used. Prefer a non-Container child for exact rects.
 @export_node_path("Control") var text_rect_target_path: NodePath
@@ -150,6 +154,7 @@ var _avatar_expressions: Dictionary = {}  # character_id -> avatar expression
 var _adv_anchor_top: float
 var _adv_offset_top: float
 var _dialogue_bg: Control
+var _text_window_background_authored_self_modulate: Color = Color.WHITE
 var _text_area: VBoxContainer
 var _text_rect_target: Control
 var _authored_presentation: Dictionary = {}
@@ -378,7 +383,7 @@ func _ready():
 		(SignalBus.get(
 			&"dialogue_visibility_transition_receipts_finish_requested"
 		) as Signal).connect(_on_dialogue_visibility_transition_receipts_finish_requested)
-	SignalBus.settings_changed.connect(_on_typewriter_setting_changed)
+	SignalBus.settings_changed.connect(_on_presenter_setting_changed)
 	_config_loader = StellaRuntime.character_config_loader
 	_avatar_container = get_node_or_null("%AvatarContainer")
 	if _avatar_container:
@@ -403,7 +408,10 @@ func _ready():
 			self, _dialogue_avatar_participant_capability)
 		_dialogue_avatar_participant_capability = null
 		return
-	_dialogue_bg = get_node_or_null("DialogueBg") as Control
+	_dialogue_bg = _resolve_text_window_background()
+	if _dialogue_bg != null:
+		_text_window_background_authored_self_modulate = _dialogue_bg.self_modulate
+		_apply_text_window_opacity(StellaRuntime.get_setting("text_window_opacity"))
 	_text_area = get_node_or_null("HBox/TextArea")
 	_text_rect_target = _resolve_text_rect_target()
 	visible = false
@@ -468,7 +476,7 @@ func _snapshot_typewriter_delay_seconds(
 	return float(value)
 
 
-func _on_typewriter_setting_changed(key: String, value: Variant) -> void:
+func _on_presenter_setting_changed(key: String, value: Variant) -> void:
 	if key == "character_interval":
 		var interval := _validate_typewriter_setting_seconds(key, value)
 		_char_interval = interval
@@ -477,6 +485,59 @@ func _on_typewriter_setting_changed(key: String, value: Variant) -> void:
 		var pause := _validate_typewriter_setting_seconds(key, value)
 		_punctuation_pause = pause
 		_settings_punctuation_pause = pause
+	elif key == "text_window_opacity":
+		_apply_text_window_opacity(value)
+
+
+func _resolve_text_window_background() -> Control:
+	var scene_source := scene_file_path
+	if scene_source.is_empty():
+		scene_source = "<programmatic DialoguePresenter>"
+	if dialogue_background_path.is_empty():
+		push_warning((
+			"DialoguePresenter scene '%s': dialogue_background_path is empty; "
+			+ "text_window_opacity projection is disabled"
+		) % scene_source)
+		return null
+	var candidate := get_node_or_null(dialogue_background_path)
+	if candidate == null:
+		push_warning((
+			"DialoguePresenter scene '%s': dialogue_background_path '%s' does "
+			+ "not resolve; text_window_opacity projection is disabled"
+		) % [scene_source, dialogue_background_path])
+		return null
+	if not candidate is Control:
+		push_warning((
+			"DialoguePresenter scene '%s': dialogue_background_path '%s' must "
+			+ "resolve to Control, got %s; text_window_opacity projection is disabled"
+		) % [scene_source, dialogue_background_path, candidate.get_class()])
+		return null
+	if candidate == self or not is_ancestor_of(candidate):
+		push_warning((
+			"DialoguePresenter scene '%s': dialogue_background_path '%s' resolves "
+			+ "to '%s' outside strict Presenter descendant ownership; background-only "
+			+ "Profile and text_window_opacity projection are disabled"
+		) % [scene_source, dialogue_background_path, candidate.get_path()])
+		return null
+	return candidate as Control
+
+
+func _apply_text_window_opacity(value: Variant) -> void:
+	if _dialogue_bg == null or not is_instance_valid(_dialogue_bg):
+		return
+	if (
+		typeof(value) not in [TYPE_INT, TYPE_FLOAT]
+		or not is_finite(float(value))
+		or float(value) < 0.0
+		or float(value) > 1.0
+	):
+		push_warning(
+			"DialoguePresenter: text_window_opacity must be a finite number in "
+			+ "the inclusive 0..1 range; retaining the current projection")
+		return
+	var projected := _text_window_background_authored_self_modulate
+	projected.a *= float(value)
+	_dialogue_bg.self_modulate = projected
 
 
 func _reconcile_typewriter_settings_cache() -> void:
@@ -767,6 +828,8 @@ func _publish_next_voice_queue_generation() -> int:
 
 
 func _exit_tree() -> void:
+	if SignalBus.settings_changed.is_connected(_on_presenter_setting_changed):
+		SignalBus.settings_changed.disconnect(_on_presenter_setting_changed)
 	_dialogue_timer_authority_exiting = true
 	_voice_event_waiter_authority_exiting = true
 	_next_frame_waiter_authority_exiting = true
@@ -3890,13 +3953,15 @@ func _apply_mode_profile(
 
 	if profile.overrides_property(&"background_visible"):
 		if _dialogue_bg == null:
-			_profile_warning(mode, "background visibility override requires a DialogueBg Control")
+			_profile_warning(mode,
+				"background visibility override requires dialogue_background_path to resolve to Control")
 		else:
 			_set_dialogue_visibility_node_baseline(
 				_dialogue_bg, profile.background_visible)
 	if profile.overrides_property(&"background_modulate"):
 		if _dialogue_bg == null:
-			_profile_warning(mode, "background modulation override requires a DialogueBg Control")
+			_profile_warning(mode,
+				"background modulation override requires dialogue_background_path to resolve to Control")
 		else:
 			_dialogue_bg.modulate = profile.background_modulate
 
@@ -5763,7 +5828,8 @@ func _validate_configured_profiles() -> void:
 				% _text_rect_target.get_path())
 		if ((mode_profile.override_background_visibility
 			or mode_profile.override_background_modulate) and _dialogue_bg == null):
-			_profile_warning(mode, "background overrides require a DialogueBg Control")
+			_profile_warning(mode,
+				"background overrides require dialogue_background_path to resolve to Control")
 		for group_name_value in mode_profile.visibility_groups:
 			var group_name := StringName(group_name_value)
 			if _find_auxiliary_group_nodes(group_name).is_empty():
@@ -5853,7 +5919,7 @@ func _apply_nvl_layout():
 	offset_right = 0
 	offset_bottom = 0
 	modulate.a = 0.9
-	# DialogueBg: cover full area (ADV mode anchors it to bottom only)
+	# The explicitly bound background covers the full NVL area.
 	if _dialogue_bg:
 		_dialogue_bg.anchor_top = 0.0
 		_dialogue_bg.offset_top = 0
@@ -5889,7 +5955,7 @@ func _apply_adv_layout():
 	offset_right = 0
 	offset_bottom = 0
 	modulate.a = 1.0
-	# Restore DialogueBg to bottom strip
+	# Restore the explicitly bound background to the ADV bottom strip.
 	if _dialogue_bg:
 		_dialogue_bg.anchor_top = 1.0
 		_dialogue_bg.offset_top = -220
