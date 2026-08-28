@@ -20,11 +20,11 @@ func test_se_handler_emits_play_signal():
 	var handler = SeHandler.new()
 	var cmd = CommandData.new()
 	cmd.type = "se"
-	cmd.params = {"asset": "se_click"}
+	cmd.params = {"asset": "se_select"}
 	await handler.execute(cmd, ScenarioContext.new())
 
 	assert_eq(received.size(), 1)
-	assert_eq(received[0], "se_click")
+	assert_eq(received[0], "se_select")
 
 
 func test_se_handler_rejects_removed_loop_and_asset_stop_params():

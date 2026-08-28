@@ -1,4 +1,6 @@
 extends GutTest
+
+const WarningTestSupport = preload("res://tests/helpers/warning_test_support.gd")
 ## Tests for POC command handlers — verifying signal emission and behavior.
 
 
@@ -901,6 +903,12 @@ func test_runtime_policy_rejects_concurrent_choice_before_show() -> void:
 			"set": {"leaked": "= 1"},
 		}],
 	}), rejected_context)
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		"StellaRuntime: rejected concurrent choice policy session",
+		"res://addons/stella/autoload/stella_runtime.gd",
+		"_begin_choice_policy_session",
+	)
 
 	assert_true(rejected_context.is_cancellation_requested(),
 		"a rejected concurrent blocker fails closed")

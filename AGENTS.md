@@ -87,23 +87,25 @@ relevant test; before handoff, run the full applicable suite when practical.
 # Import assets and surface script/resource errors.
 godot --audio-driver Dummy --headless --import
 
-# Full GUT suite; .gutconfig.json includes unit and integration directories.
+# Full exact GUT suite. The Stella runner owns its explicit manifest and does
+# not merge .gutconfig.json selection into the command-line request.
 STELLA_DISABLE_LOCAL_CONFIG=1 STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD=1 \
-  godot --audio-driver Dummy -s addons/gut/gut_cmdln.gd --headless
+	GODOT_BIN=godot tests/run_gut.sh full
 
 # Example targeted file.
 STELLA_DISABLE_LOCAL_CONFIG=1 STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD=1 \
-  godot --audio-driver Dummy -s addons/gut/gut_cmdln.gd --headless \
-  -gconfig= -gpost_run_script=res://tests/helpers/gut_post_run.gd \
-  -gtest=res://tests/unit/test_scenario_engine.gd -gexit
+	GODOT_BIN=godot tests/run_gut.sh focused \
+	res://tests/unit/test_scenario_engine.gd
 
 # Godot 4.6.1 export-pack smoke (binary tokens, compressed binary tokens,
 # selected-scenes fallback), run with no project export_presets.cfg present.
 GODOT_BIN=godot tests/pck_smoke/run_export_smoke.sh
 ```
 
-Do not pipe these commands through `tail` or another command that masks Godot's
-exit status. Tests must not depend on `stella.local.cfg`, `user://` leftovers,
+Do not wrap these commands in a pipeline that masks their exit status. The exact
+runner retains its raw log under `.godot/stella_test_logs/`, verifies one final
+accounting marker, and fails on any non-empty shutdown tail after that marker.
+Tests must not depend on `stella.local.cfg`, `user://` leftovers,
 machine-specific paths, or private imported assets. For visual, audio, timing, or
 input changes, supplement automated tests with the relevant demo/manual path and
 state clearly what was not manually verified.

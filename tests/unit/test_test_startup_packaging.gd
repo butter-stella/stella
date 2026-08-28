@@ -9,6 +9,11 @@ const GUT_PLUGIN_PATH := "res://addons/gut/gut_plugin.gd"
 const GUT_ROOT := "res://addons/gut"
 const AGENT_INSTRUCTIONS_PATH := "res://AGENTS.md"
 const CI_WORKFLOW_PATH := "res://.github/workflows/tests.yml"
+const ARCHITECTURE_PATH := "res://docs/ARCHITECTURE.md"
+const GUT_CONFIG_PATH := "res://.gutconfig.json"
+const GUT_POST_RUN_PATH := "res://tests/helpers/gut_post_run.gd"
+const EXACT_POST_RUN_PATH := "res://tests/helpers/exact_gut_post_run.gd"
+const EXACT_RUNNER_PATH := "res://tests/helpers/exact_gut_runner.gd"
 
 
 func _collect_gut_text_resources(root: String) -> Array[String]:
@@ -61,9 +66,27 @@ func test_gut_editor_gui_dependencies_are_deferred_after_the_headless_gate() -> 
 func test_hermetic_test_entry_points_keep_settings_and_audio_cleanup_gates() -> void:
 	var instructions := FileAccess.get_file_as_string(AGENT_INSTRUCTIONS_PATH)
 	assert_true("STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD=1" in instructions)
-	assert_true(
-		"-gpost_run_script=res://tests/helpers/gut_post_run.gd" in instructions)
+	assert_true("tests/run_gut.sh full" in instructions)
+	assert_true("tests/run_gut.sh focused" in instructions)
+	assert_false("addons/gut/gut_cmdln.gd" in instructions)
 	var workflow := FileAccess.get_file_as_string(CI_WORKFLOW_PATH)
 	assert_true('STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD: "1"' in workflow)
+	assert_true("tests/run_gut.sh full" in workflow)
+	assert_true("tests/exact_gut_gate_probes.sh" in workflow)
+	assert_true("xvfb-run -a tests/run_gut.sh rendering" in workflow)
+	assert_false("addons/gut/gut_cmdln.gd" in workflow)
+	var architecture := FileAccess.get_file_as_string(ARCHITECTURE_PATH)
+	assert_true("tests/run_gut.sh full" in architecture)
+	assert_false("addons/gut/gut_cmdln.gd" in architecture)
+	var exact_runner := FileAccess.get_file_as_string(EXACT_RUNNER_PATH)
 	assert_true(
-		"-gpost_run_script=res://tests/helpers/gut_post_run.gd" in workflow)
+		'res://tests/helpers/exact_gut_post_run.gd' in exact_runner,
+		"the exact runner must explicitly add manifest accounting")
+	var editor_config := FileAccess.get_file_as_string(GUT_CONFIG_PATH)
+	assert_true('res://tests/helpers/gut_post_run.gd' in editor_config)
+	assert_false('exact_gut_post_run.gd' in editor_config,
+		"editor GUT has no exact manifest and must use only the shared gates")
+	var shared_post_run := FileAccess.get_file_as_string(GUT_POST_RUN_PATH)
+	assert_false("validate_manifest" in shared_post_run)
+	var exact_post_run := FileAccess.get_file_as_string(EXACT_POST_RUN_PATH)
+	assert_true("validate_manifest" in exact_post_run)

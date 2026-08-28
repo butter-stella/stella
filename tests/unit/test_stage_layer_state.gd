@@ -1,5 +1,7 @@
 extends GutTest
 
+const WarningTestSupport = preload("res://tests/helpers/warning_test_support.gd")
+
 
 func _op(
 	action: String,
@@ -124,6 +126,19 @@ func test_metadata_recursively_replaces_non_finite_values() -> void:
 	assert_eq(metadata["vector"], [0.0, 4.0])
 	assert_null(metadata["nested"][0])
 	assert_eq(metadata["nested"][1]["ok"], 3.0)
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		"StageLayerState: non-finite metadata number was converted to null",
+		"res://addons/stella/core/data/stage_layer_state.gd",
+		"_warn",
+		2,
+	)
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		"StageLayerState: non-finite metadata vector component was converted to 0",
+		"res://addons/stella/core/data/stage_layer_state.gd",
+		"_warn",
+	)
 	var encoded := JSON.stringify(layers).to_lower()
 	assert_false(encoded.contains("nan"))
 	assert_false(encoded.contains("inf"))
@@ -490,6 +505,20 @@ func test_invalid_and_non_finite_values_preserve_json_safe_state():
 	assert_eq(layers["hero"]["scale"], [0.5, 0.75])
 	assert_almost_eq(layers["hero"]["opacity"], 0.8, 0.001)
 	assert_true(layers["hero"]["visible"])
+	for expected_warning: String in [
+		"StageLayerState: position must be a finite number or numeric pair",
+		"StageLayerState: scale must be a finite number or numeric pair",
+		"StageLayerState: opacity must be a finite number",
+		"StageLayerState: visible must be a boolean",
+		"StageLayerState: scale components must be positive",
+		"StageLayerState: opacity must be between 0 and 1",
+	]:
+		WarningTestSupport.assert_exact_warnings(
+			self,
+			expected_warning,
+			"res://addons/stella/core/data/stage_layer_state.gd",
+			"_warn",
+		)
 	var encoded := JSON.stringify(layers).to_lower()
 	assert_false(encoded.contains("nan"))
 	assert_false(encoded.contains("inf"))

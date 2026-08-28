@@ -3,6 +3,8 @@ extends GutTest
 ##
 ## Missing production classes are discovered dynamically. Exact main therefore
 ## fails with deliberate assertions instead of missing preload/import errors.
+
+const WarningTestSupport = preload("res://tests/helpers/warning_test_support.gd")
 ## Once the typed surface exists, these tests drive authored DSL through the
 ## Runtime, Director, existing Stage SignalBus transport, and StagePresenter.
 
@@ -1278,6 +1280,18 @@ func test_a2_absent_remove_completion_cannot_alias_after_reset() -> void:
 		"remove_alias_a", 0)), 2)
 	assert_gt(int(_presenter._layer_generation_counters.get(
 		"remove_alias_b", 0)), 2)
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		"StageLayerState: cannot remove unknown layer 'remove_alias_a'",
+		"res://addons/stella/core/data/stage_layer_state.gd",
+		"_warn",
+	)
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		"StageLayerState: cannot remove unknown layer 'remove_alias_b'",
+		"res://addons/stella/core/data/stage_layer_state.gd",
+		"_warn",
+	)
 
 
 func test_a2_abort_terminal_reentry_preserves_only_winning_new_batch() -> void:
@@ -3612,6 +3626,13 @@ func test_a7_direct_submit_preflights_context_invalid_no_work_before_id() -> voi
 	assert_eq(no_work_request.get_batch_id(), before_id,
 		"even a same-state Stage run validates the live Presenter/provider binding")
 	assert_eq(no_work_request.get_receipts(), [])
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		"StageLayerState: cannot remove unknown layer 'absent'",
+		"res://addons/stella/core/data/stage_layer_state.gd",
+		"_warn",
+		2,
+	)
 
 	var valid_payload := {
 		"action": "show",
@@ -3917,6 +3938,13 @@ func test_a8_idempotent_stage_runs_revalidate_without_visual_work() -> void:
 		assert_eq(_started_transitions, [], String(case["authored"]))
 		assert_true(_presenter._layer_tweens.is_empty(),
 			String(case["authored"]))
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		"StageLayerState: cannot remove unknown layer 'absent'",
+		"res://addons/stella/core/data/stage_layer_state.gd",
+		"_warn",
+		2,
+	)
 
 
 func test_standalone_stage_and_public_raw_facade_stay_nonblocking_void() -> void:

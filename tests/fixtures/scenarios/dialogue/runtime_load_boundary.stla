@@ -1,0 +1,4 @@
+// Stock game-scene-compatible replacement target for Runtime load boundaries.
+@chapter runtime_load_boundary "Runtime Load Boundary"
+@scene start
+「Loaded replacement」

@@ -1,0 +1,5 @@
+extends GutTest
+
+
+func test_malformed_script_must_never_be_collected() -> void:
+	var incomplete_assignment :=

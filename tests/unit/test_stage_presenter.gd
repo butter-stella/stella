@@ -2,6 +2,7 @@ extends GutTest
 
 const DEFAULT_GAME_SCENE := preload("res://addons/stella/scenes/game.tscn")
 const DEMO_GAME_SCENE := preload("res://examples/demo/scenes/game.tscn")
+const WarningTestSupport = preload("res://tests/helpers/warning_test_support.gd")
 const BACKGROUNDS_PATH := "res://examples/demo/art/backgrounds/"
 const CHARACTERS_PATH := "res://examples/demo/art/characters/"
 
@@ -85,8 +86,8 @@ func _operation(
 	}
 
 
-func _emit_operations(operations: Array, force_cut: bool = true) -> void:
-	SignalBus.emit_stage_operations(operations, force_cut)
+func _emit_operations(operations: Array, force_cut: bool = true) -> int:
+	return SignalBus.emit_stage_operations(operations, force_cut)
 
 
 func _sprite(layer: Node2D, channel: String) -> Sprite2D:
@@ -1041,6 +1042,18 @@ func test_unknown_update_and_hide_do_not_interrupt_pending_remove() -> void:
 		assert_same(_presenter.get_layer_node("ghost"), ghost)
 		assert_same(_presenter._layer_tweens["ghost"], fade_tween)
 		assert_eq(_started_transitions.size(), started_count)
+	for expected_warning: String in [
+		"StageLayerState: cannot update unknown layer 'ghost'; use show first",
+		"StageLayerState: cannot hide unknown layer 'ghost'",
+		"StageLayerState: cannot remove unknown layer 'ghost'",
+	]:
+		WarningTestSupport.assert_exact_warnings(
+			self,
+			expected_warning,
+			"res://addons/stella/core/data/stage_layer_state.gd",
+			"_warn",
+			4,
+		)
 
 	SignalBus.stage_transitions_finish_requested.emit([transition])
 	assert_null(_presenter.get_layer_node("ghost"))
@@ -1147,7 +1160,7 @@ func test_invalid_clear_keeps_canonical_and_visible_state_identical() -> void:
 		_operation("show", "hero", {"asset": "stage:bg_cafe"}),
 	], true)
 	var expected := StellaRuntime.presentation_state.stage_layers.duplicate(true)
-	SignalBus.emit_stage_operations([{
+	var request_id := SignalBus.emit_stage_operations([{
 		"action": "clear",
 		"id": "",
 		"properties": {"asset": "stage:unused"},
@@ -1155,6 +1168,18 @@ func test_invalid_clear_keeps_canonical_and_visible_state_identical() -> void:
 		"transition": "cut",
 		"duration": 0.0,
 	}], true)
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		"StageLayerState: clear operation does not accept layer properties",
+		"res://addons/stella/core/data/stage_layer_state.gd",
+		"_warn",
+	)
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		"SignalBus: rejected invalid stage operation batch %d" % request_id,
+		"res://addons/stella/autoload/signal_bus.gd",
+		"emit_stage_operations",
+	)
 	assert_eq(StellaRuntime.presentation_state.stage_layers, expected)
 	assert_not_null(_presenter.get_layer_node("hero"))
 
@@ -1188,9 +1213,22 @@ func test_visual_reset_between_stage_consumers_invalidates_current_batch() -> vo
 
 
 func test_unknown_transition_is_rejected_without_state_or_visual_mutation() -> void:
-	_emit_operations([_operation("show", "unknown", {
+	var request_id := _emit_operations([_operation("show", "unknown", {
 		"position": [123.0, 456.0],
 	}, "not-a-transition", 1.0)], false)
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		("StageLayerState: invalid transition 'not-a-transition': transition kind "
+			+ "must match [A-Za-z_][A-Za-z0-9_]* and be at most 64 characters"),
+		"res://addons/stella/core/data/stage_layer_state.gd",
+		"_warn",
+	)
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		"SignalBus: rejected invalid stage operation batch %d" % request_id,
+		"res://addons/stella/autoload/signal_bus.gd",
+		"emit_stage_operations",
+	)
 	assert_false(StellaRuntime.presentation_state.stage_layers.has("unknown"))
 	assert_null(_presenter.get_layer_node("unknown"))
 	assert_false(_presenter._layer_tweens.has("unknown"))
@@ -1206,6 +1244,13 @@ func test_missing_texture_clears_channel_consistently_across_restore() -> void:
 	SignalBus.reset_stage_visuals()
 	state.restore_snapshot(snapshot)
 	state.apply_to_presenters()
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		"StagePresenter: texture not found: stage:does_not_exist",
+		"res://addons/stella/presentation/stage/stage_presenter.gd",
+		"_set_channel_texture",
+		2,
+	)
 	assert_null(_sprite(_presenter.get_layer_node("missing"), "asset").texture)
 	state.disconnect_signals()
 
