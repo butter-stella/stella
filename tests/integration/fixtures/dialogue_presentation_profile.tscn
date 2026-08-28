@@ -27,7 +27,7 @@ offset_right = -3.0
 offset_bottom = -4.0
 modulate = Color(0.4, 0.5, 0.6, 0.75)
 
-[node name="TextRegion" type="Control" parent="."]
+[node name="TextRegion" type="Control" parent="." groups=["dialogue_surface"]]
 anchor_left = 0.12
 anchor_top = 0.18
 anchor_right = 0.88

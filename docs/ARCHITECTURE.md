@@ -947,9 +947,22 @@ import 不会构造 editor GUI。字体、PNG 和 SVG 的文本资源引用只�
 
 ```bash
 godot --audio-driver Dummy --headless --import
-STELLA_DISABLE_LOCAL_CONFIG=1 godot --audio-driver Dummy \
-  -s addons/gut/gut_cmdln.gd --headless 2>&1
+STELLA_DISABLE_LOCAL_CONFIG=1 STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD=1 \
+	GODOT_BIN=godot tests/run_gut.sh full
+STELLA_DISABLE_LOCAL_CONFIG=1 STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD=1 \
+	GODOT_BIN=godot tests/run_gut.sh focused \
+	res://tests/unit/test_scenario_engine.gd
 ```
+
+标准 CLI 和 CI 不读取 `.gutconfig.json`：Stella-owned runner 先独立解析并收集显式
+manifest，再要求 requested、collected、ran 的方法集合完全相等且每个请求脚本至少运行
+一个方法。parse/load/collector 诊断、零脚本/零方法、未处理 warning 和其他诊断都会返回
+非零；测试可按完整 message 与 production backtrace identity 精确声明预期 warning，但 raw
+warning 仍原样输出。runner 的结构化 final marker 之后由 shell gate 检查完整进程尾，任何
+非空 shutdown diagnostic 都失败。raw log 默认持久保存在 `.godot/stella_test_logs/`。
+Editor GUT 继续通过 `.gutconfig.json` 使用共享的 audio quiesce 与 warning gate，但不会伪造
+CLI exact manifest 能力。rendering job 同样走 `tests/run_gut.sh rendering`，并继续由 Xvfb
+和 Mesa Lavapipe 提供真实渲染环境。
 
 ---
 

@@ -1,4 +1,6 @@
 extends GutTest
+
+const WarningTestSupport = preload("res://tests/helpers/warning_test_support.gd")
 ## Frozen typed-state and stable Dialogue projection contract for issue #166.
 ##
 ## New classes are discovered through Godot's global-class registry so the red
@@ -515,6 +517,12 @@ func test_inactive_content_is_normalized_exactly_without_hidden_payload() -> voi
 		{"surface": false, "quick_menu": true},
 		invalid_inactive,
 	))
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		"PresentationState: invalid dialogue_content snapshot; resetting dialogue projection",
+		"res://addons/stella/core/save_system/presentation_state.gd",
+		"restore_snapshot",
+	)
 	var snapshot := state.capture_snapshot()
 	_assert_dialogue_defaults(snapshot)
 
@@ -550,6 +558,13 @@ func test_invalid_direct_restore_zeros_the_whole_dialogue_projection() -> void:
 			invalid_content,
 		))
 		_assert_dialogue_defaults(state.capture_snapshot())
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		"PresentationState: invalid dialogue_content snapshot; resetting dialogue projection",
+		"res://addons/stella/core/save_system/presentation_state.gd",
+		"restore_snapshot",
+		invalid_cases.size(),
+	)
 
 
 func test_record_dialogue_content_captures_text_only_and_final_expression() -> void:
