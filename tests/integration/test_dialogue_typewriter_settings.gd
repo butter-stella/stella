@@ -6,7 +6,8 @@ extends GutTest
 
 const FIXTURE := preload(
 	"res://tests/integration/fixtures/dialogue_presentation_profile.tscn")
-const LOAD_SETTINGS_PATH := "user://tests/issue135_typewriter_settings.json"
+const LOAD_SETTINGS_DIRECTORY := "user://tests/issue135_typewriter_settings"
+const LOAD_SETTINGS_PATH := "user://tests/issue135_typewriter_settings/settings.json"
 
 var _presenter: Control
 var _original_settings: Dictionary
@@ -78,16 +79,21 @@ func after_each() -> void:
 	StellaRuntime.skip_controller.is_active = _original_skip_active
 	StellaRuntime.game_state.current_state = _original_game_state
 	StellaRuntime.game_state.previous_state = _original_previous_game_state
-	if FileAccess.file_exists(LOAD_SETTINGS_PATH):
-		DirAccess.remove_absolute(
-			ProjectSettings.globalize_path(LOAD_SETTINGS_PATH))
+	_remove_load_settings_fixture()
 	await get_tree().process_frame
 
 
 func test_loaded_values_are_snapshotted_before_reset_and_defaults_apply_next() -> void:
+	_remove_load_settings_fixture()
+	assert_false(DirAccess.dir_exists_absolute(LOAD_SETTINGS_DIRECTORY),
+		"the owned settings parent starts absent")
+	assert_eq(DirAccess.make_dir_recursive_absolute(
+		ProjectSettings.globalize_path(LOAD_SETTINGS_DIRECTORY)), OK,
+		"the fixture creates its owned settings parent")
 	StellaRuntime.settings_manager.settings_path = LOAD_SETTINGS_PATH
 	_set_timing(200, 0)
-	StellaRuntime.settings_manager.save()
+	assert_eq(StellaRuntime.settings_manager.save(), OK,
+		"the fixture settings save succeeds")
 	_set_timing(0, 0)
 	StellaRuntime.settings_manager.load_settings()
 	assert_eq(StellaRuntime.get_setting("character_interval"), 200,
@@ -111,6 +117,17 @@ func test_loaded_values_are_snapshotted_before_reset_and_defaults_apply_next() -
 		return
 	assert_gte(Time.get_ticks_msec() - next_started, 240,
 		"the next line uses default 50ms base plus 200ms punctuation pause")
+
+
+func _remove_load_settings_fixture() -> void:
+	if FileAccess.file_exists(LOAD_SETTINGS_PATH):
+		assert_eq(DirAccess.remove_absolute(
+			ProjectSettings.globalize_path(LOAD_SETTINGS_PATH)), OK,
+			"the exact settings fixture file is removed")
+	if DirAccess.dir_exists_absolute(LOAD_SETTINGS_DIRECTORY):
+		assert_eq(DirAccess.remove_absolute(
+			ProjectSettings.globalize_path(LOAD_SETTINGS_DIRECTORY)), OK,
+			"the owned settings fixture directory is removed")
 
 
 func test_reentrant_reset_show_snapshots_the_atomic_default_pair() -> void:
