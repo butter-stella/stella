@@ -1,6 +1,8 @@
 extends GutTest
 ## Tests for StellaAction — zero-code button binding component.
 
+const WarningTestSupport = preload("res://tests/helpers/warning_test_support.gd")
+
 var _btn: Button
 var _action: StellaAction
 
@@ -41,6 +43,12 @@ func test_does_not_crash_on_non_button_parent():
 	add_child(node)
 	# Should not crash, just warn
 	assert_true(true)
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		"StellaAction: parent is not a BaseButton — action won't trigger",
+		"res://addons/stella/presentation/ui/stella_action.gd",
+		"_ready",
+	)
 	node.free()
 
 
@@ -147,3 +155,9 @@ func test_none_action_does_nothing():
 	# Should not crash, just warn
 	_btn.pressed.emit()
 	assert_true(true)
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		"StellaAction: no action selected",
+		"res://addons/stella/presentation/ui/stella_action.gd",
+		"_on_pressed",
+	)

@@ -310,9 +310,13 @@ jobs:
       - name: Run tests
         env:
           STELLA_DISABLE_LOCAL_CONFIG: "1"
-        run: >-
-          godot --audio-driver Dummy
-          -s addons/gut/gut_cmdln.gd --headless 2>&1
+        run: tests/run_gut.sh full
+        timeout-minutes: 5
+
+      - name: Probe exact GUT fail-closed boundaries
+        env:
+          STELLA_DISABLE_LOCAL_CONFIG: "1"
+        run: tests/exact_gut_gate_probes.sh
         timeout-minutes: 5
 
   rendering:
@@ -367,9 +371,5 @@ jobs:
           STELLA_EXPECT_RENDERING_METHOD: mobile
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.json
         run: >-
-          xvfb-run -a godot --path . --rendering-method mobile
-          --audio-driver Dummy
-          -s addons/gut/gut_cmdln.gd -gconfig=
-          -gpost_run_script=res://tests/helpers/gut_post_run.gd
-          -gdir=res://tests/rendering -gexit 2>&1
+          xvfb-run -a tests/run_gut.sh rendering
         timeout-minutes: 5

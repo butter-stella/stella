@@ -1,4 +1,6 @@
 extends GutTest
+
+const WarningTestSupport = preload("res://tests/helpers/warning_test_support.gd")
 ## Tests for @elif and @call DSL directives.
 
 
@@ -106,6 +108,12 @@ func test_call_empty_target_no_crash():
 
 	# Should not push to return stack with empty target
 	await handler.execute(cmd, ctx)
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		"CallHandler: empty target, skipping",
+		"res://addons/stella/core/commands/call_handler.gd",
+		"execute",
+	)
 	assert_eq(ctx.return_stack.size(), 0, "Empty target should not push return stack")
 
 
@@ -198,7 +206,7 @@ func test_engine_return_from_call():
 	end_scene.id = "end"
 	var cmd_end_jump = CommandData.new()
 	cmd_end_jump.type = "jump"
-	cmd_end_jump.params = {"target": "__done"}  # nonexistent = engine stops
+	cmd_end_jump.params = {"target": "end"}
 	main_scene.commands = [cmd_a, cmd_call, cmd_c, cmd_end_jump]
 
 	scenario.scenes = [main_scene, sub_scene, end_scene]

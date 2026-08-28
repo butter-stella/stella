@@ -1,4 +1,6 @@
 extends GutTest
+
+const WarningTestSupport = preload("res://tests/helpers/warning_test_support.gd")
 ## Public synthetic end-to-end red contract for issue #166.
 ##
 ## The new classes are resolved through the global-class registry.  The exact
@@ -585,31 +587,6 @@ func _contains_forbidden_transient(value: Variant) -> bool:
 			if _contains_forbidden_transient(child):
 				return true
 	return false
-
-
-func _unhandled_push_warnings() -> Array:
-	return get_errors().filter(func(error: GutTrackedError) -> bool:
-		return error.is_push_warning() and not error.handled)
-
-
-func _dialogue_binding_warnings() -> Array:
-	return _unhandled_push_warnings().filter(
-		func(warning: GutTrackedError) -> bool:
-			var text := "%s %s" % [warning.code, warning.rationale]
-			return "DialoguePresenter runtime binding:" in text
-	)
-
-
-func _assert_and_consume_warning_identity(
-	warning: GutTrackedError,
-	identity_parts: Array[String],
-) -> void:
-	var text := "%s %s" % [String(warning.code), String(warning.rationale)]
-	for part: String in identity_parts:
-		assert_true(part in text, "warning provenance includes '%s': %s" % [
-			part, text,
-		])
-	warning.handled = true
 
 
 func _owned_group_nodes(group_name: StringName) -> Array[CanvasItem]:
@@ -2716,29 +2693,19 @@ func test_j_missing_groups_warn_once_with_exact_provenance_and_bind_nothing() ->
 	assert_null(_dialogue_presenter.get("_current_dialogue_activation"))
 	assert_true(_runtime._apply_retained_presentation(_runtime.engine.context))
 	assert_true(_runtime._apply_retained_presentation(_runtime.engine.context))
-	var warnings := _dialogue_binding_warnings()
-	assert_eq(warnings.size(), 2,
-		"missing surface and quick-menu participants warn exactly once each")
-	if warnings.size() == 2:
-		var expected := [
-			["profile=missing_groups", "source=%s" % SCENARIO_PATH,
-				"field=surface_groups", "line=6", "group=missing_surface",
-				"failure_kind=missing"],
-			["profile=missing_groups", "source=%s" % SCENARIO_PATH,
-				"field=quick_menu_groups", "line=6", "group=missing_quick",
-				"failure_kind=missing"],
-		]
-		for identity_value: Variant in expected:
-			var identity: Array[String] = []
-			for part_value: Variant in identity_value:
-				identity.append(String(part_value))
-			var matching := warnings.filter(func(warning: GutTrackedError) -> bool:
-				var text := "%s %s" % [warning.code, warning.rationale]
-				return identity.all(func(part: String) -> bool: return part in text))
-			assert_eq(matching.size(), 1,
-				"warning dedup identity includes all six provenance fields")
-			if matching.size() == 1:
-				_assert_and_consume_warning_identity(matching[0], identity)
+	for field_and_group_value: Variant in [
+		["surface_groups", "missing_surface"],
+		["quick_menu_groups", "missing_quick"],
+	]:
+		var field_and_group: Array = field_and_group_value
+		WarningTestSupport.assert_exact_warnings(
+			self,
+			("DialoguePresenter runtime binding: profile=missing_groups "
+				+ "source=%s field=%s line=6 group=%s failure_kind=missing"
+				% [SCENARIO_PATH, field_and_group[0], field_and_group[1]]),
+			"res://addons/stella/presentation/dialogue/dialogue_presenter.gd",
+			"_emit_dialogue_visibility_binding_warning",
+		)
 
 
 func test_j_overlap_warns_once_and_only_overlap_uses_default_fallback() -> void:
@@ -2786,15 +2753,15 @@ func test_j_overlap_warns_once_and_only_overlap_uses_default_fallback() -> void:
 	assert_false(live_activation.is_pending())
 	assert_null(_dialogue_presenter.get("_current_dialogue_activation"))
 	assert_true(_runtime._apply_retained_presentation(_runtime.engine.context))
-	var warnings := _dialogue_binding_warnings()
-	assert_eq(warnings.size(), 1, "normalized overlap warns exactly once")
-	if warnings.size() == 1:
-		_assert_and_consume_warning_identity(warnings[0], [
-			"profile=overlapping", "source=%s" % SCENARIO_PATH,
-			"field=surface_groups", "line=7", "group=overlap_surface",
-			"field=quick_menu_groups", "line=7", "group=overlap_quick",
-			"failure_kind=overlap",
-		])
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		("DialoguePresenter runtime binding: profile=overlapping source=%s "
+			+ "field=surface_groups line=7 group=overlap_quick "
+			+ "group=overlap_surface field=quick_menu_groups line=7 "
+			+ "failure_kind=overlap") % SCENARIO_PATH,
+		"res://addons/stella/presentation/dialogue/dialogue_presenter.gd",
+		"_emit_dialogue_visibility_binding_warning",
+	)
 
 
 func test_j_overlapping_default_groups_fail_to_empty_without_recursive_fallback() -> void:
@@ -2828,8 +2795,15 @@ func test_j_overlapping_default_groups_fail_to_empty_without_recursive_fallback(
 		assert_eq(presenter_binding.get("current", {}).get("surface_groups"), [])
 		assert_eq(presenter_binding.get("current", {}).get("quick_menu_groups"), [])
 	toolbar.remove_from_group("dialogue_surface")
-	for warning: GutTrackedError in _unhandled_push_warnings():
-		warning.handled = true
+	WarningTestSupport.assert_exact_warnings(
+		self,
+		("DialoguePresenter runtime binding: profile=overlapping source=%s "
+			+ "field=surface_groups line=7 group=overlap_quick "
+			+ "group=overlap_surface field=quick_menu_groups line=7 "
+			+ "failure_kind=overlap") % SCENARIO_PATH,
+		"res://addons/stella/presentation/dialogue/dialogue_presenter.gd",
+		"_emit_dialogue_visibility_binding_warning",
+	)
 
 
 func test_j_hard_reset_cancels_old_generations_and_clears_projection() -> void:

@@ -4,7 +4,7 @@ extends GutTest
 
 const RuntimeTestSupport = preload("res://tests/helpers/runtime_test_support.gd")
 const LOAD_FIXTURE := \
-	"res://tests/fixtures/scenarios/dialogue/presentation_profile.stla"
+	"res://tests/fixtures/scenarios/dialogue/runtime_load_boundary.stla"
 const BOUNDARY_SAVE_DIR := "user://tests/pr175_runtime_boundary/"
 
 var _runtime: Node
@@ -1184,7 +1184,7 @@ func _assert_load_boundary_owner(
 	assert_true(old_context.is_finished)
 	assert_eq(old_activation.get_outcome(), DialogueActivation.Outcome.ABORTED)
 	assert_not_same(_runtime.engine.context, old_context)
-	assert_eq(_runtime.engine.context.scenario_data.id, "presentation_profile")
+	assert_eq(_runtime.engine.context.scenario_data.id, "runtime_load_boundary")
 	assert_eq(_scenario_ended_count[0], 0,
 		"load cancellation must not look like natural scenario completion")
 	assert_eq(_runtime.game_state.current_state, GameStateMachine.State.PLAYING)
@@ -1200,7 +1200,7 @@ func _assert_blocking_load_boundary(
 	assert_true(old_context.is_cancellation_requested(),
 		"context replacement must cancel the retired execution generation")
 	assert_not_same(_runtime.engine.context, old_context)
-	assert_eq(_runtime.engine.context.scenario_data.id, "presentation_profile")
+	assert_eq(_runtime.engine.context.scenario_data.id, "runtime_load_boundary")
 	assert_eq(_scenario_ended_count[0], 0,
 		"blocking cancellation must not look like natural scenario completion")
 	assert_eq(_runtime.game_state.current_state, GameStateMachine.State.PLAYING)

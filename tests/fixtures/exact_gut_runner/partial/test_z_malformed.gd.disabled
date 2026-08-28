@@ -1,0 +1,5 @@
+extends GutTest
+
+
+func test_malformed_neighbor_must_fail_the_whole_selection() -> void:
+	var incomplete_assignment :=
