@@ -7,7 +7,8 @@ extends GutTest
 ## behavior and are synchronized by the request-scoped activation.
 
 const GAME_SCENE := preload("res://addons/stella/scenes/game.tscn")
-const LOAD_SETTINGS_PATH := "user://tests/issue136_click_to_complete.json"
+const LOAD_SETTINGS_DIRECTORY := "user://tests/issue136_click_to_complete"
+const LOAD_SETTINGS_PATH := "user://tests/issue136_click_to_complete/settings.json"
 
 var _original_settings: Dictionary
 var _original_settings_path: String
@@ -58,9 +59,7 @@ func after_each() -> void:
 	StellaRuntime.skip_controller.is_active = _original_skip_active
 	StellaRuntime.game_state.current_state = _original_game_state
 	StellaRuntime.game_state.previous_state = _original_previous_game_state
-	if FileAccess.file_exists(LOAD_SETTINGS_PATH):
-		DirAccess.remove_absolute(
-			ProjectSettings.globalize_path(LOAD_SETTINGS_PATH))
+	_remove_load_settings_fixture()
 	await get_tree().process_frame
 	_viewports.clear()
 	_signal_callbacks.clear()
@@ -188,9 +187,16 @@ func test_direct_reset_and_silent_load_are_live_at_each_input() -> void:
 		"reset restores the default true policy for the next input")
 	assert_true(reset_activation.is_pending())
 
+	_remove_load_settings_fixture()
+	assert_false(DirAccess.dir_exists_absolute(LOAD_SETTINGS_DIRECTORY),
+		"the owned settings parent starts absent")
+	assert_eq(DirAccess.make_dir_recursive_absolute(
+		ProjectSettings.globalize_path(LOAD_SETTINGS_DIRECTORY)), OK,
+		"the fixture creates its owned settings parent")
 	StellaRuntime.settings_manager.settings_path = LOAD_SETTINGS_PATH
 	StellaRuntime.set_setting("click_to_complete", false)
-	StellaRuntime.settings_manager.save()
+	assert_eq(StellaRuntime.settings_manager.save(), OK,
+		"the fixture settings save succeeds")
 	StellaRuntime.set_setting("click_to_complete", true)
 	var load_activation := _begin_owned_typing(fixture, "Load live setting")
 	StellaRuntime.settings_manager.load_settings()
@@ -204,6 +210,17 @@ func test_direct_reset_and_silent_load_are_live_at_each_input() -> void:
 	_dispatch(handler, _joy_event())
 	assert_false(presenter._is_typing)
 	assert_true(load_activation.is_pending())
+
+
+func _remove_load_settings_fixture() -> void:
+	if FileAccess.file_exists(LOAD_SETTINGS_PATH):
+		assert_eq(DirAccess.remove_absolute(
+			ProjectSettings.globalize_path(LOAD_SETTINGS_PATH)), OK,
+			"the exact settings fixture file is removed")
+	if DirAccess.dir_exists_absolute(LOAD_SETTINGS_DIRECTORY):
+		assert_eq(DirAccess.remove_absolute(
+			ProjectSettings.globalize_path(LOAD_SETTINGS_DIRECTORY)), OK,
+			"the owned settings fixture directory is removed")
 
 
 func test_ready_input_commits_read_state_without_a_second_global_result() -> void:
