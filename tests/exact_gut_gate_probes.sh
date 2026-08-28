@@ -52,12 +52,12 @@ run_probe() {
 			"$name" "$expected_status" "$status" >&2
 		exit 1
 	fi
-	if ! rg -F -- "$expected_reason" "$log" >/dev/null; then
+	if ! grep -F -- "$expected_reason" "$log" >/dev/null; then
 		printf 'Exact GUT probe %s: missing reason: %s\n' "$name" "$expected_reason" >&2
 		exit 1
 	fi
 	local marker_count
-	marker_count=$(rg -c '^STELLA_EXACT_GUT_FINAL ' "$log" || true)
+	marker_count=$(grep -c '^STELLA_EXACT_GUT_FINAL ' "$log" || true)
 	marker_count=${marker_count:-0}
 	if [[ $expected_marker == absent && $marker_count -ne 0 ]]; then
 		printf 'Exact GUT probe %s: expected no final marker, got %s\n' \
@@ -70,7 +70,7 @@ run_probe() {
 				"$name" "$marker_count" >&2
 			exit 1
 		fi
-		if ! rg -F -- "\"status\":\"$expected_marker_status\"" "$log" >/dev/null; then
+		if ! grep -F -- "\"status\":\"$expected_marker_status\"" "$log" >/dev/null; then
 			printf 'Exact GUT probe %s: final marker did not report %s\n' \
 				"$name" "$expected_marker_status" >&2
 			exit 1
