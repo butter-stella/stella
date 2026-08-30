@@ -8,6 +8,7 @@
 [ext_resource type="Script" path="res://addons/stella/presentation/effects/fade_presenter.gd" id="7"]
 [ext_resource type="Script" uid="uid://wkgv23f4gu6f" path="res://addons/stella/presentation/effects/screen_effects.gd" id="8"]
 [ext_resource type="Script" path="res://addons/stella/presentation/ui/chapter_indicator_presenter.gd" id="9"]
+[ext_resource type="Script" uid="uid://dtg6jxmev6gtm" path="res://addons/stella/presentation/ui/stella_action.gd" id="10"]
 
 [node name="Game" type="Node2D" unique_id=2021434320]
 
@@ -174,6 +175,118 @@ offset_bottom = -15.0
 grow_horizontal = 2
 grow_vertical = 0
 alignment = 2
+
+[node name="VoiceReplay" type="Button" parent="UILayer/DialoguePanel/Toolbar"]
+custom_minimum_size = Vector2(60, 30)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "重听"
+flat = true
+
+[node name="StellaAction" type="Node" parent="UILayer/DialoguePanel/Toolbar/VoiceReplay"]
+script = ExtResource("10")
+action_id = &"voice_replay"
+hide_when_unavailable = true
+
+[node name="Auto" type="Button" parent="UILayer/DialoguePanel/Toolbar"]
+custom_minimum_size = Vector2(60, 30)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "自动"
+flat = true
+
+[node name="StellaAction" type="Node" parent="UILayer/DialoguePanel/Toolbar/Auto"]
+script = ExtResource("10")
+action_id = &"auto"
+
+[node name="Skip" type="Button" parent="UILayer/DialoguePanel/Toolbar"]
+custom_minimum_size = Vector2(60, 30)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "快进"
+flat = true
+
+[node name="StellaAction" type="Node" parent="UILayer/DialoguePanel/Toolbar/Skip"]
+script = ExtResource("10")
+action_id = &"skip"
+
+[node name="Backlog" type="Button" parent="UILayer/DialoguePanel/Toolbar"]
+custom_minimum_size = Vector2(60, 30)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "记录"
+flat = true
+
+[node name="StellaAction" type="Node" parent="UILayer/DialoguePanel/Toolbar/Backlog"]
+script = ExtResource("10")
+action_id = &"backlog"
+hide_when_unavailable = true
+
+[node name="PrevChoice" type="Button" parent="UILayer/DialoguePanel/Toolbar"]
+custom_minimum_size = Vector2(60, 30)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "回选项"
+flat = true
+
+[node name="StellaAction" type="Node" parent="UILayer/DialoguePanel/Toolbar/PrevChoice"]
+script = ExtResource("10")
+action_id = &"prev_choice"
+
+[node name="QuickSave" type="Button" parent="UILayer/DialoguePanel/Toolbar"]
+custom_minimum_size = Vector2(60, 30)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "快存"
+flat = true
+
+[node name="StellaAction" type="Node" parent="UILayer/DialoguePanel/Toolbar/QuickSave"]
+script = ExtResource("10")
+action_id = &"quick_save"
+
+[node name="QuickLoad" type="Button" parent="UILayer/DialoguePanel/Toolbar"]
+custom_minimum_size = Vector2(60, 30)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "快读"
+flat = true
+
+[node name="StellaAction" type="Node" parent="UILayer/DialoguePanel/Toolbar/QuickLoad"]
+script = ExtResource("10")
+action_id = &"quick_load"
+
+[node name="Save" type="Button" parent="UILayer/DialoguePanel/Toolbar"]
+custom_minimum_size = Vector2(60, 30)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "存档"
+flat = true
+
+[node name="StellaAction" type="Node" parent="UILayer/DialoguePanel/Toolbar/Save"]
+script = ExtResource("10")
+action_id = &"save"
+
+[node name="Load" type="Button" parent="UILayer/DialoguePanel/Toolbar"]
+custom_minimum_size = Vector2(60, 30)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "读档"
+flat = true
+
+[node name="StellaAction" type="Node" parent="UILayer/DialoguePanel/Toolbar/Load"]
+script = ExtResource("10")
+action_id = &"load"
+
+[node name="Settings" type="Button" parent="UILayer/DialoguePanel/Toolbar"]
+custom_minimum_size = Vector2(60, 30)
+layout_mode = 2
+mouse_default_cursor_shape = 2
+text = "设置"
+flat = true
+
+[node name="StellaAction" type="Node" parent="UILayer/DialoguePanel/Toolbar/Settings"]
+script = ExtResource("10")
+action_id = &"settings"
 
 [node name="ChoicePanel" type="PanelContainer" parent="UILayer" unique_id=1398717553]
 anchors_preset = 8

@@ -6,6 +6,14 @@ signal scenario_started(scenario_id: String)
 signal scenario_ended(scenario_id: String)
 signal scene_changed(scene_id: String)
 signal command_executed(command_data: CommandData)
+## Emitted after the non-null current command is established and before its
+## handler runs. Runtime uses this typed cursor edge for predicates such as
+## `prev_choice`; handler-specific presentation signals are intentionally not
+## used as an incomplete approximation of command position.
+signal command_position_changed(
+	context: ScenarioContext,
+	command_data: CommandData,
+)
 
 var _context_owner_state: Dictionary = {}
 var context: ScenarioContext:
@@ -274,6 +282,10 @@ func run() -> void:
 			if not _owns_run(ctx, generation):
 				return
 			continue
+
+		command_position_changed.emit(ctx, cmd)
+		if not _owns_run(ctx, generation):
+			return
 
 		# Dispatch to handler
 		ctx.apply_dialogue_mode_events(cmd.dialogue_mode_events_before)

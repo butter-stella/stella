@@ -20,10 +20,12 @@ Stella 是基于 Godot 4 的视觉小说 / Galgame 框架。设计目标：
 Stella 采用分层架构，由下至上：
 
 - **Autoload 层**：`StellaRuntime`（启动入口）+ `SignalBus`（全局信号总线）
-- **Core 层**：脚本解析、剧情引擎、命令处理、变量、存档、设置、播放控制、已读、Backlog、收藏、鉴赏。引擎无关，可独立单测
+- **Core 层**：脚本解析、剧情引擎、命令处理、稳定 action catalog/dispatcher、变量、存档、设置、播放控制、已读、Backlog、收藏、鉴赏。引擎无关，可独立单测
 - **Presentation 层**：对话、动态舞台、背景、音频、选择、特效、UI。基于 Godot 节点，订阅 SignalBus 渲染
 
-Core 与 Presentation 通过 Godot 信号（Signal）解耦，所有跨层通信经由 `SignalBus` 单例。
+Core 命令与 Presentation 事件通过 `SignalBus` 解耦；用户 UI/input 的稳定语义 intent 先经
+Runtime-owned action registry，再由 Runtime 的 canonical callback 进入相同 subsystem 或
+Presenter owner。
 
 ### 1.1 模块依赖与数据流
 
@@ -43,6 +45,7 @@ flowchart TB
         PARSER[script_parser<br/>词法/语法]
         ENGINE[scenario_engine<br/>执行调度 + ScenarioContext]
         REG[command_registry<br/>+ *_handler.gd]
+        ACTION[stella_action_registry<br/>catalog + dispatcher]
         STATE[state / variable_system<br/>config / settings]
         SAVE[save_system / bookmark<br/>gallery / localization]
         PLAY[playback<br/>auto / skip / backlog / read_flag]
@@ -61,6 +64,7 @@ flowchart TB
     STLA --> PARSER --> ENGINE
     ASSETS -.-> Presentation
     RT --> ENGINE
+    RT --> ACTION
     ENGINE <--> REG
     ENGINE <--> STATE
     ENGINE <--> SAVE
@@ -73,13 +77,60 @@ flowchart TB
     BUS --> AUD
     BUS --> FX
     BUS --> CHO
-    UI -- user input --> BUS --> ENGINE
+    UI -- stable action ID --> ACTION --> RT
+    RT --> BUS
 ```
 
 **数据流说明**：
 - 正向：`.stla` → `script_parser` → `scenario_engine` 调度 → `command_registry` 分发到各 `*_handler` → 通过 `SignalBus` 广播给 Presentation 层 presenter
-- 反向：用户输入（点击/选择）从 `presentation/input` 经 `SignalBus` 回到 `scenario_engine` 推进剧情
+- 反向：Button 与 `presentation/input` 把稳定 action ID 交给同一个 registry；Runtime callback
+  再推进 exact Presenter/engine owner 或发出兼容 `SignalBus` 事件
 - `playback` 子模块（auto/skip/backlog/read_flag）状态独立，与 engine 协作并通过 SignalBus 与 UI 联动
+
+#### Runtime-owned action catalog
+
+`StellaRuntime` 在 composition root 中同步构造唯一 `StellaActionRegistry`。构造使用只存在于
+调用栈内的私有 capability，一次性注册 18 个 canonical built-in ID；unknown、duplicate、
+missing definition、invalid metadata 或 callback 会清空全部 entry，使 Runtime 明确报错并拒绝
+部分 catalog 启动。公开持有 `StellaRuntime` 或 `action_registry` 不能取得该 capability，也不能
+注册或替换 built-in ID。
+
+每个 entry 保存 immutable generation、exact Node owner ID 与 weak owner reference。项目 action
+只能使用 lowercase namespaced ID，callback 必须属于 live tree-bound exact owner；owner 的
+`tree_exiting` 自动注销其全部 entry 并断开连接。registry 不以 bound Callable 反向延长
+RefCounted owner 生命周期。catalog/metadata/context 都以 defensive copy 越过公开边界；
+`can_execute` 与 `is_active` 是严格返回 bool 的无副作用 query，execute 只有返回 true 才是
+成功。
+
+execute/query/confirmation 与 catalog lifecycle 允许同步重入，但每个用户 callback 后都会重取
+并校验 exact generation/owner receipt。`action_state_changed` 是只读投影边界：listener 可同步
+查询 metadata、availability、active state，但在该 signal 栈内再次 execute 会明确 `FAILED`。
+因此产生通知的 Runtime/Presenter transaction 不会被 Binding listener 半途重入；也不需要
+deferred call、polling、timer 或第二 scheduler。catalog add/remove 的 signal 不会把 retired
+entry 的 state event 投到同 ID replacement；全量 state 通知按 ID/generation/owner snapshot
+遍历。action state 由 game state、Auto/Skip、存档、choice、voice、Presenter、ScenarioEngine
+的 typed command-position edge 和 custom owner 的显式 signal 驱动。
+
+`disruptive` / `destructive` 第一次 dispatch 只创建 single-use opaque confirmation token 并发出
+request；confirmed dispatch 必须携带 exact token，且 token 在 execute callback 前消费。新的
+top-level request 会退休该 action 的旧未确认 receipt；同一同步 confirmation dispatch 内的
+nested receipt 相互独立，但有明确的 8 个上界，超过即 fail-close。多个同步或异步 listener
+竞争时至多一个能执行；request signal 返回后也会复验 receipt，不能给已注销或 replacement
+的 action 误报 confirmation required。legacy Inspector enum 仅是一对一
+canonical ID adapter；它为既有 destructive scene 同步消费该次专用 receipt，并用 context
+marker 让正常 confirmation UI 忽略，不形成第二 dispatcher 或永久 bypass。
+
+`StellaAction` 是任意 `BaseButton` 的声明式 Presentation binding。它和内建
+`DialoguePresenter` 工具栏都消费上述同一 registry，事件驱动投影 label、availability 和
+active。场景 authored Button 的视觉与 geometry 保持不变；动态换成 non-toggle 或 action
+注销时会清除陈旧 pressed state，catalog label 消失时恢复 ready 时保存的 authored fallback。
+exact built-in DialoguePresenter 只有在 clear/avatar/clip 三项 typed admission 以及背景/Profile
+校验完成后才发布到 Runtime 的 action weak view，然后绑定 authored toolbar children；非空
+Toolbar 不清空、不重建，空 Toolbar 的默认产品 UI 也只创建相同 Binding。项目 Presenter
+subclass 不进入该 view，exact-script registry 检查不放宽。scene replacement overlap 时由最新
+publish 且仍 live 的 exact Presenter 接管 action；它退出后恢复下一位仍 live 的 older owner，
+无效 WeakRef 会逆序原地清除。最终 publication 失败会原子注销已取得的 clear/avatar/clip 三项
+capability，不留下 half-connected participant。
 
 ### 1.2 启动配置数据流
 
@@ -708,24 +759,21 @@ stateDiagram-v2
 
 ### 3.8 输入抽象
 
-通过 `StellaAction` 枚举将物理输入映射为语义动作：
+固定物理输入与 scene-authored Button 共用 `StellaActionRegistry` 的稳定字符串 ID。完整
+catalog 由 Runtime 枚举；输入面使用的 ID 为：
 
 ```gdscript
-enum {
-    ADVANCE,         # 推进对话
-    CANCEL,          # 取消/返回
-    SHOW_MENU,       # 打开菜单
-    HISTORY_PREV,    # 回看上一条
-    HISTORY_NEXT,    # 回看下一条
-    TOGGLE_AUTO,     # 切换自动播放
-    TOGGLE_SKIP,     # 切换快进
-    HIDE_UI,         # 隐藏文本框
-    QUICK_SAVE,      # 快速存档
-    QUICK_LOAD,      # 快速读档
-}
+&"advance"    # 推进 exact current semantic owner
+&"hide_ui"    # 隐藏/恢复对话 UI
+&"flowchart"  # 打开流程图
+&"cancel"     # 关闭当前 overlay
 ```
 
-当前内建物理输入面覆盖左键、Space、Enter、手柄 A，以及 Ctrl/工具栏 Skip。语义 advance 会完成当前 exact blocking owner，不会跨越到同一 signal tail 中创建的下一命令。#133 的可重绑输入仍属后续工作；当前只承诺这组固定映射。
+当前内建物理输入面覆盖左键、右键、Space、Enter、F9、手柄 A，以及 Ctrl。工具栏另 author
+`voice_replay`、`auto`、`skip`、`backlog`、`prev_choice`、`quick_save`、`quick_load`、
+`save`、`load`、`settings`。语义 advance 会完成当前 exact blocking owner，不会跨越到同一
+signal tail 中创建的下一命令。#133 的持久可重绑物理输入仍属后续工作；action registry 不
+引入 binding persistence 或第二套 input scheduler。
 
 ---
 

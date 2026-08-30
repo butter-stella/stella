@@ -2666,12 +2666,16 @@ func test_ready_toolbar_reflects_already_active_public_controllers() -> void:
 	add_child_autoqfree(_presenter)
 	await get_tree().process_frame
 
-	assert_not_null(_presenter._auto_btn)
-	assert_not_null(_presenter._skip_btn)
-	if _presenter._auto_btn != null:
-		assert_eq(_presenter._auto_btn.modulate, Color.YELLOW)
-	if _presenter._skip_btn != null:
-		assert_eq(_presenter._skip_btn.modulate, Color.YELLOW)
+	var auto_button := _presenter._framework_toolbar_buttons.get(
+		StellaActionRegistry.ACTION_AUTO) as Button
+	var skip_button := _presenter._framework_toolbar_buttons.get(
+		StellaActionRegistry.ACTION_SKIP) as Button
+	assert_not_null(auto_button)
+	assert_not_null(skip_button)
+	if auto_button != null:
+		assert_eq(auto_button.modulate, Color.YELLOW)
+	if skip_button != null:
+		assert_eq(skip_button.modulate, Color.YELLOW)
 
 
 func test_scene_custom_effect_tags_share_visual_and_backlog_scanning() -> void:

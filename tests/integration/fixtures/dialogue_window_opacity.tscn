@@ -110,6 +110,12 @@ offset_right = 250.0
 offset_bottom = 174.0
 modulate = Color(1, 0.4, 0, 1)
 
+[node name="ToolbarProbe" type="ColorRect" parent="Toolbar"]
+custom_minimum_size = Vector2(24, 24)
+layout_mode = 2
+mouse_filter = 2
+color = Color(1, 1, 1, 1)
+
 [node name="FocusableProbe" type="Button" parent="."]
 layout_mode = 0
 offset_left = 260.0

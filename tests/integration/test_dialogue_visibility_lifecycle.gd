@@ -784,8 +784,9 @@ func test_issue169_clear_is_positive_synchronous_apply_without_transition_receip
 	assert_eq(_dialogue_presenter.get("_dialogue_segments"), [])
 	assert_eq((_dialogue_presenter.get_node("%TextLabel") as RichTextLabel).text, "")
 	assert_false((_dialogue_presenter.get_node("%NameLabel") as Label).visible)
-	var replay_button := _dialogue_presenter.get("_voice_replay_btn") as Button
-	assert_true(replay_button == null or not replay_button.visible)
+	assert_false(_runtime.can_execute_action(
+		StellaActionRegistry.ACTION_VOICE_REPLAY),
+		"clear retires replay availability even when the fixture has no toolbar")
 	assert_true((_dialogue_presenter.get_node("UnrelatedHUD") as CanvasItem).visible)
 
 	var second := _submit_dialogue_clear()

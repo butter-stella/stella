@@ -362,6 +362,44 @@ func test_can_jump_after_walking_past_first_choice():
 	await _stop_engine()
 
 
+func test_action_binding_enables_on_choice_to_wait_command_position() -> void:
+	var data := ScenarioData.new()
+	data.id = "choice_to_wait_action_edge"
+	var scene := SceneData.new()
+	scene.id = "start"
+	var choice := CommandData.new()
+	choice.type = "choice"
+	choice.params = {
+		"prompt": "pick",
+		"options": [{"id": "a", "label": "A"}],
+	}
+	var wait := CommandData.new()
+	wait.type = "wait"
+	wait.params = {"mode": "click"}
+	scene.commands.assign([choice, wait])
+	data.scenes.append(scene)
+	_setup(data)
+	_runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+
+	var button := Button.new()
+	var binding := StellaAction.new()
+	binding.action_id = StellaActionRegistry.ACTION_PREV_CHOICE
+	button.add_child(binding)
+	add_child_autoqfree(button)
+
+	_runtime.engine.run()
+	await get_tree().process_frame
+	assert_true(button.disabled,
+		"the current first choice is not itself a previous choice")
+	await _select("a")
+	assert_eq(_runtime.engine.context.current_command(), wait)
+	assert_false(button.disabled,
+		"the canonical command-position edge enables before wait dispatch")
+
+	SignalBus.advance_requested.emit()
+	await _stop_engine()
+
+
 # ─── Flowchart line sync on cross-chapter rewind ───
 
 func test_rewind_across_chapter_boundary_truncates_flowchart_line():

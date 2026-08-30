@@ -2079,13 +2079,16 @@ func test_graceful_quit_latch_and_mix_boundary_fail_close_are_bounded() -> void:
 	assert_true(runtime_source.contains(
 		"auto_save()\n\t\trequest_quit()"),
 		"OS close preserves autosave then reuses the public graceful boundary")
+	assert_true(runtime_source.contains(
+		"func _action_execute_quit(_context: Dictionary) -> bool:\n\treturn request_quit()"),
+		"the canonical quit action terminates only through the graceful boundary")
 	for path: String in [
 		"res://addons/stella/presentation/ui/title_screen.gd",
 		"res://addons/stella/presentation/ui/stella_action.gd",
 		"res://examples/demo/scripts/demo_title.gd",
 	]:
 		var source := FileAccess.get_file_as_string(path)
-		assert_true(source.contains("StellaRuntime.request_quit()"), path)
+		assert_true(source.contains("StellaActionRegistry.ACTION_QUIT"), path)
 		assert_false(source.contains("get_tree().quit("), path)
 
 

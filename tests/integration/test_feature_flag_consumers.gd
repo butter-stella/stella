@@ -35,15 +35,20 @@ func test_disabled_backlog_does_not_open_overlay_or_change_game_state() -> void:
 		"a disabled feature must not leave the visible scene and state split")
 
 
-func test_disabled_backlog_is_absent_from_builtin_dialogue_toolbar() -> void:
+func test_disabled_backlog_authored_control_is_hidden_by_binding() -> void:
 	_runtime.config.backlog = false
 	var game: Node = GAME_SCENE.instantiate()
 	add_child_autoqfree(game)
 	await get_tree().process_frame
 
 	var toolbar: HBoxContainer = game.get_node("UILayer/DialoguePanel/Toolbar")
-	assert_null(_find_button_with_text(toolbar, "记录"),
-		"the built-in toolbar must not create a disabled backlog action")
+	var backlog_button := _find_button_with_text(toolbar, "记录")
+	assert_not_null(backlog_button,
+		"the authored product toolbar keeps stable scene-owned controls")
+	if backlog_button != null:
+		assert_false(backlog_button.visible,
+			"the declarative binding hides the unavailable feature")
+		assert_true(backlog_button.disabled)
 
 
 func test_enabled_backlog_is_present_in_builtin_dialogue_toolbar() -> void:

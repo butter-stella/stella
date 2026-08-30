@@ -2,9 +2,12 @@ extends GutTest
 ## Dialogue voice, replay, reset, and presentation-isolation regressions.
 
 var _game_scene: Node
+var _original_game_state: int
 
 
 func before_each():
+	_original_game_state = StellaRuntime.game_state.current_state
+	StellaRuntime.game_state.transition_to(GameStateMachine.State.PLAYING)
 	_game_scene = load("res://addons/stella/scenes/game.tscn").instantiate()
 	add_child_autoqfree(_game_scene)
 	await get_tree().process_frame
@@ -20,6 +23,14 @@ func after_each() -> void:
 		# snapshots this test's orphan state.
 		await get_tree().process_frame
 	_game_scene = null
+	StellaRuntime.game_state.transition_to(_original_game_state)
+
+
+func _press_voice_replay(dialogue: Control) -> void:
+	var button := dialogue.get_node("Toolbar/VoiceReplay") as Button
+	assert_not_null(button)
+	if button != null:
+		button.pressed.emit()
 
 
 func _get_stage_presenter() -> StagePresenter:
@@ -313,9 +324,10 @@ func test_toolbar_and_backlog_replay_logical_event_order() -> void:
 	SignalBus.dialogue_voice_finished.connect(on_finished)
 	dialogue._dialogue_segments = [{"text": "", "voice_layers": [{"id": "main", "asset": "narration_001", "character": "", "dsp": "", "line": 0}]}]
 	dialogue._dialogue_voice_character = ""
+	dialogue._dialogue_total_duration = 1.0
 
 	_open_logical_voice_session(dialogue)
-	dialogue._on_voice_replay_pressed()
+	_press_voice_replay(dialogue)
 	assert_eq(events, ["finish", "start"],
 		"toolbar replay closes the old logical session before its new START")
 
@@ -372,10 +384,10 @@ func test_backlog_replay_from_voice_started_does_not_strand_show() -> void:
 		0.001,
 		"toolbar duration belongs to the original SHOW, not backlog replay",
 	)
-	assert_not_null(dialogue._voice_replay_btn)
-	if dialogue._voice_replay_btn != null:
-		assert_true(dialogue._voice_replay_btn.visible,
-			"the original voiced SHOW must retain toolbar replay visibility")
+	var replay_button := dialogue.get_node("Toolbar/VoiceReplay") as Button
+	assert_not_null(replay_button)
+	assert_true(replay_button.visible,
+		"the original voiced SHOW must retain toolbar replay visibility")
 
 	SignalBus.hide_dialogue.emit()
 	var audio_presenter := StellaRuntime.get_node_or_null("AudioPresenter")
@@ -404,7 +416,7 @@ func test_combine_voice_replay_restarts_from_first_segment():
 	# Simulate replay — should not crash and should kick off the queue again
 	var voice_play_count := [0]
 	SignalBus.voice_play.connect(func(_a, _c): voice_play_count[0] += 1)
-	dialogue._on_voice_replay_pressed()
+	_press_voice_replay(dialogue)
 	await get_tree().process_frame
 	assert_true(voice_play_count[0] >= 1,
 		"replay should emit at least one voice_play for segment 0")
@@ -496,7 +508,7 @@ func test_voice_replay_re_emits_dialogue_voice_started():
 	var started_count := [0]
 	SignalBus.dialogue_voice_started.connect(func(_d): started_count[0] += 1)
 
-	dialogue._on_voice_replay_pressed()
+	_press_voice_replay(dialogue)
 	assert_eq(started_count[0], 1,
 		"replay should fire dialogue_voice_started so the progress bar shows again")
 
@@ -594,10 +606,7 @@ func test_replay_button_visible_when_only_later_segment_has_voice():
 	# A combine where seg[0] is voice-less but seg[1] has a voice would hide
 	# the button even though replay would play the later voice.
 	var dialogue = _game_scene.get_node("UILayer/DialoguePanel")
-	# Create the replay button via the toolbar setup the presenter expects
-	if dialogue._voice_replay_btn == null:
-		dialogue._voice_replay_btn = Button.new()
-		add_child_autoqfree(dialogue._voice_replay_btn)
+	var replay_button := dialogue.get_node("Toolbar/VoiceReplay") as Button
 
 	var segments = [
 		{"text": "一", "voice_layers": []},
@@ -606,7 +615,7 @@ func test_replay_button_visible_when_only_later_segment_has_voice():
 	SignalBus.show_dialogue.emit("sakura", segments, "adv")
 	await get_tree().process_frame
 
-	assert_true(dialogue._voice_replay_btn.visible,
+	assert_true(replay_button.visible,
 		"replay button should show whenever ANY segment has a voice")
 
 
@@ -662,7 +671,7 @@ func test_backlog_replay_does_not_corrupt_dialogue_state():
 	var played: Array = []
 	var conn = func(asset, _c): played.append(asset)
 	SignalBus.voice_play.connect(conn)
-	dialogue._on_voice_replay_pressed()
+	_press_voice_replay(dialogue)
 	await get_tree().process_frame
 	SignalBus.voice_play.disconnect(conn)
 

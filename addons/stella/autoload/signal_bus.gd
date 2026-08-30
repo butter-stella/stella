@@ -1517,6 +1517,7 @@ signal movie_finish_requested(request_id: int, input_kind: StringName)
 signal movie_projection_reset_requested(epoch: int)
 signal movie_state_capture_requested(request: MovieStateCaptureRequest)
 signal movie_completion_committed()
+signal movie_save_boundary_changed(stable: bool)
 
 # Declarative animated presentation clips
 signal presentation_clip_prepare_requested(request: PresentationClipOperationRequest)
@@ -2489,6 +2490,7 @@ func commit_movie_completion(
 		"token": token,
 	})
 	movie_completion_committed.emit()
+	movie_save_boundary_changed.emit(false)
 	return token
 
 
@@ -2510,6 +2512,7 @@ func finish_movie_completion(
 	):
 		return false
 	_movie_completion_stack.pop_back()
+	movie_save_boundary_changed.emit(movie_save_boundary_is_stable())
 	return true
 
 

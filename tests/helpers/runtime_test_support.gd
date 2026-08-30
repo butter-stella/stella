@@ -49,6 +49,7 @@ static func reset_for_test(runtime: Node, tree: SceneTree) -> void:
 	# make clear()/restore_snapshot({}) insufficient for complete isolation.
 	runtime.auto_play = AutoPlayController.new()
 	runtime.skip_controller = SkipController.new()
+	runtime._connect_action_registry_state_sources()
 	if (
 		runtime.presentation_director != null
 		and not runtime.skip_controller.active_changed.is_connected(
@@ -72,6 +73,7 @@ static func reset_for_test(runtime: Node, tree: SceneTree) -> void:
 	runtime.presentation_state.clear()
 	runtime.game_state.current_state = GameStateMachine.State.TITLE
 	runtime.game_state.previous_state = GameStateMachine.State.TITLE
+	runtime.action_registry.notify_all_action_states_changed()
 
 	runtime.scenario_graph = null
 	runtime._last_scenario_path = ""
