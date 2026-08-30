@@ -41,8 +41,9 @@ separate vendor object with its documented upstream-only warning exemptions;
 the first-party `register_types.cpp` and `stella_marker_bgm.cpp` compile with
 `-Wall -Wextra -Werror` and no `-Wno-*`, or MSVC `/W4 /WX` and no `/wd*`.
 Only the stb object disables MSVC's upstream narrowing/sign and shadowing
-diagnostics (C4244/C4245 and C4456/C4457). A compile-command gate checks the
-exact boundary after every GCC/Clang build and whenever the MSVC generator
+diagnostics (C4244/C4245 and C4456/C4457), plus its bounded-reader
+potentially-uninitialized diagnostic (C4701). A compile-command gate checks
+the exact boundary after every GCC/Clang build and whenever the MSVC generator
 provides a compile database.
 The existing `AudioPresenter._process()` only drains already timestamped ring
 events; marker selection and triggering happen solely at an audio callback

@@ -98,6 +98,7 @@ if(MSVC)
 		/wd4245
 		/wd4456
 		/wd4457
+		/wd4701
 	)
 	target_compile_options(stella_marker_bgm PRIVATE /W4 /WX)
 else()

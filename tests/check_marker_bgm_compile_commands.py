@@ -15,7 +15,9 @@ REQUIRED_WARNINGS = {"-Wall", "-Wextra", "-Werror"}
 VENDOR_EXEMPTIONS = {"-Wno-unused-function", "-Wno-unused-parameter"}
 GNU_VENDOR_EXEMPTIONS = {"-Wno-maybe-uninitialized"}
 MSVC_REQUIRED_WARNINGS = {"/W4", "/WX"}
-MSVC_VENDOR_EXEMPTIONS = {"/wd4244", "/wd4245", "/wd4456", "/wd4457"}
+MSVC_VENDOR_EXEMPTIONS = {
+	"/wd4244", "/wd4245", "/wd4456", "/wd4457", "/wd4701"
+}
 
 
 def fail(message: str) -> None:
