@@ -33,6 +33,7 @@ const GROUP_LIST_KEYS := ["surface_groups", "quick_menu_groups"]
 const RESOURCE_PATH_KEYS := [
 	"advance_indicator_texture",
 	"advance_indicator_scene",
+	"auto_timing_profile",
 ]
 const DEFAULT_SURFACE_GROUPS: Array[String] = ["dialogue_surface"]
 const DEFAULT_QUICK_MENU_GROUPS: Array[String] = ["quick_menu"]
@@ -504,13 +505,19 @@ static func _parse_resource_path_property(
 			"DslParser: dialogue profile %s resource does not exist: '%s' (line %d)"
 			% [key, resource_path, line], line)
 	var resource := ResourceLoader.load(resource_path)
-	var valid_type := (
-		(resource is Texture2D) if key == "advance_indicator_texture"
-		else (resource is PackedScene)
-	)
+	var valid_type := false
+	var expected_type := ""
+	match key:
+		"advance_indicator_texture":
+			valid_type = resource is Texture2D
+			expected_type = "Texture2D"
+		"advance_indicator_scene":
+			valid_type = resource is PackedScene
+			expected_type = "PackedScene"
+		"auto_timing_profile":
+			valid_type = resource is AutoTimingProfile
+			expected_type = "AutoTimingProfile"
 	if not valid_type:
-		var expected_type := (
-			"Texture2D" if key == "advance_indicator_texture" else "PackedScene")
 		var actual_type := resource.get_class() if resource != null else "unloadable resource"
 		return _invalid(diagnostics,
 			"DslParser: dialogue profile %s must reference a %s, got %s (line %d)"

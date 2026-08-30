@@ -214,6 +214,7 @@ owned private bus effects 与 tail Timer；不属于对话 UI 的旧 dry program
 @dialogue_profile novel entry_prefix="・" entry_separator=""
 @dialogue_profile novel advance_indicator_texture="res://ui/dialogue/wait.svg"
 @dialogue_profile novel advance_indicator_offset=8,-2 advance_indicator_animation=bob
+@dialogue_profile novel auto_timing_profile="res://settings/auto_timing.tres"
 
 // ADV 也可以选择命名 Profile；未写 @adv 时使用场景原始 ADV。
 @dialogue_profile message panel_anchors=0,0.72,1,1
@@ -233,6 +234,24 @@ owned private bus effects 与 tail Timer；不属于对话 UI 的旧 dry program
 ```
 
 `@adv` / `@nvl` / `@overlay` 作为模式开关，之后的所有对话都使用该模式，直到 `off` 或切换。不需要每句都写 `mode`。不带 `profile` 时使用内置兼容表现；`profile=<name>` 从当前 STLA 文件的 `@dialogue_profile` 声明中选择一套表现。Profile 声明会在编译时进入当前 scenario 的 registry，因此可以写在引用之后，但建议统一放在文件顶部。若先用 `@adv profile=message` 配置 ADV，`@nvl off` / `@overlay off` 会沿实际运行路径恢复 `message`；否则恢复场景编排的 ADV 基线。
+
+`auto_timing_profile` 是可选的 typed `AutoTimingProfile` Resource。未配置时继续只读取
+内置 `auto_play_delay`。配置后，下一次 Auto tail 建立时使用同一个 Presenter-owned timer，
+按下面的有限线性公式计算 delay：
+
+```text
+base_delay_seconds
++ setting_value * setting_scale_seconds
++ visible_character_count * visible_character_scale_seconds
++ (has_voice ? voiced_line_addition_seconds : 0)
+```
+
+最终值只在完整公式之后 clamp 到 `minimum_delay_seconds..maximum_delay_seconds`（最大
+3600 秒）。`setting_key` 必须是当前 SettingsManager 已注册的 integer/number；当前值、全部
+系数和结果必须有限。resource 缺失、类型错误、setting 未注册/类型错误或非法边界会在替换
+现有对话前以 `source_path:line` fail-close。setting direct set、load、migration 与 reset 都只
+影响下一次建立的 Auto tail，不改写已经启动的 timer；voice wait、choice suspension、点击、
+Skip、rollback/restart 和 scene replacement 仍由原有 generation/attempt owner 处理。
 
 模式开关按实际运行路径生效：经过 `@nvl off` 或切到其他模式后，再通过顺序执行、`@jump`、`@call` 或条件分支进入 `@nvl`，都会开始新的 NVL 页面；没有离开 NVL 时重复写 `@nvl` 则继续当前页面。不同条件分支可以选择不同 mode/Profile；汇合后的对话会继承玩家真正走过的分支。只有在作者希望所有路径从汇合点开始使用同一布局时，才需要在汇合后显式重新选择。
 

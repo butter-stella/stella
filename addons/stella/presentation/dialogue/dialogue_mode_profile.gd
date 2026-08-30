@@ -73,6 +73,7 @@ var _stla_advance_indicator_texture_path: String = ""
 var _stla_advance_indicator_scene_path: String = ""
 var _stla_advance_indicator_offset: Vector2 = Vector2.ZERO
 var _stla_advance_indicator_animation: String = "none"
+var _stla_auto_timing_profile_path: String = ""
 ## Runtime-only authoring provenance copied from SignalBus's synchronous
 ## presentation sidecar. It is never written to dialogue text or persistence.
 var _stla_provenance: Dictionary = {}
@@ -129,6 +130,9 @@ static func from_dictionary(
 		profile._stla_advance_indicator_offset = data["advance_indicator_offset"]
 	if data.has("advance_indicator_animation"):
 		profile._stla_advance_indicator_animation = data["advance_indicator_animation"]
+	if data.has("auto_timing_profile"):
+		profile._stla_auto_timing_profile_path = String(
+			data["auto_timing_profile"])
 	if data.has("entry_prefix"):
 		profile.override_entry_prefix = true
 		profile.entry_prefix = data["entry_prefix"]
@@ -217,6 +221,57 @@ func get_advance_indicator_offset() -> Vector2:
 
 func get_advance_indicator_animation() -> String:
 	return _stla_advance_indicator_animation
+
+
+func has_auto_timing_profile() -> bool:
+	return not _stla_auto_timing_profile_path.is_empty()
+
+
+func resolve_auto_timing_profile() -> AutoTimingProfile:
+	if not has_auto_timing_profile():
+		return null
+	if not ResourceLoader.exists(_stla_auto_timing_profile_path):
+		return null
+	return ResourceLoader.load(
+		_stla_auto_timing_profile_path) as AutoTimingProfile
+
+
+func auto_timing_validation_errors(
+	settings_manager: SettingsManager,
+) -> PackedStringArray:
+	var errors := PackedStringArray()
+	if not has_auto_timing_profile():
+		return errors
+	if not ResourceLoader.exists(_stla_auto_timing_profile_path):
+		errors.append(
+			"auto_timing_profile resource no longer exists: '%s'"
+			% _stla_auto_timing_profile_path)
+		return errors
+	var resource := ResourceLoader.load(_stla_auto_timing_profile_path)
+	if not resource is AutoTimingProfile:
+		var actual_name := (
+			resource.get_class() if resource != null else "unloadable resource")
+		errors.append(
+			"auto_timing_profile must resolve to an AutoTimingProfile, got %s"
+			% actual_name)
+		return errors
+	errors.append_array(
+		(resource as AutoTimingProfile).validation_errors(settings_manager))
+	return errors
+
+
+func auto_timing_diagnostic_provenance() -> Dictionary:
+	var source_path := String(_stla_provenance.get("source_path", ""))
+	if source_path.is_empty():
+		source_path = "<unknown STLA>"
+	var field_lines: Dictionary = _stla_provenance.get("field_lines", {})
+	return {
+		"profile_name": String(
+			_stla_provenance.get("profile_name", "<runtime profile>")),
+		"source_path": source_path,
+		"line": int(field_lines.get("auto_timing_profile", 0)),
+		"resource_path": _stla_auto_timing_profile_path,
+	}
 
 
 ## Indicator failures are local presentation failures. DialoguePresenter uses
