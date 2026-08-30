@@ -14,6 +14,8 @@ VENDOR = "stb_vorbis_impl.cpp"
 REQUIRED_WARNINGS = {"-Wall", "-Wextra", "-Werror"}
 VENDOR_EXEMPTIONS = {"-Wno-unused-function", "-Wno-unused-parameter"}
 GNU_VENDOR_EXEMPTIONS = {"-Wno-maybe-uninitialized"}
+MSVC_REQUIRED_WARNINGS = {"/W4", "/WX"}
+MSVC_VENDOR_EXEMPTIONS = {"/wd4244", "/wd4245", "/wd4456", "/wd4457"}
 
 
 def fail(message: str) -> None:
@@ -63,10 +65,14 @@ def main() -> None:
 			missing = REQUIRED_WARNINGS - token_set
 			if missing:
 				fail(f"{filename} is missing {sorted(missing)}")
+		elif compiler_id == "MSVC":
+			missing = MSVC_REQUIRED_WARNINGS - token_set
+			if missing:
+				fail(f"{filename} is missing {sorted(missing)}")
 		if filename in FIRST_PARTY:
 			seen_first_party.add(filename)
 			for token in tokens:
-				if token.startswith("-Wno-"):
+				if token.startswith("-Wno-") or token.lower().startswith("/wd"):
 					fail(f"first-party {filename} contains forbidden {token}")
 			if compiler_id in {"GNU", "Clang", "AppleClang"}:
 				joined = " ".join(tokens)
@@ -83,6 +89,15 @@ def main() -> None:
 					fail(
 						f"vendor {filename} exemptions are {sorted(actual_exemptions)}, "
 						f"expected exactly {sorted(expected_exemptions)}"
+					)
+			elif compiler_id == "MSVC":
+				actual_exemptions = {
+					token.lower() for token in tokens if token.lower().startswith("/wd")
+				}
+				if actual_exemptions != MSVC_VENDOR_EXEMPTIONS:
+					fail(
+						f"vendor {filename} exemptions are {sorted(actual_exemptions)}, "
+						f"expected exactly {sorted(MSVC_VENDOR_EXEMPTIONS)}"
 					)
 
 	if seen_first_party != FIRST_PARTY:

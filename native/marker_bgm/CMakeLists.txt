@@ -90,7 +90,15 @@ set_target_properties(stella_marker_bgm PROPERTIES
 )
 
 if(MSVC)
-	target_compile_options(stella_marker_bgm_stb PRIVATE /W4 /WX)
+	target_compile_options(stella_marker_bgm_stb PRIVATE
+		/W4 /WX
+		# Pinned stb intentionally narrows integer fields and shadows locals.
+		# These exemptions apply only to its isolated implementation object.
+		/wd4244
+		/wd4245
+		/wd4456
+		/wd4457
+	)
 	target_compile_options(stella_marker_bgm PRIVATE /W4 /WX)
 else()
 	target_compile_options(stella_marker_bgm_stb PRIVATE
