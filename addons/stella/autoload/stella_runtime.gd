@@ -1651,7 +1651,24 @@ func _prepare_movie_restore_from_save(save_data: Dictionary) -> int:
 	var raw_presentation: Variant = save_data.get("presentation_state", {})
 	if not raw_presentation is Dictionary:
 		return 0
+	if not _prepare_bgm_restore_from_presentation(raw_presentation as Dictionary):
+		return 0
 	return _prepare_movie_restore_from_presentation(raw_presentation as Dictionary)
+
+
+func _prepare_bgm_restore_from_presentation(snapshot: Dictionary) -> bool:
+	if not snapshot.has("bgm"):
+		push_error("StellaRuntime: current presentation snapshot is missing BGM state")
+		return false
+	var state: Variant = snapshot["bgm"]
+	if not BgmChannelState.validate_snapshot_state(state, false):
+		push_error("StellaRuntime: invalid BGM restore state")
+		return false
+	if not SignalBus.validate_bgm_state_restore(state as Dictionary):
+		push_error(
+			"StellaRuntime: saved pending BGM marker occurrence is no longer reachable")
+		return false
+	return true
 
 
 func _prepare_movie_restore_from_presentation(snapshot: Dictionary) -> int:
@@ -5053,6 +5070,8 @@ func _restore_runtime_from_snapshot(
 	if not raw_presentation is Dictionary:
 		return false
 	var presentation_snapshot: Dictionary = raw_presentation
+	if not _prepare_bgm_restore_from_presentation(presentation_snapshot):
+		return false
 	var dialogue_content: Variant = presentation_snapshot.get(
 		"dialogue_content",
 		PresentationState._inactive_dialogue_content(),

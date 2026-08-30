@@ -83,15 +83,15 @@ func test_scenario_context_restore_without_return_stack_clears_it():
 
 func _bgm_state(asset: String = "theme.ogg") -> Dictionary:
 	return {
-		"asset": asset, "cue": "", "loop": true, "position": 0.0,
-		"status": "playing", "stem_mix": {}, "volume": 1.0,
+		"asset": asset, "cue": "", "loop": true, "pending_marker_mix": {},
+		"position": 0.0, "status": "playing", "stem_mix": {}, "volume": 1.0,
 	}
 
 
 func _bgm_operation(asset: String = "theme.ogg") -> BgmPresentationOperation:
 	return BgmPresentationOperation.new({
 		"action": "play", "asset": asset, "cue": "", "fade_duration": 0.0,
-		"resume_position": 0.0, "stem_mix": {}, "volume": 1.0,
+		"marker": "", "resume_position": 0.0, "stem_mix": {}, "volume": 1.0,
 	})
 
 func test_presentation_state_tracks_bg():
@@ -117,7 +117,7 @@ func test_presentation_state_tracks_stopped_bgm():
 		_bgm_operation("battle.ogg"), _bgm_state("battle.ogg"))
 	SignalBus.bgm_operation_committed.emit(BgmPresentationOperation.new({
 		"action": "stop", "asset": "", "cue": "", "fade_duration": 0.5,
-		"resume_position": 0.0, "stem_mix": {}, "volume": 1.0,
+		"marker": "", "resume_position": 0.0, "stem_mix": {}, "volume": 1.0,
 	}), {})
 	assert_eq(ps.current_bgm, {})
 	ps.disconnect_signals()

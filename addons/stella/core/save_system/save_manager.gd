@@ -229,10 +229,18 @@ func _read_metadata(path: String) -> Dictionary:
 ## file whose contents could change mid-transaction.
 func restore_data(data: Dictionary) -> bool:
 	var choice_provider: Variant = null
+	var presentation_provider: Variant = null
 	for provider in _providers:
 		if provider.get_provider_id() == PresentationClipAudioChoiceAuthority.PROVIDER_ID:
 			choice_provider = provider
-			break
+		elif provider.get_provider_id() == "presentation_state":
+			presentation_provider = provider
+	if presentation_provider != null and (
+		not data.has("presentation_state")
+		or not presentation_provider.preflight_restore_snapshot(
+			data["presentation_state"])
+	):
+		return false
 	if choice_provider != null and (
 		not data.has(PresentationClipAudioChoiceAuthority.PROVIDER_ID)
 		or not PresentationClipAudioChoiceAuthority.validate_playthrough_snapshot(
@@ -268,6 +276,11 @@ func _read_data(path: String, scenario_data: ScenarioData = null) -> Variant:
 	var data: Variant = JSON.parse_string(text)
 	if data == null or not data is Dictionary:
 		return null
+	# Godot's JSON parser represents JSON numbers as float. Normalize only the
+	# closed pending-marker integer schema at this disk boundary; every runtime
+	# typed boundary continues to reject float/String/Bool coercion.
+	if not _decode_pending_marker_mix_json_boundaries(data as Dictionary):
+		return null
 	# Every registered snapshot provider has a Dictionary restore boundary.
 	# Reject a structurally invalid save before Runtime replaces the current
 	# scene/context instead of discovering the type mismatch during commit.
@@ -289,6 +302,74 @@ func _read_data(path: String, scenario_data: ScenarioData = null) -> Variant:
 	if scenario_data != null and not validate_data_for_scenario(data, scenario_data):
 		return null
 	return data
+
+
+func _decode_pending_marker_mix_json_boundaries(data: Dictionary) -> bool:
+	if data.has("presentation_state") and not _decode_pending_marker_mix_json_in_presentation(
+		data["presentation_state"]):
+		return false
+	var flowchart_value: Variant = data.get("flowchart_state", {})
+	if not flowchart_value is Dictionary:
+		return true
+	var chapter_snapshots_value: Variant = (flowchart_value as Dictionary).get(
+		"chapter_snapshots", {})
+	if not chapter_snapshots_value is Dictionary:
+		return true
+	for snapshot_value: Variant in (chapter_snapshots_value as Dictionary).values():
+		if (
+			snapshot_value is Dictionary
+			and (snapshot_value as Dictionary).has("presentation_state")
+			and not _decode_pending_marker_mix_json_in_presentation(
+				(snapshot_value as Dictionary)["presentation_state"])
+		):
+			return false
+	return true
+
+
+func _decode_pending_marker_mix_json_in_presentation(
+	raw_presentation: Variant,
+) -> bool:
+	if not raw_presentation is Dictionary:
+		return true
+	var bgm_value: Variant = (raw_presentation as Dictionary).get("bgm", {})
+	if not bgm_value is Dictionary:
+		return true
+	var pending_value: Variant = (bgm_value as Dictionary).get(
+		"pending_marker_mix", {})
+	if not pending_value is Dictionary or (pending_value as Dictionary).is_empty():
+		return true
+	var pending: Dictionary = pending_value
+	var keys := pending.keys()
+	keys.sort()
+	if keys != BgmPendingMarkerMixState.EXACT_KEYS:
+		return false
+	for key: String in [
+		"schema_version", "marker_frame", "marker_ordinal", "marker_loop_epoch",
+		"restore_horizon_frame", "restore_horizon_loop_epoch",
+	]:
+		var decoded: Variant = _decode_json_safe_pending_integer(
+			pending.get(key, null), 0 if key == "schema_version" else -1)
+		if decoded == null:
+			return false
+		pending[key] = decoded
+	return true
+
+
+func _decode_json_safe_pending_integer(value: Variant, minimum: int) -> Variant:
+	if value is int:
+		return value if value >= minimum and value <= MAX_JSON_SAFE_INTEGER else null
+	if not value is float:
+		return null
+	var numeric: float = value
+	if (
+		not is_finite(numeric)
+		or numeric < float(minimum)
+		or numeric >= FIRST_UNSAFE_JSON_INTEGER_FLOAT
+		or numeric != floor(numeric)
+	):
+		return null
+	var decoded := int(numeric)
+	return decoded if float(decoded) == numeric else null
 
 
 ## Validate every built-in provider snapshot against the scenario that will

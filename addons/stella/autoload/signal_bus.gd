@@ -16,6 +16,8 @@ const BgmOperationRequestType = preload(
 	"res://addons/stella/core/data/bgm_operation_request.gd")
 const BgmStateCaptureRequestType = preload(
 	"res://addons/stella/core/data/bgm_state_capture_request.gd")
+const BgmStateRestoreValidationRequestType = preload(
+	"res://addons/stella/core/data/bgm_state_restore_validation_request.gd")
 const MovieOperationRequestType = preload(
 	"res://addons/stella/core/data/movie_operation_request.gd")
 const MovieStateCaptureRequestType = preload(
@@ -1488,7 +1490,10 @@ signal bgm_projection_reset_requested(epoch: int)
 signal bgm_state_apply_requested(state: Dictionary, generation: int)
 signal bgm_title_cut_requested(asset: String, generation: int)
 signal bgm_state_capture_requested(request: BgmStateCaptureRequest)
+signal bgm_state_restore_validate_requested(
+	request: BgmStateRestoreValidationRequest)
 signal bgm_position_committed(position: float)
+signal bgm_runtime_state_committed(state: Dictionary)
 signal bgm_natural_stop_committed()
 signal bgm_presenter_registered()
 
@@ -1588,6 +1593,7 @@ var _bgm_epoch_stack: Array[int] = []
 var _dispatching_bgm_request: BgmOperationRequest
 var _applying_bgm_request: BgmOperationRequest
 var _capturing_bgm_request: BgmStateCaptureRequest
+var _validating_bgm_restore_request: BgmStateRestoreValidationRequest
 var _bgm_participant_authority := RefCounted.new()
 var _bgm_registrar_authority: Object
 var _bgm_presenter: WeakRef
@@ -2046,6 +2052,7 @@ func _runtime_audio_shutdown_bus_is_idle() -> bool:
 		and _dispatching_bgm_request == null
 		and _applying_bgm_request == null
 		and _capturing_bgm_request == null
+		and _validating_bgm_restore_request == null
 		and _dispatching_chapter_indicator_request == null
 		and _applying_chapter_indicator_request == null
 	)
@@ -2106,11 +2113,55 @@ func capture_bgm_position() -> float:
 	return request.get_position() if request.is_resolved() else 0.0
 
 
+func capture_bgm_state(fallback_state: Dictionary) -> Dictionary:
+	var normalized := BgmChannelState.normalize_snapshot_state(fallback_state)
+	var presenter := _current_bgm_presenter()
+	if presenter == null:
+		return normalized
+	var request := BgmStateCaptureRequestType.new()
+	request._bind_authority(_bgm_participant_authority)
+	_capturing_bgm_request = request
+	bgm_state_capture_requested.emit(request)
+	_capturing_bgm_request = null
+	return request.get_state() if request.is_resolved() else normalized
+
+
+func validate_bgm_state_restore(state: Dictionary) -> bool:
+	if not BgmChannelState.validate_snapshot_state(state, true):
+		return false
+	if state.is_empty() or (state.get("pending_marker_mix", {}) as Dictionary).is_empty():
+		return true
+	var presenter := _current_bgm_presenter()
+	if presenter == null:
+		return false
+	var request := BgmStateRestoreValidationRequestType.new(state)
+	request._bind_authority(_bgm_participant_authority)
+	_validating_bgm_restore_request = request
+	bgm_state_restore_validate_requested.emit(request)
+	_validating_bgm_restore_request = null
+	return request.was_accepted()
+
+
+func resolve_bgm_state_restore_validation(
+	request: BgmStateRestoreValidationRequest,
+	presenter: Object,
+	capability: RefCounted,
+	accepted: bool,
+) -> bool:
+	if (
+		request == null
+		or request != _validating_bgm_restore_request
+		or not _bgm_participant_identity_matches(presenter, capability)
+	):
+		return false
+	return request._resolve(accepted, _bgm_participant_authority)
+
+
 func resolve_bgm_state_capture(
 	request: BgmStateCaptureRequest,
 	presenter: Object,
 	capability: RefCounted,
-	position: float,
+	state: Dictionary,
 ) -> bool:
 	if (
 		request == null
@@ -2118,7 +2169,7 @@ func resolve_bgm_state_capture(
 		or not _bgm_participant_identity_matches(presenter, capability)
 	):
 		return false
-	return request._resolve(position, _bgm_participant_authority)
+	return request._resolve(state, _bgm_participant_authority)
 
 
 func commit_bgm_position(
@@ -2133,6 +2184,23 @@ func commit_bgm_position(
 	):
 		return false
 	bgm_position_committed.emit(position)
+	return true
+
+
+func commit_bgm_runtime_state(
+	presenter: Object,
+	capability: RefCounted,
+	state: Dictionary,
+	epoch: int,
+) -> bool:
+	if (
+		not _bgm_participant_identity_matches(presenter, capability)
+		or epoch != _bgm_epoch
+		or not BgmChannelState.validate_snapshot_state(state, false)
+	):
+		return false
+	bgm_runtime_state_committed.emit(
+		BgmChannelState.normalize_snapshot_state(state))
 	return true
 
 

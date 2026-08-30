@@ -44,6 +44,22 @@ class MockProvider:
 		data = snapshot.duplicate()
 
 
+class MockPresentationProvider:
+	var data: Dictionary = {"preserved": true}
+
+	func get_provider_id() -> String:
+		return "presentation_state"
+
+	func capture_snapshot() -> Dictionary:
+		return data.duplicate(true)
+
+	func preflight_restore_snapshot(_snapshot: Dictionary) -> bool:
+		return true
+
+	func restore_snapshot(snapshot: Dictionary) -> void:
+		data = snapshot.duplicate(true)
+
+
 func _make_validation_scenario() -> ScenarioData:
 	var data := ScenarioData.new()
 	data.id = "save_validation"
@@ -113,6 +129,49 @@ func _make_valid_save_snapshot() -> Dictionary:
 		},
 		"timestamp": 1.0,
 	}
+
+
+func _pending_marker_disk_snapshot(phase: String) -> Dictionary:
+	var horizon_frame := 123 if phase == "queued" else 900
+	var horizon_epoch := 2
+	var pending := {
+		"fade_duration": 0.25,
+		"marker": "サビ 同期",
+		"marker_frame": -1 if phase == "queued" else 4410,
+		"marker_loop_epoch": -1 if phase == "queued" else 3,
+		"marker_ordinal": -1 if phase == "queued" else 4,
+		"marker_table_fingerprint": "a".repeat(64),
+		"phase": phase,
+		"restore_horizon_frame": horizon_frame,
+		"restore_horizon_loop_epoch": horizon_epoch,
+		"schema_version": 2,
+		"stem_mix": {"bass": 1.0, "rhythm": 0.0},
+		"track_fingerprint": "b".repeat(64),
+		"wraps_loop": phase == "armed",
+	}
+	var snapshot := _make_valid_save_snapshot()
+	snapshot["other"] = {"loaded": phase}
+	snapshot["presentation_state"]["bgm"] = {
+		"asset": "synthetic_marker_stems",
+		"cue": "",
+		"loop": true,
+		"pending_marker_mix": pending,
+		"position": float(horizon_frame) / 44100.0,
+		"status": "paused",
+		"stem_mix": {"bass": 0.0, "rhythm": 1.0},
+		"volume": 1.0,
+	}
+	return snapshot
+
+
+func _write_save_snapshot(slot: int, snapshot: Dictionary) -> void:
+	_manager._ensure_dir()
+	var file := FileAccess.open(
+		_save_dir + "save_%d.json" % slot, FileAccess.WRITE)
+	assert_not_null(file)
+	if file != null:
+		file.store_string(JSON.stringify(snapshot))
+		file.close()
 
 
 func _nvl_voice_layer(
@@ -709,6 +768,134 @@ func test_bgm_snapshot_schema_is_exact_and_legacy_string_read_fails_closed() -> 
 		"the unversioned legacy String never enters the runtime restore boundary")
 	assert_false(_manager.load_save(1))
 	assert_eq(provider.data, {"preserved": true})
+
+
+func test_pending_marker_json_disk_roundtrip_decodes_only_exact_integer_fields() -> void:
+	var presentation := MockPresentationProvider.new()
+	var other := MockProvider.new("other")
+	other.data = {"preserved": true}
+	_manager.register_provider(other)
+	_manager.register_provider(presentation)
+	for phase: String in ["queued", "armed"]:
+		var slot := 20 if phase == "queued" else 21
+		var snapshot := _pending_marker_disk_snapshot(phase)
+		_write_save_snapshot(slot, snapshot)
+		var decoded_value: Variant = _manager.read_save_data(slot)
+		assert_true(decoded_value is Dictionary,
+			"FileAccess + JSON.stringify save must survive Godot float-number decode")
+		if not decoded_value is Dictionary:
+			continue
+		var decoded: Dictionary = decoded_value
+		var pending: Dictionary = decoded["presentation_state"]["bgm"] \
+			["pending_marker_mix"]
+		for key: String in [
+			"schema_version", "marker_frame", "marker_ordinal", "marker_loop_epoch",
+			"restore_horizon_frame", "restore_horizon_loop_epoch",
+		]:
+			assert_true(pending[key] is int,
+				"disk boundary reconstructs only known integer field %s" % key)
+		assert_not_null(BgmPendingMarkerMixState.from_snapshot(pending))
+		assert_eq(pending["marker"], "サビ 同期")
+		assert_eq(
+			roundi(float(decoded["presentation_state"]["bgm"]["position"]) * 44100.0),
+			pending["restore_horizon_frame"],
+			"fractional seconds and the exact source horizon survive disk roundtrip",
+		)
+		if phase == "armed":
+			assert_eq(pending["restore_horizon_loop_epoch"], 2)
+			assert_eq(pending["marker_loop_epoch"], 3)
+			assert_true(pending["wraps_loop"])
+		assert_true(_manager.load_save(slot))
+		assert_eq(
+			presentation.data["bgm"]["pending_marker_mix"], pending,
+			"load passes a typed pending state to the provider",
+		)
+		assert_eq(other.data, {"loaded": phase})
+
+
+func test_pending_marker_json_disk_decode_fails_closed_without_provider_mutation() -> void:
+	var presentation := MockPresentationProvider.new()
+	var other := MockProvider.new("other")
+	_manager.register_provider(other)
+	_manager.register_provider(presentation)
+	var invalid_snapshots: Array[Dictionary] = []
+
+	var fractional := _pending_marker_disk_snapshot("armed")
+	fractional["presentation_state"]["bgm"]["pending_marker_mix"] \
+		["marker_frame"] = 4410.5
+	invalid_snapshots.append(fractional)
+	var unsafe_integer := _pending_marker_disk_snapshot("armed")
+	unsafe_integer["presentation_state"]["bgm"]["pending_marker_mix"] \
+		["restore_horizon_frame"] = 9007199254740992.0
+	invalid_snapshots.append(unsafe_integer)
+	var string_version := _pending_marker_disk_snapshot("queued")
+	string_version["presentation_state"]["bgm"]["pending_marker_mix"] \
+		["schema_version"] = "2"
+	invalid_snapshots.append(string_version)
+	var bool_ordinal := _pending_marker_disk_snapshot("armed")
+	bool_ordinal["presentation_state"]["bgm"]["pending_marker_mix"] \
+		["marker_ordinal"] = true
+	invalid_snapshots.append(bool_ordinal)
+	var unknown_key := _pending_marker_disk_snapshot("queued")
+	unknown_key["presentation_state"]["bgm"]["pending_marker_mix"] \
+		["unknown"] = 0
+	invalid_snapshots.append(unknown_key)
+	var missing_key := _pending_marker_disk_snapshot("queued")
+	missing_key["presentation_state"]["bgm"]["pending_marker_mix"].erase(
+		"restore_horizon_loop_epoch")
+	invalid_snapshots.append(missing_key)
+
+	for index in range(invalid_snapshots.size()):
+		presentation.data = {"preserved": true}
+		other.data = {"preserved": true}
+		var slot := 30 + index
+		_write_save_snapshot(slot, invalid_snapshots[index])
+		assert_null(_manager.read_save_data(slot),
+			"malformed on-disk pending integer schema %d fails closed" % index)
+		assert_false(_manager.load_save(slot))
+		assert_eq(presentation.data, {"preserved": true})
+		assert_eq(other.data, {"preserved": true},
+			"disk preflight precedes every provider mutation")
+
+
+func test_pending_marker_restore_preflights_before_any_provider_mutation() -> void:
+	var presentation := PresentationState.new()
+	presentation.current_bg = "preserved"
+	var other := MockProvider.new("other")
+	other.data = {"preserved": true}
+	_manager.register_provider(other)
+	_manager.register_provider(presentation)
+	var active_bgm := {
+		"asset": "synthetic_marker_stems", "cue": "", "loop": true,
+		"position": 0.25, "status": "paused",
+		"stem_mix": {"bass": 0.0, "rhythm": 1.0},
+		"volume": 1.0,
+	}
+
+	var old_snapshot := _make_valid_save_snapshot()
+	old_snapshot["other"] = {"changed": true}
+	old_snapshot["presentation_state"]["bgm"] = active_bgm.duplicate(true)
+	assert_true(_manager.restore_data(old_snapshot),
+		"the sole compatibility default is a missing pending_marker_mix field")
+	assert_eq(presentation.current_bgm.get("pending_marker_mix"), {})
+	assert_eq(other.data, {"changed": true})
+
+	presentation.current_bg = "preserved-again"
+	other.data = {"preserved": true}
+	for invalid_pending: Variant in [
+		{"schema_version": 99},
+		{"schema_version": 1, "phase": "armed"},
+		"not-a-dictionary",
+	]:
+		var invalid := _make_valid_save_snapshot()
+		invalid["other"] = {"changed": true}
+		invalid["presentation_state"]["bgm"] = active_bgm.duplicate(true)
+		invalid["presentation_state"]["bgm"]["pending_marker_mix"] = (
+			invalid_pending)
+		assert_false(_manager.restore_data(invalid))
+		assert_eq(presentation.current_bg, "preserved-again")
+		assert_eq(other.data, {"preserved": true},
+			"presentation preflight precedes every registered provider restore")
 
 
 func test_dialogue_visibility_schema_is_exact_and_never_truthy_coerced() -> void:

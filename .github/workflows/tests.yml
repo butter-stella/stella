@@ -7,6 +7,111 @@ on:
     branches: [main]
 
 jobs:
+  native-platforms:
+    name: Native ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            label: Linux x86_64
+            artifact: linux-x86_64
+          - runner: macos-14
+            label: macOS universal
+            artifact: macos-universal
+          - runner: windows-latest
+            label: Windows x86_64
+            artifact: windows-x86_64
+    env:
+      STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD: "1"
+      STELLA_DISABLE_LOCAL_CONFIG: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          clean: true
+
+      - name: Setup Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.6.1
+          use-dotnet: false
+
+      - name: Verify a clean clone imports without a missing-library loader
+        shell: bash
+        run: |
+          descriptor="addons/stella/native/stella_marker_bgm.gdextension"
+          clean_log="$RUNNER_TEMP/stella-native-clean-clone.log"
+          feature_log="$RUNNER_TEMP/stella-native-missing-feature.log"
+          test ! -e "$descriptor"
+          clean_status=0
+          godot --audio-driver Dummy --headless --import \
+            >"$clean_log" 2>&1 || clean_status=$?
+          cat "$clean_log"
+          if (( clean_status != 0 )); then
+            exit "$clean_status"
+          fi
+          if grep -Eqi \
+            'GDExtension.*(could not|failed|missing)|Cannot open dynamic library' \
+            "$clean_log"; then
+            echo "::error::clean clone emitted a missing native-library loader diagnostic"
+            exit 1
+          fi
+          feature_status=0
+          STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD=1 \
+            STELLA_DISABLE_LOCAL_CONFIG=1 \
+            godot --audio-driver Dummy --headless --path . \
+            res://tests/fixtures/audio/bgm/missing_marker_extension_probe.tscn \
+            >"$feature_log" 2>&1 || feature_status=$?
+          cat "$feature_log"
+          if (( feature_status != 0 )); then
+            exit "$feature_status"
+          fi
+          grep -Fq \
+            'marker-capable BGM requires the Stella marker playback extension' \
+            "$feature_log"
+
+      - name: Build debug and release marker playback
+        shell: bash
+        run: |
+          tests/build_marker_bgm_native.sh template_debug
+          tests/build_marker_bgm_native.sh template_release
+        timeout-minutes: 20
+
+      - name: Verify universal macOS slices
+        if: matrix.artifact == 'macos-universal'
+        shell: bash
+        run: |
+          for library in addons/stella/native/bin/*.dylib; do
+            slices="$(lipo -archs "$library")"
+            [[ " $slices " == *" arm64 "* ]]
+            [[ " $slices " == *" x86_64 "* ]]
+          done
+
+      - name: Import and run native contract
+        shell: bash
+        run: |
+          godot --audio-driver Dummy --headless --import
+          GODOT_BIN=godot tests/run_gut.sh focused \
+            res://tests/unit/test_bgm_marker_native_contract.gd
+        timeout-minutes: 5
+
+      - name: Probe exported PCK load and PCM
+        shell: bash
+        run: GODOT_BIN=godot tests/pck_smoke/run_export_smoke.sh
+        timeout-minutes: 8
+
+      - name: Upload native release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stella-marker-bgm-${{ matrix.artifact }}
+          if-no-files-found: error
+          path: |
+            addons/stella/native/stella_marker_bgm.gdextension
+            addons/stella/native/bin/*
+
   test:
     name: GUT Tests
     runs-on: ubuntu-latest
@@ -24,6 +129,12 @@ jobs:
         with:
           version: 4.6.1
           use-dotnet: false
+
+      - name: Build marker BGM native extension
+        run: |
+          tests/build_marker_bgm_native.sh template_debug
+          tests/build_marker_bgm_native.sh template_release
+        timeout-minutes: 10
 
       - name: Import project
         run: godot --audio-driver Dummy --headless --import 2>&1
@@ -341,6 +452,10 @@ jobs:
         run: >-
           sudo apt-get update && sudo apt-get install -y
           xvfb xauth mesa-vulkan-drivers
+
+      - name: Build marker BGM native extension
+        run: tests/build_marker_bgm_native.sh template_debug
+        timeout-minutes: 10
 
       - name: Import project
         run: godot --audio-driver Dummy --headless --import 2>&1

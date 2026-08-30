@@ -45,6 +45,34 @@ pack_dir="$smoke_root/packs"
 run_dir="$smoke_root/outside-source"
 mkdir -p "$pack_dir" "$run_dir"
 
+host_os="$(uname -s)"
+host_arch="$(uname -m)"
+case "$host_os:$host_arch" in
+	Darwin:arm64|Darwin:x86_64)
+		host_extension="$repo_root/addons/stella/native/bin/libstella_marker_bgm.macos.template_debug.universal.dylib"
+		;;
+	Linux:x86_64)
+		host_extension="$repo_root/addons/stella/native/bin/libstella_marker_bgm.linux.template_debug.x86_64.so"
+		;;
+	MINGW*:x86_64|MSYS*:x86_64|CYGWIN*:x86_64)
+		host_extension="$repo_root/addons/stella/native/bin/stella_marker_bgm.windows.template_debug.x86_64.dll"
+		;;
+	*)
+		echo "error: unsupported export-smoke host $host_os/$host_arch" >&2
+		exit 1
+		;;
+esac
+if [[ ! -f "$host_extension" ]]; then
+	echo "error: build the host marker BGM extension before export smoke" >&2
+	exit 1
+fi
+# A raw PCK cannot ask the OS loader to mmap an embedded shared library. Keep
+# the canonical resource-relative sidecar layout used by an exported game;
+# the probe then proves that the PCK contains and loads the .gdextension
+# descriptor while the matching host library is present.
+mkdir -p "$run_dir/addons/stella/native/bin"
+cp -- "$host_extension" "$run_dir/addons/stella/native/bin/"
+
 case "$run_dir/" in
 	"$repo_root/"*)
 		echo "error: export probe must run outside the source directory" >&2
@@ -123,3 +151,36 @@ run_probe \
 	"compressed-degraded" \
 	"degraded-title-fallback" \
 	"degraded-fallback-ok"
+
+if [[ "$host_os" == "Linux" ]]; then
+	native_export_dir="$smoke_root/native-export"
+	mkdir -p "$native_export_dir"
+	for export_kind in debug release; do
+		native_export_log="$smoke_root/native-export-$export_kind.log"
+		native_run_log="$smoke_root/native-export-$export_kind-run.log"
+		native_marker="$smoke_root/native-export-$export_kind.marker"
+		native_executable="$native_export_dir/stella-native-$export_kind.x86_64"
+		if ! "$godot_bin" --audio-driver Dummy --headless --path "$repo_root" \
+			"--export-$export_kind" "Stella PCK Binary Tokens" \
+			"$native_executable" \
+			>"$native_export_log" 2>&1; then
+			cat "$native_export_log"
+			exit 1
+		fi
+		if ! STELLA_EXPORT_PROBE_MODE="config" \
+			STELLA_EXPORT_PROBE_MARKER="$native_marker" \
+			"$native_executable" \
+			--audio-driver Dummy --headless --quit-after 600 \
+			res://tests/fixtures/pck_smoke/export_probe_host.tscn \
+			>"$native_run_log" 2>&1; then
+			cat "$native_run_log"
+			exit 1
+		fi
+		if [[ ! -f "$native_marker" ]] || ! grep -Fxq "config-ok" "$native_marker"; then
+			cat "$native_run_log"
+			echo "error: full Linux $export_kind export did not load marker BGM" >&2
+			exit 1
+		fi
+		echo "ok: full-linux-native-$export_kind-export (config-ok)"
+	done
+fi

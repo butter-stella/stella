@@ -9,6 +9,9 @@ const EXPECTED_SCENARIO = "res://examples/demo/scenarios/demo.stla"
 const EXPECTED_BACKGROUNDS = "res://examples/demo/art/backgrounds/"
 const EXPECTED_CONFIG_SOURCE = "res://stella.cfg"
 const NATIVE_MOVIE = "res://tests/fixtures/movies/synthetic_movie.ogv"
+const MARKER_BGM_OGG = (
+	"res://tests/fixtures/audio/bgm/synthetic_loop_region.ogg"
+)
 const UID_DEPENDENCY_SCRIPT = (
 	"res://tests/fixtures/pck_smoke/export_probe_runner.gd"
 )
@@ -65,6 +68,7 @@ func _probe_exported_config() -> void:
 	var failures := PackedStringArray()
 	_probe_relocated_uid_dependency(failures)
 	_probe_native_movie_resource(failures)
+	_probe_marker_bgm_extension(failures)
 	if StellaRuntime.config == null:
 		failures.append("StellaRuntime config is null")
 	else:
@@ -97,6 +101,7 @@ func _probe_selected_scenes_fallback() -> void:
 	var failures := PackedStringArray()
 	_probe_relocated_uid_dependency(failures)
 	_probe_native_movie_resource(failures)
+	_probe_marker_bgm_extension(failures)
 	var current_scene := get_tree().current_scene
 	if current_scene == null or current_scene.scene_file_path != BUILT_IN_TITLE_SCENE:
 		failures.append("fallback did not finish on the built-in title scene")
@@ -124,6 +129,50 @@ func _probe_native_movie_resource(failures: PackedStringArray) -> void:
 	player.free()
 	if not is_finite(length) or length <= 0.0:
 		failures.append("exported native movie has no finite positive length")
+
+
+func _probe_marker_bgm_extension(failures: PackedStringArray) -> void:
+	if not ClassDB.class_exists(&"StellaMarkerBgmStream"):
+		failures.append("export omitted or could not load StellaMarkerBgmStream")
+		return
+	var imported := ResourceLoader.load(MARKER_BGM_OGG) as AudioStreamOggVorbis
+	if imported == null or imported.packet_sequence == null:
+		failures.append("export omitted marker BGM imported OGG data")
+		return
+	var bytes := BgmOggPacketEncoder.encode(
+		imported.packet_sequence.packet_data,
+		imported.packet_sequence.granule_positions,
+		0x53540001,
+	)
+	if bytes.is_empty():
+		failures.append("exported marker BGM OGG packets could not rebuild")
+		return
+	var stream_object: Object = ClassDB.instantiate(&"StellaMarkerBgmStream")
+	if stream_object == null:
+		failures.append("exported marker BGM stream could not instantiate")
+		return
+	var configured: Variant = stream_object.call("configure", {
+		"initial_gains": PackedFloat32Array([1.0, 0.0]),
+		"loop": true,
+		"loop_end_frame": 1024,
+		"loop_start_frame": 0,
+		"markers": [{"frame": 32, "name": "サビ"}],
+		"schema_version": 1,
+		"stem_names": PackedStringArray(["rhythm", "bass"]),
+		"stem_ogg_bytes": [bytes, bytes],
+	})
+	if configured != true:
+		failures.append("exported marker BGM stream rejected its public fixture")
+		return
+	var playback := (stream_object as AudioStream).instantiate_playback()
+	if playback == null:
+		failures.append("exported marker BGM playback could not instantiate")
+		return
+	playback.start()
+	var rate_scale := float(AudioServer.get_mix_rate()) / 44100.0
+	if playback.mix_audio(rate_scale, 1).size() != 1:
+		failures.append("exported marker BGM playback produced no PCM")
+	playback.stop()
 
 
 func _probe_source_fallback() -> void:

@@ -83,12 +83,14 @@ func _operation(
 	fade: float = 0.0,
 	line: int = 3,
 	stem_mix: Dictionary = {},
+	marker: String = "",
 ) -> BgmPresentationOperation:
 	return BgmPresentationOperation.new({
 		"action": action,
 		"asset": asset if action == "play" else "",
 		"cue": cue if action == "play" else "",
 		"fade_duration": fade,
+		"marker": marker if action == "mix" else "",
 		"resume_position": 0.0,
 		"stem_mix": stem_mix if action in ["play", "mix"] else {},
 		"volume": volume if action == "play" else 1.0,
@@ -145,6 +147,35 @@ func _loop_region_definition(
 
 func _synchronized_stream() -> AudioStreamSynchronized:
 	return _player().stream as AudioStreamSynchronized
+
+
+func _marker_playback() -> Object:
+	return (_audio._bgm_channel.get("current", {}) as Dictionary).get(
+		"marker_playback") as Object
+
+
+func _mix_marker_source_frames(playback: Object, frames: int) -> void:
+	var source_rate := int((_player().stream as Object).call(
+		"get_source_sample_rate"))
+	assert_gt(source_rate, 0)
+	var rate_scale := float(AudioServer.get_mix_rate()) / float(source_rate)
+	(playback as AudioStreamPlayback).mix_audio(rate_scale, frames)
+
+
+func _marker_snapshot(playback: Object) -> Dictionary:
+	var value: Variant = playback.call("capture_marker_state")
+	assert_true(value is Dictionary)
+	return value as Dictionary if value is Dictionary else {}
+
+
+func _wait_for_marker_rate_hold(playback: Object, minimum_count: int) -> bool:
+	var spin_count := 0
+	while spin_count < 100000000:
+		var metrics: Dictionary = playback.call("debug_get_marker_metrics")
+		if int(metrics.get("rate_hold_callback_count", 0)) >= minimum_count:
+			return true
+		spin_count += 1
+	return false
 
 
 func _stem_db(stem_name: String) -> float:
@@ -291,6 +322,7 @@ func test_marker_metadata_raw_default_and_nonloop_cue_are_physical() -> void:
 	assert_eq(raw.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
 	assert_eq(_runtime.presentation_state.current_bgm, {
 		"asset": "synthetic_raw", "cue": "", "loop": true,
+		"pending_marker_mix": {},
 		"position": 0.0, "status": "playing", "stem_mix": {},
 		"volume": 1.0,
 	})
@@ -663,7 +695,8 @@ func test_explicit_end_survives_pause_save_rollback_resume_and_restart_cursor() 
 	var snapshot_keys: Array = (snapshot["bgm"] as Dictionary).keys()
 	snapshot_keys.sort()
 	assert_eq(snapshot_keys, [
-		"asset", "cue", "loop", "position", "status", "stem_mix", "volume",
+		"asset", "cue", "loop", "pending_marker_mix", "position", "status",
+		"stem_mix", "volume",
 	], "loop end remains resource metadata, never a new save field")
 	assert_gt(float(snapshot["bgm"]["position"]), 0.3)
 	assert_lt(float(snapshot["bgm"]["position"]), 0.55)
@@ -757,6 +790,7 @@ func test_synchronized_stems_play_on_one_player_with_one_canonical_state() -> vo
 	assert_eq(synchronized.stream_count, 2)
 	assert_eq(_runtime.presentation_state.current_bgm, {
 		"asset": "synthetic_stems", "cue": "intro", "loop": true,
+		"pending_marker_mix": {},
 		"position": 0.02, "status": "playing",
 		"stem_mix": {"harmony": 0.25, "rhythm": 1.0},
 		"volume": 0.8,
@@ -769,6 +803,753 @@ func test_synchronized_stems_play_on_one_player_with_one_canonical_state() -> vo
 			synchronized_players += 1
 	assert_eq(synchronized_players, 1,
 		"all stems share the one physical bgm:main player")
+
+
+func test_marker_mix_save_windows_split_at_h_and_keep_one_transport() -> void:
+	_submit([_operation("play", "synthetic_marker_stems")])
+	var player := _player()
+	var stream := player.stream
+	var playback := _marker_playback()
+	assert_not_null(playback)
+	if playback == null:
+		return
+	player.stream_paused = true
+	var cursor_before := int(_marker_snapshot(playback).get("frame_cursor", -1))
+	assert_true(cursor_before >= 0 and cursor_before < 8820,
+		"the synthetic first marker leaves deterministic admission headroom")
+	var fade := 4.0 / 44100.0
+	playback.call("debug_set_callback_gate", true)
+	var joined := _submit([_operation(
+		"mix", "", "", 1.0, fade, 190,
+		{"bass": 1.0, "rhythm": 0.0}, "サビ",
+	)], PresentationBatchRequest.Policy.JOIN)
+	assert_false(joined.is_settled())
+	assert_same(_player(), player)
+	assert_same(_player().stream, stream)
+	assert_same(_marker_playback(), playback)
+	var queued_save: Dictionary = _runtime.presentation_state.capture_snapshot()
+	assert_eq(queued_save["bgm"]["pending_marker_mix"]["phase"], "queued")
+	playback.call("debug_set_callback_gate", false)
+
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	var armed_save: Dictionary = _runtime.presentation_state.capture_snapshot()
+	var armed_pending: Dictionary = armed_save["bgm"]["pending_marker_mix"]
+	assert_eq(armed_pending["phase"], "armed")
+	assert_eq(armed_pending["marker"], "サビ")
+	assert_eq(armed_pending["marker_frame"], 8820)
+	assert_eq(armed_pending["marker_ordinal"], 1)
+	assert_false(armed_pending["wraps_loop"])
+	var cursor_armed := int(_marker_snapshot(playback).get("frame_cursor", -1))
+	_mix_marker_source_frames(playback, 8820 - cursor_armed)
+	assert_eq(_marker_snapshot(playback).get("frame_cursor"), 8820)
+	assert_eq(
+		_runtime.presentation_state.capture_snapshot()["bgm"]
+			["pending_marker_mix"]["phase"],
+		"armed",
+		"a save immediately before H remains an exact armed occurrence",
+	)
+
+	_mix_marker_source_frames(playback, 1)
+	var undrained := SignalBus.capture_bgm_state(
+		_runtime.presentation_state.current_bgm)
+	assert_eq(undrained["pending_marker_mix"], {})
+	assert_eq(undrained["stem_mix"], {"bass": 1.0, "rhythm": 0.0})
+	var next_operations: Array[PresentationOperation] = [
+		_operation("pause", "", "", 1.0, 0.0, 189),
+	]
+	var next_preflight: Dictionary = _runtime.presentation_director.call(
+		"_preflight_operations",
+		next_operations,
+		PresentationBatchRequest.Policy.JOIN,
+		_context(),
+	)
+	assert_true(bool(next_preflight.get("valid", false)))
+	assert_eq(next_preflight.get("before_bgm", {}), undrained,
+		"Director rollback snapshots use the coherent native state before event drain")
+	_audio.call("_drain_bgm_marker_events")
+	assert_eq(_runtime.presentation_state.current_bgm["pending_marker_mix"], {})
+	assert_eq(_runtime.presentation_state.current_bgm["stem_mix"], {
+		"bass": 1.0, "rhythm": 0.0,
+	})
+	assert_false(joined.is_settled(), "H starts, but does not skip, the ramp")
+	_mix_marker_source_frames(playback, 3)
+	_audio.call("_drain_bgm_marker_events")
+	assert_eq(joined.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_same(_player(), player)
+	assert_same(_player().stream, stream)
+	assert_same(_marker_playback(), playback)
+	assert_gt(int(_marker_snapshot(playback).get("frame_cursor", -1)), cursor_before)
+
+
+func test_same_marker_redispatch_rebinds_one_arm_and_supersedes_old_receipt() -> void:
+	_submit([_operation("play", "synthetic_marker_stems")])
+	var player := _player()
+	player.stream_paused = true
+	var playback := _marker_playback()
+	var target := {"bass": 1.0, "rhythm": 0.0}
+	var first := _submit([_operation(
+		"mix", "", "", 1.0, 0.1, 191, target, "サビ",
+	)], PresentationBatchRequest.Policy.JOIN)
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	var armed_before := _marker_snapshot(playback)
+	var first_receipt: Dictionary = _receipts.back().duplicate(true)
+	var terminal_count := _terminals.size()
+	var second := _submit([_operation(
+		"mix", "", "", 1.0, 0.1, 192, target, "サビ",
+	)], PresentationBatchRequest.Policy.JOIN)
+	assert_eq(first.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	assert_push_error(SOURCE_PATH + ":191")
+	assert_false(second.is_settled())
+	assert_eq(_terminals.size(), terminal_count + 1)
+	assert_eq(_terminals.back()["token"], first_receipt["token"])
+	assert_eq(_terminals.back()["outcome"], &"superseded")
+	var armed_after := _marker_snapshot(playback)
+	assert_eq(armed_after["arm_id"], armed_before["arm_id"])
+	assert_eq(armed_after["published_sequence"], armed_before["published_sequence"],
+		"same-target dispatch creates no second native schedule")
+	assert_same(_player(), player)
+	_finish_receipt(_receipts.back())
+	assert_false(second.is_settled(),
+		"finish enqueue is not the audio callback's physical cut acknowledgement")
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	assert_eq(second.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(_audio._bgm_channel.get("marker_operations", {}), {})
+
+
+func test_replacement_failure_preserves_old_arm_and_no_marker_fails_closed() -> void:
+	_submit([_operation("play", "synthetic_marker_stems")])
+	_player().stream_paused = true
+	var playback := _marker_playback()
+	var old_target := {"bass": 0.5, "rhythm": 0.5}
+	var old_fnf := _submit([_operation(
+		"mix", "", "", 1.0, 0.0, 193, old_target, "old",
+	)])
+	assert_eq(old_fnf.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	var old_arm := _marker_snapshot(playback)
+	assert_eq(old_arm["phase"], "armed")
+	assert_true(bool(playback.call("debug_hold_all_free_event_credits")))
+	var rejected := _submit([_operation(
+		"mix", "", "", 1.0, 0.0, 194,
+		{"bass": 1.0, "rhythm": 0.0}, "サビ",
+	)], PresentationBatchRequest.Policy.JOIN)
+	assert_eq(rejected.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	assert_push_error(SOURCE_PATH + ":194")
+	var arm_after_rejection := _marker_snapshot(playback)
+	var old_arm_identity := old_arm.duplicate(true)
+	var arm_after_identity := arm_after_rejection.duplicate(true)
+	for cursor_key: String in [
+		"frame_cursor", "horizon_frame", "horizon_loop_epoch",
+		"playback_frame_cursor",
+	]:
+		old_arm_identity.erase(cursor_key)
+		arm_after_identity.erase(cursor_key)
+	assert_eq(arm_after_identity, old_arm_identity,
+		"failed replacement keeps the old arm while its one transport may advance")
+	assert_true(
+		int(arm_after_rejection["frame_cursor"]) >= int(old_arm["frame_cursor"]))
+	playback.call("debug_release_held_event_credits")
+	_finish_receipt(_receipts.front())
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+
+	var before_state: Dictionary = (
+		_runtime.presentation_state.current_bgm.duplicate(true))
+	var player_before_missing := _player()
+	var missing := _submit([_operation(
+		"mix", "", "", 1.0, 0.0, 195,
+		{"bass": 0.25, "rhythm": 1.0}, "未登録",
+	)], PresentationBatchRequest.Policy.JOIN)
+	assert_false(missing.is_settled(),
+		"a syntactically valid unknown label settles only at the audio boundary")
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	assert_eq(missing.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	assert_push_error(SOURCE_PATH + ":195")
+	assert_same(_player(), player_before_missing)
+	var state_after_failure: Dictionary = (
+		_runtime.presentation_state.current_bgm.duplicate(true))
+	state_after_failure["position"] = before_state["position"]
+	assert_eq(state_after_failure, before_state)
+	assert_true(float(_runtime.presentation_state.current_bgm["position"])
+		>= float(before_state["position"]))
+	assert_eq(_marker_snapshot(playback)["phase"], "none")
+
+
+func test_missing_marker_selectively_rolls_back_mixed_join_without_bgm_restart() -> void:
+	_submit([_operation("play", "synthetic_marker_stems")])
+	_player().stream_paused = true
+	var player := _player()
+	var playback := _marker_playback()
+	var cursor_before := int(_marker_snapshot(playback).get("frame_cursor", -1))
+	var gains_before: PackedFloat32Array = playback.call("debug_get_current_gains")
+	var request := _submit([
+		StagePresentationOperation.new({
+			"action": "show", "id": "marker_failure",
+			"properties": {"asset": "stage:redraw_source"},
+			"transition_params": {},
+			"transition": "cut", "duration": 0.0,
+		}, {"source_path": SOURCE_PATH, "line": 205}),
+		_operation("mix", "", "", 1.0, 0.0, 206,
+			{"bass": 1.0, "rhythm": 0.0}, "missing marker"),
+	], PresentationBatchRequest.Policy.JOIN)
+	assert_false(request.is_settled())
+	assert_true(_runtime.presentation_state.stage_layers.has("marker_failure"))
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	assert_push_error(SOURCE_PATH + ":206")
+	assert_false(_runtime.presentation_state.stage_layers.has("marker_failure"))
+	assert_same(_player(), player)
+	assert_same(_marker_playback(), playback)
+	assert_eq(playback.call("debug_get_current_gains"), gains_before)
+	assert_true(int(_marker_snapshot(playback).get("frame_cursor", -1)) >= cursor_before)
+	assert_eq(_runtime.presentation_director._entries, {})
+
+
+func test_missing_marker_fnf_reports_source_and_drains_entry_map() -> void:
+	_submit([_operation("play", "synthetic_marker_stems")])
+	_player().stream_paused = true
+	var player := _player()
+	var playback := _marker_playback()
+	var request := _submit([
+		StagePresentationOperation.new({
+			"action": "show", "id": "marker_fnf_failure",
+			"properties": {"asset": "stage:redraw_source"},
+			"transition_params": {},
+			"transition": "cut", "duration": 0.0,
+		}, {"source_path": SOURCE_PATH, "line": 207}),
+		_operation("mix", "", "", 1.0, 0.0, 208,
+			{"bass": 0.5, "rhythm": 0.5}, "missing fnf"),
+	])
+	assert_eq(request.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_false(_runtime.presentation_director._entries.is_empty())
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	assert_push_error(SOURCE_PATH + ":208")
+	assert_eq(_runtime.presentation_director._entries, {})
+	assert_false(_runtime.presentation_state.stage_layers.has("marker_fnf_failure"))
+	assert_same(_player(), player)
+	assert_same(_marker_playback(), playback)
+
+
+func test_armed_save_restore_and_rollback_rearm_the_exact_occurrence() -> void:
+	_submit([_operation("play", "synthetic_marker_stems")])
+	_player().stream_paused = true
+	var original_playback := _marker_playback()
+	var target := {"bass": 1.0, "rhythm": 0.0}
+	_submit([_operation(
+		"mix", "", "", 1.0, 0.25, 196, target, "サビ",
+	)])
+	_mix_marker_source_frames(original_playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	var armed_save: Dictionary = _runtime.presentation_state.capture_snapshot()
+	var expected_pending: Dictionary = (
+		armed_save["bgm"]["pending_marker_mix"].duplicate(true))
+	assert_eq(expected_pending["phase"], "armed")
+	# A paused projection makes the restore callback boundary deterministic; the
+	# pending typed state itself is unchanged from the coherent live capture.
+	var paused_bgm: Dictionary = armed_save["bgm"]
+	paused_bgm["status"] = "paused"
+	armed_save["bgm"] = paused_bgm
+	var original_player := _player()
+	var invalid_occurrence := armed_save.duplicate(true)
+	invalid_occurrence["bgm"]["pending_marker_mix"]["marker_frame"] = 13230
+	invalid_occurrence["bgm"]["pending_marker_mix"]["marker_ordinal"] = 2
+	var provider_before: Dictionary = (
+		_runtime.presentation_state.current_bgm.duplicate(true))
+	assert_false(_runtime.presentation_state.restore_snapshot(invalid_occurrence))
+	assert_push_warning("PresentationState: restore preflight rejected")
+	assert_eq(_runtime.presentation_state.current_bgm, provider_before)
+	assert_same(_player(), original_player)
+	assert_same(_marker_playback(), original_playback)
+	assert_true(_runtime.presentation_state.restore_snapshot(armed_save))
+	assert_eq(_runtime.presentation_state.current_bgm["status"], "paused")
+	assert_eq(
+		_runtime.presentation_state.current_bgm["pending_marker_mix"],
+		expected_pending,
+	)
+	_runtime.presentation_state.apply_to_presenters()
+	var restored_player := _player()
+	var restored_playback := _marker_playback()
+	assert_not_same(restored_player, original_player)
+	assert_true(restored_player.stream_paused)
+	assert_eq(_marker_snapshot(restored_playback)["phase"], "queued")
+	_mix_marker_source_frames(restored_playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	assert_eq(
+		_runtime.presentation_state.current_bgm["pending_marker_mix"],
+		expected_pending,
+		"restore must re-select the saved frame/ordinal/wrap occurrence exactly",
+	)
+
+	var sequence_before := int(
+		_marker_snapshot(restored_playback)["published_sequence"])
+	var rebound := _submit([_operation(
+		"mix", "", "", 1.0, 0.25, 197, target, "サビ",
+	)], PresentationBatchRequest.Policy.JOIN)
+	assert_false(rebound.is_settled())
+	assert_eq(
+		_marker_snapshot(restored_playback)["published_sequence"], sequence_before,
+		"an authored redispatch binds a receipt to the restored native arm",
+	)
+	_finish_receipt(_receipts.back())
+	assert_false(rebound.is_settled())
+	_mix_marker_source_frames(restored_playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	assert_eq(rebound.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+
+	_runtime.presentation_state.restore_snapshot(armed_save)
+	_runtime.presentation_state.apply_to_presenters()
+	var rollback_player := _player()
+	var rollback_playback := _marker_playback()
+	assert_not_same(rollback_player, restored_player)
+	assert_true(rollback_player.stream_paused)
+	_mix_marker_source_frames(rollback_playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	assert_eq(
+		_runtime.presentation_state.current_bgm["pending_marker_mix"],
+		expected_pending,
+	)
+	var rollback_state: Dictionary = (
+		_runtime.presentation_state.current_bgm.duplicate(true))
+	_mix_marker_source_frames(original_playback, 20000)
+	_audio.call("_drain_bgm_marker_events")
+	assert_eq(_runtime.presentation_state.current_bgm, rollback_state,
+		"events from the pre-rollback generation cannot reclaim canonical state")
+
+
+func test_pending_restore_startup_gate_closes_play_to_arm_callback_race() -> void:
+	_submit([_operation("play", "synthetic_marker_stems")])
+	_player().stream_paused = true
+	var playback := _marker_playback()
+	var source_rate := int((_player().stream as Object).call(
+		"get_source_sample_rate"))
+	var source_rate_scale := float(AudioServer.get_mix_rate()) / float(source_rate)
+	(playback as AudioStreamPlayback).mix_audio(source_rate_scale * 0.5, 2)
+	_submit([_operation(
+		"mix", "", "", 1.0, 0.0, 209,
+		{"bass": 1.0, "rhythm": 0.0}, "サビ",
+	)])
+	var queued_save: Dictionary = _runtime.presentation_state.capture_snapshot()
+	var queued_pending: Dictionary = queued_save["bgm"]["pending_marker_mix"]
+	assert_eq(queued_pending["phase"], "queued")
+	assert_eq(
+		roundi(float(queued_save["bgm"]["position"]) * source_rate),
+		queued_pending["restore_horizon_frame"],
+		"persisted position and marker selection share one exact source coordinate",
+	)
+
+	var playing_hook: Dictionary = {}
+	_audio._bgm_after_player_played_debug_hook = func(
+		player: AudioStreamPlayer,
+		restored_playback: Object,
+	) -> void:
+		var before := _marker_snapshot(restored_playback)
+		playing_hook["paused"] = player.stream_paused
+		playing_hook["before"] = before
+		playing_hook["playback_id"] = restored_playback.get_instance_id()
+		var spin_count := 0
+		while (
+			int(restored_playback.call("debug_get_gated_callback_count")) == 0
+			and spin_count < 100000000
+		):
+			spin_count += 1
+		playing_hook["gated_callbacks"] = int(
+			restored_playback.call("debug_get_gated_callback_count"))
+		playing_hook["after"] = _marker_snapshot(restored_playback)
+		playing_hook["playing_after_quantum"] = player.playing
+		# The real server callback above proves the playing restore survives the
+		# startup hold. Pause before the test drives mix_audio() directly so the
+		# test never gives the same Vorbis decoder two concurrent mixer owners.
+		player.stream_paused = true
+		playing_hook["debug_paused_after_quantum"] = player.stream_paused
+	assert_true(_runtime.presentation_state.restore_snapshot(queued_save))
+	assert_true(_runtime.presentation_state.apply_to_presenters())
+	_audio._bgm_after_player_played_debug_hook = Callable()
+	assert_false(bool(playing_hook["paused"]))
+	assert_eq(playing_hook["before"]["phase"], "queued")
+	assert_true(bool(playing_hook["before"]["startup_gate_closed"]))
+	assert_true(int(playing_hook["gated_callbacks"]) >= 1,
+		"a real Dummy AudioServer mix quantum crosses the closed startup gate")
+	assert_eq(playing_hook["after"], playing_hook["before"],
+		"real silent callbacks preserve horizon, phase, and command sequences")
+	var restored_playback := _marker_playback()
+	assert_true(bool(playing_hook["playing_after_quantum"]),
+		"the complete silent startup buffer keeps the sole player alive")
+	assert_true(bool(playing_hook["debug_paused_after_quantum"]))
+	assert_eq(restored_playback.get_instance_id(), playing_hook["playback_id"],
+		"AudioServer retains the exact playback after the silent hold quantum")
+	assert_false(bool(_marker_snapshot(restored_playback)["startup_gate_closed"]))
+	_mix_marker_source_frames(restored_playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	_player().stream_paused = false
+	assert_true(_player().playing,
+		"the same playback continues after its exact arm is published")
+	var armed_save: Dictionary = _runtime.presentation_state.capture_snapshot()
+	var armed_pending: Dictionary = armed_save["bgm"]["pending_marker_mix"]
+	assert_eq(armed_pending["phase"], "armed")
+	assert_eq(armed_pending["marker_frame"], 8820)
+	assert_eq(armed_pending["marker_ordinal"], 1,
+		"the adjacent duplicate-label occurrence is not reselected")
+
+	var armed_hook: Dictionary = {}
+	_audio._bgm_after_player_played_debug_hook = func(
+		player_value: AudioStreamPlayer,
+		restored_playback_value: Object,
+	) -> void:
+		armed_hook["before"] = _marker_snapshot(restored_playback_value)
+		var spin_count := 0
+		while (
+			int(restored_playback_value.call("debug_get_gated_callback_count")) == 0
+			and spin_count < 100000000
+		):
+			spin_count += 1
+		armed_hook["gated_callbacks"] = int(
+			restored_playback_value.call("debug_get_gated_callback_count"))
+		armed_hook["after"] = _marker_snapshot(restored_playback_value)
+		player_value.stream_paused = true
+		armed_hook["debug_paused_after_quantum"] = player_value.stream_paused
+	assert_true(_runtime.presentation_state.restore_snapshot(armed_save))
+	assert_true(_runtime.presentation_state.apply_to_presenters())
+	_audio._bgm_after_player_played_debug_hook = Callable()
+	assert_eq(armed_hook["before"]["phase"], "queued")
+	assert_true(int(armed_hook["gated_callbacks"]) >= 1,
+		"armed playing restore also survives a real silent AudioServer callback")
+	assert_eq(armed_hook["after"], armed_hook["before"],
+		"armed restore remains physically unchanged during its silent hold")
+	assert_true(bool(armed_hook["debug_paused_after_quantum"]))
+	_mix_marker_source_frames(_marker_playback(), 1)
+	_audio.call("_drain_bgm_marker_events")
+	_player().stream_paused = false
+	var rearmed: Dictionary = (
+		_runtime.presentation_state.current_bgm["pending_marker_mix"])
+	assert_eq(rearmed["marker_frame"], armed_pending["marker_frame"])
+	assert_eq(rearmed["marker_ordinal"], armed_pending["marker_ordinal"])
+	assert_eq(
+		rearmed["marker_loop_epoch"], armed_pending["marker_loop_epoch"])
+
+	var paused_save: Dictionary = armed_save.duplicate(true)
+	paused_save["bgm"]["status"] = "paused"
+	var paused_hook: Dictionary = {}
+	_audio._bgm_after_player_played_debug_hook = func(
+		player: AudioStreamPlayer,
+		restored_playback_value: Object,
+	) -> void:
+		paused_hook["paused"] = player.stream_paused
+		paused_hook["before"] = _marker_snapshot(restored_playback_value)
+		paused_hook["pcm"] = (
+			restored_playback_value as AudioStreamPlayback).mix_audio(
+				source_rate_scale, 1).size()
+	assert_true(_runtime.presentation_state.restore_snapshot(paused_save))
+	assert_true(_runtime.presentation_state.apply_to_presenters())
+	_audio._bgm_after_player_played_debug_hook = Callable()
+	assert_true(bool(paused_hook["paused"]),
+		"pause is established while the native silent-hold gate is still closed")
+	assert_true(bool(paused_hook["before"]["startup_gate_closed"]))
+	assert_eq(paused_hook["pcm"], 1,
+		"paused restore retains the playback with a complete silent callback")
+	assert_true(_player().stream_paused)
+	assert_eq(
+		_marker_snapshot(_marker_playback())["horizon_frame"],
+		paused_hook["before"]["horizon_frame"],
+	)
+
+
+func test_unsupported_source_speed_holds_real_player_until_exact_recovery() -> void:
+	_submit([_operation("play", "synthetic_marker_stems")])
+	var player := _player()
+	var playback := _marker_playback()
+	var identity := playback.get_instance_id()
+	var normal_speed := AudioServer.playback_speed_scale
+	var metrics: Dictionary = playback.call("debug_get_marker_metrics")
+	var hold_count := int(metrics.get("rate_hold_callback_count", 0))
+
+	# First cross a real unsupported callback before enqueue. This proves no
+	# earlier normal callback remains in flight when the queued snapshot is made.
+	AudioServer.playback_speed_scale = 1.0e-12
+	assert_true(_wait_for_marker_rate_hold(playback, hold_count + 1))
+	hold_count = int((playback.call("debug_get_marker_metrics") as Dictionary).get(
+		"rate_hold_callback_count", 0))
+	var joined := _submit([_operation(
+		"mix", "", "", 1.0, 0.0, 213,
+		{"bass": 1.0, "rhythm": 0.0}, "サビ",
+	)], PresentationBatchRequest.Policy.JOIN)
+	assert_false(joined.is_settled())
+	var queued := _marker_snapshot(playback)
+	var gains_before: PackedFloat32Array = playback.call(
+		"debug_get_current_gains")
+	var refills_before := int((
+		playback.call("debug_get_marker_metrics") as Dictionary).get(
+			"rt_decoder_refill_calls", 0))
+	assert_true(_wait_for_marker_rate_hold(playback, hold_count + 1))
+	assert_eq(_marker_snapshot(playback), queued,
+		"source_increment zero holds the exact queued command")
+
+	hold_count = int((playback.call("debug_get_marker_metrics") as Dictionary).get(
+		"rate_hold_callback_count", 0))
+	AudioServer.playback_speed_scale = 2048.0
+	assert_true(_wait_for_marker_rate_hold(playback, hold_count + 1))
+	assert_eq(_marker_snapshot(playback), queued,
+		"source_step above the supported bound holds the same queued command")
+	assert_eq(playback.call("debug_get_current_gains"), gains_before)
+	assert_eq(
+		int((playback.call("debug_get_marker_metrics") as Dictionary).get(
+			"rt_decoder_refill_calls", 0)),
+		refills_before,
+	)
+	assert_true(player.playing,
+		"full silent rate holds keep the real AudioServer playback alive")
+	assert_same(_marker_playback(), playback)
+	assert_eq(_marker_playback().get_instance_id(), identity)
+
+	# Pause only after a coherent post-callback capture, then restore the rate so
+	# deterministic direct mixing never shares the decoder with AudioServer.
+	player.stream_paused = true
+	assert_eq(_marker_snapshot(playback), queued)
+	AudioServer.playback_speed_scale = normal_speed
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	assert_false(joined.is_settled())
+	var armed: Dictionary = (
+		_runtime.presentation_state.current_bgm["pending_marker_mix"])
+	assert_eq(armed["phase"], "armed")
+	assert_eq(armed["marker_frame"], 8820)
+	assert_eq(armed["marker_ordinal"], 1)
+	_mix_marker_source_frames(playback, 9000)
+	_audio.call("_drain_bgm_marker_events")
+	assert_eq(joined.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED,
+		"the retained command arms/triggers/completes exactly once after recovery")
+	assert_eq(_runtime.presentation_state.current_bgm["stem_mix"],
+		{"bass": 1.0, "rhythm": 0.0})
+	assert_eq(_audio._bgm_channel.get("marker_operations", {}), {})
+	player.stream_paused = false
+
+
+func test_armed_save_restore_preserves_exact_loop_epoch_after_wrap() -> void:
+	_submit([_operation("play", "synthetic_marker_stems")])
+	_player().stream_paused = true
+	var playback := _marker_playback()
+	_mix_marker_source_frames(playback, 5000)
+	_submit([_operation(
+		"mix", "", "", 1.0, 0.0, 210,
+		{"bass": 0.5, "rhythm": 0.5}, "old",
+	)])
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	var before_wrap: Dictionary = (
+		_runtime.presentation_state.capture_snapshot()["bgm"]
+			["pending_marker_mix"])
+	assert_eq(before_wrap["marker_frame"], 4410)
+	assert_eq(before_wrap["marker_loop_epoch"], 1)
+	assert_true(before_wrap["wraps_loop"])
+
+	var frame_count := int((_player().stream as Object).call(
+		"get_source_frame_count"))
+	var horizon_before_wrap := int(
+		_marker_snapshot(playback)["horizon_frame"])
+	var remaining := frame_count - horizon_before_wrap + 100
+	while remaining > 0:
+		var callback_frames := mini(remaining, 512)
+		_mix_marker_source_frames(playback, callback_frames)
+		remaining -= callback_frames
+	var wrapped_save: Dictionary = _runtime.presentation_state.capture_snapshot()
+	var wrapped_pending: Dictionary = wrapped_save["bgm"]["pending_marker_mix"]
+	assert_eq(wrapped_pending["phase"], "armed")
+	assert_eq(wrapped_pending["restore_horizon_loop_epoch"], 1)
+	assert_eq(wrapped_pending["marker_loop_epoch"], 1)
+	assert_false(wrapped_pending["wraps_loop"])
+	assert_true(int(wrapped_pending["restore_horizon_frame"]) < 4410)
+
+	wrapped_save["bgm"]["status"] = "paused"
+	assert_true(_runtime.presentation_state.restore_snapshot(wrapped_save))
+	assert_true(_runtime.presentation_state.apply_to_presenters())
+	var restored := _marker_playback()
+	var restored_queued := _marker_snapshot(restored)
+	assert_eq(
+		restored_queued["horizon_loop_epoch"],
+		wrapped_pending["restore_horizon_loop_epoch"],
+	)
+	_mix_marker_source_frames(restored, 1)
+	_audio.call("_drain_bgm_marker_events")
+	var restored_pending: Dictionary = (
+		_runtime.presentation_state.current_bgm["pending_marker_mix"])
+	assert_eq(restored_pending["marker_frame"], 4410)
+	assert_eq(restored_pending["marker_ordinal"], 0)
+	assert_eq(restored_pending["marker_loop_epoch"], 1)
+
+
+func test_native_marker_fade_range_rejects_before_receipt_or_restore_mutation() -> void:
+	assert_eq(
+		_audio._native_bgm_fade_frames(
+			float(AudioPresenter.MAX_NATIVE_BGM_FADE_FRAMES), 1),
+		AudioPresenter.MAX_NATIVE_BGM_FADE_FRAMES,
+		"the exact int32 maximum frame count is representable",
+	)
+	assert_eq(
+		_audio._native_bgm_fade_frames(
+			float(AudioPresenter.MAX_NATIVE_BGM_FADE_FRAMES) + 1.0, 1),
+		-1,
+		"the next frame is rejected before roundi or native admission",
+	)
+
+	_submit([_operation("play", "synthetic_marker_stems")])
+	_player().stream_paused = true
+	var player := _player()
+	var playback := _marker_playback()
+	var state_before: Dictionary = (
+		_runtime.presentation_state.current_bgm.duplicate(true))
+	var native_before := _marker_snapshot(playback)
+	var receipts_before := _receipts.size()
+	var authored := DslParser.parse(
+		DslLexer.tokenize(
+			"@chapter synthetic\n@scene start\n"
+			+ "@bgm mix bass marker=\"サビ\" fade=1e100"),
+		"synthetic", SOURCE_PATH,
+	)
+	assert_eq(authored.diagnostics, [], str(authored.diagnostics))
+	var authored_context := ScenarioContext.new(authored)
+	authored_context.variable_store = VariableStore.new()
+	var handler: CommandHandler = _runtime.registry.get_handler(
+		"presentation_batch")
+	handler.call("execute", authored.scenes[0].commands[0], authored_context)
+	assert_true(authored_context.is_finished)
+	assert_push_error(SOURCE_PATH + ":3")
+	assert_eq(_receipts.size(), receipts_before,
+		"invalid native fade range allocates no physical receipt")
+	assert_eq(_runtime.presentation_state.current_bgm, state_before)
+	assert_same(_player(), player)
+	assert_same(_marker_playback(), playback)
+	assert_eq(
+		_marker_snapshot(playback)["published_sequence"],
+		native_before["published_sequence"],
+		"invalid fade never reaches the native command ring",
+	)
+
+	_submit([_operation(
+		"mix", "", "", 1.0, 0.0, 212,
+		{"bass": 1.0, "rhythm": 0.0}, "サビ",
+	)])
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	var malicious_restore: Dictionary = (
+		_runtime.presentation_state.capture_snapshot())
+	malicious_restore["bg"] = "mutated-before-preflight"
+	malicious_restore["bgm"]["pending_marker_mix"]["fade_duration"] = 1.0e100
+	var bg_before: String = _runtime.presentation_state.current_bg
+	var bgm_before: Dictionary = (
+		_runtime.presentation_state.current_bgm.duplicate(true))
+	assert_false(_runtime.presentation_state.restore_snapshot(malicious_restore))
+	assert_push_warning("PresentationState: restore preflight rejected")
+	assert_eq(_runtime.presentation_state.current_bg, bg_before)
+	assert_eq(_runtime.presentation_state.current_bgm, bgm_before)
+	assert_same(_player(), player,
+		"malformed pending fade is rejected before any presenter/provider mutation")
+
+
+func test_marker_cancel_skip_and_same_track_play_cut_without_restart() -> void:
+	_submit([_operation("play", "synthetic_marker_stems")])
+	var player := _player()
+	player.stream_paused = true
+	var playback := _marker_playback()
+	var target := {"bass": 1.0, "rhythm": 0.0}
+	var context := _context()
+	var cancelled := _submit([_operation(
+		"mix", "", "", 1.0, 1.0, 198, target, "サビ",
+	)], PresentationBatchRequest.Policy.JOIN, context)
+	context.request_cancellation()
+	assert_eq(cancelled.get_outcome(), PresentationBatchRequest.Outcome.CANCELLED)
+	assert_false(_runtime.presentation_state.current_bgm["pending_marker_mix"].is_empty(),
+		"cancellation settles ownership but does not claim the cut was applied")
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	assert_eq(_runtime.presentation_state.current_bgm["pending_marker_mix"], {})
+	assert_eq(_runtime.presentation_state.current_bgm["stem_mix"], target)
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	assert_same(_player(), player)
+
+	var skipped := _submit([_operation(
+		"mix", "", "", 1.0, 1.0, 199,
+		{"bass": 0.25, "rhythm": 1.0}, "サビ",
+	)], PresentationBatchRequest.Policy.JOIN)
+	_runtime.skip_controller.is_active = true
+	_runtime.presentation_director.call(
+		"_finish_latest_join_for_skip", _runtime.presentation_director._generation)
+	assert_false(skipped.is_settled())
+	assert_eq(playback.call("debug_get_current_gains"),
+		PackedFloat32Array([0.0, 1.0]))
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	assert_eq(skipped.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(_runtime.presentation_state.current_bgm["pending_marker_mix"], {})
+	_runtime.skip_controller.is_active = false
+	assert_same(_player(), player)
+
+	var marker_fnf := _submit([_operation(
+		"mix", "", "", 1.0, 1.0, 200, target, "サビ",
+	)])
+	assert_eq(marker_fnf.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	assert_eq(
+		_runtime.presentation_state.current_bgm["pending_marker_mix"]["phase"],
+		"armed",
+	)
+	player.stream_paused = false
+	var same_play := _submit([_operation(
+		"play", "synthetic_marker_stems", "", 1.0, 0.0, 201,
+		{"bass": 0.0, "rhythm": 1.0},
+	)])
+	assert_eq(same_play.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_same(_player(), player,
+		"same-track play cancels the marker arm through the one live transport")
+	assert_eq(_runtime.presentation_state.current_bgm["pending_marker_mix"], {})
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	assert_eq(_audio._bgm_channel.get("marker_operations", {}), {})
+
+
+func test_marker_track_same_play_mix_and_volume_uses_one_composite_receipt() -> void:
+	_submit([_operation("play", "synthetic_marker_stems")])
+	var player := _player()
+	var playback := _marker_playback()
+	var receipt_count_before := _receipts.size()
+	var target := {"bass": 1.0, "rhythm": 0.0}
+	assert_true(player.playing)
+	assert_eq(
+		(playback.call("debug_get_marker_metrics") as Dictionary).get(
+			"available_event_credits"),
+		(playback.call("debug_get_marker_metrics") as Dictionary).get(
+			"event_capacity"),
+	)
+	var joined := _submit([_operation(
+		"play", "synthetic_marker_stems", "", 0.5, 1.0, 202, target,
+	)], PresentationBatchRequest.Policy.JOIN)
+	assert_false(joined.is_settled())
+	assert_eq(_receipts.size(), receipt_count_before + 1,
+		"native stem and player-level fades share one Director participant")
+	assert_same(_player(), player)
+	_runtime.skip_controller.is_active = true
+	_runtime.presentation_director.call(
+		"_finish_latest_join_for_skip", _runtime.presentation_director._generation)
+	_runtime.skip_controller.is_active = false
+	assert_false(joined.is_settled())
+	assert_eq(playback.call("debug_get_current_gains"),
+		PackedFloat32Array([1.0, 0.0]))
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	assert_eq(joined.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	assert_eq(_audio._bgm_channel.get("marker_operations", {}), {})
+	assert_eq(_runtime.presentation_state.current_bgm["stem_mix"], target)
+	assert_eq(_runtime.presentation_state.current_bgm["volume"], 0.5)
+	assert_almost_eq(player.volume_db, _expected_bgm_db(0.5), 0.000001)
+	assert_eq(playback.call("debug_get_current_gains"),
+		PackedFloat32Array([0.0, 1.0]))
 
 
 func test_stem_resource_preflight_enforces_audible_mix_and_32_stream_limit() -> void:
