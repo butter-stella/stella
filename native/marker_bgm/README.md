@@ -36,9 +36,11 @@ short-return, and those paths settle any admitted native operation first. The
 forbidden-fallback sentinels, not process-wide allocator or mutex hooks. The RT
 claim is therefore enforced jointly by fixed-storage code review, warning-as-
 error native builds, the 32-stem refill bound, and callback lifecycle tests.
-The CMake target documents two GCC-only upstream exemptions: godot-cpp's empty
-generated method-argument pack and stb_vorbis' inlined bounded-memory header
-read. All other extension diagnostics remain errors.
+godot-cpp headers are compiler `SYSTEM` includes. The stb implementation is a
+separate vendor object with its documented upstream-only warning exemptions;
+the first-party `register_types.cpp` and `stella_marker_bgm.cpp` compile with
+`-Wall -Wextra -Werror` and no `-Wno-*`. A compile-command gate checks that
+boundary after every GCC/Clang build.
 The existing `AudioPresenter._process()` only drains already timestamped ring
 events; marker selection and triggering happen solely at an audio callback
 boundary.

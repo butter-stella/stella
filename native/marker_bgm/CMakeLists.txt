@@ -3,6 +3,9 @@ cmake_minimum_required(VERSION 3.20)
 project(stella_marker_bgm LANGUAGES CXX)
 
 include(FetchContent)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(STELLA_GODOT_CPP_COMMIT
 	"58d1de720b8ffe9f8ffcdfe3a85148582cfd2e74"
@@ -13,6 +16,7 @@ if(NOT DEFINED GODOTCPP_TARGET)
 endif()
 set(GODOTCPP_DISABLE_EXCEPTIONS ON CACHE BOOL "" FORCE)
 set(GODOTCPP_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+set(GODOTCPP_SYSTEM_HEADERS ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
 	godot_cpp
@@ -22,9 +26,21 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(godot_cpp)
 
+add_library(stella_marker_bgm_stb OBJECT
+	third_party/stb/stb_vorbis_impl.cpp
+)
+target_compile_features(stella_marker_bgm_stb PRIVATE cxx_std_17)
+target_include_directories(stella_marker_bgm_stb PRIVATE
+	${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
+)
+set_target_properties(stella_marker_bgm_stb PROPERTIES
+	POSITION_INDEPENDENT_CODE ON
+)
+
 add_library(stella_marker_bgm SHARED
 	src/register_types.cpp
 	src/stella_marker_bgm.cpp
+	$<TARGET_OBJECTS:stella_marker_bgm_stb>
 )
 target_compile_features(stella_marker_bgm PRIVATE cxx_std_17)
 target_include_directories(stella_marker_bgm PRIVATE
@@ -74,23 +90,34 @@ set_target_properties(stella_marker_bgm PROPERTIES
 )
 
 if(MSVC)
+	target_compile_options(stella_marker_bgm_stb PRIVATE /W4 /WX)
 	target_compile_options(stella_marker_bgm PRIVATE /W4 /WX)
 else()
-	target_compile_options(stella_marker_bgm PRIVATE
+	target_compile_options(stella_marker_bgm_stb PRIVATE
 		-Wall -Wextra -Werror
-		# Generated godot-cpp bindings intentionally contain unused callback
-		# parameters and stb_vorbis contains unused static helpers.
+		# These diagnostics arise only while compiling the pinned stb
+		# implementation object, never a Stella translation unit.
 		-Wno-unused-function
 		-Wno-unused-parameter
 	)
 	if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-		target_compile_options(stella_marker_bgm PRIVATE
-			# GCC diagnoses the empty method-argument pack in generated
-			# godot-cpp release bindings even though no caller reads it.
-			-Wno-unused-but-set-parameter
+		target_compile_options(stella_marker_bgm_stb PRIVATE
 			# GCC release inlining cannot prove that stb_vorbis' bounded
 			# memory reader initializes its page-header scratch first.
 			-Wno-maybe-uninitialized
 		)
 	endif()
+	target_compile_options(stella_marker_bgm PRIVATE
+		-Wall -Wextra -Werror
+	)
 endif()
+
+add_custom_target(stella_marker_bgm_compile_gate ALL
+	COMMAND
+		${Python3_EXECUTABLE}
+		${CMAKE_CURRENT_SOURCE_DIR}/../../tests/check_marker_bgm_compile_commands.py
+		${CMAKE_BINARY_DIR}/compile_commands.json
+		${CMAKE_CXX_COMPILER_ID}
+	DEPENDS stella_marker_bgm
+	VERBATIM
+)
