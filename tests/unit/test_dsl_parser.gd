@@ -4,6 +4,7 @@ extends GutTest
 const ADVANCE_INDICATOR_TEXTURE_PATH := \
 	"res://examples/demo/art/backgrounds/bg_black.png"
 const ADVANCE_INDICATOR_SCENE_PATH := "res://addons/stella/scenes/game.tscn"
+const AUTO_TIMING_PROFILE_PATH := "res://tests/fixtures/auto_timing_profile.tres"
 
 
 func _parse(source: String, id: String = "test") -> ScenarioData:
@@ -259,6 +260,40 @@ advance_indicator_animation=pulse
 	assert_not_null(runtime_profile.resolve_advance_indicator_texture())
 	assert_null(runtime_profile.resolve_advance_indicator_scene())
 	assert_true(runtime_profile.advance_indicator_validation_errors().is_empty())
+
+
+func test_dialogue_profile_parses_typed_auto_timing_profile_with_provenance():
+	var source := ("""@dialogue_profile timed auto_timing_profile=\"%s\"
+@chapter test
+@scene start
+@adv profile=timed
+「line」""") % AUTO_TIMING_PROFILE_PATH
+	var data := DslParser.parse(
+		DslLexer.tokenize(source),
+		"auto_timing",
+		"res://story/auto_timing.stla",
+	)
+	assert_eq(data.diagnostics, [])
+	var profile := data.get_dialogue_profile("timed")
+	var provenance := data.get_dialogue_profile_provenance("timed")
+	assert_eq(profile.get("auto_timing_profile"), AUTO_TIMING_PROFILE_PATH)
+	assert_eq(provenance.get("field_lines", {}).get("auto_timing_profile"), 1)
+	var runtime_profile := DialogueModeProfile.from_dictionary(profile, provenance)
+	assert_true(runtime_profile.has_auto_timing_profile())
+	assert_true(runtime_profile.resolve_auto_timing_profile() is AutoTimingProfile)
+	assert_eq(runtime_profile.auto_timing_diagnostic_provenance().get("line"), 1)
+
+
+func test_dialogue_profile_rejects_wrong_auto_timing_resource_type_atomically():
+	var data := _parse(("""@dialogue_profile broken line_spacing=5 \
+auto_timing_profile=\"%s\"
+@chapter test
+@scene start
+@adv profile=broken
+「line」""") % ADVANCE_INDICATOR_SCENE_PATH)
+	assert_true(_has_diagnostic(data, "error", "AutoTimingProfile"))
+	assert_true(data.get_dialogue_profile("broken").is_empty())
+	assert_true(_has_diagnostic(data, "error", "unknown dialogue profile 'broken'"))
 
 
 func test_dialogue_profile_keeps_indicator_provenance_out_of_profile_data():

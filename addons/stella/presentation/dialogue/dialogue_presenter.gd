@@ -162,6 +162,10 @@ var _auxiliary_visibility_baseline: Dictionary = {}
 var _profile_warning_keys: Dictionary = {}
 var _active_stla_mode_profile: DialogueModeProfile
 var _active_uses_stla_presentation: bool = false
+var _active_auto_timing_profile: AutoTimingProfile
+var _active_auto_timing_provenance: Dictionary = {}
+var _active_auto_visible_character_count: int = 0
+var _active_auto_has_voice: bool = false
 var _canonical_dialogue_visibility := {
 	"surface": true,
 	"quick_menu": true,
@@ -1761,6 +1765,10 @@ func _on_dialogue_requested(dialogue_request: DialogueRequest) -> void:
 		if not bool(_voice_layers_for_segment(segment_value).get("valid", false)):
 			dialogue_request.abort()
 			return
+	var auto_timing_preflight := _preflight_auto_timing_profile(dialogue_request)
+	if not bool(auto_timing_preflight.get("ok", false)):
+		dialogue_request.abort()
+		return
 	var effect_names := _collect_backlog_custom_effect_names()
 	var custom_effect_registry := _effect_name_registry(effect_names)
 	SignalBus.dialogue_backlog_effects_resolved.emit(dialogue_request, effect_names)
@@ -1773,6 +1781,12 @@ func _on_dialogue_requested(dialogue_request: DialogueRequest) -> void:
 		"nvl_page_entries": dialogue_request.get_nvl_page_entries(),
 		"presentation_profile": dialogue_request.get_presentation_profile(),
 		"presentation_provenance": dialogue_request.get_presentation_provenance(),
+		"auto_timing_profile": (
+			auto_timing_preflight.get("profile") as AutoTimingProfile
+		),
+		"auto_timing_provenance": (
+			auto_timing_preflight.get("provenance", {}) as Dictionary
+		).duplicate(true),
 		"declarative_presentation": dialogue_request.uses_declarative_presentation(),
 		"custom_effect_registry": custom_effect_registry.duplicate(true),
 		"boundary_revision": revision,
@@ -1803,6 +1817,45 @@ func _on_dialogue_requested(dialogue_request: DialogueRequest) -> void:
 		return
 	_abort_queued_dialogue_requests()
 	_accept_dialogue_request(request)
+
+
+func _preflight_auto_timing_profile(
+	dialogue_request: DialogueRequest,
+) -> Dictionary:
+	var profile_data := dialogue_request.get_presentation_profile()
+	if profile_data.is_empty() or not profile_data.has("auto_timing_profile"):
+		return {"ok": true, "profile": null, "provenance": {}}
+	var mode_profile := DialogueModeProfile.from_dictionary(
+		profile_data, dialogue_request.get_presentation_provenance())
+	var provenance := mode_profile.auto_timing_diagnostic_provenance()
+	var errors := mode_profile.auto_timing_validation_errors(
+		StellaRuntime.settings_manager)
+	if not errors.is_empty():
+		_report_auto_timing_error(provenance, "; ".join(errors))
+		return {"ok": false, "profile": null, "provenance": provenance}
+	var profile := mode_profile.resolve_auto_timing_profile()
+	if profile == null:
+		_report_auto_timing_error(
+			provenance, "auto_timing_profile could not be resolved")
+		return {"ok": false, "profile": null, "provenance": provenance}
+	return {
+		"ok": true,
+		"profile": profile.duplicate(true) as AutoTimingProfile,
+		"provenance": provenance,
+	}
+
+
+func _report_auto_timing_error(provenance: Dictionary, detail: String) -> void:
+	var source_path := String(provenance.get("source_path", "<unknown STLA>"))
+	var line := int(provenance.get("line", 0))
+	push_error(
+		"DialoguePresenter: %s:%d: invalid Auto timing profile '%s': %s"
+		% [
+			source_path,
+			line,
+			String(provenance.get("profile_name", "<runtime profile>")),
+			detail,
+		])
 
 
 ## A Presenter can render only one queued replacement. Every displaced typed
@@ -1916,6 +1969,11 @@ func _show_dialogue_request(request: Dictionary) -> void:
 		"presentation_provenance", {})
 	var custom_effect_registry: Dictionary = request.get(
 		"custom_effect_registry", {})
+	_active_auto_timing_profile = request.get(
+		"auto_timing_profile") as AutoTimingProfile
+	_active_auto_timing_provenance = (
+		request.get("auto_timing_provenance", {}) as Dictionary
+	).duplicate(true)
 	_capture_request_identity(request)
 	_show_dialogue_now(
 		String(request.get("character", "")),
@@ -1944,6 +2002,8 @@ func _show_dialogue_now(
 	# Settings changes may arrive while this coroutine is active. Snapshot both
 	# delays at the active SHOW boundary so the whole line has one deterministic
 	# timing policy; a later line observes the updated caches.
+	_active_auto_visible_character_count = 0
+	_active_auto_has_voice = false
 	_reconcile_typewriter_settings_cache()
 	var line_character_interval := _snapshot_typewriter_delay_seconds(
 		"character_interval", _char_interval)
@@ -2139,6 +2199,8 @@ func _show_dialogue_now(
 		rendered_source, authored_source_start)
 	var authored_text_offset := maxi(
 		0, authored_parsed_start - text_label.visible_characters)
+	_active_auto_visible_character_count = maxi(
+		0, text_label.get_total_character_count() - text_label.visible_characters)
 	for marker_index in range(all_markers.size()):
 		var marker: Dictionary = all_markers[marker_index]
 		marker["at_char"] = (
@@ -2196,6 +2258,10 @@ func _show_dialogue_now(
 		character, segments)
 	_dialogue_total_duration = _sum_voice_segment_durations(
 		dialogue_voice_durations)
+	# Auto timing consumes authored canonical dialogue metadata, not incidental
+	# decoder duration. A muted or zero-length-but-valid voice layer remains a
+	# voiced line even though the existing voice-wait authority drains at once.
+	_active_auto_has_voice = _canonical_dialogue_has_voice(segments)
 	StellaRuntime.notify_action_state_changed(
 		StellaActionRegistry.ACTION_VOICE_REPLAY)
 	var kickoff_queue_gen := _playback_queue_gen + 1
@@ -2241,8 +2307,7 @@ func _show_dialogue_now(
 	# RichTextLabel's visible-character API counts parsed text, not BBCode source
 	# bytes. Use the renderer's character domain so formatting tags do not add
 	# fake typewriter delay or corrupt an accumulated NVL entry boundary.
-	var total_new_chars := maxi(
-		0, text_label.get_total_character_count() - start_visible)
+	var total_new_chars := _active_auto_visible_character_count
 	var parsed_text_snapshot := text_label.get_parsed_text()
 	var current_char_interval := line_character_interval
 	for i in range(total_new_chars):
@@ -2387,7 +2452,16 @@ func _continue_auto_play_after_ready(gen: int) -> void:
 		if _playback_is_dialogue and _voice_playing:
 			if not await _wait_for_active_voice_finished(gen, attempt):
 				return
-	var auto_play_delay: float = StellaRuntime.get_setting("auto_play_delay")
+	var delay_result := _resolve_auto_play_delay()
+	if not bool(delay_result.get("ok", false)):
+		_report_auto_timing_error(
+			_active_auto_timing_provenance,
+			String(delay_result.get("error", "Auto timing resolution failed")),
+		)
+		_retire_auto_play_attempt()
+		_abort_current_dialogue_activation()
+		return
+	var auto_play_delay := float(delay_result["delay"])
 	if not await _await_dialogue_timer(
 		auto_play_delay, gen, _TIMER_PURPOSE_AUTO, attempt):
 		return
@@ -2404,6 +2478,35 @@ func _continue_auto_play_after_ready(gen: int) -> void:
 		and not StellaRuntime.is_choice_active() \
 		and StellaRuntime.game_state.is_playing():
 		_commit_current_dialogue_advance()
+
+
+func _resolve_auto_play_delay() -> Dictionary:
+	if _active_auto_timing_profile == null:
+		var fallback := StellaRuntime.get_setting("auto_play_delay")
+		if (
+			typeof(fallback) not in [TYPE_INT, TYPE_FLOAT]
+			or not is_finite(float(fallback))
+			or float(fallback) < 0.0
+		):
+			return {
+				"ok": false,
+				"delay": 0.0,
+				"error": "auto_play_delay is not a finite non-negative number",
+			}
+		return {"ok": true, "delay": float(fallback), "error": ""}
+	return _active_auto_timing_profile.resolve_delay(
+		StellaRuntime.settings_manager,
+		_active_auto_visible_character_count,
+		_active_auto_has_voice,
+	)
+
+
+func _canonical_dialogue_has_voice(segments: Array) -> bool:
+	for segment_value: Variant in segments:
+		var voice_selection := _voice_layers_for_segment(segment_value, false)
+		if not (voice_selection.get("request_layers", []) as Array).is_empty():
+			return true
+	return false
 
 
 func _wait_for_active_voice_finished(gen: int, attempt: int) -> bool:
@@ -5635,6 +5738,10 @@ func _apply_visual_only_dialogue_restore(
 	preserve_current_presentation: bool = false,
 ) -> void:
 	_abort_current_dialogue_activation()
+	_active_auto_timing_profile = null
+	_active_auto_timing_provenance.clear()
+	_active_auto_visible_character_count = 0
+	_active_auto_has_voice = false
 	if not preserve_current_presentation:
 		_restore_authored_presentation()
 	_current_voice = ""
@@ -6096,6 +6203,10 @@ func _apply_hide_dialogue_boundary(revision: int) -> void:
 	_restore_authored_presentation()
 	_auxiliary_visibility_baseline.clear()
 	_active_stla_mode_profile = null
+	_active_auto_timing_profile = null
+	_active_auto_timing_provenance.clear()
+	_active_auto_visible_character_count = 0
+	_active_auto_has_voice = false
 	_active_uses_stla_presentation = false
 	_current_mode = "adv"
 	_current_scenario_id = ""

@@ -239,6 +239,7 @@ Game
 @dialogue_profile novel entry_prefix="・" entry_separator=""
 @dialogue_profile novel advance_indicator_texture="res://ui/dialogue/wait.svg"
 @dialogue_profile novel advance_indicator_offset=8,-2 advance_indicator_animation=bob
+@dialogue_profile novel auto_timing_profile="res://settings/auto_timing.tres"
 @dialogue_profile message panel_anchors=0,0.72,1,1
 
 @chapter prologue "序章"
@@ -282,6 +283,31 @@ Theme/style alpha、Profile/场景 `modulate.a`、场景 authored `self_modulate
 只有项目加入自定义 frame、logo 等专属 UI 时，才需要在 Godot 的 Node > Groups 中给节点增加语义分组，并在 STLA 的 `show` / `hide` 中引用。极少数需要程序动态注入样式的项目仍可在 Inspector 中使用 `DialoguePresentationProfile` / `DialogueModeProfile` Resource，或调用 `DialoguePresenter.set_presentation_profile()`；这是高级兜底接口，不是常规创作流程。
 
 完全不写 `@dialogue_profile` 时，`@nvl` / `@overlay` 使用内置兼容布局，旧项目不需要迁移。离开 NVL 后，下一次进入会开始新的累积文本；这一规则也适用于 `@jump` 循环、重复 `@call` 和条件分支的实际执行路径。不同分支可以保留不同 Profile 到共同 continuation；若希望汇合后统一布局，再显式写一次模式选择。未离开 NVL 时重复 `@nvl` 不会另起一页。存档记录当前与 ADV 的 Profile 名称、声明式选择状态，以及当前 NVL 页每条记录的 Profile 名、原始角色/segment 输入；读档或 Backlog 回退后从当前剧本的 Profile registry 逐条重建页面，所以同一页中途换 Profile 不会改写更早记录的 prefix/separator。存档不保存已解析 Profile、诊断 provenance 或渲染后的 `RichTextLabel.text`。
+
+项目若有独立的 Auto 速度设置，不要把它别名到 `auto_play_delay`。在 settings schema 注册
+numeric key 后，创建一个数据资源并由需要的 dialogue profile 引用：
+
+```ini
+[gd_resource type="Resource" script_class="AutoTimingProfile" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/stella/core/playback/auto_timing_profile.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+setting_key = "project.auto_base_wait"
+base_delay_seconds = 3.0
+setting_scale_seconds = -0.02
+visible_character_scale_seconds = 0.01
+minimum_delay_seconds = 0.25
+maximum_delay_seconds = 5.0
+```
+
+公式为 `base + setting*setting_scale + visible_chars*visible_character_scale +
+(voiced ? voiced_line_addition : 0)`，最后 clamp 到声明范围。这里的 visible chars 使用
+RichTextLabel 与 typewriter 相同的 parsed-character domain，不把 BBCode bytes 当作字符；
+`has_voice` 来自该句已预检的 canonical voice group。profile 只提供数据，实际等待仍由现有
+DialoguePresenter Auto timer/voice waiter authority 拥有，不会创建项目 timer、callback 或
+第二 scheduler。完全不引用资源时，行为仍是原有 `auto_play_delay`。
 
 ### Step 5 — 运行
 

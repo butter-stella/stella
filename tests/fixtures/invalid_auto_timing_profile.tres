@@ -1,0 +1,7 @@
+[gd_resource type="Resource" script_class="AutoTimingProfile" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/stella/core/playback/auto_timing_profile.gd" id="1_auto"]
+
+[resource]
+script = ExtResource("1_auto")
+setting_key = "fullscreen"

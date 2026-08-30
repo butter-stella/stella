@@ -713,6 +713,15 @@ generation 的全部 waiter；Skip/Auto 的局部取消只退休对应 owner，�
 用途。因而取消不是简单 free Timer 后留下悬挂函数，也不需要第二 scheduler、wall-clock
 轮询或测试专用清理路径。
 
+命名 Dialogue Profile 可选地引用 data-only `AutoTimingProfile`。Presenter 在接收 typed
+DialogueRequest、且尚未退休当前可见 request 前，验证 Resource 类型、已注册 numeric
+setting binding、有限系数与 delay 边界，并保留 STLA provenance；失败会 source-located
+abort incoming activation。成功后只保存 detached typed profile snapshot。Auto voice tail
+结束时读取一次 live setting，以当前行和 typewriter 相同 domain 的 visible-character count、
+canonical voice-presence 计算并 clamp delay，再交给上述同一个 timer authority。设置
+direct set/load/reset 因而影响下一次 timer creation；已经开始的 attempt 不被重排，也没有
+settings listener、项目 callback、第二 scheduler 或 wall-clock polling。
+
 语音完成等待同样由该 DialoguePresenter 的单一 cancellable authority 管理，而不是让
 queue/Auto coroutine 直接悬挂在全局 signal。每个 voice-event waiter 绑定 dialogue
 generation、`queue`/`auto` 用途，以及对应 queue generation 或 Auto attempt；物理事件
