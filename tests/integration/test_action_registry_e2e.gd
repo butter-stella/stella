@@ -152,7 +152,7 @@ func test_setup_toolbar_preserves_authored_identity_skin_and_geometry() -> void:
 	var prev_binding := prev_button.get_node("StellaAction") as StellaAction
 	prev_binding.sync_availability = false
 	prev_button.disabled = false
-	dialogue._notify_prev_choice_state_changed()
+	_runtime.notify_action_state_changed(StellaActionRegistry.ACTION_PREV_CHOICE)
 	assert_false(prev_button.disabled,
 		"Presenter state edges respect binding availability opt-out")
 
@@ -202,6 +202,99 @@ func test_predicate_dependencies_publish_binding_edges_without_polling() -> void
 	_runtime._quit_requested = old_quit_requested
 	_runtime._quit_exit_code = old_quit_code
 	_runtime.notify_action_state_changed(StellaActionRegistry.ACTION_QUIT)
+
+
+func test_state_projection_listeners_cannot_reenter_runtime_transactions() -> void:
+	var nested_results: Array[int] = []
+	var watched_action := [StellaActionRegistry.ACTION_ADVANCE]
+	var nested_action := [StellaActionRegistry.ACTION_AUTO]
+	var listener := func(action_id: StringName) -> void:
+		if action_id == watched_action[0]:
+			nested_results.append(_runtime.execute_action(nested_action[0]))
+	_runtime.action_registry.action_state_changed.connect(listener)
+
+	_runtime.set_setting("auto_play_pause_on_choice", true)
+	var choice_session: int = _runtime._begin_choice_policy_session()
+	assert_gt(choice_session, 0)
+	assert_eq(nested_results, [StellaActionRegistry.ExecuteResult.FAILED])
+	assert_false(_runtime.is_auto_playing())
+	assert_true(_runtime._active_choice_auto_suspension,
+		"the retired listener cannot interrupt the choice begin tail")
+	assert_true(_runtime._resolve_choice_policy_session(choice_session))
+
+	nested_results.clear()
+	watched_action[0] = StellaActionRegistry.ACTION_CANCEL
+	nested_action[0] = StellaActionRegistry.ACTION_CANCEL
+	assert_true(_runtime.show_settings())
+	assert_false(nested_results.is_empty())
+	assert_true(nested_results.all(func(result: int) -> bool:
+		return result == StellaActionRegistry.ExecuteResult.FAILED))
+	assert_not_null(_runtime._current_overlay)
+	assert_true(_runtime._current_overlay.is_inside_tree(),
+		"overlay attachment commits despite hostile state listeners")
+	assert_eq(_runtime.game_state.current_state, GameStateMachine.State.SETTINGS)
+	assert_true(_runtime.close_overlay())
+
+	nested_results.clear()
+	watched_action[0] = StellaActionRegistry.ACTION_HIDE_UI
+	nested_action[0] = StellaActionRegistry.ACTION_ADVANCE
+	var dialogue := _dialogue()
+	var dialogue_generation: int = dialogue._dialogue_gen
+	dialogue._set_is_typing(true)
+	dialogue._set_is_typing(false)
+	assert_false(nested_results.is_empty())
+	assert_true(nested_results.all(func(result: int) -> bool:
+		return result == StellaActionRegistry.ExecuteResult.FAILED))
+	assert_eq(dialogue._dialogue_gen, dialogue_generation,
+		"a typing projection cannot advance or replace the current line")
+
+	_runtime.action_registry.action_state_changed.disconnect(listener)
+
+
+func test_failed_navigation_receipt_is_not_reported_as_admitted() -> void:
+	var previous_generation: int = _runtime._navigation_generation
+	var navigation: int = _runtime._begin_navigation("quick_load")
+	assert_eq(navigation, previous_generation + 1)
+	_runtime._abort_action_navigation(navigation)
+	assert_false(_runtime._navigation_was_admitted(
+		previous_generation, "quick_load"))
+	assert_eq(_runtime._navigation_failed_generation, navigation)
+	assert_eq(_runtime._navigation_kind, "")
+	assert_eq(_runtime._navigation_runtime_ownership_generation, 0)
+	assert_eq(_runtime._navigation_presentation_reset_generation, 0)
+
+
+func test_in_game_quick_load_post_begin_failure_settles_action_navigation() -> void:
+	var scenario_path := "res://examples/demo/scenarios/demo.stla"
+	_runtime.save_manager.save_dir = ACTION_TEST_SAVE_DIR
+	DirAccess.make_dir_recursive_absolute(
+		ProjectSettings.globalize_path(ACTION_TEST_SAVE_DIR))
+	assert_true(_runtime._prepare_scenario(scenario_path))
+	_runtime._last_scenario_path = scenario_path
+	_runtime.game_state.transition_to(GameStateMachine.State.PLAYING)
+	assert_true(_runtime.quick_save())
+	var action_entry: Dictionary = _runtime.action_registry._get_live_entry(
+		StellaActionRegistry.ACTION_QUICK_LOAD)
+	var execution_count := int(action_entry["execution_count"])
+	var transaction_id := 144001
+	assert_true(_runtime.presentation_clip_audio_choice_authority.hold(
+		transaction_id))
+
+	assert_eq(
+		_runtime.execute_action(StellaActionRegistry.ACTION_QUICK_LOAD),
+		StellaActionRegistry.ExecuteResult.FAILED,
+		"a restore rejected after navigation begin is not reported as executed",
+	)
+	assert_push_error(
+		"StellaRuntime: presentation-clip audio-choice initial checkpoint restore failed")
+	assert_eq(int(action_entry["execution_count"]), execution_count)
+	assert_eq(_runtime._navigation_kind, "")
+	assert_eq(_runtime._navigation_runtime_ownership_generation, 0)
+	assert_eq(_runtime._navigation_presentation_reset_generation, 0)
+	assert_eq(_runtime.movie_presenter._restore_ticket, 0)
+	assert_eq(_runtime.movie_presenter._armed_restore_ticket, 0)
+	assert_true(_runtime.presentation_clip_audio_choice_authority.abort(
+		transaction_id))
 
 
 func test_builtin_dispatch_reports_preflight_failure_and_async_admission() -> void:

@@ -102,16 +102,21 @@ RefCounted owner 生命周期。catalog/metadata/context 都以 defensive copy �
 `can_execute` 与 `is_active` 是严格返回 bool 的无副作用 query，execute 只有返回 true 才是
 成功。
 
-所有公开 callback 和 signal 都允许同步重入，但每个用户 callback 后都会重取并校验 exact
-generation/owner receipt。catalog add/remove 的 signal 不会把 retired entry 的 state event
-投到同 ID replacement；全量 state 通知按 ID/generation/owner snapshot 遍历。action state 由
-game state、Auto/Skip、存档、choice、voice、Presenter 和 custom owner 的显式 signal 驱动，
-不使用 polling 或 timer。
+execute/query/confirmation 与 catalog lifecycle 允许同步重入，但每个用户 callback 后都会重取
+并校验 exact generation/owner receipt。`action_state_changed` 是只读投影边界：listener 可同步
+查询 metadata、availability、active state，但在该 signal 栈内再次 execute 会明确 `FAILED`。
+因此产生通知的 Runtime/Presenter transaction 不会被 Binding listener 半途重入；也不需要
+deferred call、polling、timer 或第二 scheduler。catalog add/remove 的 signal 不会把 retired
+entry 的 state event 投到同 ID replacement；全量 state 通知按 ID/generation/owner snapshot
+遍历。action state 由 game state、Auto/Skip、存档、choice、voice、Presenter、ScenarioEngine
+的 typed command-position edge 和 custom owner 的显式 signal 驱动。
 
 `disruptive` / `destructive` 第一次 dispatch 只创建 single-use opaque confirmation token 并发出
-request；confirmed dispatch 必须携带 exact token，且 token 在 execute callback 前消费。多个
-同步或异步 listener 竞争时至多一个能执行；request signal 返回后也会复验 receipt，不能给已
-注销或 replacement 的 action 误报 confirmation required。legacy Inspector enum 仅是一对一
+request；confirmed dispatch 必须携带 exact token，且 token 在 execute callback 前消费。新的
+top-level request 会退休该 action 的旧未确认 receipt；同一同步 confirmation dispatch 内的
+nested receipt 相互独立，但有明确的 8 个上界，超过即 fail-close。多个同步或异步 listener
+竞争时至多一个能执行；request signal 返回后也会复验 receipt，不能给已注销或 replacement
+的 action 误报 confirmation required。legacy Inspector enum 仅是一对一
 canonical ID adapter；它为既有 destructive scene 同步消费该次专用 receipt，并用 context
 marker 让正常 confirmation UI 忽略，不形成第二 dispatcher 或永久 bypass。
 

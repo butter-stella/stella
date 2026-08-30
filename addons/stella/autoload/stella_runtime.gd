@@ -70,6 +70,7 @@ var _current_overlay: Node = null
 var _return_to_title_pending: bool = false
 var _navigation_generation: int = 0
 var _navigation_kind: String = ""
+var _navigation_failed_generation: int = 0
 var _navigation_scene_request_pending: bool = false
 var _navigation_pending_scene_path: String = ""
 var _navigation_scene_slot_serial_counter: int = 0
@@ -598,6 +599,7 @@ func _ready():
 	engine.scenario_started.connect(func(id): SignalBus.scenario_started_event.emit(id))
 	engine.scenario_ended.connect(_on_scenario_ended)
 	engine.scene_changed.connect(func(id): SignalBus.scene_changed_event.emit(id))
+	engine.command_position_changed.connect(_on_command_position_changed)
 	engine.scene_changed.connect(_on_scene_changed_for_chapter_presentation)
 	# Issue #97: detect chapter transitions for flowchart state tracking.
 	engine.scene_changed.connect(_on_scene_changed_for_flowchart)
@@ -910,8 +912,20 @@ func _connect_action_registry_state_sources() -> void:
 func _navigation_was_admitted(previous_generation: int, kind: String) -> bool:
 	return (
 		_navigation_generation == previous_generation + 1
+		and _navigation_failed_generation != _navigation_generation
 		and (_navigation_kind == kind or _navigation_kind.is_empty())
 	)
+
+
+func _abort_action_navigation(
+	navigation: int,
+	movie_restore_ticket: int = 0,
+) -> void:
+	_discard_prepared_movie_restore(movie_restore_ticket)
+	if not _owns_navigation(navigation):
+		return
+	_navigation_failed_generation = navigation
+	_finish_navigation(navigation)
 
 
 func _notify_quick_save_state() -> void:
@@ -3974,6 +3988,15 @@ func _on_choice_for_history(_prompt: String, _options: Array) -> void:
 	notify_action_state_changed(StellaActionRegistry.ACTION_PREV_CHOICE)
 
 
+func _on_command_position_changed(
+	position_context: ScenarioContext,
+	_command: CommandData,
+) -> void:
+	if engine == null or engine.context != position_context:
+		return
+	notify_action_state_changed(StellaActionRegistry.ACTION_PREV_CHOICE)
+
+
 func _clear_choice_history() -> void:
 	choice_history_manager.clear()
 	notify_action_state_changed(StellaActionRegistry.ACTION_PREV_CHOICE)
@@ -4225,14 +4248,13 @@ func quick_load() -> bool:
 			navigation,
 			"game",
 		):
-			_discard_prepared_movie_restore(movie_restore_ticket)
-			_finish_navigation(navigation)
+			_abort_action_navigation(navigation, movie_restore_ticket)
 			return false
 		if not _owns_navigation(navigation):
 			_discard_prepared_movie_restore(movie_restore_ticket)
 			return false
 		if not _cancel_active_gameplay(navigation):
-			_discard_prepared_movie_restore(movie_restore_ticket)
+			_abort_action_navigation(navigation, movie_restore_ticket)
 			return false
 		_close_current_overlay()
 		if not _owns_navigation(navigation):
@@ -4250,17 +4272,19 @@ func quick_load() -> bool:
 			navigation,
 			movie_restore_ticket,
 		):
+			_abort_action_navigation(navigation, movie_restore_ticket)
 			return false
 		_finish_navigation(navigation)
 		return true
 
 	# In-game: reload in place
 	if not _cancel_active_gameplay(navigation):
-		_discard_prepared_movie_restore(movie_restore_ticket)
+		_abort_action_navigation(navigation, movie_restore_ticket)
 		return false
 	_last_scenario_path = scenario_path
 	if not _load_preparsed_scenario_and_restore(
 		scenario_data, scenario_path, save_data, navigation, movie_restore_ticket):
+		_abort_action_navigation(navigation, movie_restore_ticket)
 		return false
 	_finish_navigation(navigation)
 	return true
@@ -4355,14 +4379,13 @@ func continue_game() -> bool:
 			navigation,
 			"game",
 		):
-			_discard_prepared_movie_restore(movie_restore_ticket)
-			_finish_navigation(navigation)
+			_abort_action_navigation(navigation, movie_restore_ticket)
 			return false
 		if not _owns_navigation(navigation):
 			_discard_prepared_movie_restore(movie_restore_ticket)
 			return false
 		if not _cancel_active_gameplay(navigation):
-			_discard_prepared_movie_restore(movie_restore_ticket)
+			_abort_action_navigation(navigation, movie_restore_ticket)
 			return false
 		_close_current_overlay()
 		if not _owns_navigation(navigation):
@@ -4380,17 +4403,19 @@ func continue_game() -> bool:
 			navigation,
 			movie_restore_ticket,
 		):
+			_abort_action_navigation(navigation, movie_restore_ticket)
 			return false
 		_finish_navigation(navigation)
 		return true
 
 	# In-game: reload in place
 	if not _cancel_active_gameplay(navigation):
-		_discard_prepared_movie_restore(movie_restore_ticket)
+		_abort_action_navigation(navigation, movie_restore_ticket)
 		return false
 	_last_scenario_path = scenario_path
 	if not _load_preparsed_scenario_and_restore(
 		scenario_data, scenario_path, save_data, navigation, movie_restore_ticket):
+		_abort_action_navigation(navigation, movie_restore_ticket)
 		return false
 	_finish_navigation(navigation)
 	return true

@@ -69,6 +69,7 @@ const _CONFIRMATION_POLICIES := {
 	CONFIRMATION_DESTRUCTIVE: true,
 }
 const _MAX_ACTION_ID_LENGTH := 128
+const _MAX_NESTED_CONFIRMATION_RECEIPTS := 8
 const CONFIRMATION_TOKEN_CONTEXT_KEY := &"confirmation_token"
 const CONFIRMATION_AUTO_CONFIRM_CONTEXT_KEY := &"confirmation_auto_confirm"
 
@@ -84,6 +85,7 @@ var _accepting_initial_builtins: bool = false
 var _construction_valid: bool = true
 var _construction_capability_ref: WeakRef
 var _sealed_builtin_owner_id: int = 0
+var _state_notification_depth: int = 0
 
 
 ## Runtime construction is one synchronous, sealed operation. The temporary
@@ -303,6 +305,7 @@ func _register_action(
 		"generation": _next_generation,
 		"execution_count": 0,
 		"pending_confirmation_tokens": {},
+		"confirmation_dispatch_depth": 0,
 		"owner_id": owner.get_instance_id(),
 		"owner_ref": weakref(owner),
 		"metadata": normalized,
@@ -318,7 +321,7 @@ func _register_action(
 		_builtin_ids[action_id] = true
 	catalog_changed.emit()
 	if _entry_receipt_is_current(action_id, added_receipt):
-		action_state_changed.emit(action_id)
+		_emit_action_state_changed(action_id)
 	return true
 
 
@@ -414,6 +417,14 @@ func execute(
 	action_id: StringName,
 	context: Dictionary = {},
 ) -> ExecuteResult:
+	# State notifications are a read-only projection boundary. Bindings may query
+	# metadata, availability, and active state synchronously, but an observer may
+	# not start a second action while the producer is still committing the state
+	# tuple that caused the notification. Rejecting that reentry keeps Runtime,
+	# Presenter, and project actions under one deterministic transaction rule
+	# without deferred calls, timers, or a second scheduler.
+	if _state_notification_depth > 0:
+		return ExecuteResult.FAILED
 	var entry := _get_live_entry(action_id)
 	if entry.is_empty():
 		return ExecuteResult.NOT_FOUND
@@ -450,14 +461,26 @@ func execute(
 	if not _entry_receipt_is_current(action_id, entry):
 		return ExecuteResult.FAILED
 	if policy != CONFIRMATION_NONE and not confirmation_granted:
+		var pending_tokens: Dictionary = entry["pending_confirmation_tokens"]
+		var dispatch_depth := int(entry["confirmation_dispatch_depth"])
+		# One new top-level request supersedes every older unanswered user
+		# decision for this action. Receipts created by synchronous nested
+		# confirmation listeners remain independent until the outer dispatch
+		# returns, but their count has an explicit fail-closed ceiling.
+		if dispatch_depth == 0:
+			pending_tokens.clear()
+		if pending_tokens.size() >= _MAX_NESTED_CONFIRMATION_RECEIPTS:
+			return ExecuteResult.FAILED
 		_next_confirmation_token += 1
 		var requested_token := _next_confirmation_token
-		var pending_tokens: Dictionary = entry["pending_confirmation_tokens"]
 		pending_tokens[requested_token] = true
 		var confirmation_context := context.duplicate(true)
 		confirmation_context[CONFIRMATION_TOKEN_CONTEXT_KEY] = requested_token
 		var execution_count := int(entry["execution_count"])
+		entry["confirmation_dispatch_depth"] = dispatch_depth + 1
 		confirmation_requested.emit(action_id, policy, confirmation_context)
+		if _entry_receipt_is_current(action_id, entry):
+			entry["confirmation_dispatch_depth"] = dispatch_depth
 		if not _entry_receipt_is_current(action_id, entry):
 			return ExecuteResult.FAILED
 		var current := _get_live_entry(action_id)
@@ -478,7 +501,7 @@ func execute(
 		return ExecuteResult.FAILED
 	var live_entry := _get_live_entry(action_id)
 	live_entry["execution_count"] = int(live_entry["execution_count"]) + 1
-	action_state_changed.emit(action_id)
+	_emit_action_state_changed(action_id)
 	return ExecuteResult.EXECUTED
 
 
@@ -487,7 +510,7 @@ func execute(
 func notify_action_state_changed(action_id: StringName) -> void:
 	if _get_live_entry(action_id).is_empty():
 		return
-	action_state_changed.emit(action_id)
+	_emit_action_state_changed(action_id)
 
 
 func notify_all_action_states_changed() -> void:
@@ -503,7 +526,13 @@ func notify_all_action_states_changed() -> void:
 	for receipt: Dictionary in receipts:
 		var action_id := StringName(receipt["action_id"])
 		if _entry_receipt_is_current(action_id, receipt):
-			action_state_changed.emit(action_id)
+			_emit_action_state_changed(action_id)
+
+
+func _emit_action_state_changed(action_id: StringName) -> void:
+	_state_notification_depth += 1
+	action_state_changed.emit(action_id)
+	_state_notification_depth -= 1
 
 
 func _get_live_entry(action_id: StringName) -> Dictionary:
@@ -579,7 +608,7 @@ func _erase_entry(action_id: StringName, publish: bool) -> void:
 		# catalog_changed already repaints a synchronously registered replacement;
 		# never deliver the retired entry's second event to that new generation.
 		if not _entries.has(action_id):
-			action_state_changed.emit(action_id)
+			_emit_action_state_changed(action_id)
 
 
 func _fail_construction(message: String) -> void:

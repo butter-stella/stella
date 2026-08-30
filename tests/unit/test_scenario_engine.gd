@@ -127,6 +127,42 @@ func test_engine_executes_multiple_commands_in_order():
 	assert_eq(handler.executed[2].get_string("text"), "Third")
 
 
+func test_command_position_edge_precedes_handler_and_stale_run_stops() -> void:
+	var handler := TrackingHandler.new("dialogue")
+	_registry.register(handler)
+	var original := _build_scenario([{
+		"id": "start",
+		"commands": [{"type": "dialogue", "params": {"text": "retired"}}],
+	}])
+	var replacement := _build_scenario([{
+		"id": "replacement",
+		"commands": [{"type": "dialogue", "params": {"text": "fresh"}}],
+	}])
+	var observed: Array[Dictionary] = []
+	_engine.command_position_changed.connect(func(
+		context: ScenarioContext,
+		command: CommandData,
+	) -> void:
+		observed.append({
+			"context": context,
+			"command": command,
+			"current": context.current_command(),
+		})
+		if command.get_string("text") == "retired":
+			_engine.load_scenario(replacement)
+	)
+
+	_engine.load_scenario(original)
+	await _engine.run()
+
+	assert_eq(observed.size(), 1)
+	assert_same(observed[0]["command"], observed[0]["current"],
+		"the non-null cursor is canonical before the edge is emitted")
+	assert_eq(handler.executed.size(), 0,
+		"a listener-owned replacement invalidates the stale pre-handler tail")
+	assert_same(_engine.context.scenario_data, replacement)
+
+
 func test_parallel_handler_rejects_blocking_dialogue_children_atomically() -> void:
 	var read_flags := ReadFlagManager.new()
 	var dialogue_handler := DialogueHandler.new(read_flags)

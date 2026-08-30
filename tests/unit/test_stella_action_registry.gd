@@ -546,7 +546,7 @@ func test_valid_confirmation_is_retired_when_availability_changes() -> void:
 		StellaActionRegistry.ExecuteResult.CONFIRMATION_REQUIRED,
 	)
 	assert_eq(contexts.size(), 1)
-	var stale_context := contexts[0].duplicate(true)
+	var stale_context: Dictionary = contexts[0].duplicate(true)
 	stale_context["confirmation_granted"] = true
 	owner.available = false
 	assert_eq(
@@ -674,6 +674,107 @@ func test_nested_confirmation_requests_keep_independent_exact_tokens() -> void:
 	)
 	assert_eq(owner.execute_count, 1)
 	registry.confirmation_requested.disconnect(confirmation_listener)
+
+
+func test_sequential_confirmation_requests_keep_one_fresh_receipt() -> void:
+	var registry := StellaActionRegistry.new()
+	var owner := _owner(registry, &"project.confirm_bounded")
+	assert_true(_register(
+		registry, owner, false, false,
+		StellaActionRegistry.CONFIRMATION_DESTRUCTIVE))
+	var contexts: Array[Dictionary] = []
+	registry.confirmation_requested.connect(func(
+		_action_id: StringName,
+		_policy: StringName,
+		context: Dictionary,
+	) -> void: contexts.append(context.duplicate(true)))
+
+	for request_index: int in range(32):
+		assert_eq(
+			registry.execute(owner.action_id),
+			StellaActionRegistry.ExecuteResult.CONFIRMATION_REQUIRED,
+			"top-level request %d is admitted" % request_index,
+		)
+		var entry := registry._get_live_entry(owner.action_id)
+		assert_eq(
+			(entry["pending_confirmation_tokens"] as Dictionary).size(), 1,
+			"a fresh top-level request supersedes every older receipt",
+		)
+
+	var stale_context := contexts[0].duplicate(true)
+	stale_context["confirmation_granted"] = true
+	assert_eq(
+		registry.execute(owner.action_id, stale_context),
+		StellaActionRegistry.ExecuteResult.FAILED,
+	)
+	var fresh_context: Dictionary = contexts.back().duplicate(true)
+	fresh_context["confirmation_granted"] = true
+	assert_eq(
+		registry.execute(owner.action_id, fresh_context),
+		StellaActionRegistry.ExecuteResult.EXECUTED,
+	)
+	assert_eq(owner.execute_count, 1)
+	assert_true((registry._get_live_entry(owner.action_id)[
+		"pending_confirmation_tokens"] as Dictionary).is_empty())
+
+
+func test_nested_confirmation_receipts_fail_closed_at_explicit_bound() -> void:
+	var registry := StellaActionRegistry.new()
+	var owner := _owner(registry, &"project.confirm_nested_bound")
+	assert_true(_register(
+		registry, owner, false, false,
+		StellaActionRegistry.CONFIRMATION_DESTRUCTIVE))
+	var nested_results: Array[int] = []
+	var confirmation_listener := func(
+		action_id: StringName,
+		_policy: StringName,
+		_context: Dictionary,
+	) -> void:
+		nested_results.append(registry.execute(action_id))
+	registry.confirmation_requested.connect(confirmation_listener)
+
+	assert_eq(
+		registry.execute(owner.action_id),
+		StellaActionRegistry.ExecuteResult.CONFIRMATION_REQUIRED,
+	)
+	assert_eq(nested_results.size(),
+		StellaActionRegistry._MAX_NESTED_CONFIRMATION_RECEIPTS)
+	assert_eq(
+		nested_results.front(),
+		StellaActionRegistry.ExecuteResult.FAILED,
+		"the deepest request beyond the receipt ceiling fails without emitting",
+	)
+	var entry := registry._get_live_entry(owner.action_id)
+	assert_eq(
+		(entry["pending_confirmation_tokens"] as Dictionary).size(),
+		StellaActionRegistry._MAX_NESTED_CONFIRMATION_RECEIPTS,
+	)
+	assert_eq(int(entry["confirmation_dispatch_depth"]), 0)
+	registry.confirmation_requested.disconnect(confirmation_listener)
+
+
+func test_action_state_notification_is_read_only_dispatch_boundary() -> void:
+	var registry := StellaActionRegistry.new()
+	var source := _owner(registry, &"project.state_source")
+	var target := _owner(registry, &"project.state_target")
+	target.active = true
+	assert_true(_register(registry, source))
+	assert_true(_register(registry, target, true, true))
+	var nested_results: Array[int] = []
+	var listener := func(action_id: StringName) -> void:
+		if action_id != source.action_id:
+			return
+		assert_false(registry.get_action(target.action_id).is_empty())
+		assert_true(registry.can_execute(target.action_id))
+		assert_true(registry.is_active(target.action_id))
+		nested_results.append(registry.execute(target.action_id))
+	registry.action_state_changed.connect(listener)
+
+	registry.notify_action_state_changed(source.action_id)
+	assert_eq(nested_results, [StellaActionRegistry.ExecuteResult.FAILED])
+	assert_eq(target.execute_count, 0)
+	assert_eq(registry._state_notification_depth, 0)
+	registry.action_state_changed.disconnect(listener)
 
 
 func test_notify_all_skips_replaced_snapshot_generation() -> void:

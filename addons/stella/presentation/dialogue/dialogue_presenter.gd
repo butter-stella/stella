@@ -310,19 +310,6 @@ func _ready():
 		_on_auto_play_effective_changed)
 	StellaRuntime.skip_controller.active_changed.connect(_on_skip_active_changed)
 	SignalBus.choice_show.connect(_on_choice_modal_started)
-	# Refresh the "回选项" button state whenever execution surfaces a new
-	# command (dialogue or choice). Both signals fire AFTER the engine has
-	# advanced to the command being presented, so can_jump_to_previous_choice()
-	# reads the right current_cmd_uid. scenario lifecycle signals handle
-	# start/end-of-run resets.
-	SignalBus.dialogue_requested.connect(
-		func(_request): _notify_prev_choice_state_changed())
-	SignalBus.choice_show.connect(
-		func(_p, _o): _notify_prev_choice_state_changed())
-	SignalBus.scenario_started_event.connect(
-		func(_id): _notify_prev_choice_state_changed())
-	SignalBus.scenario_ended_event.connect(
-		func(_id): _notify_prev_choice_state_changed())
 	SignalBus.stage_transition_started.connect(_on_stage_transition_started)
 	SignalBus.stage_operation_request_finished.connect(
 		_on_stage_operation_request_finished
@@ -1639,11 +1626,6 @@ func finalize_current_dialogue_for_advance() -> void:
 		return
 	_finalize_dialogue(
 		_dialogue_voice_character, _dialogue_segments, _dialogue_gen)
-
-
-func _notify_prev_choice_state_changed() -> void:
-	StellaRuntime.notify_action_state_changed(
-		StellaActionRegistry.ACTION_PREV_CHOICE)
 
 
 func _is_toggle_active(btn_id: String) -> bool:

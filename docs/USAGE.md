@@ -432,7 +432,8 @@ ID 冲突、内建 ID、invalid callback 和非 tree-bound owner 都会 fail-clo
 `false`，dispatcher 才会返回 `FAILED`，不能把同步 no-op 报成 `EXECUTED`。
 所有 callback 接收 context 的副本。项目状态变化后调用
 `notify_action_state_changed(id)`；registry 的 `catalog_changed` / `action_state_changed` 会
-事件驱动刷新所有 Binding。
+事件驱动刷新所有 Binding。`action_state_changed` listener 只能查询；若在该同步通知栈内调用
+`execute_action`，dispatcher 会明确返回 `FAILED`，调用方应等待真实的下一次用户输入。
 
 `disruptive` / `destructive` action 第一次执行只发出 confirmation request，不执行动作。
 确认 UI 必须保存该次 context 中的 opaque single-use token，在用户真实确认后以同一份
@@ -463,8 +464,10 @@ func _on_confirmation_dialog_confirmed() -> void:
 	StellaRuntime.execute_action(_pending_action, _pending_context)
 ```
 
-token 不能伪造或复用；多个同步/异步 listener 竞争时只有第一个有效确认能执行，其他请求
-fail-close。`quit` 的 execute 最终进入 `StellaRuntime.request_quit()`，绝不直接调用
+token 不能伪造或复用；新的 top-level 请求会使旧未确认 token 失效，同一同步 confirmation
+signal 内允许独立 nested receipt，但最多 8 个，超过即 fail-close。多个同步/异步 listener
+竞争时只有第一个有效确认能执行，其他请求 fail-close。`quit` 的 execute 最终进入
+`StellaRuntime.request_quit()`，绝不直接调用
 `SceneTree.quit()`。旧 Inspector `action` enum 保留严格的一对一 canonical adapter
 （例如 `TOGGLE_AUTO_PLAY → auto`、`SHOW_SAVE → save`、`QUIT → quit`）；新场景应只填写
 `action_id`。legacy destructive enum 会同步消费本次专用 receipt 以维持既有行为，正常

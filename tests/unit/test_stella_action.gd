@@ -42,7 +42,6 @@ func test_does_not_crash_on_non_button_parent():
 	node.add_child(action)
 	add_child(node)
 	# Should not crash, just warn
-	assert_push_warning("parent is not a BaseButton")
 	assert_true(true)
 	WarningTestSupport.assert_exact_warnings(
 		self,
@@ -161,7 +160,6 @@ func test_none_action_does_nothing():
 	_action.action = StellaAction.Action.NONE
 	# Should not crash, just warn
 	_btn.pressed.emit()
-	assert_push_warning("no action selected")
 	assert_true(true)
 	WarningTestSupport.assert_exact_warnings(
 		self,

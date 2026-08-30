@@ -100,6 +100,10 @@ Binding 的 label、disabled、visible 和 toggle active 状态只由 registry �
 signal 刷新。Runtime 在 game state、Auto/Skip、存档、choice、voice 和 admitted Presenter
 状态变化时发出精确通知；项目 action owner 自己调用
 `notify_action_state_changed(action_id)`。不存在 `_process`、timer 或第二条 action match。
+state signal 是只读投影边界：listener 可以查询 registry，但在该同步 signal 栈内 execute 会
+返回 `FAILED`，不得借 UI 刷新重入尚未完成的 Runtime/Presenter transaction。`prev_choice`
+使用 ScenarioEngine 在 non-null current command 已建立、handler 尚未 dispatch 时发出的 typed
+command-position edge，因此 wait、stage 和其他非 dialogue handler 都不会漏掉 availability 更新。
 disruptive/destructive action 先发 confirmation request；只有携带该次 single-use opaque
 token 的 confirmed context 才能执行，因此一次 Button click 不会双派发。legacy Inspector
 enum 只是一对一 canonical ID adapter；其同步 auto-confirm receipt 带专用 marker，正常确认
