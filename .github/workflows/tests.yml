@@ -78,7 +78,7 @@ jobs:
         run: |
           tests/build_marker_bgm_native.sh template_debug
           tests/build_marker_bgm_native.sh template_release
-        timeout-minutes: 20
+        timeout-minutes: 35
 
       - name: Verify universal macOS slices
         if: matrix.artifact == 'macos-universal'
@@ -134,7 +134,7 @@ jobs:
         run: |
           tests/build_marker_bgm_native.sh template_debug
           tests/build_marker_bgm_native.sh template_release
-        timeout-minutes: 10
+        timeout-minutes: 25
 
       - name: Import project
         run: godot --audio-driver Dummy --headless --import 2>&1
@@ -455,7 +455,7 @@ jobs:
 
       - name: Build marker BGM native extension
         run: tests/build_marker_bgm_native.sh template_debug
-        timeout-minutes: 10
+        timeout-minutes: 20
 
       - name: Import project
         run: godot --audio-driver Dummy --headless --import 2>&1
