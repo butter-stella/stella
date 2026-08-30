@@ -38,6 +38,7 @@ jobs:
         with:
           version: 4.6.1
           use-dotnet: false
+          include-templates: true
 
       - name: Verify a clean clone imports without a missing-library loader
         shell: bash
@@ -129,6 +130,7 @@ jobs:
         with:
           version: 4.6.1
           use-dotnet: false
+          include-templates: true
 
       - name: Build marker BGM native extension
         run: |

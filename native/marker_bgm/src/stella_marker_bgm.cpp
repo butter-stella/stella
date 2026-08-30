@@ -70,7 +70,7 @@ bool is_valid_marker_label(const String &p_label) {
 		return false;
 	}
 	for (int64_t index = 0; index < p_label.length(); index++) {
-		const char32_t code = p_label.unicode_at(index);
+		const int64_t code = p_label.unicode_at(index);
 		if (code == 0 || (code < 32 && code != 9 && code != 10 && code != 13) ||
 				(code >= 127 && code <= 159)) {
 			return false;
@@ -84,7 +84,7 @@ bool is_valid_stem_name(const String &p_name) {
 		return false;
 	}
 	for (int64_t index = 0; index < p_name.length(); index++) {
-		const char32_t code = p_name.unicode_at(index);
+		const int64_t code = p_name.unicode_at(index);
 		const bool ascii_letter = (code >= 'a' && code <= 'z') ||
 				(code >= 'A' && code <= 'Z');
 		const bool digit = code >= '0' && code <= '9';
@@ -1418,10 +1418,16 @@ bool StellaMarkerBgmStream::configure(const Dictionary &p_configuration) {
 	}
 	auto candidate = std::make_shared<StellaMarkerBgmStreamData>();
 	const AudioServer *audio_server = AudioServer::get_singleton();
-	if (audio_server == nullptr || audio_server->get_mix_rate() <= 0) {
+	if (audio_server == nullptr) {
 		return false;
 	}
-	candidate->output_mix_rate = audio_server->get_mix_rate();
+	const double output_mix_rate = static_cast<double>(audio_server->get_mix_rate());
+	if (!std::isfinite(output_mix_rate) || output_mix_rate <= 0.0 ||
+			output_mix_rate > static_cast<double>(std::numeric_limits<int32_t>::max()) ||
+			std::floor(output_mix_rate) != output_mix_rate) {
+		return false;
+	}
+	candidate->output_mix_rate = static_cast<int32_t>(output_mix_rate);
 	bool audible = false;
 	for (int64_t index = 0; index < stem_names.size(); index++) {
 		const String name = stem_names[index];
