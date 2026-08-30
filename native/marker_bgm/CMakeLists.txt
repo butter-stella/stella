@@ -83,4 +83,14 @@ else()
 		-Wno-unused-function
 		-Wno-unused-parameter
 	)
+	if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+		target_compile_options(stella_marker_bgm PRIVATE
+			# GCC diagnoses the empty method-argument pack in generated
+			# godot-cpp release bindings even though no caller reads it.
+			-Wno-unused-but-set-parameter
+			# GCC release inlining cannot prove that stb_vorbis' bounded
+			# memory reader initializes its page-header scratch first.
+			-Wno-maybe-uninitialized
+		)
+	endif()
 endif()

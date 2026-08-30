@@ -36,6 +36,9 @@ short-return, and those paths settle any admitted native operation first. The
 forbidden-fallback sentinels, not process-wide allocator or mutex hooks. The RT
 claim is therefore enforced jointly by fixed-storage code review, warning-as-
 error native builds, the 32-stem refill bound, and callback lifecycle tests.
+The CMake target documents two GCC-only upstream exemptions: godot-cpp's empty
+generated method-argument pack and stb_vorbis' inlined bounded-memory header
+read. All other extension diagnostics remain errors.
 The existing `AudioPresenter._process()` only drains already timestamped ring
 events; marker selection and triggering happen solely at an audio callback
 boundary.
