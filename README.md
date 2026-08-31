@@ -1,5 +1,8 @@
 # Stella
 
+> [!WARNING]
+> **Work in Progress:** Stella is still under active development. APIs, features, and documentation may change before a stable release.
+
 A Godot 4.6 visual-novel framework built around a typed authoring DSL and
 independent presentation systems.
 
