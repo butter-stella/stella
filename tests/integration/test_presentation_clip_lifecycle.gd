@@ -36,6 +36,7 @@ var _receipts: Array[Dictionary] = []
 var _terminals: Array[Dictionary] = []
 var _audio_cues: Array[Dictionary] = []
 var _cue_order: Array[String] = []
+var _bgm_validation_reset_probe: Callable
 
 
 func before_each() -> void:
@@ -103,6 +104,14 @@ func before_each() -> void:
 
 
 func after_each() -> void:
+	if (
+		_bgm_validation_reset_probe.is_valid()
+		and SignalBus.bgm_validate_requested.is_connected(
+			_bgm_validation_reset_probe)
+	):
+		SignalBus.bgm_validate_requested.disconnect(
+			_bgm_validation_reset_probe)
+	_bgm_validation_reset_probe = Callable()
 	if SignalBus.presentation_clip_transition_receipt_started.is_connected(_on_receipt):
 		SignalBus.presentation_clip_transition_receipt_started.disconnect(_on_receipt)
 	if SignalBus.presentation_clip_transition_terminal.is_connected(_on_terminal):
@@ -1235,6 +1244,8 @@ func test_bgm_reset_during_validation_does_not_revoke_clip_authority() -> void:
 func test_bgm_reset_during_bgm_validation_fails_the_same_domain_request() -> void:
 	var committed_count: Array[int] = [0]
 	var receipt_count: Array[int] = [0]
+	var validation_reset_count: Array[int] = [0]
+	var before_bgm_epoch := SignalBus.current_bgm_epoch()
 	var on_committed := func(
 		_operation: BgmPresentationOperation,
 		_force_cut: bool,
@@ -1249,7 +1260,9 @@ func test_bgm_reset_during_bgm_validation_fails_the_same_domain_request() -> voi
 	) -> void:
 		receipt_count[0] += 1
 	var reset_bgm := func(_request: BgmOperationRequest) -> void:
+		validation_reset_count[0] += 1
 		SignalBus.reset_bgm_presentation()
+	_bgm_validation_reset_probe = reset_bgm
 	SignalBus.bgm_operation_committed.connect(on_committed)
 	SignalBus.bgm_transition_receipt_started.connect(on_receipt)
 	SignalBus.bgm_validate_requested.connect(reset_bgm, CONNECT_ONE_SHOT)
@@ -1259,6 +1272,7 @@ func test_bgm_reset_during_bgm_validation_fails_the_same_domain_request() -> voi
 			"asset": "",
 			"cue": "",
 			"fade_duration": 0.0,
+			"marker": "",
 			"resume_position": 0.0,
 			"stem_mix": {},
 			"volume": 1.0,
@@ -1276,6 +1290,13 @@ func test_bgm_reset_during_bgm_validation_fails_the_same_domain_request() -> voi
 		"a direct same-domain reset fail-closes the captured BGM request")
 	assert_eq(committed_count[0], 0)
 	assert_eq(receipt_count[0], 0)
+	assert_eq(validation_reset_count[0], 1,
+		"the canonical BGM request must reach the validation callback exactly once")
+	assert_eq(SignalBus.current_bgm_epoch(), before_bgm_epoch + 1,
+		"the same-domain validation reset advances the BGM epoch exactly once")
+	assert_false(SignalBus.bgm_validate_requested.is_connected(reset_bgm),
+		"the one-shot validation reset cannot leak into later same-process tests")
+	_bgm_validation_reset_probe = Callable()
 	assert_true(_runtime.presentation_director._entries.is_empty())
 	SignalBus.bgm_operation_committed.disconnect(on_committed)
 	SignalBus.bgm_transition_receipt_started.disconnect(on_receipt)

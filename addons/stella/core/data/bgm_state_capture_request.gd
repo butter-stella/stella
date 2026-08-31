@@ -2,12 +2,16 @@
 class_name BgmStateCaptureRequest extends RefCounted
 
 var _authority: Object
-var _position: float = 0.0
+var _state: Dictionary = {}
 var _resolved: bool = false
 
 
 func get_position() -> float:
-	return _position
+	return float(_state.get("position", 0.0))
+
+
+func get_state() -> Dictionary:
+	return _state.duplicate(true)
 
 
 func is_resolved() -> bool:
@@ -21,15 +25,14 @@ func _bind_authority(authority: Object) -> bool:
 	return true
 
 
-func _resolve(position: float, authority: Object) -> bool:
+func _resolve(state: Dictionary, authority: Object) -> bool:
 	if (
 		authority == null
 		or authority != _authority
 		or _resolved
-		or not is_finite(position)
-		or position < 0.0
+		or not BgmChannelState.validate_snapshot_state(state, false)
 	):
 		return false
-	_position = position
+	_state = BgmChannelState.normalize_snapshot_state(state)
 	_resolved = true
 	return true

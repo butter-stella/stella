@@ -334,7 +334,7 @@ alpha；自定义 scene 的 typed binding 规则见[使用指南](USAGE.md#声�
 
 `@stage` 是人物立绘、身体/脸部差分、事件图、SD 与前景图片的统一舞台接口。它通过稳定 ID 管理任意数量的动态层，不预建位置槽，也不限制同时显示的人物数量。ID 区分大小写且必须非空；`clear` 是无 ID 的全舞台动作。
 
-### 3.5A Dialogue visibility
+### 3.5A 对话界面显隐
 
 ```stla
 @dialogue_visibility hide
@@ -361,17 +361,16 @@ alpha；自定义 scene 的 typed binding 规则见[使用指南](USAGE.md#声�
 
 每条 standalone command 都是 blocking JOIN；无 Presenter 的 headless runner 同步完成。
 
-### 3.5B Addressable dialogue avatar
+### 3.5B 可寻址对话头像
 
 ```stla
 @dialogue_avatar show asset=character:portraits/hero.png
 @dialogue_avatar hide
 ```
 
-`@dialogue_avatar` controls one stable avatar projection owned by the dialogue surface. It is
-independent from line-local `[expr:]` markers and from named Stage layers. The shortest
-`show`/`hide` forms are sufficient for ordinary use; `set` can prepare a hidden stable state
-without waiting for a later dialogue line:
+`@dialogue_avatar` 控制一份由对话 surface 拥有的稳定头像投影。它与行内 `[expr:]`
+标记、命名 Stage layer 相互独立。普通场景使用最短的 `show` / `hide` 即可；`set` 可以先准备
+一份隐藏的稳定状态，不必等待后续对话行：
 
 ```stla
 @dialogue_avatar set character=hero expression=neutral visible=false position=-280,-140 origin=-480,320 scale=0.45,0.45
@@ -380,33 +379,30 @@ without waiting for a later dialogue line:
 @dialogue_avatar remove transition=fade duration=0.25
 ```
 
-The exact grammar is:
+精确 grammar 为：
 
 - `@dialogue_avatar set <properties...> [transition=cut|fade] [duration=<seconds>]`
 - `@dialogue_avatar show [<properties...>] [transition=cut|fade] [duration=<seconds>]`
 - `@dialogue_avatar hide [transition=cut|fade] [duration=<seconds>]`
 - `@dialogue_avatar remove [transition=cut|fade] [duration=<seconds>]`
-- source is either `asset=<logical-id>` or the pair `character=<id> expression=<id>`; the two forms are mutually exclusive
-- canonical properties are `visible` (only with `set`), `position=x,y`, `origin=x,y`, `scale=x,y`, `rotation`, `z_index`, and `opacity`
-- `position` and `origin` are signed pixel coordinates in the avatar container local canvas; `position` places the Sprite, while `origin` is the pivot measured from the source texture top-left and projects as `Sprite2D.offset=-origin`
-- `scale` is a unitless positive pair and `rotation` is in radians; source fixed-point, unsigned, degree, or packed encodings must be decoded by the importer before constructing Stella DSL
-- `cut` is the default and requires `duration=0`; `fade` defaults to `duration=0.25` and crossfades old/new projections
+- source 必须是 `asset=<logical-id>`，或成对的 `character=<id> expression=<id>`；两种形式互斥
+- canonical properties 为 `visible`（仅 `set`）、`position=x,y`、`origin=x,y`、`scale=x,y`、`rotation`、`z_index`、`opacity`
+- `position` 与 `origin` 是头像容器本地画布中的有符号像素坐标；`position` 放置 Sprite，`origin` 是从源纹理左上角计算的 pivot，并投影为 `Sprite2D.offset=-origin`
+- `scale` 是无单位正数对，`rotation` 使用弧度；源格式中的定点、无符号、角度或 packed 编码必须由 importer 在构造 Stella DSL 前解码
+- 默认 `cut` 且要求 `duration=0`；`fade` 默认 `duration=0.25`，并在新旧投影之间 crossfade
 
-Source-format fields such as `xpos`, `ypos`, `zoom`, `showmode`, `visvalue`, `leveloffset`,
-`order`, and `zpos` are not Stella aliases. An importer must prove and translate them into the
-canonical properties above, or reject the source at its original line. Unknown, duplicate,
-non-finite, out-of-range, incomplete source, and unsupported current-state updates all
-fail-close before Presenter mutation.
+`xpos`、`ypos`、`zoom`、`showmode`、`visvalue`、`leveloffset`、`order`、`zpos`
+等源格式字段不是 Stella alias。importer 必须证明语义并转换为上述 canonical properties，
+否则应在源格式原始行拒绝。未知、重复、非有限、越界、不完整 source 和当前状态不支持的更新，
+都会在 Presenter mutation 前 fail-close。
 
-Standalone avatar commands lower to a one-child JOIN and always traverse the Runtime-owned
-typed Director/DialoguePresenter preflight. Click and Skip may make the effective transition a
-cut, but cannot bypass logical-resource validation. Save/load records only the sealed stable
-avatar target; Tween, receipt, generation, and line-local avatar state do not enter the snapshot.
-Backlog replay restores text and never re-dispatches avatar operations.
-The CI-compiled public reference scenario is
+独立头像命令会 lower 为单 child JOIN，并始终经过 Runtime-owned typed
+Director/DialoguePresenter preflight。Click 和 Skip 可以令有效转场成为 cut，但不能绕过逻辑资源
+验证。存读档只记录 sealed stable avatar target；Tween、receipt、generation 和行内头像状态都不
+进入 snapshot。Backlog 回放只恢复文本，不会重新派发头像操作。CI 会编译的公开参考场景为
 [`examples/demo/scenarios/dialogue_avatar.stla`](../examples/demo/scenarios/dialogue_avatar.stla).
 
-### 3.5C Declarative presentation clip
+### 3.5C 声明式演出片段
 
 ```stla
 @presentation_clip ui/eyecatch
@@ -487,7 +483,7 @@ cursor/path 前验证该 mandatory provider。
 [`tests/fixtures/scenarios/presentation_clip/lifecycle.stla`](../tests/fixtures/scenarios/presentation_clip/lifecycle.stla)
 由 CI 通过同一 parser、Director 与三个 Runtime-owned participant 实际执行。
 
-### 3.5D Dialogue page clear
+### 3.5D 清空对话页
 
 ```stla
 @dialogue_clear
@@ -507,7 +503,7 @@ token、Tween 或 wall-clock wait。存档显式记录 cleared 状态，不能�
 `text == ""` 推断；load、rollback、restart 与 scene replacement 都使用 generation 边界拒绝
 旧 callback。
 
-#### 高级：mixed presentation batch
+#### 高级：混合演出批次
 
 只有需要把 chapter indicator、dialogue visibility、dialogue clear、addressable dialogue avatar 与 Stage 操作组成同一 JOIN/FNF 边界时，才使用
 `@presentation_batch`：
@@ -627,6 +623,7 @@ Rule 遮罩以 normalized viewport UV 拉伸到整个视口、nearest sample，�
 @bgm play bgm_cafe volume=0.7 fade=1.5
 @bgm play bgm_battle_stems mix=rhythm,bass:0.7
 @bgm mix rhythm:0.4,bass,melody fade=0.8
+@bgm mix rhythm,bass:0.7 marker="サビ" fade=0.1
 @bgm pause fade=0.2
 @bgm resume fade=0.2
 @bgm stop fade=1.0
@@ -650,7 +647,7 @@ BGM 是单一固定 channel，唯一 public grammar 是：
 
 ```stla
 @bgm play <asset> [cue=<name>] [mix=<stem>[,<stem>[:<gain>]...]] [volume=0..1] [fade=<seconds>]
-@bgm mix <stem>[,<stem>[:<gain>]...] [fade=<seconds>]
+@bgm mix <stem>[,<stem>[:<gain>]...] [marker="<label>"] [fade=<seconds>]
 @bgm pause [fade=<seconds>]
 @bgm resume [fade=<seconds>]
 @bgm stop [fade=<seconds>]
@@ -667,12 +664,17 @@ BGM 是单一固定 channel，唯一 public grammar 是：
 
 同一 playing asset+cue 且 volume/stem mix 相同仍会通过 AudioPresenter/resource positive preflight，物理投影稳定时不重播、不 seek、也不创建 receipt；只改 volume 或 stem mix 会复用同一个 player/stream/cursor。`@bgm mix` 直接淡变同一 `AudioStreamSynchronized` 的子流 gain，不创建 stem player、第二 scheduler 或 guessed wait。若相同 play/mix/pause/resume/stop target 仍由上一条 fire-and-forget fade 持有，新的同 action 会先把旧 exact receipt 完成到唯一 authored endpoint，再以零新 Tween 同步确认；旧 token 的迟到 callback 无效。paused 状态下 `play` 从 cue 的 authored start marker 重播，只有 `resume` 从保留 cursor 继续；显式重启写成 `stop` 后再 `play`，不存在 `restart` option。对空 channel 执行 `mix`/`pause`/`resume` 会在该行 fail-close；single-stream BGM 也拒绝 `mix`；`stop` 为空时同步 no-op。
 
+`marker=` 只允许出现在 `@bgm mix`，并且 canonical authored spelling 只有 ASCII 双引号。字符串支持 `\\`、`\"`、`\n`、`\r`、`\t`；未知/不完整 escape、空 label、NUL、除 tab/newline/CR 外的 C0 control、C1 control、尾随 token 或未闭合引号都按原始 `source_path:line` fail-close。空格、逗号、等号和 Unicode 是 label 内容而不是分隔符，例如 `marker="A B,="` 与 `marker="サビ"`。label 与 resource 中的 source label 做 exact Unicode code-point 匹配，不 trim、不归一化，也没有单引号、curly quote 或 legacy alias。
+
+marker mix 不立即改 gain。命令在下一个 native audio callback 入口原子消费，并从该 callback 的 earliest-not-yet-rendered source-frame horizon 选择第一个 `sample_frame >= horizon` 的同名 occurrence；线性重采样已预取但尚未成为可听输出的 source sample 仍属于这个 horizon，不会被 decoder head 越过。因此恰在 H 提交会命中 H，H+1 才命中后一个重复 occurrence。多个同名/Unicode marker 按 `(sample_frame, authored ordinal)` 发生次序工作，不要求 label 全局唯一。循环 track 在当前 loop 尾部无匹配时只向下一圈的 `[loop_start, loop_end)` wrap 一次；non-loop 或整条可达 horizon 都无匹配时 receipt exact `FAILED`，stem mix 与 transport 不变。触发 callback 在 H 切分并从 H 的第一帧开始 source-frame ramp；它不 wall-clock wait/poll、seek、restart 或替换 player/stream。Skip/cancel 所需的 cut 也先在 audio callback 物理应用，再由 `CUT_APPLIED` terminal credit 完成 receipt；enqueue success 不冒充完成。
+
 原始 OGG/MP3/WAV 默认 `loop=true`、start=0，并保留格式自身合法的 loop marker。需要 authored start/loop marker 或 named cue 时，asset 指向 `BgmTrackDefinition` `.tres`；default 与每个 `BgmCueDefinition` 都是完整定义，cue 不继承 track 字段：
 
 ```gdscript
 # BgmTrackDefinition
 stream = <AudioStream>
 stems = []
+markers = []
 loop = true
 start_position = 0.0
 loop_position = 4.2
@@ -680,7 +682,9 @@ loop_end_position = 12.8 # -1.0 (default) means physical stream end
 cues = [<BgmCueDefinition cue_name="evening" ...>]
 ```
 
-`BgmTrackDefinition` 是严格 sum schema：`stream` 与 `stems` 必须且只能设置一个。single-stream 继续使用上面的 `stream`。multi-stem 则把 `stream` 留空，并提供 2..32 个 `BgmStemDefinition {stem_name, stream, default_gain}`；名称必须唯一，`default_gain` 为有限 `0..1`，且默认 mix 至少一个 gain 大于 0。所有 stem 必须同为 OGG、MP3 或 WAV，报告相同有限正长度；WAV 还必须具有相同 `mix_rate`、`stereo` 和 sample `format`。Presenter 预检成功后把它们装入一个 `AudioStreamSynchronized`，因此相位对齐并只占一个 `bgm:main` player。正在播放的 same asset+cue 只有在 ordered stem names、default gains、源流内容/格式与选中 marker 组成的 resource signature 完全一致时才允许原地 play/mix；合法 hot reload 若改变该 signature，会在 mixed batch 的任何 child mutation 前 fail-close。
+`BgmTrackDefinition` 是严格 sum schema：`stream` 与 `stems` 必须且只能设置一个。single-stream 继续使用上面的 `stream`。multi-stem 则把 `stream` 留空，并提供 2..32 个 `BgmStemDefinition {stem_name, stream, default_gain}`；名称必须唯一，`default_gain` 为有限 `0..1`，且默认 mix 至少一个 gain 大于 0。没有 marker 的 stem track 可继续使用同为 OGG、MP3 或 WAV 的流；WAV 还必须具有相同 `mix_rate`、`stereo` 和 sample `format`，并由一个 `AudioStreamSynchronized` player 播放。
+
+需要 marker 同步时，`markers` 是 ordered `BgmMarkerDefinition {marker_name: String, sample_frame: int}` 数组，且所有 stem 必须是采样率相同、长度相同的 imported OGG。marker 按 sample frame 非递减；同一 frame 可有不同 label，但完全相同的 `(frame,label)` 非法。marker 必须落在 physical stream frame range；某 cue/loop 当前不可达的 marker 不会被猜测为命中。使用 sample frame 而非秒值可避免格式/平台舍入。Presenter 从 export-safe `OggPacketSequence` 确定性重建 container，在 main-thread preflight 配置一个 custom native playback；仍只有一个 `bgm:main` player、一个 cursor 和一个 Director。正在播放的 same asset+cue 只有在 ordered stem names、源内容、loop region、采样率/frame count 与完整 marker table 的 schema-versioned SHA-256 signature 一致时才允许原地 play/mix；hot reload 改变 signature 会在 mixed batch 的任何 child mutation 前 fail-close。`configure(Dictionary)` 只是 strict closed-schema 内部 FFI，不是 public DSL/API。
 
 每个 default/cue 都完整声明 `loop`、`start_position`、`loop_position` 与 `loop_end_position`；cue 不继承 track。`loop_end_position=-1.0` 是唯一 sentinel，解析为 physical stream end，其他负数非法。resolved region 必须对每个 stem 满足有限的 `0 <= start_position <= loop_position < loop_end_position <= stream length`；即使 `loop=false` 也验证同一完整 region，但 duplicate stream 会禁用循环并继续播放 physical tail，不会被 end marker 截断。
 
@@ -1054,7 +1058,7 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | 清空舞台层 | `@stage clear` | `@stage clear` |
 | 句内头像表情 | `[expr:expression]` | — |
 | BGM 播放 | `@bgm play asset cue=... volume=... fade=...` | `@bgm play asset` |
-| BGM stem mix | `@bgm play asset mix=rhythm,bass:0.7` / `@bgm mix rhythm:0.4,bass fade=...` | 仅 multi-stem resource |
+| BGM stem mix | `@bgm play asset mix=rhythm,bass:0.7` / `@bgm mix rhythm:0.4,bass marker="サビ" fade=...` | marker 可省略；仅 multi-stem resource |
 | BGM 暂停/继续/停止 | `@bgm pause\|resume\|stop fade=...` | `@bgm pause` / `@bgm resume` / `@bgm stop` |
 | 音效 | `@se asset` | `@se asset` |
 | 循环音效播放 | `@loop_se channel play asset volume=... fade=...` | `@loop_se channel play asset` |
@@ -1088,7 +1092,7 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | timed wait 可跳过 | `false` | 显式 `skippable=true` 才接受普通推进或 Skip |
 | 对话推进 | 等待点击 | 有语音时可配置等语音播完 |
 
-### Native movie
+### 原生电影
 
 普通电影只需一行：
 
@@ -1109,7 +1113,7 @@ DSL 是唯一的脚本格式，引擎直接解析 `.stla` 为内部数据结构�
 
 整个 `@stage_batch` block 编译为一个 `stage_batch` command，并保留每个 child
 source line 供 runtime fail-close；批次所有权与回执规则见
-[Architecture 的 presentation architecture](ARCHITECTURE.md#6-presentation-architecture)。
+[架构设计的表现事务](ARCHITECTURE.md#7-表现事务)。
 
 ```
 ScriptParser/

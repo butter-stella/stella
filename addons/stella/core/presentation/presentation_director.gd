@@ -22,8 +22,8 @@ const EXACT_LOOP_SE_KEYS := [
 	"action", "asset", "channel", "fade_duration", "resume_position", "volume",
 ]
 const EXACT_BGM_KEYS := [
-	"action", "asset", "cue", "fade_duration", "resume_position", "stem_mix",
-	"volume",
+	"action", "asset", "cue", "fade_duration", "marker", "resume_position",
+	"stem_mix", "volume",
 ]
 const EXACT_PRESENTATION_CLIP_KEYS := ["asset"]
 const EXACT_MOVIE_KEYS := ["action", "asset", "loop", "skippable"]
@@ -726,10 +726,8 @@ func _preflight_operations(
 		SignalBus.capture_loop_se_positions(),
 	)
 	var loop_se_simulated := before_loop_se_channels.duplicate(true)
-	var before_bgm := BgmChannelState.with_position(
-		_presentation_state.current_bgm,
-		SignalBus.capture_bgm_position(),
-	)
+	var before_bgm := SignalBus.capture_bgm_state(
+		_presentation_state.current_bgm)
 	var before_movie := SignalBus.capture_movie_state()
 	var before_dialogue_avatar := _presentation_state.dialogue_avatar.duplicate(true)
 	var simulated_dialogue_avatar := before_dialogue_avatar.duplicate(true)
@@ -924,7 +922,7 @@ func _preflight_operations(
 			stage_run_open = false
 			if payload_keys != EXACT_BGM_KEYS:
 				return _preflight_failure(
-					"BGM payload must use the canonical seven-field schema",
+					"BGM payload must use the canonical eight-field schema",
 					operation,
 				)
 			if (
@@ -1686,7 +1684,7 @@ func _on_bgm_transition_terminal(
 	generation: int,
 	outcome: StringName,
 ) -> void:
-	if outcome not in [&"completed", &"superseded", &"cancelled"]:
+	if outcome not in [&"completed", &"superseded", &"cancelled", &"failed"]:
 		return
 	var entry: Dictionary = _entries.get(operation_request_id, {})
 	if entry.is_empty() or int(entry.get("generation", -1)) != _generation:
@@ -1773,6 +1771,28 @@ func _evaluate_terminal_state(request_id: int) -> void:
 	var terminal_keys: Dictionary = entry["terminal_keys"]
 	var receipt_keys: Dictionary = entry["receipt_keys"]
 	var request: PresentationBatchRequest = entry["request"]
+	for terminal_key_value: Variant in terminal_keys:
+		if StringName(terminal_keys[terminal_key_value]) != &"failed":
+			continue
+		if bool(entry.get("settling_failure", false)):
+			return
+		entry["settling_failure"] = true
+		var context: ScenarioContext = entry.get("context")
+		if context == null or not context.is_runtime_owner_current():
+			if int(entry["policy"]) == PresentationBatchRequest.Policy.JOIN:
+				request._settle(
+					PresentationBatchRequest.Outcome.CANCELLED, _authority)
+		else:
+			# A marker miss leaves the one BGM player, decoder cursor, and
+			# physical mix untouched. Restore every other domain still owned by
+			# this batch so its cross-domain atomicity is not silently broken.
+			_rollback_entry(entry, true)
+			_report_entry_participant_failure(entry, String(terminal_key_value))
+			if int(entry["policy"]) == PresentationBatchRequest.Policy.JOIN:
+				request._settle(
+					PresentationBatchRequest.Outcome.FAILED, _authority)
+		_cleanup_entry(request_id)
+		return
 	if int(entry["policy"]) == PresentationBatchRequest.Policy.JOIN:
 		for terminal_key_value: Variant in terminal_keys:
 			var terminal_key := String(terminal_key_value)
@@ -1881,7 +1901,7 @@ func _report_entry_participant_failure(
 	)
 
 
-func _rollback_entry(entry: Dictionary) -> void:
+func _rollback_entry(entry: Dictionary, preserve_bgm: bool = false) -> void:
 	var context: ScenarioContext = entry.get("context")
 	if context == null or not context.is_runtime_owner_current():
 		return
@@ -1891,7 +1911,7 @@ func _rollback_entry(entry: Dictionary) -> void:
 	var rollback_dialogue_avatar := _entry_owns_dialogue_avatar(entry)
 	var rollback_chapter := _entry_owns_chapter(entry)
 	var rollback_loop_se_channels := _entry_owned_loop_se_channels(entry)
-	var rollback_bgm := _entry_owns_bgm(entry)
+	var rollback_bgm := _entry_owns_bgm(entry) and not preserve_bgm
 	var rollback_presentation_clip := _entry_owns_presentation_clip(entry)
 	var rollback_movie := _entry_owns_movie(entry)
 	if (

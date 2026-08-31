@@ -4,14 +4,20 @@ class_name BgmChannelState extends RefCounted
 const VALID_ACTIONS := ["play", "mix", "pause", "resume", "stop"]
 const VALID_STATUSES := ["playing", "paused"]
 const EXACT_OPERATION_KEYS := [
-	"action", "asset", "cue", "fade_duration", "resume_position", "stem_mix",
-	"volume",
+	"action", "asset", "cue", "fade_duration", "marker", "resume_position",
+	"stem_mix", "volume",
 ]
 const EXACT_STATE_KEYS := [
+	"asset", "cue", "loop", "pending_marker_mix", "position", "status",
+	"stem_mix", "volume",
+]
+const PRE_MARKER_STATE_KEYS := [
 	"asset", "cue", "loop", "position", "status", "stem_mix", "volume",
 ]
 const MAX_CUE_NAME_LENGTH := 64
 const MAX_STEM_NAME_LENGTH := 64
+const MAX_MARKER_NAME_LENGTH := 64
+const MAX_MARKER_UTF8_BYTES := 256
 
 
 static func empty_state() -> Dictionary:
@@ -54,6 +60,24 @@ static func is_valid_stem_name(stem_name: String) -> bool:
 	return true
 
 
+static func is_valid_marker_label(marker: String) -> bool:
+	if (
+		marker.is_empty()
+		or marker.length() > MAX_MARKER_NAME_LENGTH
+		or marker.to_utf8_buffer().size() > MAX_MARKER_UTF8_BYTES
+	):
+		return false
+	for index in range(marker.length()):
+		var code := marker.unicode_at(index)
+		if (
+			code == 0
+			or (code < 32 and code not in [9, 10, 13])
+			or (code >= 127 and code <= 159)
+		):
+			return false
+	return true
+
+
 static func validate_stem_mix(
 	raw_mix: Variant,
 	allow_empty: bool = true,
@@ -89,8 +113,8 @@ static func validate_operation(raw_operation: Variant, report: bool = true) -> b
 	var keys := operation.keys()
 	keys.sort()
 	if keys != EXACT_OPERATION_KEYS:
-		return _reject(report, "operation must use the canonical seven-field schema")
-	for key: String in ["action", "asset", "cue"]:
+		return _reject(report, "operation must use the canonical eight-field schema")
+	for key: String in ["action", "asset", "cue", "marker"]:
 		if not operation.get(key, null) is String:
 			return _reject(report, "%s must be a String" % key)
 	for key: String in ["fade_duration", "resume_position", "volume"]:
@@ -100,6 +124,7 @@ static func validate_operation(raw_operation: Variant, report: bool = true) -> b
 	var action := String(operation["action"])
 	var asset := String(operation["asset"])
 	var cue := String(operation["cue"])
+	var marker := String(operation["marker"])
 	var fade_duration := float(operation["fade_duration"])
 	var resume_position := float(operation["resume_position"])
 	var stem_mix: Variant = operation["stem_mix"]
@@ -122,6 +147,8 @@ static func validate_operation(raw_operation: Variant, report: bool = true) -> b
 			return _reject(report, "play requires a canonical non-empty asset")
 		if cue != cue.strip_edges() or not is_valid_cue_name(cue):
 			return _reject(report, "play has an invalid cue name")
+		if not marker.is_empty():
+			return _reject(report, "play requires an empty marker")
 	elif action == "mix":
 		if (
 			not asset.is_empty()
@@ -133,6 +160,8 @@ static func validate_operation(raw_operation: Variant, report: bool = true) -> b
 				report,
 				"mix requires empty asset/cue, volume=1, and resume_position=0",
 			)
+		if not marker.is_empty() and not is_valid_marker_label(marker):
+			return _reject(report, "mix has an invalid marker label")
 	else:
 		if (
 			not asset.is_empty()
@@ -140,6 +169,7 @@ static func validate_operation(raw_operation: Variant, report: bool = true) -> b
 			or not (stem_mix as Dictionary).is_empty()
 			or volume != 1.0
 			or resume_position != 0.0
+			or not marker.is_empty()
 		):
 			return _reject(
 				report,
@@ -157,8 +187,8 @@ static func validate_snapshot_state(raw_state: Variant, report: bool = true) -> 
 		return true
 	var keys := state.keys()
 	keys.sort()
-	if keys != EXACT_STATE_KEYS:
-		return _reject(report, "active BGM state must use the canonical seven-field schema")
+	if keys != EXACT_STATE_KEYS and keys != PRE_MARKER_STATE_KEYS:
+		return _reject(report, "active BGM state must use the canonical BGM schema")
 	if (
 		not state.get("asset", null) is String
 		or String(state["asset"]).is_empty()
@@ -184,7 +214,28 @@ static func validate_snapshot_state(raw_state: Variant, report: bool = true) -> 
 		return _reject(report, "position must be non-negative")
 	if float(state["volume"]) < 0.0 or float(state["volume"]) > 1.0:
 		return _reject(report, "volume must be between 0 and 1")
+	var pending_value: Variant = state.get("pending_marker_mix", {})
+	if not pending_value is Dictionary:
+		return _reject(report, "pending_marker_mix must be a Dictionary")
+	if not (pending_value as Dictionary).is_empty():
+		var pending := BgmPendingMarkerMixState.from_snapshot(pending_value)
+		if pending == null:
+			return _reject(report, "pending_marker_mix has an invalid versioned schema")
+		if (state_mix as Dictionary).is_empty():
+			return _reject(report, "pending_marker_mix requires a multi-stem state")
 	return true
+
+
+static func normalize_snapshot_state(raw_state: Variant) -> Dictionary:
+	if not validate_snapshot_state(raw_state, false):
+		return {}
+	var state: Dictionary = raw_state
+	if state.is_empty():
+		return {}
+	var result := state.duplicate(true)
+	if not result.has("pending_marker_mix"):
+		result["pending_marker_mix"] = {}
+	return result
 
 
 static func operation_is_supported(state: Dictionary, operation: Dictionary) -> bool:
@@ -210,11 +261,21 @@ static func operation_has_work(state: Dictionary, operation: Dictionary) -> bool
 	if action == "resume":
 		return String(state.get("status", "")) != "playing"
 	if action == "mix":
-		return not stem_mix_equal(
+		var pending := BgmPendingMarkerMixState.from_snapshot(
+			state.get("pending_marker_mix", {}))
+		if not String(operation["marker"]).is_empty():
+			# A repeated authored marker command is a new Director participant.
+			# Presenter rebinds its receipt to the existing native arm so the old
+			# participant settles exact superseded instead of disappearing as a
+			# guessed no-op.
+			return true
+		return pending != null or not stem_mix_equal(
 			state.get("stem_mix", {}) as Dictionary,
 			operation["stem_mix"] as Dictionary,
 		)
 	return (
+		not (state.get("pending_marker_mix", {}) as Dictionary).is_empty()
+		or
 		state.is_empty()
 		or String(state.get("status", "")) != "playing"
 		or String(state.get("asset", "")) != String(operation["asset"])
@@ -231,7 +292,7 @@ static func operation_has_work(state: Dictionary, operation: Dictionary) -> bool
 
 
 static func with_position(state: Dictionary, position: float) -> Dictionary:
-	var result := state.duplicate(true)
+	var result := normalize_snapshot_state(state)
 	if (
 		result.is_empty()
 		or not is_finite(position)

@@ -50,6 +50,7 @@ func test_play_and_mix_lower_to_one_canonical_bgm_channel() -> void:
 		"asset": "ensemble",
 		"cue": "intro",
 		"fade_duration": 0.4,
+		"marker": "",
 		"resume_position": 0.0,
 		"stem_mix": {"harmony": 0.5, "rhythm": 1.0},
 		"volume": 0.8,
@@ -59,13 +60,14 @@ func test_play_and_mix_lower_to_one_canonical_bgm_channel() -> void:
 		"asset": "",
 		"cue": "",
 		"fade_duration": 0.6,
+		"marker": "",
 		"resume_position": 0.0,
 		"stem_mix": {"harmony": 1.0, "rhythm": 0.25},
 		"volume": 1.0,
 	})
 
 
-func test_single_stream_operations_use_the_same_exact_seven_field_schema() -> void:
+func test_single_stream_operations_use_the_same_exact_eight_field_schema() -> void:
 	var data := _parse("""@chapter synthetic
 @scene start
 @bgm play theme
@@ -80,7 +82,7 @@ func test_single_stream_operations_use_the_same_exact_seven_field_schema() -> vo
 		var keys := payload.keys()
 		keys.sort()
 		assert_eq(keys, [
-			"action", "asset", "cue", "fade_duration", "resume_position",
+			"action", "asset", "cue", "fade_duration", "marker", "resume_position",
 			"stem_mix", "volume",
 		])
 
@@ -151,7 +153,7 @@ func test_canonical_state_requires_full_json_safe_stem_mix() -> void:
 func test_mix_operation_requires_an_active_multi_stem_state() -> void:
 	var mix := {
 		"action": "mix", "asset": "", "cue": "",
-		"fade_duration": 0.5, "resume_position": 0.0,
+		"fade_duration": 0.5, "marker": "", "resume_position": 0.0,
 		"stem_mix": {"rhythm": 1.0}, "volume": 1.0,
 	}
 	var single := {

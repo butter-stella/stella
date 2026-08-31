@@ -36,7 +36,7 @@ Issue/实现公共契约；不要把立绘编码成背景、复制调度器，�
 
 ## 快速开始（5 分钟跑通）
 
-### Step 1 — 创建目录结构
+### 步骤 1 — 创建目录结构
 
 在你的项目中创建以下目录：
 
@@ -57,7 +57,7 @@ your_project/
 └── stella.cfg            ← 配置文件
 ```
 
-### Step 2 — 写一段剧本
+### 步骤 2 — 写一段剧本
 
 创建 `scenarios/demo.stla`：
 
@@ -75,7 +75,7 @@ sakura「这是一个最小的示例。」
 @bg bg_black fade 1.0
 ```
 
-### Step 3 — 创建配置文件
+### 步骤 3 — 创建配置文件
 
 创建 `stella.cfg`：
 
@@ -209,7 +209,7 @@ GODOT_BIN=godot tests/pck_smoke/run_export_smoke.sh
 
 `stella.local.cfg` 只是方便开发的覆盖层，不是 secrets vault：它既不加密，也不保证不会被误导出、备份或读取。不要在其中存放 API token、密码或其他凭据；凭据应通过环境变量或专用密钥管理服务提供。
 
-### Step 4 — 搭建游戏场景
+### 步骤 4 — 搭建游戏场景
 
 参考 `examples/demo/` 的结构搭建自己的标题场景和游戏场景，然后在 `stella.cfg` 的 `[overrides]` 中指向它们。
 
@@ -326,17 +326,17 @@ RichTextLabel 与 typewriter 相同的 parsed-character domain，不把 BBCode b
 DialoguePresenter Auto timer/voice waiter authority 拥有，不会创建项目 timer、callback 或
 第二 scheduler。完全不引用资源时，行为仍是原有 `auto_play_delay`。
 
-### Step 5 — 运行
+### 步骤 5 — 运行
 
 按 F5 运行。
 
 ---
 
-## Facade API
+## 公开 Facade API
 
 `StellaRuntime` 提供简洁的 API，用户搭建自己的 UI 时只需要调用这些方法：
 
-### 声明式 UI action
+### 声明式 UI 动作
 
 项目按钮不需要为每个 action 编写脚本，也不应调用 Presenter 的 `_on_*` 私有方法。在
 任意 `BaseButton` 下添加一个 `StellaAction` 子节点，并在 Inspector 中填写稳定的
@@ -516,7 +516,7 @@ signal 内允许独立 nested receipt，但最多 8 个，超过即 fail-close�
 `action_id`。legacy destructive enum 会同步消费本次专用 receipt 以维持既有行为，正常
 confirmation UI 必须按上例忽略带 auto-confirm marker 的请求。
 
-### 自定义对话 consumer / handler 迁移
+### 自定义对话消费端 / Handler 迁移
 
 Canonical 对话事件是 `SignalBus.dialogue_requested(request)`。自定义 UI 或无界面 runner 完成显示后，应确认收到的**同一个** request；不要用旧的全局 `advance_requested` 作为剧情确认：
 
@@ -554,7 +554,7 @@ StellaRuntime.request_quit()         # 安全退休音频后退出
 
 自定义标题、性能模式或其他宿主退出入口必须调用 `request_quit(exit_code=0)`，不要直接 `get_tree().quit()`。该 API 与内置标题、`StellaAction.QUIT` 和 OS close 共用同一个幂等边界：OS close 先自动存档，唯一 AudioPresenter 再退休 BGM/loop-SE/Voice/SE，Runtime 观察真实 AudioServer mix 回绕并给主线程一次 cleanup boundary 后退出。ack、driver 或 timing 非法及有界等待耗尽会以非零状态 fail-close。Godot 4.6.1 的 raw `--quit-after` 存在上游 audio-driver teardown 顺序限制（godotengine/godot#76745 / #122742），不能用于验证 active-audio 的产品 clean shutdown。
 
-#### 场景回想 / Gallery 播放
+#### 场景回想 / 鉴赏播放
 
 Gallery controller 以一个明确的零参数 continuation 启动同一份 STLA：
 
@@ -718,7 +718,7 @@ scheduler。完整语法见 [DSL 文档](DSL.md#35b-addressable-dialogue-avatar)
 可运行且由 CI 实际解析的公开 synthetic 示例位于
 [`examples/demo/scenarios/dialogue_avatar.stla`](../examples/demo/scenarios/dialogue_avatar.stla)。
 
-### 声明式 presentation clip
+### 声明式演出片段
 
 普通作者只选择一个 logical definition；时间线、命名状态 cue、system audio cue、UI 抑制和
 转场都保存在可复用的 `PresentationClipDefinition` 中，不展开成一长串 DSL 参数：
@@ -798,7 +798,7 @@ choice 不会被同步 save 捕获；Backlog、previous-choice、flowchart 也�
 cursor/history/path。load 后未访问 chapter 的 initial checkpoint 使用存档 initial seed 重建，绝不
 采用 load 过程中临时 fresh entropy。
 
-### Native movie
+### 原生电影
 
 项目先把可发布的视频离线转为 Godot 4.6 原生 Ogg Theora/Vorbis `.ogv`，放在 `[paths] movies` 根目录，以 logical ID 引用：
 
@@ -863,15 +863,16 @@ standalone 默认 fire-and-forget，不需要 policy、transition、duration 或
 
 资源从 `[paths] se` 解析，只接受 OGG/WAV；格式 stream 会先 duplicate 再启用 loop，所以普通 one-shot 不受影响，并保留已有 OGG/WAV loop marker。same channel 的 asset+volume 相同是 no-op；只改 volume 保留 player/position；换 asset 才 crossfade，任意时刻最多一个 incoming 与一个 outgoing。缺失资源会在 mixed batch 的任何 child mutation 前按 authored line 拒绝整批。session/new-game/title reset 会清 channels；普通场景和 UI replacement 不会。
 
-### BGM lifecycle 与 cue marker
+### BGM 生命周期与 cue marker
 
-BGM 只有一个 `bgm:main` channel。普通作者使用四条短 standalone 命令；默认立即执行并 fire-and-forget，动画必须显式写 `fade=`：
+BGM 只有一个 `bgm:main` channel。普通作者使用五种短 standalone action；默认立即执行并 fire-and-forget，动画必须显式写 `fade=`：
 
 ```stla
 @bgm play theme
 @bgm play evening cue=bridge volume=0.7 fade=1.0
 @bgm play battle_stems mix=rhythm,bass:0.7
 @bgm mix rhythm:0.4,bass,melody fade=0.8
+@bgm mix rhythm,bass:0.7 marker="サビ" fade=0.1
 @bgm pause fade=0.2
 @bgm resume fade=0.2
 @bgm stop fade=1.0
@@ -888,15 +889,21 @@ replacement 的 `fade` 是 outgoing 淡出与 incoming 淡入重叠的整个总�
 
 最短 `@bgm play asset` 保持不变。multi-stem resource 可在 `play` 上以 `mix=stem[,stem[:gain]...]` 指定初始配比，之后用 `@bgm mix ... [fade=...]` 原地改变配比；裸 stem gain 为 1，未列出的已定义 stem 为 0，空或全零 mix 会 fail-close。same playing asset+cue+volume+mix 会重新完成 resource/Presenter positive preflight，但稳定时不 seek、不重启 player；只改 volume 或 mix 保留同一个 player/stream/cursor。若同 action 的上一条 FNF fade 尚未结束，新 aligned JOIN 会先 exact-finish 旧 receipt 到唯一 authored endpoint，再以零新 Tween 同步完成，旧 token 之后保持 inert。paused 下 `play` 从 cue start 重播，`resume` 才继续保存的 cursor。play/mix/pause/resume/stop fade 都由同一 Director receipt 驱动，普通 advance 与 Skip 只 exact-finish 当前 JOIN；Auto 本身不制造 ack。context/global abort 会 cut 当前 Tween 到已提交 stable target；reset/load/rollback/restart/title 与 stale callback 使用同一 generation/ownership边界。
 
-原始 OGG/MP3/WAV 默认从 0 开始、循环到 stream end，并保留格式中合法的 loop marker。需要 authored start/loop marker 或 named cue 时，创建 `BgmTrackDefinition` Resource。single-stream 设置 `stream`；multi-stem 必须把 `stream` 留空并设置 2..32 个 `BgmStemDefinition`（唯一 `stem_name`、AudioStream、`default_gain=0..1`）。两者必须且只能选一个。multi-stem 所有流必须同为 OGG/MP3/WAV、长度相同；WAV 还要求 mix rate、stereo 和 sample format 相同。Presenter 只创建一个 `AudioStreamSynchronized` BGM player，各 stem 从同一 playback 相位开始。
+marker-capable stem track 可以把完整 mix 延迟到下一次 matching audio marker：`@bgm mix ... marker="<label>" [fade=...]`。marker 必须使用 ASCII 双引号；canonical escape 只有 `\\`、`\"`、`\n`、`\r`、`\t`，因此空格/逗号/等号与日文等 Unicode 都能 exact 表达。重复 label 合法并按 source sample frame + authored ordinal 发生次序匹配；命令在下一个 audio callback 入口选 earliest-not-yet-activated `(source frame, loop epoch)` horizon 上第一个 matching occurrence，包括重采样器已预取但尚未输出的 source sample。选中目标绑定 exact loop epoch；rate>1 时单次 callback 即使跨过多个短 loop，仍逐 source frame 激活并在首个 exact occurrence 命中，不依赖 bool wrap 推测。marker playback 的 `fade` 在 resource sample rate 已解析后统一转为 signed int32 source frames；`2147483647` frames 可表示，下一 frame 在 receipt/state/native mutation 前 fail-close。未命中会使 exact receipt `FAILED`，不改变 mix/cursor/player；mixed batch 已应用的非 BGM domain 会 selective rollback，FNF 仍按 BGM authored `source_path:line` 报告并 drain owner。没有 immediate fallback、wall-clock wait/poll、seek/restart 或第二 transport。H 所在 callback 会在 H split，`fade` 从 H 的第一帧按 source frames 推进；Skip/cancel 的 cut 必须等 callback 发出 `CUT_APPLIED` 后才完成 receipt，enqueue success 不是物理完成。
+
+原始 OGG/MP3/WAV 默认从 0 开始、循环到 stream end，并保留格式中合法的 loop marker。需要 authored start/loop marker 或 named cue 时，创建 `BgmTrackDefinition` Resource。single-stream 设置 `stream`；multi-stem 必须把 `stream` 留空并设置 2..32 个 `BgmStemDefinition`（唯一 `stem_name`、AudioStream、`default_gain=0..1`）。两者必须且只能选一个。没有 marker 的 multi-stem 所有流必须同为 OGG/MP3/WAV、长度相同；WAV 还要求 mix rate、stereo 和 sample format 相同，Presenter 用一个 `AudioStreamSynchronized` player。
+
+marker-capable resource 另设置 ordered `markers: Array[BgmMarkerDefinition]`，每项是 exact `marker_name` 与整数 `sample_frame`。它只支持采样率/长度一致的 imported OGG stems；marker 必须落在 physical stream frame range，frames 非递减，同 frame 的不同 label 合法而完全重复 pair 非法。某个 cue/loop horizon 当前不可达的 marker 会 exact fail，不会猜测命中。Presenter 从 Godot export 中保留的 `OggPacketSequence` 确定性重建 Ogg container，配置一个 direct custom playback 来维持唯一 player/cursor、线性 sample-rate interpolation 与 atomic gain ramp。公开 author/API 仍只有 typed definitions；native `configure(Dictionary)` 是 internal closed-schema FFI。完整 marker table、ordered stems/content、loop region 与 PCM metadata 进入 schema-versioned SHA-256 restore signature，hot reload 不会把旧 pending arm 投到新素材。
 
 track 设置共享 `loop`、`start_position`、`loop_position`、`loop_end_position`，并可添加完整的 `BgmCueDefinition`。named cue 不继承 track default。`loop_end_position=-1.0` 是唯一 physical-stream-end sentinel；其他值必须有限，且每个定义都须对所有流满足 `0 <= start_position <= loop_position < resolved_loop_end <= length`。`loop=false` 时仍验证完整 region，但不启用循环，也不会截断显式 end 后的 natural tail。
 
 WAV definition duplicate 以 source sample frame 写入 `loop_begin` / `loop_end`；OGG/MP3 duplicate 以 Godot 4.6 mixer 的 `loop_offset` + 单 beat boundary 写入显式 end，并要求读回误差小于一个 source sample，否则 fail-close。natural sentinel 清除 definition duplicate 的 beat end marker，raw stream 自带的合法 native marker 则原样保留。multi-stem 的同一 end 原子应用到每个 synchronized child；mix/volume-only 更新仍不 seek、不 restart、不换 stream。Stella 不裁剪、转码或猜测素材时长，也没有 polling/timer/frame-wait loop owner。`loop_end_position` 只属于 resource definition，不是新 DSL/save 字段。资源/cue/stem/region 缺失、歧义、非法或不可精确表示，会在 mixed child 的任何 mutation 前按 BGM authored line fail-close。公开 synthetic single/multi-stem reference 见 [`examples/demo/scenarios/bgm_lifecycle.stla`](../examples/demo/scenarios/bgm_lifecycle.stla) 与对应 redistributable `.tres`。
 
+marker transport 是 Stella 明确的最小 C++/godot-cpp 设计边界，因为 Godot 4.6 的 GDScript/`AudioStreamSynchronized` gain API 与 native resampler prebuffer 都无法暴露 source-sample atomic switch。native callback 会在消费 marker command 前校验完整 source step；过小而不能表示 fixed-point increment、或超过受支持上限的正数 playback speed 会暂时输出完整静音 buffer，player/cursor/pending 不变，速率恢复后同一 command 才执行一次，不会用 short buffer 误报播放结束。构建/导出前运行 `tests/build_marker_bgm_native.sh template_debug` 与 `template_release`；godot-cpp commit、Godot 4.6 ABI、stb_vorbis source/license 均固定在 `native/marker_bgm`。脚本从 checked-in `.gdextension.in` 生成 active descriptor，所以未构建的 clean clone 不会先产生 missing-library loader 噪音；真正使用 marker track 时会明确 fail-close 并提示构建步骤。CI 对 macOS universal（arm64+x86_64）、Linux x86_64、Windows x86_64 分别从 clean checkout 构建 debug/release，运行 native contract、exported-PCK load/PCM smoke，并上传 descriptor+binary release artifact；其他 OS/architecture 必须先补 library entry、可重现 build 和 exported-process smoke，不能退化为 immediate mix。导出 filter 必须收集生成的 `addons/stella/native/stella_marker_bgm.gdextension`、对应 `addons/stella/native/bin` sidecar、marker `.tres` 和 imported OGG；PCK 中无需 source `.ogg` raw bytes。
+
 旧 `@bgm asset [fade]` / `@bgm off [fade]` 已删除，必须迁移为 `play` / `stop` action grammar；Runtime 中没有第二 BGM handler 或 legacy alias。
 
-### 声明式 Stage 批次：JOIN 与 fire-and-forget
+### 声明式 Stage 批次：JOIN 与非阻塞执行
 
 当多个命名 Stage 层必须在同一 authored boundary 提交，且后续对话或音频必须等待全部转场到达终态时，使用 `policy=join`：
 
@@ -974,7 +981,9 @@ legacy_snapshot["scenario_context"]["scenario_source_identity"] = (
 
 在游戏内读档、快读或从 Backlog/选项/流程图回退时，Runtime 会先把 engine context 所有权转交给恢复后的 context，再清理旧画面和阻塞命令。旧对话的取消不会触发自然 `scenario_ended`，恢复后的 context 始终是最终执行 owner；自定义 Presenter 仍只需遵守上文的 request `advance()` / `abort()` 契约。
 
-JOIN 动画进行中可以存档。存档记录已原子提交的 final canonical Stage target、loop-SE 的 `{asset, loop, volume, position}`、BGM 的 `{asset, cue, loop, position, status, stem_mix, volume}`（stopped 为 `{}`；single-stream 的 `stem_mix={}`）与 scenario cursor；operation、policy、request/batch、receipt、token、generation、Tween、barrier、fade progress 与 outgoing player 都不入档。恢复时先 cancel old generation，再 reset + atomic cut canonical target，最后在 same cursor 重新派发。BGM pause fade 存档会采样保存瞬间 cursor，但恢复直接是稳定 paused；crossfade 存档只保存 incoming target/current incoming cursor，mix fade 保存已提交的 final mix。这是有意的 cut projection，不恢复 Tween progress。loop-SE/BGM 的 same target 仍须通过 AudioPresenter/resource preflight。旧版 String `bgm` 或缺少 `stem_mix` 的旧六字段 BGM 存档不是当前版本公共 schema，generic read 与 scenario-aware load 都在任何 provider mutation 前 fail-close；宿主若需要迁移已确认版本的 single-stream 旧档，应在自己的版本化迁移事务中补入 `stem_mix={}`，Stella Runtime 不保留 legacy 分支。
+JOIN 动画进行中可以存档。存档记录已原子提交的 final canonical Stage target、loop-SE 的 `{asset, loop, volume, position}`、BGM 的 `{asset, cue, loop, pending_marker_mix, position, status, stem_mix, volume}`（stopped 为 `{}`；single-stream 的 `stem_mix={}`、`pending_marker_mix={}`）与 scenario cursor；operation、policy、request/batch、receipt、token、generation、Tween、barrier、普通 fade progress 与 outgoing player 都不入档。恢复时先 cancel old generation，再 reset + atomic cut canonical target，最后在 same cursor 重新派发。BGM pause fade 存档会采样保存瞬间 cursor，但恢复直接是稳定 paused；crossfade 存档只保存 incoming target/current incoming cursor，immediate mix fade 保存已提交的 final mix。这是有意的 cut projection，不恢复 Tween progress。
+
+marker arm 是例外的 typed pending state：enqueue-before-audio-ack 保存 versioned `queued` descriptor；ack 后保存 exact `armed` frame/ordinal/loop epoch；两种 phase 都保存与 selection 相同的 earliest-not-yet-activated restore horizon，pending 时 `position` 也严格投影自该 source frame，H split 已开始则保存 final stem mix并清 pending。restore 同时核验 marker-table/track SHA-256，再把 exact horizon/occurrence 作为 startup command 写入 custom playback；native silent full-buffer hold 在 `player.play()` 前已关闭，hold callback 输出完整静音 buffer 但不推进 decoder/cursor/command，Presenter 登记 owner 并设置 paused/playing 后才释放，所以不存在 play→arm 的 source-sample/cursor 窗口，AudioServer 也不会将它当作 short-buffer end。same-target 重派会让旧 receipt exact superseded、新 receipt 绑定同一 native arm；replacement admission/consume 失败则 old arm/receipt 保持；cancel/skip/restart/scene replacement/load/rollback 使旧 generation events inert。runtime typed snapshot 仍要求 pending integer 字段是 exact int；Godot 从 JSON 读回后数字是 float，因此 SaveManager 仅在 disk decode 对这些已知字段接受 finite、integral且不超过 `2^53-1` 的 JSON number，然后转为 int；String/Bool、fractional、unsafe integer、unknown/missing key 全部 fail-close。JSON parser 已丢失 `2` 与 `2.0` 的 token spelling，disk contract 不伪称可区分它们。旧存档允许仅缺少新字段 `pending_marker_mix` 并 clean-default `{}`；字段存在但 malformed 或 schema version 未知会在任何 provider mutation 前 fail-close。这只是新增字段缺省，不恢复旧 String `bgm`、缺 `stem_mix` 等 legacy schema；后者仍需宿主自己的版本化迁移事务。
 
 Stage target 中的 `z_index` 与 `depth_origin` 作为两个独立 canonical 字段进入同一 JSON snapshot；恢复时重新计算完整浮点排序键，不保存 CanvasItem bucket、sibling index 或 Tween 中间值。
 
@@ -1001,7 +1010,7 @@ StellaRuntime.show_backlog()         # 打开回想记录
 StellaRuntime.close_overlay()        # 关闭当前覆盖层
 ```
 
-### CG Gallery
+### CG 鉴赏
 
 ```gdscript
 StellaRuntime.unlock_cg(cg_id)       # 启用 cg_gallery 时记录解锁

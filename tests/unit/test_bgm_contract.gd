@@ -68,12 +68,12 @@ func test_standalone_actions_lower_to_canonical_fire_and_forget_children() -> vo
 		assert_eq(command.params["operations"][0]["kind"], "bgm")
 	assert_eq(commands[0].params["operations"][0]["payload"], {
 		"action": "play", "asset": "theme", "cue": "p1",
-		"fade_duration": 0.8, "resume_position": 0.0, "stem_mix": {},
+		"fade_duration": 0.8, "marker": "", "resume_position": 0.0, "stem_mix": {},
 		"volume": 0.65,
 	})
 	assert_eq(commands[1].params["operations"][0]["payload"], {
 		"action": "pause", "asset": "", "cue": "",
-		"fade_duration": 0.2, "resume_position": 0.0, "stem_mix": {},
+		"fade_duration": 0.2, "marker": "", "resume_position": 0.0, "stem_mix": {},
 		"volume": 1.0,
 	})
 	assert_eq(commands[2].params["operations"][0]["payload"]["fade_duration"], 0.0,
@@ -148,7 +148,7 @@ func test_stable_state_distinguishes_status_cue_volume_loop_and_position() -> vo
 	assert_not_null(JSON.parse_string(JSON.stringify(playing)))
 	var play := {
 		"action": "play", "asset": "theme", "cue": "p1",
-		"fade_duration": 0.5, "resume_position": 0.0, "stem_mix": {},
+		"fade_duration": 0.5, "marker": "", "resume_position": 0.0, "stem_mix": {},
 		"volume": 0.7,
 	}
 	assert_false(BgmChannelState.operation_has_work(playing, play),
@@ -159,7 +159,7 @@ func test_stable_state_distinguishes_status_cue_volume_loop_and_position() -> vo
 		"play from paused restarts at the authored cue")
 	var pause := {
 		"action": "pause", "asset": "", "cue": "",
-		"fade_duration": 0.2, "resume_position": 0.0, "stem_mix": {},
+		"fade_duration": 0.2, "marker": "", "resume_position": 0.0, "stem_mix": {},
 		"volume": 1.0,
 	}
 	assert_true(BgmChannelState.operation_has_work(playing, pause))

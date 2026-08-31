@@ -1,0 +1,46 @@
+[gd_resource type="Resource" script_class="BgmTrackDefinition" load_steps=9 format=3]
+
+[ext_resource type="Script" path="res://addons/stella/core/data/bgm_track_definition.gd" id="1_track"]
+[ext_resource type="Script" path="res://addons/stella/core/data/bgm_stem_definition.gd" id="2_stem"]
+[ext_resource type="Script" path="res://addons/stella/core/data/bgm_marker_definition.gd" id="3_marker"]
+[ext_resource type="AudioStreamOggVorbis" path="res://tests/fixtures/audio/bgm/synthetic_loop_region.ogg" id="4_stream"]
+
+[sub_resource type="Resource" id="Resource_rhythm"]
+script = ExtResource("2_stem")
+stem_name = "rhythm"
+stream = ExtResource("4_stream")
+default_gain = 1.0
+
+[sub_resource type="Resource" id="Resource_bass"]
+script = ExtResource("2_stem")
+stem_name = "bass"
+stream = ExtResource("4_stream")
+default_gain = 0.0
+
+[sub_resource type="Resource" id="Marker_old"]
+script = ExtResource("3_marker")
+marker_name = "old"
+sample_frame = 4410
+
+[sub_resource type="Resource" id="Marker_sabi_1"]
+script = ExtResource("3_marker")
+marker_name = "サビ"
+sample_frame = 8820
+
+[sub_resource type="Resource" id="Marker_sabi_2"]
+script = ExtResource("3_marker")
+marker_name = "サビ"
+sample_frame = 13230
+
+[sub_resource type="Resource" id="Marker_quoted"]
+script = ExtResource("3_marker")
+marker_name = "A B,=\t\"C\""
+sample_frame = 17640
+
+[resource]
+script = ExtResource("1_track")
+stems = Array[ExtResource("2_stem")]([SubResource("Resource_rhythm"), SubResource("Resource_bass")])
+loop = true
+start_position = 0.0
+loop_position = 0.0
+markers = Array[ExtResource("3_marker")]([SubResource("Marker_old"), SubResource("Marker_sabi_1"), SubResource("Marker_sabi_2"), SubResource("Marker_quoted")])

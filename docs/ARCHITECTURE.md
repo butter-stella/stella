@@ -1,337 +1,423 @@
-# Stella architecture
+# Stella 架构设计
 
-This document describes the architecture implemented on `main`. It is the
-canonical source for module ownership and runtime data flow. It deliberately
-does not duplicate the complete DSL grammar or every Facade method:
+本文描述当前 `main` 已实现的模块所有权和运行时数据流，是 Stella 架构的权威说明。
+它不重复完整 DSL 语法或所有 Facade 方法：
 
-- authored syntax and defaults: [DSL.md](DSL.md)
-- project integration and public API: [USAGE.md](USAGE.md)
-- input ownership: [INPUT_DESIGN.md](INPUT_DESIGN.md)
-- architectural assessment and roadmap: [ARCHITECTURE_REVIEW.md](ARCHITECTURE_REVIEW.md)
+- 作者语法和默认值：[DSL.md](DSL.md)；
+- 宿主接入和公开 API：[USAGE.md](USAGE.md)；
+- 输入所有权：[INPUT_DESIGN.md](INPUT_DESIGN.md)；
+- 架构判断、风险和演进顺序：[ARCHITECTURE_REVIEW.md](ARCHITECTURE_REVIEW.md)。
 
-Source and tests are the executable truth. New features must update the
-relevant canonical document in the same change.
+源码和测试是最终可执行事实。新功能改变所有权、数据流或兼容面时，必须在同一改动中更新
+对应文档。
 
-## 1. Goals and boundaries
+## 1. 一句话架构
 
-Stella is a Godot 4.6 visual-novel framework with a typed `.stla` authoring
-language. Its main architectural goals are:
+Stella 是一个**单组合根、单剧情游标、单演出事务所有者**的 Godot 视觉小说框架：
 
-- keep scenario semantics independent from concrete scene layout;
-- provide one composition root and one owner for each mutable runtime concern;
-- validate authored input before visible or persistent mutation;
-- make blocking commands cancellable across load, navigation, restart and
-  scene replacement;
-- persist canonical presentation state instead of serializing scene nodes,
-  Tweens or callbacks;
-- expose stable project APIs without turning compatibility adapters into a
-  second execution path.
+- `StellaRuntime` 负责组合和生命周期；
+- `ScenarioEngine` 负责唯一剧情执行游标；
+- `PresentationDirector` 负责阻塞演出的批次、回执、取消和回滚；
+- `SignalBus` 只承担跨层端口与兼容通知；
+- Presenter 拥有 Godot 节点和物理表现；
+- `SaveManager` 保存 canonical value，而不是节点、Tween 或 callback；
+- 原生代码只作为受控执行器解决已确认的 Godot API 缺口。
 
-`core/` is **non-visual runtime logic**, not engine-independent code. It uses
-Godot types (`RefCounted`, signals, resources and `Variant`) but must not depend
-on concrete Control/Node scene layouts. `presentation/` owns Godot nodes,
-rendering, UI and audio behavior.
-
-Downstream games are validation consumers. A missing capability must be fixed
-or designed in Stella; games must not encode character layers as backgrounds,
-reimplement Stella scheduling, or add hidden compatibility paths to make a
-specific package appear supported.
-
-## 2. System context
+## 2. 系统总览
 
 ```mermaid
-flowchart LR
-    Author[Writer / .stla] --> Parser[Lexer + parser]
-    Host[Game project] --> Config[stella.cfg + scenes + resources]
-    Parser --> Model[ScenarioData]
-    Config --> Runtime[StellaRuntime]
-    Runtime --> Engine[ScenarioEngine]
-    Model --> Engine
-    Engine --> Handler[CommandRegistry + handlers]
-    Handler --> Director[PresentationDirector]
-    Handler --> Bus[SignalBus adapters]
-    Director <--> Bus
-    Bus --> Presenter[Scene/global Presenters]
-    Presenter --> Player[Godot UI / render / audio]
-    Director --> Projection[PresentationState]
-    Engine --> Save[SaveManager]
-    Projection --> Save
+flowchart TB
+    subgraph Host["作者与宿主项目"]
+        STLA[".stla 剧本"]
+        CFG["stella.cfg / settings schema"]
+        RES["逻辑资源 / Profile / 场景"]
+        UI["项目 UI / StellaAction"]
+        PHYS["键鼠 / 手柄 / OS 事件"]
+    end
+
+    subgraph Bootstrap["启动与组合边界"]
+        PLUGIN["Editor Plugin / bootstrap"]
+        RT["StellaRuntime\n唯一组合根与 Facade"]
+        BUS["SignalBus\n跨层 typed port + 兼容通知"]
+    end
+
+    subgraph Core["Core：非视觉运行时逻辑"]
+        PARSER["DslLexer / DslParser\nclosed grammar + source diagnostics"]
+        MODEL["ScenarioData / CommandData\ntyped operation / state value"]
+        ENGINE["ScenarioEngine + ScenarioContext\n唯一剧情游标与 execution generation"]
+        REG["CommandRegistry + Handler"]
+        DIRECTOR["PresentationDirector\n唯一演出事务 / receipt owner"]
+        ACTION["ActionRegistry / Input policy\nAuto / Skip / Backlog / Settings"]
+        SAVE["SaveManager\nprovider transaction"]
+        PSTATE["PresentationState\ncanonical projection"]
+    end
+
+    subgraph Presentation["Presentation：Godot 物理表现"]
+        SCENE_P["Scene-owned Presenter\nDialogue / Stage / Background / Choice / UI"]
+        GLOBAL_P["Runtime-owned Presenter\nAudio / Clip / Movie"]
+        INPUT["InputHandler\n物理输入 → 语义 intent"]
+    end
+
+    subgraph Native["受控原生边界"]
+        MARKER["StellaMarkerBgmStream / Playback\nOGG decode + sample-frame marker + gain ramp"]
+    end
+
+    subgraph Godot["Godot 4.6 运行时"]
+        TREE["SceneTree / Control / Canvas / Tween"]
+        AUDIO["AudioServer / AudioStreamPlayer"]
+        DISK["ResourceLoader / JSON / user://"]
+    end
+
+    STLA --> PARSER
+    CFG --> RT
+    RES --> RT
+    PLUGIN --> RT
+    PARSER --> MODEL --> ENGINE
+    RT --> ENGINE
+    RT --> DIRECTOR
+    RT --> ACTION
+    RT --> SAVE
+    ENGINE --> REG
+    REG --> DIRECTOR
+    REG --> BUS
+    DIRECTOR <--> BUS
+    BUS --> SCENE_P
+    BUS --> GLOBAL_P
+    DIRECTOR --> PSTATE --> SAVE
+    ENGINE --> SAVE
+    UI --> ACTION
+    PHYS --> INPUT --> ACTION
+    ACTION --> RT
+    SCENE_P --> TREE
+    GLOBAL_P --> TREE
+    GLOBAL_P --> AUDIO
+    GLOBAL_P --> MARKER --> AUDIO
+    SAVE --> DISK
+    RT --> DISK
 ```
 
-There are two Autoloads:
+图中最重要的约束是**箭头不能偷偷复制所有权**。`SignalBus` 可以传输事件，但不能因此成为
+第二个 Director；原生 BGM callback 可以决定 sample-frame 物理切换，但不能因此成为剧情
+scheduler；项目 UI 可以发出 action intent，但不能直接完成当前 blocking operation。
 
-- `StellaRuntime` is the composition root, lifecycle coordinator and public
-  Facade. It constructs Core services, registers handlers, owns global
-  Presenters, manages navigation and bridges public calls to the current run.
-- `SignalBus` transports cross-layer requests and public notifications. Some
-  typed presentation protocols also keep dispatch-scoped participant state on
-  the bus, but the bus does not create another Director or scenario engine.
-
-The plugin installs those Autoloads and selects the non-visual bootstrap scene
-only when the host has no project-owned main scene (or still uses Stella's old
-default title scene).
-
-## 3. Dependency rules
+## 3. 分层与依赖规则
 
 ```mermaid
 flowchart TD
-    Plugin[Editor plugin / bootstrap] --> Runtime[Autoload composition]
-    Runtime --> Core[Core]
-    Runtime --> Presentation[Presentation]
-    Core --> Bus[SignalBus contract]
-    Presentation --> Bus
-    Core -. forbidden .-> Concrete[Concrete Presenter nodes/scenes]
+    HOST["宿主 / 示例 / 测试"] --> API["公开 DSL / Config / Facade / Resource"]
+    API --> RT["StellaRuntime 组合根"]
+    RT --> CORE["Core"]
+    RT --> PRES["Presentation"]
+    CORE --> PORT["SignalBus / typed operation port"]
+    PRES --> PORT
+    PRES --> NATIVE["受控 native executor"]
+    CORE -. "禁止依赖" .-> CONCRETE["具体 Presenter / scene / node path"]
+    NATIVE -. "禁止拥有" .-> STORY["Scenario cursor / Director / save policy"]
 ```
 
-The intended dependency rules are:
+必须保持以下依赖规则：
 
-1. Concrete scene and node behavior stays in `presentation/` or `scenes/`.
-2. Core commands communicate with Presentation through typed operations or a
-   documented SignalBus port, never by searching a scene tree.
-3. `StellaRuntime` is the only production composition root. No subsystem may
-   construct a parallel ScenarioEngine, PresentationDirector or input router.
-4. Persisted state contains values and stable logical resource identities, not
-   live Nodes, Callables, Tweens, receipt objects or wall-clock deadlines.
-5. Public compatibility signals are notifications/adapters. They must not
-   become an alternative completion authority for built-in blocking commands.
-6. Native extensions are exceptional implementation details for measured
-   Godot API gaps. Their lifecycle must remain behind the same typed Core and
-   Presenter ownership model.
+1. 具体场景和节点行为属于 `presentation/` 或 `scenes/`；
+2. Core 只通过 typed operation 或有文档约束的 `SignalBus` 端口请求表现，不搜索具体场景树；
+3. `StellaRuntime` 是唯一生产组合根，任何子系统都不得并行构造 ScenarioEngine、
+   PresentationDirector、输入路由或存档事务；
+4. `core/` 是“非视觉运行时逻辑”，不是“完全引擎无关代码”：可以使用 `RefCounted`、
+   Resource、signal 和 Variant，但不能依赖具体 Control/Node 布局；
+5. 持久化状态只保存值、版本和稳定逻辑资源身份，不保存 Node、Callable、Tween、receipt 对象、
+   音频 callback 或 wall-clock deadline；
+6. 兼容 signal 是通知/adapter，不得成为内建 blocking command 的替代完成路径；
+7. native extension 是例外实现细节，必须继续受 typed operation、Presenter、Director 和
+   generation 生命周期约束。
 
-## 4. Startup and composition
+## 4. 组件与所有权
 
-`StellaRuntime._init()` resolves the startup configuration before host scene
-initializers consume it. Configuration resolution is atomic per source:
+| 组件 | 唯一职责 | 明确不负责 |
+|---|---|---|
+| `StellaRuntime` | 组合、Facade、启动、导航、生命周期桥接 | 具体 UI/音频渲染；第二套剧情执行 |
+| `SignalBus` | Core↔Presentation 端口、typed 协议运输、公开通知 | 决定剧情顺序；创建 Director；保存状态 |
+| `ScenarioEngine` | 当前 scenario/context 的命令循环与唯一剧情游标 | SceneTree 切换；具体表现实现 |
+| `CommandRegistry` / Handler | 将 canonical CommandData 执行为 Core 变更或表现请求 | 扩展 DSL grammar；直接搜索 Presenter |
+| `PresentationDirector` | batch ownership、authored order、receipt、JOIN/FNF、取消、选择性回滚 | 具体 channel 的节点/资源实现 |
+| `PresentationState` | 持久表现域的 canonical value projection | live Node/Tween/player 所有权 |
+| `SaveManager` | provider preflight、JSON 边界和原子恢复顺序 | 猜测损坏数据；保存 callback/节点 |
+| `StellaActionRegistry` | 稳定 action catalog、确认与 owner generation | 物理输入优先级；直接推进剧情尾部 |
+| Scene-owned Presenter | 当前场景中的 Dialogue/Stage/UI 等物理表现 | 跨场景持久 channel；剧情调度 |
+| Runtime-owned Presenter | Audio/Clip/Movie 等跨场景 channel | 第二 Runtime/Director |
+| Marker BGM native playback | audio callback 中的 OGG decode、marker 选择与 gain ramp | 资源语义、存档策略、receipt 语义、main-thread 调度 |
+
+## 5. 启动与组合
+
+`StellaRuntime._init()` 必须在宿主场景成员初始化消费配置前，完成分层配置解析：
 
 ```text
-built-in defaults < res://stella.cfg < res://stella.local.cfg
+内置默认值 < res://stella.cfg < res://stella.local.cfg
 ```
 
-The local layer is for machine-specific development values and is not part of
-a distributable project. Tests can explicitly disable implicit local config and
-settings reads to remain hermetic.
-
-`StellaRuntime._ready()` then constructs the runtime graph in this order:
-
-1. settings, save, playback, game-state and action services;
-2. `PresentationState` and the single `PresentationDirector`;
-3. runtime-owned global Presenters (audio, presentation clip and movie);
-4. `CommandRegistry`, `ScenarioEngine` and built-in handlers;
-5. lifecycle bridges, save providers and state-change observers.
-
-The bootstrap scene enters the resolved title scene after composition and
-configuration are ready. Scene-owned Presenters register when their scene enters
-the tree and retire their capabilities when it exits.
-
-## 5. Authoring and execution pipeline
+每个来源都先完整解析和校验，再原子提交。未知 section/key、错误类型、非法编码或损坏语法会
+拒绝整个来源，不留下半套覆盖。`stella.local.cfg` 只用于本机开发，不能进入发布包。
 
 ```mermaid
 sequenceDiagram
-    participant S as .stla source
-    participant P as DslLexer/DslParser
+    participant P as Plugin / bootstrap
+    participant R as StellaRuntime
+    participant C as 配置与资源预检
+    participant S as Core services
+    participant G as Runtime-owned Presenter
     participant E as ScenarioEngine
+    participant T as SceneTree
+
+    P->>R: 创建两个 Autoload
+    R->>C: defaults → base → local
+    C-->>R: 完整 resolved snapshot 或 fail-close
+    R->>S: 构造设置/存档/播放/动作/状态
+    R->>S: 构造 PresentationState + 单一 Director
+    R->>G: 构造 Audio / Clip / Movie Presenter
+    R->>E: 构造 Registry / Engine / built-in Handler
+    R->>T: 进入 resolved title scene
+    T-->>R: scene_changed
+    T->>T: Scene-owned Presenter 注册 capability
+```
+
+场景候选会在状态提交前经过资源、依赖、类型、构造器和退化路径预检。导航不是 Handler 直接
+调用 `change_scene`，而是 Runtime-owned transaction；只有最终 `SceneTree.scene_changed`
+确认目标后，才提交新的宏观状态。
+
+## 6. 作者语法到剧情执行
+
+```mermaid
+sequenceDiagram
+    participant A as .stla 源码
+    participant P as DslLexer / DslParser
+    participant D as ScenarioData
+    participant E as ScenarioEngine
+    participant C as ScenarioContext
     participant R as CommandRegistry
     participant H as CommandHandler
-    participant C as ScenarioContext
 
-    S->>P: tokenize + parse(source_path)
-    P-->>S: source-located diagnostics on failure
-    P->>E: ScenarioData / scenes / commands
-    E->>C: create owned run context
-    loop commands
-        E->>R: lookup command type
-        R->>H: execute CommandData
-        H->>C: read/update run state or await cancellation-aware result
-        H-->>E: completed / cancelled / failed
+    A->>P: tokenize + parse(source_path)
+    alt 语法/语义非法
+        P-->>A: source_path:line 单点诊断并 fail-close
+    else 形成 canonical IR
+        P->>D: chapter / scene / CommandData
+        D->>E: 启动新的 run generation
+        E->>C: 创建唯一 execution owner
+        loop 命令循环
+            E->>R: 按 command type 查找
+            R->>H: execute(data, context)
+            H-->>E: completed / cancelled / failed
+            E->>C: advance / jump / return
+        end
     end
 ```
 
-The parser owns the mapping from authored syntax to canonical `CommandData`.
-Registering a new Handler does not automatically add a new `.stla` directive:
-the parser must recognize and validate it first. A new DSL feature normally
-touches all of the following:
+Parser 拥有“作者语法 → canonical data”的映射。注册新 Handler **不会**自动扩展 `.stla`
+语法。完整 DSL 功能通常需要同步修改：
 
-1. grammar/tokenization and source-located diagnostics;
-2. canonical typed data or closed payload schema;
-3. Handler registration and execution;
-4. cross-layer port and Presenter, when user-visible;
-5. save/restore projection, when persistent;
-6. parser, lifecycle and integration tests;
-7. `DSL.md`, `USAGE.md` and this document when ownership changes.
+1. grammar、tokenization 与源码定位诊断；
+2. typed data 或严格 closed payload；
+3. Handler 注册与执行；
+4. 跨层端口与 Presenter；
+5. 持久化投影和 JSON 边界（如适用）；
+6. parser、lifecycle、same-process 与集成测试；
+7. `DSL.md`、`USAGE.md`，以及所有权变化时的本文。
 
-`ScenarioContext` is the execution-generation token. Replacing or cancelling a
-run makes old waiters lose ownership. Blocking handlers must use the shared
-cancellation boundary rather than a naked signal/timer await.
+`ScenarioContext` 同时是 execution generation。新 run、load、rollback、restart 或 return-to-title
+会退休旧 context；所有 `await` continuation 和公开 signal 返回后都必须复验 owner/generation。
 
-## 6. Presentation architecture
+## 7. 表现事务
 
-Stella currently has two cross-layer presentation styles:
+Stella 当前保留两类跨层表现通信：
 
-### 6.1 Simple notification path
+### 7.1 简单通知路径
 
-Straightforward, non-transactional operations can be emitted through a
-documented SignalBus signal and consumed by one Presenter. Legacy public signals
-also remain observable by extensions. They do not settle typed transactional
-commands and must not be used as a second owner.
+非事务、无需 completion barrier 的操作可以通过有文档约束的 SignalBus notification 交给
+Presenter。部分旧公开 signal 也继续作为兼容观察面存在。它们不能 settle typed batch，也不能
+成为同一表现域的第二写入者。
 
-### 6.2 Typed transactional path
+### 7.2 类型化事务路径
 
-Stage layers, dialogue visibility/page-clear/avatar, chapter indicator, loop-SE,
-BGM, presentation clips and movies use typed operations coordinated by the
-single `PresentationDirector`. Normal dialogue activation has its own typed
-`DialogueRequest` lifecycle and is not silently folded into a presentation
-batch.
+Stage、对话显隐/清页/头像、章节标题、loop-SE、BGM、presentation clip 和 movie 通过单一
+`PresentationDirector` 协调。普通对话激活使用独立的 typed `DialogueRequest` 生命周期，
+不会被偷偷折叠成 presentation batch。
 
 ```mermaid
 flowchart LR
-    Handler --> Reserve[reserve request]
-    Reserve --> Validate[validate operations + participants]
-    Validate --> Snapshot[capture before-state]
-    Snapshot --> Seal[seal participant set]
-    Seal --> Apply[dispatch in authored order]
-    Apply --> Receipt[typed receipts]
-    Receipt --> Settle{all terminal?}
-    Settle -->|success| Commit[commit projection]
-    Settle -->|failure/cancel| Rollback[selective rollback]
+    H[Handler] --> R[reserve request]
+    R --> V[validate operation + participant]
+    V --> B[capture before-state]
+    B --> S[seal participant set]
+    S --> A[按 authored order apply]
+    A --> P[collect typed receipt]
+    P --> T{全部 terminal?}
+    T -->|成功| C[commit canonical projection]
+    T -->|失败/取消| X[selective rollback owned domains]
 ```
 
-Important properties:
+事务不变量：
 
-- A batch has one policy: `JOIN` blocks the scenario; `FIRE_AND_FORGET` releases
-  the command but the projection and receipts remain lifecycle-owned.
-- Participant membership is captured and sealed before mutation. Late or stale
-  Presenters cannot enlarge the barrier.
-- Each operation has a stable channel and typed receipt. Generation/request
-  checks reject callbacks from replaced scenes or superseded operations.
-- Mixed batches preflight all children before the first visible mutation and
-  retain authored child order and source locations.
-- Skip, explicit finish, navigation and reset act on the current sealed owner;
-  one physical input edge is never replayed into the next command.
-- On failure, the Director restores the domains still owned by the failing
-  transaction instead of resetting unrelated current owners.
+- `JOIN` 阻塞剧情；`FIRE_AND_FORGET` 只释放剧情，projection 和 receipt 仍由 lifecycle 持有；
+- participant 在 mutation 前捕获并 seal，迟到或 stale Presenter 不能扩大 barrier；
+- operation 有稳定 channel，receipt 携带 request/token/generation/owner 身份；
+- mixed batch 在首个可见 mutation 前预检全部 child，并保留作者顺序与 source line；
+- Skip、finish、navigation 和 reset 只作用于当前 sealed owner；一次物理输入不能穿透到下一命令；
+- 失败时只回滚仍属于该 transaction 的 domain，不覆盖已经被新 owner 接管的状态；
+- `SignalBus` 运输 typed request/receipt，但 private registrar capability 防止任意 listener 加入
+  内建 completion quorum。
 
-`SignalBus` carries the typed request/receipt protocol because Core and
-Presentation cannot import each other's concrete objects. `StellaRuntime`
-creates private registrar authorities so arbitrary listeners cannot join a
-built-in completion quorum.
+## 8. 表现器与物理执行
 
-## 7. Presentation ownership
+Runtime-owned Presenter 在需要跨游戏场景持续存在的 channel 上保持唯一 owner：
 
-Runtime-owned Presenters persist across game scenes when their channel must
-survive overlays or scene replacement:
+- `AudioPresenter`；
+- `PresentationClipPresenter`；
+- `MoviePresenter`。
 
-- `AudioPresenter`
-- `PresentationClipPresenter`
-- `MoviePresenter`
+Scene-owned Presenter 随当前场景注册/注销 capability：
 
-Scene-owned Presenters render the current scene and must register/unregister
-their typed capabilities deterministically:
+- Dialogue 与对话 UI；
+- named Stage、Background 和 Screen Effects；
+- Choice、章节标题和项目 UI/action binding。
 
-- dialogue and dialogue UI;
-- named stage layers;
-- backgrounds and effects;
-- choices and project UI screens;
-- chapter indicator and action bindings.
+Core 只保存逻辑资源 ID 和 canonical value。Presenter 在配置的资源根下解析物理资源，并拥有
+Node、Texture、AudioStreamPlayer、VideoStreamPlayer、Tween 和 shader。项目专属 node path、
+源格式字段或素材编码不得反向渗入 Core/DSL。
 
-Core stores logical resource IDs and canonical values. Presentation resolves
-those IDs to project resources. A game-specific node path or asset encoding must
-not leak back into DSL or Core state.
+## 9. 标记同步 BGM 的原生边界
 
-## 8. Canonical state and persistence
+Issue #190 引入了当前唯一明确的原生音频执行器。原因不是“C++ 更快”，而是 Godot 4.6 的
+GDScript / `AudioStreamSynchronized` 公共 API 无法在同一个 source sample H 上，对全部 stem
+完成 audio-thread 原子切换且保持 callback 零分配。
 
-`SaveManager` coordinates registered snapshot providers. Scenario cursor,
-variables and provider snapshots are validated before a restore is committed.
-Providers must offer value snapshots and deterministic restore behavior.
+```mermaid
+sequenceDiagram
+    participant H as BGM Handler
+    participant D as PresentationDirector
+    participant P as AudioPresenter
+    participant N as StellaMarkerBgmPlayback
+    participant A as AudioServer callback
 
-`PresentationState` is the canonical projection for persistent visual/audio
-domains. It records values such as:
+    H->>D: typed BGM mix(marker, gains, fade)
+    D->>P: validate / accept
+    P->>P: 资源、marker table、fingerprint、ring credit 预检
+    P->>N: enqueue fixed POD command
+    Note over N,A: command 尚未被 audio callback 接受时为 QUEUED
+    A->>N: callback 入口消费 command
+    N->>N: 选择 earliest not-yet-activated (frame, loop epoch)
+    N-->>P: ARMED event
+    A->>N: 到达 exact sample H
+    N->>N: split buffer + 原子安装完整 gains + source-frame ramp
+    N-->>P: TRIGGERED / COMPLETED event
+    P-->>D: typed terminal receipt
+```
 
-- background logical ID;
-- named stage-layer states;
-- dialogue visibility, content and avatar state;
-- BGM, loop-SE and movie channel state.
+边界规则：
 
-Presenters apply this projection; their transient Tweens, node references and
-receipts are not saved. Save/load, rollback, restart and navigation must cancel
-old generations before applying the restored projection. New persisted fields
-need an explicit version/default/migration policy and tests through the real JSON
-boundary, not only in-memory Dictionaries.
+- 只有一个 `AudioStreamPlayer`、一个 playback、一个 cursor/loop owner；
+- callback 只操作预分配 decoder chunk、fixed POD command/event ring 和 caller-owned buffer；
+- callback 不创建 Variant/Array/Ref，不分配、不加锁、不发 signal、不 deferred call；
+- `AudioPresenter._process()` 只派送已经由 callback 决定的事件，不选择 marker、不轮询位置；
+- save capture 与 marker selection 使用同一 `(source frame, loop epoch)` 坐标；
+- restore 在 `player.play()` 前预配置 arm，并用完整静音 buffer gate 关闭启动竞态；
+- native executor 不拥有资源语义、receipt 语义、存档政策、剧情或演出 scheduler；
+- generated `.gdextension` 与 binary 不进仓库，三平台 CI 从固定依赖源码构建并验证导出 PCM；
+- 新平台或新格式必须先具备确定性 build + exported-process smoke，不能静默退化成立即 mix。
 
-Global/monotonic progress and per-save state are separate providers. A provider
-must document whether restore replaces, merges or ignores older data.
+该能力带来真实维护成本：Godot/godot-cpp ABI 升级时需要重编 debug/release；需要维护
+macOS universal、Linux x86_64、Windows x86_64 toolchain、stb notice 和较长的 CI 冷构建。
+这项成本已纳入架构评审，而不是被视为无成本实现细节。
 
-## 9. Input and action ownership
+## 10. 规范状态与存档
 
-`InputHandler` translates physical mouse/keyboard/controller input into semantic
-intent. `StellaActionRegistry` is the Runtime-owned catalog used by built-in and
-project UI buttons. See [INPUT_DESIGN.md](INPUT_DESIGN.md) for exact priority.
+```mermaid
+flowchart LR
+    E[ScenarioEngine cursor] --> S[SaveManager transaction]
+    V[Variable / read / unlock providers] --> S
+    P[PresentationState canonical values] --> S
+    N[Native coherent audio snapshot] --> P
+    S --> J[Versioned JSON]
+    J --> PRE[Detached schema/resource preflight]
+    PRE --> RETIRE[Retire old generations]
+    RETIRE --> APPLY[Provider apply + physical cut projection]
+```
 
-The architectural rule is one edge, one owner:
+`SaveManager` 统一协调 provider。场景游标、变量和 provider snapshot 必须在任何 live mutation
+前完成验证。`PresentationState` 保存的典型 domain 包括：
 
-1. non-playing states reject story advance;
-2. modal movie/presentation clip may claim the edge;
-3. choice or interactive GUI owns its accepted event;
-4. hidden UI restoration consumes the edge;
-5. Skip/Auto policy runs before normal dialogue advance;
-6. the current dialogue/presentation/wait owner receives one stable dispatch
-   serial.
+- 背景逻辑 ID；
+- 命名 Stage layer 状态；
+- 对话显隐、内容、头像和章节目标；
+- BGM、loop-SE、movie channel 状态；
+- queued/armed marker mix 的 versioned typed value。
 
-Input code does not complete presentation work itself. It dispatches intent to
-the current typed owner and consumes the Godot event when that owner accepts it.
+Presenter 的 Node、Tween、receipt、callback 和临时 player 不进入存档。load、rollback、restart
+和导航先退休旧 generation，再投影恢复值。新增字段必须定义 schema version、旧数据默认值、
+非法数据行为和真实 JSON roundtrip 测试，不能只测内存 Dictionary。
 
-## 10. Navigation and cancellation
+## 11. 输入、动作与一次边界
 
-Navigation is a Runtime transaction, not a direct scene switch from a Handler.
-The Runtime validates scenario/save/scene inputs before ownership changes, then
-uses generation and suspension capabilities to retire the old run and confirm
-the final `SceneTree.scene_changed` result.
+`InputHandler` 把物理输入转换成语义 intent；`StellaActionRegistry` 是 Runtime-owned action
+catalog，供内建 UI 和项目 Button 共用。核心原则是“一次输入、一个 owner”：
 
-All asynchronous continuations must re-check their context/generation after
-every await or public signal emission. Reentrant callbacks may start a newer
-navigation synchronously; last accepted owner wins and older tails become no-op.
+1. 非 Playing 状态拒绝剧情推进；
+2. modal movie/clip 可优先 claim；
+3. Choice 或交互 GUI 拥有自己接受的事件；
+4. 隐藏 UI 的恢复会消费该次输入；
+5. Skip/Auto policy 在普通对话推进前执行；
+6. 当前 dialogue/presentation/wait owner 只接收一个稳定 dispatch serial。
 
-This area is intentionally centralized because scene replacement intersects
-ScenarioEngine ownership, Presenter registration, overlays, saves, audio and
-game state. The concentration is also a maintainability risk documented in the
-architecture review.
+输入代码不直接完成演出，它只把 intent 交给当前 typed owner。同步 listener 可能重入，因此每次
+公开 signal/callback 返回后仍需复验 generation 和 owner。
 
-## 11. Public and internal surfaces
+## 12. 导航与取消
 
-| Surface | Intended status | Notes |
+导航是 Runtime transaction，而不是 Handler 的直接场景切换：
+
+1. 在 detached 状态解析 scenario/save/scene；
+2. 验证资源、provider schema 与目标边界；
+3. 取得新的 navigation generation；
+4. 退休旧 ScenarioContext、Presenter receipt、waiter 和 overlay owner；
+5. 请求 SceneTree 切换；
+6. `scene_changed` 确认最终目标后提交新状态。
+
+同步 callback 可以在旧 transaction 尾部发起更新的导航；因此语义是“最后一个已接受 owner
+获胜”，而不是“最后一个 coroutine 返回获胜”。所有旧 tail 在每个 await 或公开 signal 后必须
+因 generation 不匹配而变成 no-op。
+
+## 13. 公开、兼容与内部表面
+
+| 表面 | 稳定性 | 约束 |
 |---|---|---|
-| `.stla` grammar | public, versioned by behavior | closed grammar; invalid input fails with source location |
-| `stella.cfg` / project settings schema | public, closed schema | unknown keys fail; local override is development-only |
-| `StellaRuntime` documented Facade | public | preferred host integration surface |
-| logical resources and presentation profiles | public | concrete schema must be documented and validated |
-| save files | persisted compatibility surface | require explicit field/version migration policy |
-| documented SignalBus notifications | compatibility/extension surface | not a built-in completion authority |
-| `core/data` typed operations and receipts | internal protocol | may evolve with Stella unless explicitly promoted |
-| private Runtime/Director methods and registrar capabilities | internal | never call from a game project |
+| `.stla` grammar | 公开兼容面 | closed grammar；非法输入带源码位置 fail-close |
+| `stella.cfg` / settings schema | 公开兼容面 | strict schema；本地覆盖只用于开发 |
+| 文档列出的 `StellaRuntime` Facade | 公开宿主 API | 优先的宿主集成入口 |
+| logical resource / Profile | 公开声明式资源面 | schema、根目录和 validation 必须有文档 |
+| save JSON | 持久兼容面 | 版本、默认、迁移或拒绝政策必须明确 |
+| 文档列出的 SignalBus notification | 兼容/扩展面 | 不是内建 typed completion authority |
+| `core/data` operation / receipt | 内部协议 | 除非明确提升，否则可随 Stella 演进 |
+| Runtime/Director 私有方法与 registrar capability | 内部实现 | 游戏项目不得直接调用 |
+| native FFI Dictionary | Presenter↔executor 内部 ABI | strict closed schema，不是项目 API |
 
-Public API status is currently documented rather than mechanically enforced.
-The review recommends adding an explicit API inventory and compatibility tests.
+当前公开 API 分级主要依赖文档，还没有版本化 inventory 和自动兼容 gate。这是架构评审中的
+优先改进项。
 
-## 12. Extension model
+## 14. 扩展模型
 
-Supported extension shapes are intentionally narrow:
+支持的扩展方式应保持收敛：
 
-- custom scenes and UI through documented Facade/action/profile contracts;
-- custom stage transition providers through the transition registry;
-- custom option presentation where the documented Presenter contract permits;
-- project-owned logical resources under configured roots;
-- new Stella commands implemented end-to-end in the framework.
+- 通过 Facade、action 和 Profile 契约替换场景/UI；
+- 通过 transition registry 添加 Stage transition provider；
+- 在文档明确允许的 Presenter contract 上替换选择样式；
+- 在配置的逻辑资源根下添加项目资源；
+- 在 Stella 内端到端实现新命令与 grammar；
+- 对确认的 Godot API 缺口添加受控原生 executor。
 
-Directly registering a `CommandHandler` is useful for programmatic
-`CommandData`, but it does not extend the closed `.stla` grammar. Treat raw
-SignalBus emission, direct mutation of Runtime internals and subclassing an
-exact built-in Presenter as unstable unless `USAGE.md` explicitly supports it.
+直接注册 `CommandHandler` 只对程序化 `CommandData` 有效，并不会扩展 closed `.stla`
+grammar。raw SignalBus emission、直接修改 Runtime 内部、继承 exact built-in Presenter 或在
+游戏项目中复制 scheduler 都是不稳定/禁止路径，除非 `USAGE.md` 明确提升为公共契约。
 
-## 13. Verification and architecture fitness
+## 15. 验证与架构适应度
 
-The repository uses GUT unit/integration tests, headless import, rendering pixel
-tests and export/PCK probes. `AGENTS.md` owns the full testing policy; the
-hermetic entry points are repeated here because they are part of the
-architecture fitness boundary:
+`AGENTS.md` 是完整测试策略的权威入口；以下 hermetic 命令同时属于架构边界：
 
 ```bash
 godot --audio-driver Dummy --headless --import
@@ -346,60 +432,61 @@ STELLA_DISABLE_LOCAL_CONFIG=1 STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD=1 \
 GODOT_BIN=godot tests/pck_smoke/run_export_smoke.sh
 ```
 
-Do not invoke GUT's bundled command-line script directly for authoritative CI
-evidence; the Stella runner owns the exact manifest, diagnostic accounting and
-shutdown tail gate.
+不得绕过 Stella runner 直接调用 GUT bundled command-line script 作为权威证据。runner 负责
+exact manifest、诊断计数和 shutdown tail gate。
 
-Architecture-sensitive changes should prove:
+架构敏感变更至少应证明：
 
-- source-located parser failure and no partial mutation;
-- cancellation and stale-callback rejection;
-- same-process reset/restart behavior, because Autoloads persist between tests;
-- save/load through JSON and restored physical projection;
-- one receipt/terminal outcome per accepted operation;
-- exported-project behavior for dynamic resources and native components;
-- no private game asset/path in public fixtures.
+- parser 失败带源码位置且无部分 mutation；
+- cancellation 与 stale callback 被拒绝；
+- Autoload 同进程 reset/restart 不受测试顺序污染；
+- 存读档经过真实 JSON 与物理投影；
+- 每个已接受 operation 只有一个 terminal receipt；
+- 动态资源和 native component 在导出程序中真实工作；
+- 公开 fixture 不含私有游戏资产或路径；
+- Core 不依赖具体 Presenter，且生产环境只有一个 Director/Runtime。
 
-Coverage percentages are not claimed unless produced by a measured coverage
-tool for the exact revision.
+没有使用当前 revision 的覆盖率工具时，不声称固定覆盖率百分比。
 
-## 14. Repository map
+## 16. 仓库地图
 
 ```text
 addons/stella/
   autoload/             StellaRuntime + SignalBus
   core/
-    commands/           Command handlers
-    data/               Commands, operations, receipts and state values
-    input/              Semantic action catalog
-    playback/           Auto, Skip, backlog and read state
-    presentation/       PresentationDirector and non-node authorities
+    commands/           CommandHandler 与命令执行
+    data/               command、operation、receipt、state value
+    input/              action catalog
+    playback/           Auto、Skip、Backlog、read flag
+    presentation/       PresentationDirector 与非节点 authority
     save_system/        SaveManager + PresentationState
-    scenario_engine/    Run context and command scheduler
-    script_parser/      Lexer, parser, profiles and graph builder
-    settings/           Settings schema and persistence
-  presentation/         Godot Presenters, UI, render and audio
-  scenes/               Framework default scenes and bootstrap
-  editor/               Editor integration
-examples/demo/          Redistributable example project
-tests/unit/             Focused contracts
-tests/integration/      Cross-layer and lifecycle contracts
-docs/                   Public documentation and architecture review
+    scenario_engine/    run context 与命令循环
+    script_parser/      lexer、parser、Profile、flow graph
+    settings/           settings schema 与 persistence
+  presentation/         Godot Presenter、UI、render、audio、input
+  scenes/               bootstrap 与框架默认场景
+  editor/               Godot 编辑器集成
+  native/               生成 descriptor 的模板
+native/marker_bgm/      C++17 marker BGM executor 与构建/notice
+examples/demo/          可再分发 demo
+tests/unit/             聚焦契约
+tests/integration/      跨层与生命周期契约
+docs/                   公共文档与架构评审
 ```
 
-## 15. Architectural decisions
+## 17. 当前架构决策
 
-The following rules are current decisions, not optional implementation style:
+以下是已接受的架构决策，不是可选风格：
 
-- one `StellaRuntime`, one `ScenarioEngine`, one `PresentationDirector`;
-- typed completion for blocking built-in presentation;
-- fail-close validation before mutation;
-- generation/capability ownership instead of timing delays;
-- canonical value snapshots instead of scene serialization;
-- project gaps fixed in Stella, never concealed by remake compatibility;
-- native code only behind the existing typed lifecycle when Godot's public API
-  cannot meet a measured requirement.
+- 一个 `StellaRuntime`、一个 `ScenarioEngine`、一个 `PresentationDirector`；
+- 内建 blocking presentation 使用 typed completion；
+- mutation 前 fail-close validation；
+- 使用 generation/capability 解决所有权，不用任意 timing delay；
+- 保存 canonical value，不序列化场景对象；
+- remake 暴露的问题必须在 Stella 修复，不得用项目兼容掩盖；
+- native 代码必须位于既有 typed lifecycle 后方，不能拥有第二调度器；
+- 架构演进采用内部渐进拆分，不重写剧情引擎，不破坏公共兼容面。
 
-The architecture is viable for the current product direction, but its central
-objects have accumulated too many responsibilities. The recommended extraction
-order and explicit non-goals are in [ARCHITECTURE_REVIEW.md](ARCHITECTURE_REVIEW.md).
+当前方向能够继续支撑产品，但 Runtime、SignalBus、DslParser、PresentationDirector 和
+AudioPresenter 已经集中太多规则。风险、目标形态和拆分顺序见
+[ARCHITECTURE_REVIEW.md](ARCHITECTURE_REVIEW.md)。
