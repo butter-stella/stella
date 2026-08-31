@@ -21,9 +21,14 @@ var _committed_state: Dictionary = {}
 var _errors: Array[String] = []
 
 
-func _init(payload: Dictionary = {}, source: Dictionary = {}) -> void:
+func _init(
+	payload: Dictionary = {},
+	source: Dictionary = {},
+	force_cut: bool = false,
+) -> void:
 	_payload = payload.duplicate(true)
 	_source = source.duplicate(true)
+	_force_cut = force_cut
 
 
 func get_payload() -> Dictionary:
@@ -111,13 +116,6 @@ func _seal_validation(request_id: int, authority: Object) -> bool:
 		return false
 	_request_id = request_id
 	_phase = Phase.APPLYING
-	return true
-
-
-func _set_force_cut(force_cut: bool, authority: Object) -> bool:
-	if authority != _authority or _phase != Phase.APPLYING:
-		return false
-	_force_cut = force_cut
 	return true
 
 

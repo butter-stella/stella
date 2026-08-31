@@ -4115,7 +4115,7 @@ func _drain_presentation_operation_queue_once() -> void:
 		elif operation_value is BgmPresentationOperation:
 			var operation: BgmPresentationOperation = operation_value
 			var bgm_request := BgmOperationRequestType.new(
-				operation.get_payload(), operation.get_source())
+				operation.get_payload(), operation.get_source(), force_cut)
 			bgm_request._bind_authority(
 				_bgm_participant_authority,
 				_bgm_participant_identity_matches,
@@ -4136,7 +4136,6 @@ func _drain_presentation_operation_queue_once() -> void:
 					bgm_request.get_source(), bgm_request.get_validation_errors())
 				preflight_valid = false
 				break
-			bgm_request._set_force_cut(force_cut, _bgm_participant_authority)
 			bgm_accept_requested.emit(bgm_request)
 			if not bgm_request.was_accepted() or not bgm_request.presenter_is_live():
 				_report_bgm_rejection(
