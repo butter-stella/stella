@@ -492,3 +492,94 @@ func test_runtime_custom_owner_exit_does_not_contaminate_next_registration() -> 
 	await second.tree_exited
 	await get_tree().process_frame
 	assert_true(_runtime.get_action(&"e2e.open_codex").is_empty())
+
+
+func test_texture_button_uses_canonical_action_without_a_text_surface() -> void:
+	var owner := preload(
+		"res://tests/helpers/action_registry_owner_fixture.gd").new()
+	add_child(owner)
+	var action_id := &"e2e.texture_button"
+	assert_true(_runtime.register_action(
+		action_id,
+		{"label": "Texture action", "category": "test"},
+		owner,
+		Callable(owner, "execute_action"),
+	))
+	var initial_catalog_connections: int = (
+		_runtime.action_registry.catalog_changed.get_connections().size()
+	)
+	var initial_state_connections: int = (
+		_runtime.action_registry.action_state_changed.get_connections().size()
+	)
+	var button := TextureButton.new()
+	var binding := StellaAction.new()
+	binding.action_id = action_id
+	binding.sync_label = false
+	button.add_child(binding)
+	add_child(button)
+
+	assert_false(button.disabled)
+	assert_eq(
+		_runtime.action_registry.catalog_changed.get_connections().size(),
+		initial_catalog_connections + 1,
+	)
+	assert_eq(
+		_runtime.action_registry.action_state_changed.get_connections().size(),
+		initial_state_connections + 1,
+	)
+	button.pressed.emit()
+	assert_eq(owner.execute_count, 1)
+
+	button.free()
+	assert_eq(
+		_runtime.action_registry.catalog_changed.get_connections().size(),
+		initial_catalog_connections,
+	)
+	assert_eq(
+		_runtime.action_registry.action_state_changed.get_connections().size(),
+		initial_state_connections,
+	)
+	assert_true(_runtime.unregister_action(action_id, owner))
+	owner.queue_free()
+	await owner.tree_exited
+
+
+func test_texture_button_label_projection_fails_closed() -> void:
+	var owner := preload(
+		"res://tests/helpers/action_registry_owner_fixture.gd").new()
+	add_child(owner)
+	var action_id := &"e2e.texture_label"
+	assert_true(_runtime.register_action(
+		action_id,
+		{"label": "Texture label", "category": "test"},
+		owner,
+		Callable(owner, "execute_action"),
+	))
+	var button := TextureButton.new()
+	var binding := StellaAction.new()
+	binding.action_id = action_id
+	binding.sync_availability = false
+	binding.sync_label = true
+	button.add_child(binding)
+	add_child(button)
+
+	assert_push_error(
+		"StellaAction: sync_label requires a Button parent; "
+		+ "TextureButton has no text surface"
+	)
+	assert_true(button.disabled)
+	button.pressed.emit()
+	assert_eq(owner.execute_count, 0)
+	_runtime.notify_action_state_changed(action_id)
+	assert_true(button.disabled)
+	button.pressed.emit()
+	assert_eq(owner.execute_count, 0)
+
+	binding.sync_label = false
+	assert_false(button.disabled)
+	button.pressed.emit()
+	assert_eq(owner.execute_count, 1)
+	button.free()
+	assert_true(_runtime.unregister_action(action_id, owner))
+	owner.queue_free()
+	await owner.tree_exited

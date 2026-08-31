@@ -344,7 +344,10 @@ timer。`sync_availability=true`（默认）投影 `disabled`；`hide_when_unava
 `toggle_mode/button_pressed`，动态改成 non-toggle action 时会同步清除旧高亮。
 `sync_label=false` 默认保留场景文字；设为 `true` 后使用 `label_key` 的翻译或 fallback
 `label`，action 消失时恢复该 Binding 首次 ready 时保存的 authored Button 文字，不会保留
-已经失效的旧 action label。
+已经失效的旧 action label。`TextureButton` 等没有原生 `text` 属性的 `BaseButton` 应保持
+`sync_label=false`，此时纹理、availability、visibility、active state 与 action dispatch 都走
+同一 canonical binding；若对这类按钮显式开启 label 同步，Stella 会指出缺少文字 surface、
+禁用该绑定并拒绝 dispatch，而不是在 `_ready()` 中产生属性访问错误或静默忽略配置。
 
 内建 `DialoguePresenter` 的 Toolbar 也遵守同一规则：场景已 authored 的 Button 是权威，
 不会在 `_ready()` 中被清空或重建；只有 Toolbar 完全为空时才生成默认产品工具栏，而且

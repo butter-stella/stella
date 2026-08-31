@@ -120,8 +120,11 @@ nested receipt 相互独立，但有明确的 8 个上界，超过即 fail-close
 canonical ID adapter；它为既有 destructive scene 同步消费该次专用 receipt，并用 context
 marker 让正常 confirmation UI 忽略，不形成第二 dispatcher 或永久 bypass。
 
-`StellaAction` 是任意 `BaseButton` 的声明式 Presentation binding。它和内建
-`DialoguePresenter` 工具栏都消费上述同一 registry，事件驱动投影 label、availability 和
+`StellaAction` 是任意 `BaseButton` 的声明式 Presentation binding。所有按钮类型都可投影
+availability、visibility、active state 并执行 action；label 投影只属于具有原生 `text`
+surface 的 `Button` 及其子类。`TextureButton` 等无文字 surface 的按钮在默认
+`sync_label=false` 下保持作者化纹理，若显式请求 label 同步则绑定会以精确诊断 fail-close。
+它和内建 `DialoguePresenter` 工具栏都消费上述同一 registry，事件驱动投影 label、availability 和
 active。场景 authored Button 的视觉与 geometry 保持不变；动态换成 non-toggle 或 action
 注销时会清除陈旧 pressed state，catalog label 消失时恢复 ready 时保存的 authored fallback。
 exact built-in DialoguePresenter 只有在 clear/avatar/clip 三项 typed admission 以及背景/Profile

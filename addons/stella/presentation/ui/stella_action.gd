@@ -52,13 +52,22 @@ const _LEGACY_ACTION_IDS := {
 
 ## Keep the authored Button label by default. Enable this for catalog-driven
 ## menus whose text should follow label_key/localization automatically.
-@export var sync_label: bool = false
+@export var sync_label: bool = false:
+	set(value):
+		sync_label = value
+		if not sync_label:
+			_label_surface_error_reported = false
+		_refresh_button_state()
 @export var sync_availability: bool = true
 @export var hide_when_unavailable: bool = false
 @export var sync_active_state: bool = true
 
 var _button: BaseButton
+var _label_button: Button
 var _authored_button_text: String = ""
+var _label_surface_error_reported: bool = false
+var _label_projection_blocked: bool = false
+var _disabled_before_label_block: bool = false
 
 
 func _ready() -> void:
@@ -68,7 +77,9 @@ func _ready() -> void:
 			"StellaAction: parent is not a BaseButton — action won't trigger")
 		return
 	_button = parent as BaseButton
-	_authored_button_text = _button.text
+	if _button is Button:
+		_label_button = _button as Button
+		_authored_button_text = _label_button.text
 	_button.pressed.connect(_on_pressed)
 	if StellaRuntime.action_registry != null:
 		StellaRuntime.action_registry.catalog_changed.connect(
@@ -103,6 +114,8 @@ func get_action_id() -> StringName:
 
 
 func _on_pressed() -> void:
+	if not _label_surface_is_valid():
+		return
 	var resolved_id := get_action_id()
 	if resolved_id.is_empty():
 		push_warning("StellaAction: no action selected")
@@ -163,6 +176,15 @@ func _on_action_state_changed(changed_id: StringName) -> void:
 func _refresh_button_state() -> void:
 	if _button == null or not is_instance_valid(_button):
 		return
+	if not _label_surface_is_valid():
+		if not _label_projection_blocked:
+			_disabled_before_label_block = _button.disabled
+			_label_projection_blocked = true
+		_button.disabled = true
+		return
+	if _label_projection_blocked:
+		_button.disabled = _disabled_before_label_block
+		_label_projection_blocked = false
 	# Legacy Inspector scenes predate state projection and were dispatch-only.
 	# Keep their authored/current presentation byte-for-byte passive even though
 	# the new canonical binding defaults opt in to availability and active state.
@@ -180,7 +202,7 @@ func _refresh_button_state() -> void:
 	if hide_when_unavailable:
 		_button.visible = available
 	if sync_label:
-		_button.text = (
+		_label_button.text = (
 			StellaRuntime.get_action_label(resolved_id)
 			if not metadata.is_empty()
 			else _authored_button_text
@@ -190,3 +212,17 @@ func _refresh_button_state() -> void:
 		_button.toggle_mode = is_toggle
 		_button.set_pressed_no_signal(
 			StellaRuntime.is_action_active(resolved_id) if is_toggle else false)
+
+
+func _label_surface_is_valid() -> bool:
+	if not sync_label:
+		return true
+	if _label_button != null and is_instance_valid(_label_button):
+		return true
+	if not _label_surface_error_reported:
+		push_error(
+			"StellaAction: sync_label requires a Button parent; "
+			+ "%s has no text surface" % _button.get_class()
+		)
+		_label_surface_error_reported = true
+	return false
