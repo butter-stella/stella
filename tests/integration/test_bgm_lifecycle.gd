@@ -1514,6 +1514,57 @@ func test_marker_cancel_skip_and_same_track_play_cut_without_restart() -> void:
 	assert_eq(_audio._bgm_channel.get("marker_operations", {}), {})
 
 
+func test_persistent_skip_cuts_sequential_marker_mixes_after_their_occurrences() -> void:
+	_submit([_operation("play", "synthetic_marker_stems_non_loop")])
+	var player := _player()
+	player.stream_paused = true
+	var playback := _marker_playback()
+	_mix_marker_source_frames(playback, 8820)
+	_runtime.skip_controller.is_active = true
+	await get_tree().process_frame
+
+	var first_target := {"bass": 1.0, "rhythm": 0.0}
+	var terminal_count := _terminals.size()
+	var first := _submit([_operation(
+		"mix", "", "", 1.0, 1.0, 213, first_target, "サビ",
+	)])
+	assert_eq(first.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED,
+		"FNF settles its story command before the physical audio cut barrier")
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	assert_eq(_terminals.size(), terminal_count + 1)
+	assert_eq(_terminals.back()["outcome"], &"completed")
+	assert_eq(_runtime.presentation_state.current_bgm["stem_mix"], first_target)
+
+	var second_target := {"bass": 0.25, "rhythm": 1.0}
+	terminal_count = _terminals.size()
+	var second := _submit([_operation(
+		"mix", "", "", 1.0, 1.0, 214, second_target, "old",
+	)])
+	assert_eq(second.get_outcome(), PresentationBatchRequest.Outcome.COMPLETED)
+	_mix_marker_source_frames(playback, 1)
+	_audio.call("_drain_bgm_marker_events")
+	assert_eq(_terminals.size(), terminal_count + 1)
+	assert_eq(_terminals.back()["outcome"], &"completed",
+		"persistent Skip must not wait for an authored occurrence behind the cursor")
+	assert_eq(_runtime.presentation_state.current_bgm["stem_mix"], second_target)
+	assert_same(_player(), player)
+	assert_same(_marker_playback(), playback)
+	assert_eq(_audio._bgm_channel.get("marker_operations", {}), {})
+
+	var state_before_invalid: Dictionary = (
+		_runtime.presentation_state.current_bgm.duplicate(true))
+	var receipts_before_invalid := _receipts.size()
+	var invalid := _submit([_operation(
+		"mix", "", "", 1.0, 1.0, 215, first_target, "missing",
+	)])
+	assert_eq(invalid.get_outcome(), PresentationBatchRequest.Outcome.FAILED)
+	assert_push_error(SOURCE_PATH + ":215")
+	assert_eq(_receipts.size(), receipts_before_invalid,
+		"persistent Skip cannot hide an invalid authored marker label")
+	assert_eq(_runtime.presentation_state.current_bgm, state_before_invalid)
+
+
 func test_marker_track_same_play_mix_and_volume_uses_one_composite_receipt() -> void:
 	_submit([_operation("play", "synthetic_marker_stems")])
 	var player := _player()

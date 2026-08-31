@@ -505,6 +505,18 @@ func _on_bgm_validate_requested(request: BgmOperationRequest) -> void:
 				current_voice.get("stem_names", []) as Array,
 			)
 			if (
+				request.get_force_cut()
+				and not _prepared_bgm_has_marker(prepared, marker)
+			):
+				SignalBus.reject_bgm_request(
+					request,
+					self,
+					_bgm_capability,
+					"marker '%s' is absent from the current BGM marker table"
+						% marker,
+				)
+				return
+			if (
 				playback == null
 				or not is_instance_valid(playback)
 				or not playback.has_method(&"can_arm_marker_mix")
@@ -569,7 +581,8 @@ func _apply_bgm_operation(
 		"play":
 			return _play_bgm(payload, prepared, fade_duration, request_id)
 		"mix":
-			return _mix_bgm(payload, prepared, fade_duration, request_id)
+			return _mix_bgm(
+				payload, prepared, fade_duration, request_id, force_cut)
 		"pause":
 			return _pause_bgm(fade_duration, request_id)
 		"resume":
@@ -717,6 +730,7 @@ func _mix_bgm(
 	prepared: Dictionary,
 	fade_duration: float,
 	request_id: int,
+	force_cut: bool,
 ) -> Variant:
 	var state: Dictionary = _bgm_channel.get("target_state", {})
 	var current: Dictionary = _bgm_channel.get("current", {})
@@ -738,6 +752,9 @@ func _mix_bgm(
 			return null
 	var marker := String(payload.get("marker", ""))
 	if not marker.is_empty():
+		if force_cut:
+			return _start_native_bgm_immediate_mix(
+				state, current, stem_mix, 0.0, request_id)
 		return _arm_marker_bgm_mix(
 			state, current, marker, stem_mix, fade_duration, request_id)
 	if bool(current.get("marker_capable", false)):
@@ -874,6 +891,16 @@ func _marker_bgm_gains(stem_mix: Dictionary, stem_names: Array) -> PackedFloat32
 			return PackedFloat32Array()
 		gains[index] = float(stem_mix[stem_name])
 	return gains
+
+
+func _prepared_bgm_has_marker(prepared: Dictionary, marker: String) -> bool:
+	for occurrence_value: Variant in prepared.get("marker_occurrences", []):
+		if (
+			occurrence_value is Dictionary
+			and String((occurrence_value as Dictionary).get("name", "")) == marker
+		):
+			return true
+	return false
 
 
 func _native_bgm_fade_frames(fade_duration: float, sample_rate: int) -> int:
