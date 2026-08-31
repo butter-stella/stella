@@ -329,7 +329,26 @@ exact built-in Presenter as unstable unless `USAGE.md` explicitly supports it.
 ## 13. Verification and architecture fitness
 
 The repository uses GUT unit/integration tests, headless import, rendering pixel
-tests and export/PCK probes. Standard commands are maintained in `AGENTS.md`.
+tests and export/PCK probes. `AGENTS.md` owns the full testing policy; the
+hermetic entry points are repeated here because they are part of the
+architecture fitness boundary:
+
+```bash
+godot --audio-driver Dummy --headless --import
+
+STELLA_DISABLE_LOCAL_CONFIG=1 STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD=1 \
+  GODOT_BIN=godot tests/run_gut.sh full
+
+STELLA_DISABLE_LOCAL_CONFIG=1 STELLA_DISABLE_IMPLICIT_SETTINGS_LOAD=1 \
+  GODOT_BIN=godot tests/run_gut.sh focused \
+  res://tests/unit/test_scenario_engine.gd
+
+GODOT_BIN=godot tests/pck_smoke/run_export_smoke.sh
+```
+
+Do not invoke GUT's bundled command-line script directly for authoritative CI
+evidence; the Stella runner owns the exact manifest, diagnostic accounting and
+shutdown tail gate.
 
 Architecture-sensitive changes should prove:
 
