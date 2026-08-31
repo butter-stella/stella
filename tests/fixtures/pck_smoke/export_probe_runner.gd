@@ -242,6 +242,9 @@ func _probe_degraded_title_fallbacks() -> void:
 
 
 func _probe_numeric_resource_ids(failures: PackedStringArray) -> void:
+	_probe_hardcoded_large_numeric_resource_id_oracle(failures)
+	var large_numeric_id := str("1e33".to_float())
+	var quoted_large_numeric_id := '"%s"' % large_numeric_id.c_escape()
 	var scene_path := "user://stella_probe_numeric_resource_id.tscn"
 	var file := FileAccess.open(scene_path, FileAccess.WRITE)
 	if file == null:
@@ -289,12 +292,12 @@ func _probe_numeric_resource_ids(failures: PackedStringArray) -> void:
 		failures,
 		"finite_forward",
 		"1e33",
-		'"1000000000000000089690419062898688.0"',
+		quoted_large_numeric_id,
 	)
 	_probe_numeric_resource_id_case(
 		failures,
 		"finite_reverse",
-		'"1000000000000000089690419062898688.0"',
+		quoted_large_numeric_id,
 		"1e33",
 	)
 	_probe_numeric_resource_id_case(
@@ -309,6 +312,49 @@ func _probe_numeric_resource_ids(failures: PackedStringArray) -> void:
 		'"-0.0"',
 		"-1e-20",
 	)
+
+
+func _probe_hardcoded_large_numeric_resource_id_oracle(
+	failures: PackedStringArray,
+) -> void:
+	var scene_path := "user://stella_probe_numeric_resource_id_hardcoded.tscn"
+	var file := FileAccess.open(scene_path, FileAccess.WRITE)
+	if file == null:
+		failures.append("could not create hardcoded numeric resource-ID oracle")
+		return
+	file.store_string(
+		"[gd_scene load_steps=2 format=3]\n\n"
+		+ "[ext_resource type=\"Texture2D\" "
+		+ "path=\"res://examples/demo/art/backgrounds/bg_cafe.png\" "
+		+ "id=1e33]\n\n"
+		+ "[node name=\"NumericResourceId\" type=\"Sprite2D\"]\n"
+		+ "texture = ExtResource(\"1000000000000000089690419062898688.0\")\n"
+	)
+	file.close()
+	var direct_scene := _load_numeric_resource_id_direct(scene_path)
+	var direct_accepted := direct_scene != null
+	print(
+		"Export probe hardcoded 1e33 oracle: ResourceLoader %s"
+		% ("accepted" if direct_accepted else "rejected"),
+	)
+	if direct_scene != null:
+		var direct_instance := direct_scene.instantiate() as Sprite2D
+		if direct_instance == null or direct_instance.texture == null:
+			failures.append("hardcoded numeric direct oracle did not resolve")
+		if direct_instance != null:
+			direct_instance.free()
+		var stella_scene := StellaRuntime._load_title_scene(scene_path)
+		if stella_scene == null:
+			failures.append(
+				"hardcoded numeric direct oracle accepted but Stella rejected",
+			)
+		else:
+			var stella_instance := stella_scene.instantiate() as Sprite2D
+			if stella_instance == null or stella_instance.texture == null:
+				failures.append("hardcoded numeric Stella oracle did not resolve")
+			if stella_instance != null:
+				stella_instance.free()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(scene_path))
 
 
 func _probe_numeric_resource_id_case(
@@ -331,6 +377,15 @@ func _probe_numeric_resource_id_case(
 		+ "texture = ExtResource(%s)\n" % reference
 	)
 	file.close()
+	var direct_scene := _load_numeric_resource_id_direct(scene_path)
+	if direct_scene == null:
+		failures.append("%s direct ResourceLoader oracle rejected" % name)
+	else:
+		var direct_instance := direct_scene.instantiate() as Sprite2D
+		if direct_instance == null or direct_instance.texture == null:
+			failures.append("%s direct resource reference did not resolve" % name)
+		if direct_instance != null:
+			direct_instance.free()
 	var scene := StellaRuntime._load_title_scene(scene_path)
 	if scene == null:
 		failures.append("%s resource ID was rejected" % name)
@@ -341,6 +396,18 @@ func _probe_numeric_resource_id_case(
 		if instance != null:
 			instance.free()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(scene_path))
+
+
+func _load_numeric_resource_id_direct(scene_path: String) -> PackedScene:
+	var previous_print_errors := Engine.print_error_messages
+	Engine.print_error_messages = false
+	var scene := ResourceLoader.load(
+		scene_path,
+		"PackedScene",
+		ResourceLoader.CACHE_MODE_IGNORE_DEEP,
+	) as PackedScene
+	Engine.print_error_messages = previous_print_errors
+	return scene
 
 
 func _probe_quoted_empty_resource_ids(failures: PackedStringArray) -> void:
