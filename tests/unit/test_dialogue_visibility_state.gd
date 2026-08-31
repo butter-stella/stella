@@ -499,14 +499,28 @@ func test_missing_current_dialogue_envelope_fails_without_partial_restore() -> v
 		_adv_content(),
 	))
 	var before := state.capture_snapshot()
+	var bgm_restore_preflight_count: Array[int] = [0]
+	var on_bgm_restore_preflight := func(
+		_request: BgmStateRestoreValidationRequest,
+	) -> void:
+		bgm_restore_preflight_count[0] += 1
+	SignalBus.bgm_state_restore_validate_requested.connect(
+		on_bgm_restore_preflight)
 	state.restore_snapshot({
 		"bg": "must-not-commit",
 		"stage_layers": {},
+		"bgm": {
+			"pending_marker_mix": {"schema_version": 999},
+		},
 	})
 	assert_push_warning(
 		"current snapshot requires movie and the complete dialogue_visibility/dialogue_content/dialogue_avatar envelope")
+	assert_eq(bgm_restore_preflight_count[0], 0,
+		"the envelope gate runs before every BGM marker restore preflight")
 	assert_eq(state.capture_snapshot(), before,
 		"missing current fields reject before any provider mutation")
+	SignalBus.bgm_state_restore_validate_requested.disconnect(
+		on_bgm_restore_preflight)
 
 
 func test_inactive_content_is_normalized_exactly_without_hidden_payload() -> void:

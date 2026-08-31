@@ -1586,7 +1586,7 @@ static func _parse_at_command(
 	var args = _strip_inline_comment(
 		raw.substr(name_position + name.length()).strip_edges()
 	)
-	var parts = _split_args(args)
+	var parts = _split_bgm_args(args) if name == "bgm" else _split_args(args)
 
 	match name:
 		"recollection_exit":
@@ -2275,6 +2275,7 @@ static func _parse_bgm_command(
 
 	var cue := ""
 	var fade_duration := 0.0
+	var marker := ""
 	var volume := 1.0
 	var seen: Dictionary = {}
 	var invalid := false
@@ -2398,6 +2399,38 @@ static func _parse_bgm_command(
 						invalid = true
 					else:
 						stem_mix = (mix_result["value"] as Dictionary).duplicate(true)
+			"marker":
+				if action != "mix":
+					_record_diagnostic(
+						data,
+						"error",
+						"DslParser: @bgm %s does not accept marker at %s"
+						% [action, location],
+						line,
+					)
+					invalid = true
+				else:
+					var marker_result := _parse_canonical_double_quoted_string(raw_value)
+					if not bool(marker_result.get("valid", false)):
+						_record_diagnostic(
+							data,
+							"error",
+							"DslParser: invalid @bgm marker at %s: %s"
+							% [location, String(marker_result.get("error", "invalid quoted marker"))],
+							line,
+						)
+						invalid = true
+					else:
+						marker = String(marker_result["value"])
+						if not BgmChannelState.is_valid_marker_label(marker):
+							_record_diagnostic(
+								data,
+								"error",
+								"DslParser: @bgm marker is empty, too long, or contains unsupported control characters at %s"
+								% location,
+								line,
+							)
+							invalid = true
 			_:
 				_record_diagnostic(
 					data,
@@ -2413,6 +2446,7 @@ static func _parse_bgm_command(
 		"asset": asset,
 		"cue": cue,
 		"fade_duration": fade_duration,
+		"marker": marker,
 		"resume_position": 0.0,
 		"stem_mix": stem_mix,
 		"volume": volume,
@@ -2473,6 +2507,46 @@ static func _parse_bgm_stem_mix(encoded: String) -> Dictionary:
 	for stem_name: Variant in names:
 		canonical[String(stem_name)] = float(parsed[stem_name])
 	return {"valid": true, "value": canonical}
+
+
+static func _parse_canonical_double_quoted_string(encoded: String) -> Dictionary:
+	if not encoded.begins_with("\""):
+		return {"valid": false, "error": "marker must be quoted with ASCII double quote delimiters"}
+	var decoded := ""
+	var escaped := false
+	for index in range(1, encoded.length()):
+		var character := encoded.substr(index, 1)
+		if escaped:
+			match character:
+				"\\":
+					decoded += "\\"
+				"\"":
+					decoded += "\""
+				"n":
+					decoded += "\n"
+				"r":
+					decoded += "\r"
+				"t":
+					decoded += "\t"
+				_:
+					return {
+						"valid": false,
+						"error": "marker has invalid escape sequence '\\%s'" % character,
+					}
+			escaped = false
+			continue
+		if character == "\\":
+			escaped = true
+			continue
+		if character == "\"":
+			if index != encoded.length() - 1:
+				return {
+					"valid": false,
+					"error": "marker must contain exactly one double-quoted string",
+				}
+			return {"valid": true, "value": decoded}
+		decoded += character
+	return {"valid": false, "error": "marker has an unterminated double-quoted string"}
 
 
 static func _parse_non_negative_duration(encoded: String) -> Dictionary:
@@ -4410,6 +4484,36 @@ static func _split_args(text: String) -> Array:
 	for index in range(text.length()):
 		var character := text.substr(index, 1)
 		if _is_inline_whitespace(character):
+			if not current.is_empty():
+				result.append(current)
+				current = ""
+		else:
+			current += character
+	if not current.is_empty():
+		result.append(current)
+	return result
+
+
+static func _split_bgm_args(text: String) -> Array:
+	var result: Array = []
+	var current := ""
+	var quoted := false
+	var escaped := false
+	for index in range(text.length()):
+		var character := text.substr(index, 1)
+		if quoted:
+			current += character
+			if escaped:
+				escaped = false
+			elif character == "\\":
+				escaped = true
+			elif character == "\"":
+				quoted = false
+			continue
+		if character == "\"":
+			quoted = true
+			current += character
+		elif _is_inline_whitespace(character):
 			if not current.is_empty():
 				result.append(current)
 				current = ""

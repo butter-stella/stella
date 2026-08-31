@@ -27,3 +27,8 @@ examples/demo/audio/bgm/*.ogg
 
 # Test results
 .gut_editor_config.json
+
+# Locally built GDExtension libraries
+/addons/stella/native/bin/
+/addons/stella/native/stella_marker_bgm.gdextension
+/addons/stella/native/stella_marker_bgm.gdextension.uid

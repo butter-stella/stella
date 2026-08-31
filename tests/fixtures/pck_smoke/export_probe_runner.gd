@@ -9,6 +9,9 @@ const EXPECTED_SCENARIO = "res://examples/demo/scenarios/demo.stla"
 const EXPECTED_BACKGROUNDS = "res://examples/demo/art/backgrounds/"
 const EXPECTED_CONFIG_SOURCE = "res://stella.cfg"
 const NATIVE_MOVIE = "res://tests/fixtures/movies/synthetic_movie.ogv"
+const MARKER_BGM_OGG = (
+	"res://tests/fixtures/audio/bgm/synthetic_loop_region.ogg"
+)
 const UID_DEPENDENCY_SCRIPT = (
 	"res://tests/fixtures/pck_smoke/export_probe_runner.gd"
 )
@@ -65,6 +68,7 @@ func _probe_exported_config() -> void:
 	var failures := PackedStringArray()
 	_probe_relocated_uid_dependency(failures)
 	_probe_native_movie_resource(failures)
+	_probe_marker_bgm_extension(failures)
 	if StellaRuntime.config == null:
 		failures.append("StellaRuntime config is null")
 	else:
@@ -97,6 +101,7 @@ func _probe_selected_scenes_fallback() -> void:
 	var failures := PackedStringArray()
 	_probe_relocated_uid_dependency(failures)
 	_probe_native_movie_resource(failures)
+	_probe_marker_bgm_extension(failures)
 	var current_scene := get_tree().current_scene
 	if current_scene == null or current_scene.scene_file_path != BUILT_IN_TITLE_SCENE:
 		failures.append("fallback did not finish on the built-in title scene")
@@ -124,6 +129,50 @@ func _probe_native_movie_resource(failures: PackedStringArray) -> void:
 	player.free()
 	if not is_finite(length) or length <= 0.0:
 		failures.append("exported native movie has no finite positive length")
+
+
+func _probe_marker_bgm_extension(failures: PackedStringArray) -> void:
+	if not ClassDB.class_exists(&"StellaMarkerBgmStream"):
+		failures.append("export omitted or could not load StellaMarkerBgmStream")
+		return
+	var imported := ResourceLoader.load(MARKER_BGM_OGG) as AudioStreamOggVorbis
+	if imported == null or imported.packet_sequence == null:
+		failures.append("export omitted marker BGM imported OGG data")
+		return
+	var bytes := BgmOggPacketEncoder.encode(
+		imported.packet_sequence.packet_data,
+		imported.packet_sequence.granule_positions,
+		0x53540001,
+	)
+	if bytes.is_empty():
+		failures.append("exported marker BGM OGG packets could not rebuild")
+		return
+	var stream_object: Object = ClassDB.instantiate(&"StellaMarkerBgmStream")
+	if stream_object == null:
+		failures.append("exported marker BGM stream could not instantiate")
+		return
+	var configured: Variant = stream_object.call("configure", {
+		"initial_gains": PackedFloat32Array([1.0, 0.0]),
+		"loop": true,
+		"loop_end_frame": 1024,
+		"loop_start_frame": 0,
+		"markers": [{"frame": 32, "name": "サビ"}],
+		"schema_version": 1,
+		"stem_names": PackedStringArray(["rhythm", "bass"]),
+		"stem_ogg_bytes": [bytes, bytes],
+	})
+	if configured != true:
+		failures.append("exported marker BGM stream rejected its public fixture")
+		return
+	var playback := (stream_object as AudioStream).instantiate_playback()
+	if playback == null:
+		failures.append("exported marker BGM playback could not instantiate")
+		return
+	playback.start()
+	var rate_scale := float(AudioServer.get_mix_rate()) / 44100.0
+	if playback.mix_audio(rate_scale, 1).size() != 1:
+		failures.append("exported marker BGM playback produced no PCM")
+	playback.stop()
 
 
 func _probe_source_fallback() -> void:
@@ -193,6 +242,9 @@ func _probe_degraded_title_fallbacks() -> void:
 
 
 func _probe_numeric_resource_ids(failures: PackedStringArray) -> void:
+	_probe_hardcoded_large_numeric_resource_id_oracle(failures)
+	var large_numeric_id := str("1e33".to_float())
+	var quoted_large_numeric_id := '"%s"' % large_numeric_id.c_escape()
 	var scene_path := "user://stella_probe_numeric_resource_id.tscn"
 	var file := FileAccess.open(scene_path, FileAccess.WRITE)
 	if file == null:
@@ -240,12 +292,12 @@ func _probe_numeric_resource_ids(failures: PackedStringArray) -> void:
 		failures,
 		"finite_forward",
 		"1e33",
-		'"1000000000000000089690419062898688.0"',
+		quoted_large_numeric_id,
 	)
 	_probe_numeric_resource_id_case(
 		failures,
 		"finite_reverse",
-		'"1000000000000000089690419062898688.0"',
+		quoted_large_numeric_id,
 		"1e33",
 	)
 	_probe_numeric_resource_id_case(
@@ -260,6 +312,49 @@ func _probe_numeric_resource_ids(failures: PackedStringArray) -> void:
 		'"-0.0"',
 		"-1e-20",
 	)
+
+
+func _probe_hardcoded_large_numeric_resource_id_oracle(
+	failures: PackedStringArray,
+) -> void:
+	var scene_path := "user://stella_probe_numeric_resource_id_hardcoded.tscn"
+	var file := FileAccess.open(scene_path, FileAccess.WRITE)
+	if file == null:
+		failures.append("could not create hardcoded numeric resource-ID oracle")
+		return
+	file.store_string(
+		"[gd_scene load_steps=2 format=3]\n\n"
+		+ "[ext_resource type=\"Texture2D\" "
+		+ "path=\"res://examples/demo/art/backgrounds/bg_cafe.png\" "
+		+ "id=1e33]\n\n"
+		+ "[node name=\"NumericResourceId\" type=\"Sprite2D\"]\n"
+		+ "texture = ExtResource(\"1000000000000000089690419062898688.0\")\n"
+	)
+	file.close()
+	var direct_scene := _load_numeric_resource_id_direct(scene_path)
+	var direct_accepted := direct_scene != null
+	print(
+		"Export probe hardcoded 1e33 oracle: ResourceLoader %s"
+		% ("accepted" if direct_accepted else "rejected"),
+	)
+	if direct_scene != null:
+		var direct_instance := direct_scene.instantiate() as Sprite2D
+		if direct_instance == null or direct_instance.texture == null:
+			failures.append("hardcoded numeric direct oracle did not resolve")
+		if direct_instance != null:
+			direct_instance.free()
+		var stella_scene := StellaRuntime._load_title_scene(scene_path)
+		if stella_scene == null:
+			failures.append(
+				"hardcoded numeric direct oracle accepted but Stella rejected",
+			)
+		else:
+			var stella_instance := stella_scene.instantiate() as Sprite2D
+			if stella_instance == null or stella_instance.texture == null:
+				failures.append("hardcoded numeric Stella oracle did not resolve")
+			if stella_instance != null:
+				stella_instance.free()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(scene_path))
 
 
 func _probe_numeric_resource_id_case(
@@ -282,6 +377,15 @@ func _probe_numeric_resource_id_case(
 		+ "texture = ExtResource(%s)\n" % reference
 	)
 	file.close()
+	var direct_scene := _load_numeric_resource_id_direct(scene_path)
+	if direct_scene == null:
+		failures.append("%s direct ResourceLoader oracle rejected" % name)
+	else:
+		var direct_instance := direct_scene.instantiate() as Sprite2D
+		if direct_instance == null or direct_instance.texture == null:
+			failures.append("%s direct resource reference did not resolve" % name)
+		if direct_instance != null:
+			direct_instance.free()
 	var scene := StellaRuntime._load_title_scene(scene_path)
 	if scene == null:
 		failures.append("%s resource ID was rejected" % name)
@@ -292,6 +396,18 @@ func _probe_numeric_resource_id_case(
 		if instance != null:
 			instance.free()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(scene_path))
+
+
+func _load_numeric_resource_id_direct(scene_path: String) -> PackedScene:
+	var previous_print_errors := Engine.print_error_messages
+	Engine.print_error_messages = false
+	var scene := ResourceLoader.load(
+		scene_path,
+		"PackedScene",
+		ResourceLoader.CACHE_MODE_IGNORE_DEEP,
+	) as PackedScene
+	Engine.print_error_messages = previous_print_errors
+	return scene
 
 
 func _probe_quoted_empty_resource_ids(failures: PackedStringArray) -> void:

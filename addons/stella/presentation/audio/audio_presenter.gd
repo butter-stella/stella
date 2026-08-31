@@ -1,6 +1,8 @@
 ## Audio presenter — manages BGM, SE, Voice, and System SE playback.
 class_name AudioPresenter extends Node
 
+const MAX_NATIVE_BGM_FADE_FRAMES := 2147483647
+
 const BGM_NATURAL_LOOP_END := -1.0
 const BGM_MAX_SIGNED_MIXER_FRAMES := 2147483647.0
 
@@ -29,6 +31,11 @@ var _bgm_channel: Dictionary = {}
 var _bgm_validation_cache: Dictionary = {}
 var _bgm_generation: int = 1
 var _next_bgm_token: int = 1
+var _next_bgm_restore_operation_id: int = 9000000000000000
+## Debug-build-only deterministic interleaving hook. Tests use this to run a
+## native callback immediately after AudioStreamPlayer.play(), before voice
+## construction can perform any later main-thread work.
+var _bgm_after_player_played_debug_hook: Callable
 var _loop_se_capability: RefCounted
 var _loop_se_channels: Dictionary = {}
 var _loop_se_validation_cache: Dictionary = {}
@@ -138,6 +145,8 @@ func _ready():
 	SignalBus.bgm_title_cut_requested.connect(_on_bgm_title_cut_requested)
 	SignalBus.bgm_state_capture_requested.connect(
 		_on_bgm_state_capture_requested)
+	SignalBus.bgm_state_restore_validate_requested.connect(
+		_on_bgm_state_restore_validate_requested)
 	SignalBus.runtime_audio_shutdown_requested.connect(
 		_on_runtime_audio_shutdown_requested)
 	SignalBus.presentation_clip_validate_requested.connect(
@@ -265,8 +274,9 @@ func _exit_tree() -> void:
 	_release_voice_dsp_bus()
 	if _bgm_capability != null and _loop_se_capability != null:
 		if not _shutdown_quiesced:
-			SignalBus.commit_bgm_position(
-				self, _bgm_capability, _capture_bgm_position())
+			SignalBus.commit_bgm_runtime_state(
+				self, _bgm_capability, _capture_bgm_state(),
+				SignalBus.current_bgm_epoch())
 			SignalBus.reset_bgm_presentation()
 			SignalBus.commit_loop_se_positions(
 				self, _loop_se_capability, _capture_loop_se_positions())
@@ -288,6 +298,7 @@ func _exit_tree() -> void:
 
 
 func _process(_delta: float) -> void:
+	_drain_bgm_marker_events()
 	var entry_revision := _voice_playback_revision
 	var entry_token := _voice_playback_token
 	var entry_order: Array[String] = _voice_layer_order.duplicate()
@@ -453,6 +464,7 @@ func _on_bgm_validate_requested(request: BgmOperationRequest) -> void:
 			return
 	elif action == "mix":
 		var current_state: Dictionary = _bgm_channel.get("target_state", {})
+		var marker := String(payload.get("marker", ""))
 		prepared = _resolve_bgm_track(
 			String(current_state.get("asset", "")),
 			String(current_state.get("cue", "")),
@@ -462,6 +474,7 @@ func _on_bgm_validate_requested(request: BgmOperationRequest) -> void:
 		if (
 			prepared.is_empty()
 			or (prepared["stem_mix"] as Dictionary).is_empty()
+			or (not marker.is_empty() and not bool(prepared.get("marker_capable", false)))
 			or not _bgm_voice_matches_prepared(current_voice, prepared)
 		):
 			SignalBus.reject_bgm_request(
@@ -471,6 +484,40 @@ func _on_bgm_validate_requested(request: BgmOperationRequest) -> void:
 				"the current BGM is not a compatible multi-stem track or the stem mix is invalid",
 			)
 			return
+		if bool(prepared.get("marker_capable", false)):
+			var native_fade_frames := _native_bgm_fade_frames(
+				float(payload["fade_duration"]),
+				int(prepared.get("sample_rate", 0)),
+			)
+			if native_fade_frames < 0:
+				SignalBus.reject_bgm_request(
+					request,
+					self,
+					_bgm_capability,
+					"fade duration exceeds the native marker frame range",
+				)
+				return
+			prepared["native_fade_frames"] = native_fade_frames
+		if not marker.is_empty():
+			var playback := current_voice.get("marker_playback") as Object
+			var gains := _marker_bgm_gains(
+				prepared.get("stem_mix", {}) as Dictionary,
+				current_voice.get("stem_names", []) as Array,
+			)
+			if (
+				playback == null
+				or not is_instance_valid(playback)
+				or not playback.has_method(&"can_arm_marker_mix")
+				or gains.is_empty()
+				or not bool(playback.call("can_arm_marker_mix", marker, gains))
+			):
+				SignalBus.reject_bgm_request(
+					request,
+					self,
+					_bgm_capability,
+					"native marker command capacity is unavailable",
+				)
+				return
 	_bgm_validation_cache[request_key] = prepared
 	request.finished.connect(
 		_cleanup_bgm_validation.bind(request_key), CONNECT_ONE_SHOT)
@@ -569,6 +616,35 @@ func _play_bgm(
 				float(current.get("level", -1.0)), volume)
 			if mix_aligned and level_aligned:
 				return state
+			if bool(current.get("marker_capable", false)) and not mix_aligned:
+				var native_state := _start_native_bgm_immediate_mix(
+					current_state, current, stem_mix, fade_duration, request_id)
+				if native_state == null:
+					return null
+				native_state["volume"] = volume
+				_bgm_channel["target_state"] = native_state.duplicate(true)
+				if level_aligned:
+					return native_state
+				if fade_duration <= 0.0:
+					_set_bgm_voice_level(volume, current)
+					return native_state
+				var marker_operations: Dictionary = _bgm_channel.get(
+					"marker_operations", {})
+				var native_record: Dictionary = marker_operations.get(request_id, {})
+				if native_record.is_empty():
+					return null
+				native_record["wait_for_volume"] = true
+				native_record["volume_completed"] = false
+				marker_operations[request_id] = native_record
+				_bgm_channel["marker_operations"] = marker_operations
+				var level_tween := create_tween()
+				_bgm_channel["tween"] = level_tween
+				level_tween.tween_method(
+					_set_bgm_voice_level.bind(current),
+					float(current.get("level", 0.0)), volume, fade_duration)
+				level_tween.finished.connect(
+					_complete_native_bgm_volume_part.bind(request_id), CONNECT_ONE_SHOT)
+				return native_state
 			if fade_duration <= 0.0:
 				_set_bgm_voice_level(volume, current)
 				_set_bgm_stem_mix(stem_mix, current)
@@ -601,6 +677,7 @@ func _play_bgm(
 		stem_mix,
 		prepared.get("stem_names", []) as Array,
 		prepared.get("resource_signature", {}) as Dictionary,
+		prepared,
 	)
 	if new_voice.is_empty():
 		return null
@@ -608,6 +685,7 @@ func _play_bgm(
 		"asset": asset,
 		"cue": cue,
 		"loop": bool(prepared["loop"]),
+		"pending_marker_mix": {},
 		"position": start_position,
 		"status": "playing",
 		"stem_mix": stem_mix.duplicate(true),
@@ -651,12 +729,20 @@ func _mix_bgm(
 	if (
 		not receipt.is_empty()
 		and StringName(receipt.get("action", &"")) != &"mix"
+		and StringName(receipt.get("action", &"")) != &"marker_mix"
 	):
 		_complete_active_bgm_receipt()
 		state = _bgm_channel.get("target_state", {})
 		current = _bgm_channel.get("current", {})
 		if state.is_empty() or current.is_empty():
 			return null
+	var marker := String(payload.get("marker", ""))
+	if not marker.is_empty():
+		return _arm_marker_bgm_mix(
+			state, current, marker, stem_mix, fade_duration, request_id)
+	if bool(current.get("marker_capable", false)):
+		return _start_native_bgm_immediate_mix(
+			state, current, stem_mix, fade_duration, request_id)
 	var current_target_mix: Dictionary = state.get("stem_mix", {})
 	if BgmChannelState.stem_mix_equal(current_target_mix, stem_mix):
 		_complete_matching_bgm_receipt(&"mix")
@@ -685,6 +771,381 @@ func _mix_bgm(
 	tween.finished.connect(
 		_complete_bgm_receipt.bind(mix_receipt), CONNECT_ONE_SHOT)
 	return state
+
+
+func _arm_marker_bgm_mix(
+	state: Dictionary,
+	current: Dictionary,
+	marker: String,
+	stem_mix: Dictionary,
+	fade_duration: float,
+	request_id: int,
+) -> Variant:
+	if not bool(current.get("marker_capable", false)):
+		return null
+	var fade_frames := _native_bgm_fade_frames(
+		fade_duration, int(current.get("sample_rate", 0)))
+	if fade_frames < 0:
+		return null
+	var playback := current.get("marker_playback") as Object
+	if playback == null or not is_instance_valid(playback):
+		return null
+	var pending := BgmPendingMarkerMixState.from_snapshot(
+		state.get("pending_marker_mix", {}))
+	if pending != null and pending.target_equals(marker, stem_mix, fade_duration):
+		var marker_operations: Dictionary = _bgm_channel.get(
+			"marker_operations", {})
+		for operation_id_value: Variant in marker_operations.keys():
+			var record: Dictionary = marker_operations[operation_id_value]
+			var record_pending := record.get("pending") as BgmPendingMarkerMixState
+			if (
+				record_pending == null
+				or not record_pending.target_equals(marker, stem_mix, fade_duration)
+			):
+				continue
+			var old_receipt: Dictionary = record.get("receipt", {})
+			if not old_receipt.is_empty():
+				_emit_bgm_terminal(old_receipt, &"superseded")
+			var replacement_receipt := _start_bgm_receipt(
+				request_id, &"marker_mix")
+			record["receipt"] = replacement_receipt
+			marker_operations[operation_id_value] = record
+			_bgm_channel["marker_operations"] = marker_operations
+			return state.duplicate(true)
+		return null
+	var marker_operations: Dictionary = _bgm_channel.get("marker_operations", {})
+	for record_value: Variant in marker_operations.values():
+		if record_value is Dictionary and int(
+			(record_value as Dictionary).get("arm_id", 0)) == 0:
+			return null
+	var gains := _marker_bgm_gains(stem_mix, current.get("stem_names", []) as Array)
+	if gains.is_empty():
+		return null
+	var admission := int(playback.call(
+		"arm_marker_mix", marker, gains, fade_frames, request_id))
+	if admission != 0:
+		return null
+	var enqueue_snapshot_value: Variant = playback.call("capture_marker_state")
+	if not enqueue_snapshot_value is Dictionary:
+		playback.call("invalidate_marker_arms")
+		return null
+	var enqueue_snapshot: Dictionary = enqueue_snapshot_value
+	var horizon_frame := int(enqueue_snapshot.get("horizon_frame", -1))
+	var horizon_loop_epoch := int(
+		enqueue_snapshot.get("horizon_loop_epoch", -1))
+	var queued := BgmPendingMarkerMixState.queued(
+		marker,
+		stem_mix,
+		fade_duration,
+		String(current.get("marker_table_fingerprint", "")),
+		String(current.get("track_fingerprint", "")),
+		horizon_frame,
+		horizon_loop_epoch,
+	)
+	if queued == null:
+		playback.call("invalidate_marker_arms")
+		return null
+	var before_state := BgmChannelState.normalize_snapshot_state(state)
+	var receipt := _start_bgm_receipt(request_id, &"marker_mix")
+	marker_operations[request_id] = {
+		"arm_id": 0,
+		"before_state": before_state.duplicate(true),
+		"generation": _bgm_generation,
+		"pending": queued,
+		"receipt": receipt,
+	}
+	_bgm_channel["marker_operations"] = marker_operations
+	var queued_state := before_state.duplicate(true)
+	queued_state["position"] = (
+		float(horizon_frame) / float(current.get("sample_rate", 1)))
+	queued_state["pending_marker_mix"] = queued.to_snapshot()
+	_bgm_channel["target_state"] = queued_state.duplicate(true)
+	return queued_state
+
+
+func _marker_bgm_gains(stem_mix: Dictionary, stem_names: Array) -> PackedFloat32Array:
+	if stem_names.size() != stem_mix.size():
+		return PackedFloat32Array()
+	var gains := PackedFloat32Array()
+	gains.resize(stem_names.size())
+	for index in range(stem_names.size()):
+		var stem_name := String(stem_names[index])
+		if not stem_mix.has(stem_name):
+			return PackedFloat32Array()
+		gains[index] = float(stem_mix[stem_name])
+	return gains
+
+
+func _native_bgm_fade_frames(fade_duration: float, sample_rate: int) -> int:
+	if not is_finite(fade_duration) or fade_duration < 0.0 or sample_rate <= 0:
+		return -1
+	var scaled_frames := fade_duration * float(sample_rate)
+	if (
+		not is_finite(scaled_frames)
+		or scaled_frames < 0.0
+		or scaled_frames > float(MAX_NATIVE_BGM_FADE_FRAMES)
+	):
+		return -1
+	return roundi(scaled_frames)
+
+
+func _start_native_bgm_immediate_mix(
+	state: Dictionary,
+	current: Dictionary,
+	stem_mix: Dictionary,
+	fade_duration: float,
+	request_id: int,
+) -> Variant:
+	var playback := current.get("marker_playback") as Object
+	if playback == null or not is_instance_valid(playback):
+		return null
+	var fade_frames := _native_bgm_fade_frames(
+		fade_duration, int(current.get("sample_rate", 0)))
+	if fade_frames < 0:
+		return null
+	var normalized_state := BgmChannelState.normalize_snapshot_state(state)
+	_retire_bgm_transition(&"superseded")
+	if not SignalBus.is_current_bgm_operation_valid():
+		return null
+	current = _bgm_channel.get("current", {})
+	playback = current.get("marker_playback") as Object
+	if playback == null or not is_instance_valid(playback):
+		return null
+	var gains := _marker_bgm_gains(
+		stem_mix, current.get("stem_names", []) as Array)
+	if gains.is_empty():
+		return null
+	if int(playback.call(
+		"start_immediate_mix", gains, fade_frames, request_id)) != 0:
+		return null
+	var receipt := _start_bgm_receipt(request_id, &"native_mix")
+	var marker_operations: Dictionary = _bgm_channel.get("marker_operations", {})
+	marker_operations[request_id] = {
+		"arm_id": 0,
+		"before_state": normalized_state.duplicate(true),
+		"generation": _bgm_generation,
+		"immediate": true,
+		"receipt": receipt,
+		"target_mix": stem_mix.duplicate(true),
+	}
+	_bgm_channel["marker_operations"] = marker_operations
+	var target_state := normalized_state.duplicate(true)
+	target_state["position"] = _capture_bgm_position()
+	target_state["pending_marker_mix"] = {}
+	target_state["stem_mix"] = stem_mix.duplicate(true)
+	_bgm_channel["target_state"] = target_state.duplicate(true)
+	return target_state
+
+
+func _drain_bgm_marker_events() -> void:
+	if _bgm_capability == null or _bgm_channel.is_empty():
+		return
+	var current: Dictionary = _bgm_channel.get("current", {})
+	var playback := current.get("marker_playback") as Object
+	if playback == null or not is_instance_valid(playback):
+		return
+	var events_value: Variant = playback.call("drain_marker_events")
+	if not events_value is Array:
+		return
+	for event_value: Variant in events_value:
+		if not event_value is Dictionary:
+			continue
+		_handle_bgm_marker_event(event_value as Dictionary, current)
+
+
+func _handle_bgm_marker_event(event: Dictionary, current: Dictionary) -> void:
+	var operation_id := int(event.get("operation_id", 0))
+	var marker_operations: Dictionary = _bgm_channel.get("marker_operations", {})
+	if not marker_operations.has(operation_id):
+		return
+	var record: Dictionary = marker_operations[operation_id]
+	if (
+		int(record.get("generation", -1)) != _bgm_generation
+		or not SignalBus.is_current_bgm_operation_valid()
+	):
+		return
+	var event_type := String(event.get("type", ""))
+	if event_type == "cut_applied":
+		_finish_native_bgm_cut_applied(operation_id, record, current)
+		return
+	# Once a physical cut barrier is admitted, older ARMED/TRIGGERED/COMPLETED
+	# events for the same operation cannot settle or rewrite its target. The
+	# callback's CUT_APPLIED event is the sole linearization acknowledgement.
+	if bool(record.get("cut_pending", false)):
+		return
+	if event_type in ["failed_no_marker", "failed_conflict"]:
+		var failed_receipt: Dictionary = record.get("receipt", {})
+		marker_operations.erase(operation_id)
+		_bgm_channel["marker_operations"] = marker_operations
+		_emit_bgm_terminal(failed_receipt, &"failed")
+		var before_state: Dictionary = record.get("before_state", {})
+		before_state = BgmChannelState.with_position(
+			before_state, _capture_bgm_position())
+		_bgm_channel["target_state"] = before_state.duplicate(true)
+		_restore_current_bgm_receipt_from_marker_records(marker_operations)
+		_publish_bgm_runtime_state(before_state)
+		return
+	if bool(record.get("immediate", false)):
+		if event_type == "triggered":
+			var target_mix: Dictionary = record.get("target_mix", {})
+			current["stem_mix"] = target_mix.duplicate(true)
+			_publish_bgm_runtime_state(
+				_bgm_channel.get("target_state", {}) as Dictionary)
+			return
+		if event_type == "completed":
+			record["native_completed"] = true
+			if (
+				bool(record.get("wait_for_volume", false))
+				and not bool(record.get("volume_completed", false))
+			):
+				marker_operations[operation_id] = record
+				_bgm_channel["marker_operations"] = marker_operations
+				return
+			var immediate_receipt: Dictionary = record.get("receipt", {})
+			marker_operations.erase(operation_id)
+			_bgm_channel["marker_operations"] = marker_operations
+			_emit_bgm_terminal(immediate_receipt, &"completed")
+			_restore_current_bgm_receipt_from_marker_records(marker_operations)
+			return
+	var pending := record.get("pending") as BgmPendingMarkerMixState
+	if pending == null:
+		return
+	if event_type in ["armed", "armed_replaced"]:
+		if event_type == "armed_replaced":
+			var replaced_arm_id := int(event.get("replaced_arm_id", 0))
+			for old_operation_value: Variant in marker_operations.keys():
+				var old_operation_id := int(old_operation_value)
+				if old_operation_id == operation_id:
+					continue
+				var old_record: Dictionary = marker_operations[old_operation_value]
+				if int(old_record.get("arm_id", 0)) != replaced_arm_id:
+					continue
+				_emit_bgm_terminal(
+					old_record.get("receipt", {}) as Dictionary, &"superseded")
+				marker_operations.erase(old_operation_value)
+				break
+		var armed := pending.armed(
+			int(event.get("marker_frame", -1)),
+			int(event.get("marker_ordinal", -1)),
+			int(event.get("marker_loop_epoch", -1)),
+			int(event.get("horizon_frame", -1)),
+			int(event.get("horizon_loop_epoch", -1)),
+		)
+		if armed == null:
+			return
+		var restore_expected := record.get(
+			"restore_expected") as BgmPendingMarkerMixState
+		if (
+			restore_expected != null
+			and restore_expected.phase == BgmPendingMarkerMixState.Phase.ARMED
+			and (
+				restore_expected.marker_frame != armed.marker_frame
+				or restore_expected.marker_ordinal != armed.marker_ordinal
+				or restore_expected.marker_loop_epoch != armed.marker_loop_epoch
+			)
+		):
+			var playback := current.get("marker_playback") as Object
+			if playback != null and is_instance_valid(playback):
+				playback.call("invalidate_marker_arms")
+			marker_operations.erase(operation_id)
+			_bgm_channel["marker_operations"] = marker_operations
+			var failed_restore_state: Dictionary = record.get("before_state", {})
+			_bgm_channel["target_state"] = failed_restore_state.duplicate(true)
+			_publish_bgm_runtime_state(failed_restore_state)
+			push_error("AudioPresenter: saved marker occurrence is no longer reachable")
+			return
+		record["arm_id"] = int(event.get("arm_id", 0))
+		record["pending"] = armed
+		marker_operations[operation_id] = record
+		_bgm_channel["marker_operations"] = marker_operations
+		var armed_state := BgmChannelState.normalize_snapshot_state(
+			_bgm_channel.get("target_state", {}))
+		if armed_state.is_empty():
+			return
+		armed_state["pending_marker_mix"] = armed.to_snapshot()
+		_bgm_channel["target_state"] = armed_state.duplicate(true)
+		_publish_bgm_runtime_state(armed_state)
+		return
+	if event_type == "triggered":
+		var triggered_state := BgmChannelState.normalize_snapshot_state(
+			_bgm_channel.get("target_state", {}))
+		if triggered_state.is_empty():
+			return
+		triggered_state["stem_mix"] = pending.stem_mix.duplicate(true)
+		triggered_state["pending_marker_mix"] = {}
+		_bgm_channel["target_state"] = triggered_state.duplicate(true)
+		current["stem_mix"] = pending.stem_mix.duplicate(true)
+		record["triggered"] = true
+		marker_operations[operation_id] = record
+		_bgm_channel["marker_operations"] = marker_operations
+		_publish_bgm_runtime_state(triggered_state)
+		return
+	if event_type == "completed":
+		var completed_receipt: Dictionary = record.get("receipt", {})
+		marker_operations.erase(operation_id)
+		_bgm_channel["marker_operations"] = marker_operations
+		_emit_bgm_terminal(completed_receipt, &"completed")
+		_restore_current_bgm_receipt_from_marker_records(marker_operations)
+
+
+func _finish_native_bgm_cut_applied(
+	operation_id: int,
+	record: Dictionary,
+	current: Dictionary,
+) -> void:
+	if not bool(record.get("cut_pending", false)):
+		return
+	var marker_operations: Dictionary = _bgm_channel.get("marker_operations", {})
+	marker_operations.erase(operation_id)
+	_bgm_channel["marker_operations"] = marker_operations
+	var target_mix: Dictionary = record.get("target_mix", {})
+	var state := BgmChannelState.normalize_snapshot_state(
+		_bgm_channel.get("target_state", {}))
+	if state.is_empty() or not BgmChannelState.validate_stem_mix(
+		target_mix, false, true):
+		_emit_bgm_terminal(record.get("receipt", {}) as Dictionary, &"failed")
+		_restore_current_bgm_receipt_from_marker_records(marker_operations)
+		return
+	state["stem_mix"] = target_mix.duplicate(true)
+	state["pending_marker_mix"] = {}
+	current["stem_mix"] = target_mix.duplicate(true)
+	_set_bgm_voice_level(float(state.get("volume", 1.0)), current)
+	_bgm_channel["target_state"] = state.duplicate(true)
+	_publish_bgm_runtime_state(state)
+	_emit_bgm_terminal(record.get("receipt", {}) as Dictionary, &"completed")
+	_restore_current_bgm_receipt_from_marker_records(marker_operations)
+
+
+func _restore_current_bgm_receipt_from_marker_records(records: Dictionary) -> void:
+	if not (_bgm_channel.get("receipt", {}) as Dictionary).is_empty():
+		return
+	for record_value: Variant in records.values():
+		if record_value is Dictionary:
+			_bgm_channel["receipt"] = (record_value as Dictionary).get("receipt", {})
+
+
+func _complete_native_bgm_volume_part(operation_id: int) -> void:
+	_bgm_channel["tween"] = null
+	var marker_operations: Dictionary = _bgm_channel.get("marker_operations", {})
+	var record: Dictionary = marker_operations.get(operation_id, {})
+	if record.is_empty() or not bool(record.get("immediate", false)):
+		return
+	record["volume_completed"] = true
+	if not bool(record.get("native_completed", false)):
+		marker_operations[operation_id] = record
+		_bgm_channel["marker_operations"] = marker_operations
+		return
+	var receipt: Dictionary = record.get("receipt", {})
+	marker_operations.erase(operation_id)
+	_bgm_channel["marker_operations"] = marker_operations
+	_emit_bgm_terminal(receipt, &"completed")
+	_restore_current_bgm_receipt_from_marker_records(marker_operations)
+
+
+func _publish_bgm_runtime_state(state: Dictionary) -> void:
+	if BgmChannelState.validate_snapshot_state(state, false):
+		SignalBus.commit_bgm_runtime_state(
+			self, _bgm_capability, state, SignalBus.current_bgm_epoch())
 
 
 func _pause_bgm(fade_duration: float, request_id: int) -> Variant:
@@ -782,6 +1243,7 @@ func _stop_bgm(fade_duration: float, request_id: int) -> Variant:
 func _new_bgm_channel() -> Dictionary:
 	return {
 		"current": {}, "outgoing": {}, "receipt": {},
+		"receipts": {}, "marker_operations": {},
 		"target_state": {}, "tween": null,
 	}
 
@@ -795,6 +1257,9 @@ func _start_bgm_receipt(request_id: int, action: StringName) -> Dictionary:
 	}
 	_next_bgm_token += 1
 	_bgm_channel["receipt"] = receipt
+	var receipts: Dictionary = _bgm_channel.get("receipts", {})
+	receipts[int(receipt["token"])] = receipt
+	_bgm_channel["receipts"] = receipts
 	SignalBus.bgm_transition_receipt_started.emit(
 		get_instance_id(), int(receipt["token"]), request_id,
 		int(receipt["generation"]))
@@ -825,6 +1290,12 @@ func _complete_bgm_receipt(receipt: Dictionary) -> void:
 	if tween != null and tween.is_valid():
 		tween.kill()
 	var action := StringName(receipt.get("action", &""))
+	if action == &"marker_mix":
+		_finish_bgm_marker_mix_receipts(receipt)
+		return
+	if action == &"native_mix":
+		_finish_native_bgm_immediate_mix(receipt)
+		return
 	var current: Dictionary = _bgm_channel.get("current", {})
 	match action:
 		&"stop":
@@ -850,6 +1321,125 @@ func _complete_bgm_receipt(receipt: Dictionary) -> void:
 		_bgm_channel.clear()
 
 
+func _finish_bgm_marker_mix_receipts(requested_receipt: Dictionary) -> void:
+	var marker_operations: Dictionary = _bgm_channel.get("marker_operations", {})
+	var selected_record: Dictionary = {}
+	var selected_operation_id := 0
+	var current_receipt: Dictionary = _bgm_channel.get("receipt", {})
+	for operation_id_value: Variant in marker_operations.keys():
+		var candidate: Dictionary = marker_operations[operation_id_value]
+		if candidate.get("receipt", {}) == current_receipt:
+			selected_record = candidate
+			selected_operation_id = int(operation_id_value)
+			break
+	if selected_record.is_empty():
+		for operation_id_value: Variant in marker_operations.keys():
+			var candidate: Dictionary = marker_operations[operation_id_value]
+			if candidate.get("receipt", {}) == requested_receipt:
+				selected_record = candidate
+				selected_operation_id = int(operation_id_value)
+				break
+	if selected_record.is_empty():
+		_emit_bgm_terminal(requested_receipt, &"failed")
+		return
+	var pending := selected_record.get("pending") as BgmPendingMarkerMixState
+	var current: Dictionary = _bgm_channel.get("current", {})
+	var playback := current.get("marker_playback") as Object
+	var gains := _marker_bgm_gains(
+		pending.stem_mix if pending != null else {},
+		current.get("stem_names", []) as Array,
+	)
+	var cut_accepted := (
+		pending != null
+		and playback != null
+		and is_instance_valid(playback)
+		and not gains.is_empty()
+		and int(playback.call(
+			"cut_marker_mix", gains, selected_operation_id)) == 0
+	)
+	if not cut_accepted and playback != null and is_instance_valid(playback):
+		playback.call("invalidate_marker_arms")
+	var all_operation_ids: Array = marker_operations.keys().duplicate()
+	for operation_id_value: Variant in all_operation_ids:
+		var record_value: Variant = marker_operations[operation_id_value]
+		if not record_value is Dictionary:
+			marker_operations.erase(operation_id_value)
+			continue
+		var record_receipt: Dictionary = (record_value as Dictionary).get("receipt", {})
+		if record_receipt.is_empty():
+			marker_operations.erase(operation_id_value)
+			continue
+		if int(operation_id_value) == selected_operation_id:
+			continue
+		marker_operations.erase(operation_id_value)
+		_emit_bgm_terminal(record_receipt, &"superseded")
+	var target := BgmChannelState.normalize_snapshot_state(
+		_bgm_channel.get("target_state", {}))
+	if cut_accepted:
+		selected_record["cut_pending"] = true
+		selected_record["target_mix"] = pending.stem_mix.duplicate(true)
+		marker_operations[selected_operation_id] = selected_record
+		_bgm_channel["marker_operations"] = marker_operations
+		_bgm_channel["receipt"] = selected_record.get("receipt", {})
+		return
+	else:
+		marker_operations.erase(selected_operation_id)
+		_bgm_channel["marker_operations"] = marker_operations
+		_emit_bgm_terminal(
+			selected_record.get("receipt", {}) as Dictionary, &"failed")
+		target = BgmChannelState.normalize_snapshot_state(
+			selected_record.get("before_state", {}))
+		if not target.is_empty():
+			target["pending_marker_mix"] = {}
+			_bgm_channel["target_state"] = target.duplicate(true)
+			_publish_bgm_runtime_state(target)
+		_restore_current_bgm_receipt_from_marker_records(marker_operations)
+
+
+func _finish_native_bgm_immediate_mix(receipt: Dictionary) -> void:
+	var marker_operations: Dictionary = _bgm_channel.get("marker_operations", {})
+	var operation_key: Variant = null
+	var record: Dictionary = {}
+	for key: Variant in marker_operations.keys():
+		var candidate: Dictionary = marker_operations[key]
+		if candidate.get("receipt", {}) == receipt:
+			operation_key = key
+			record = candidate
+			break
+	if record.is_empty():
+		_emit_bgm_terminal(receipt, &"failed")
+		return
+	var current: Dictionary = _bgm_channel.get("current", {})
+	var playback := current.get("marker_playback") as Object
+	var target_mix: Dictionary = record.get("target_mix", {})
+	var gains := _marker_bgm_gains(
+		target_mix, current.get("stem_names", []) as Array)
+	var accepted := (
+		playback != null
+		and is_instance_valid(playback)
+		and not gains.is_empty()
+		and int(playback.call("cut_marker_mix", gains, int(operation_key))) == 0
+	)
+	if not accepted and playback != null and is_instance_valid(playback):
+		playback.call("invalidate_marker_arms")
+	if accepted:
+		record["cut_pending"] = true
+		record["target_mix"] = target_mix.duplicate(true)
+		marker_operations[operation_key] = record
+		_bgm_channel["marker_operations"] = marker_operations
+		return
+	marker_operations.erase(operation_key)
+	_bgm_channel["marker_operations"] = marker_operations
+	_emit_bgm_terminal(receipt, &"failed")
+	var state := BgmChannelState.normalize_snapshot_state(
+		record.get("before_state", {}))
+	if not state.is_empty():
+		state["pending_marker_mix"] = {}
+		_bgm_channel["target_state"] = state.duplicate(true)
+		_publish_bgm_runtime_state(state)
+	_restore_current_bgm_receipt_from_marker_records(marker_operations)
+
+
 func _retire_bgm_transition(outcome: StringName) -> void:
 	if _bgm_channel.is_empty():
 		_bgm_channel = _new_bgm_channel()
@@ -858,17 +1448,34 @@ func _retire_bgm_transition(outcome: StringName) -> void:
 	_bgm_channel["tween"] = null
 	if tween != null and tween.is_valid():
 		tween.kill()
+	_invalidate_bgm_marker_arms(_bgm_channel.get("current", {}))
+	_bgm_channel["marker_operations"] = {}
+	var target: Dictionary = _bgm_channel.get("target_state", {})
+	if not target.is_empty():
+		target = BgmChannelState.normalize_snapshot_state(target)
+		target["pending_marker_mix"] = {}
+		_bgm_channel["target_state"] = target
 	_stop_bgm_voice(_bgm_channel.get("outgoing", {}))
 	_bgm_channel["outgoing"] = {}
 	var receipt: Dictionary = _bgm_channel.get("receipt", {})
 	if not receipt.is_empty():
 		_emit_bgm_terminal(receipt, outcome)
+	var remaining_receipts: Array = (
+		_bgm_channel.get("receipts", {}) as Dictionary).values().duplicate()
+	for remaining_value: Variant in remaining_receipts:
+		if remaining_value is Dictionary:
+			_emit_bgm_terminal(remaining_value as Dictionary, outcome)
 
 
 func _emit_bgm_terminal(receipt: Dictionary, outcome: StringName) -> void:
-	if _bgm_channel.get("receipt", {}) != receipt:
+	var receipts: Dictionary = _bgm_channel.get("receipts", {})
+	var token := int(receipt.get("token", 0))
+	if not receipts.has(token) or receipts[token] != receipt:
 		return
-	_bgm_channel["receipt"] = {}
+	receipts.erase(token)
+	_bgm_channel["receipts"] = receipts
+	if _bgm_channel.get("receipt", {}) == receipt:
+		_bgm_channel["receipt"] = {}
 	SignalBus.bgm_transition_terminal.emit(
 		get_instance_id(), int(receipt.get("token", 0)),
 		int(receipt.get("operation_request_id", 0)),
@@ -880,6 +1487,8 @@ func _bgm_receipt_is_current(receipt: Dictionary) -> bool:
 		not _bgm_channel.is_empty()
 		and not receipt.is_empty()
 		and _bgm_channel.get("receipt", {}) == receipt
+		and (_bgm_channel.get("receipts", {}) as Dictionary).has(
+			int(receipt.get("token", 0)))
 		and int(receipt.get("generation", -1)) == _bgm_generation
 	)
 
@@ -891,7 +1500,8 @@ func _on_bgm_transition_receipts_finish_requested(records: Array) -> void:
 		var record: Dictionary = record_value
 		if int(record.get("presenter_instance_id", 0)) != get_instance_id():
 			continue
-		var receipt: Dictionary = _bgm_channel.get("receipt", {})
+		var receipt: Dictionary = (_bgm_channel.get("receipts", {}) as Dictionary).get(
+			int(record.get("token", -1)), {})
 		if (
 			int(receipt.get("token", 0)) != int(record.get("token", -1))
 			or int(receipt.get("operation_request_id", 0))
@@ -923,12 +1533,26 @@ func _on_bgm_state_apply_requested(state: Dictionary, generation: int) -> void:
 		return
 	if state.is_empty():
 		return
+	state = BgmChannelState.normalize_snapshot_state(state)
+	if state.is_empty():
+		return
 	var resolved := _resolve_bgm_track(
 		String(state["asset"]),
 		String(state["cue"]),
 		state["stem_mix"] as Dictionary,
 	)
 	var restored_position := float(state["position"])
+	var restored_pending := BgmPendingMarkerMixState.from_snapshot(
+		state.get("pending_marker_mix", {}))
+	if restored_pending != null and (
+		not bool(resolved.get("marker_capable", false))
+		or restored_pending.marker_table_fingerprint
+			!= String(resolved.get("marker_table_fingerprint", ""))
+		or restored_pending.track_fingerprint
+			!= String(resolved.get("track_fingerprint", ""))
+	):
+		push_error("AudioPresenter: cannot restore pending marker mix: track fingerprint changed")
+		return
 	var restored_length := (
 		(resolved.get("stream") as AudioStream).get_length()
 		if not resolved.is_empty()
@@ -949,6 +1573,13 @@ func _on_bgm_state_apply_requested(state: Dictionary, generation: int) -> void:
 	):
 		push_error("AudioPresenter: cannot project saved BGM state: resource metadata changed")
 		return
+	var restore_arm: Dictionary = {}
+	if restored_pending != null:
+		restore_arm = _configure_bgm_restore_startup(
+			restored_pending, resolved)
+		if restore_arm.is_empty():
+			push_error("AudioPresenter: could not prepare saved pending marker mix")
+			return
 	var level := float(state["volume"])
 	var voice := _create_bgm_voice(
 		resolved.get("stream") as AudioStream,
@@ -958,14 +1589,38 @@ func _on_bgm_state_apply_requested(state: Dictionary, generation: int) -> void:
 		resolved.get("stem_mix", {}) as Dictionary,
 		resolved.get("stem_names", []) as Array,
 		resolved.get("resource_signature", {}) as Dictionary,
+		resolved,
+		String(state["status"]) == "paused",
 	)
 	if voice.is_empty():
 		return
 	_bgm_channel = _new_bgm_channel()
 	_bgm_channel["current"] = voice
 	_bgm_channel["target_state"] = state.duplicate(true)
-	if String(state["status"]) == "paused":
-		(voice.get("player") as AudioStreamPlayer).stream_paused = true
+	if not restore_arm.is_empty():
+		var before_state := state.duplicate(true)
+		before_state["pending_marker_mix"] = {}
+		_bgm_channel["marker_operations"] = {
+			int(restore_arm["operation_id"]): {
+				"arm_id": 0,
+				"before_state": before_state,
+				"generation": _bgm_generation,
+				"pending": restore_arm["queued"],
+				"receipt": {},
+				"restore_expected": restored_pending.duplicate_value(),
+			},
+		}
+		var restored_playback := voice.get("marker_playback") as Object
+		if (
+			restored_playback == null
+			or not is_instance_valid(restored_playback)
+			or not restored_playback.has_method(&"release_startup_gate")
+		):
+			_stop_bgm_voice(voice)
+			_bgm_channel.clear()
+			push_error("AudioPresenter: pending marker startup gate is unavailable")
+			return
+		restored_playback.call("release_startup_gate")
 
 
 func _on_bgm_title_cut_requested(asset: String, generation: int) -> void:
@@ -986,6 +1641,7 @@ func _on_bgm_title_cut_requested(asset: String, generation: int) -> void:
 		resolved.get("stem_mix", {}) as Dictionary,
 		resolved.get("stem_names", []) as Array,
 		resolved.get("resource_signature", {}) as Dictionary,
+		resolved,
 	)
 	if voice.is_empty():
 		return
@@ -993,26 +1649,268 @@ func _on_bgm_title_cut_requested(asset: String, generation: int) -> void:
 	_bgm_channel["current"] = voice
 	_bgm_channel["target_state"] = {
 		"asset": asset, "cue": "", "loop": bool(resolved["loop"]),
+		"pending_marker_mix": {},
 		"position": float(resolved["start_position"]), "status": "playing",
 		"stem_mix": (resolved.get("stem_mix", {}) as Dictionary).duplicate(true),
 		"volume": 1.0,
 	}
 
 
+func _configure_bgm_restore_startup(
+	pending: BgmPendingMarkerMixState,
+	resolved: Dictionary,
+) -> Dictionary:
+	var stream := resolved.get("stream") as Object
+	if (
+		stream == null
+		or not is_instance_valid(stream)
+		or not stream.has_method(&"configure_startup_marker_mix")
+	):
+		return {}
+	var gains := _marker_bgm_gains(
+		pending.stem_mix, resolved.get("stem_names", []) as Array)
+	if gains.is_empty():
+		return {}
+	var occurrence := _select_saved_bgm_marker_occurrence(
+		pending.marker,
+		pending.restore_horizon_frame,
+		pending.restore_horizon_loop_epoch,
+		resolved,
+	)
+	if occurrence.is_empty():
+		return {}
+	var operation_id := _next_bgm_restore_operation_id
+	var fade_frames := _native_bgm_fade_frames(
+		pending.fade_duration, int(resolved.get("sample_rate", 0)))
+	if fade_frames < 0:
+		return {}
+	var configured: Variant = stream.call("configure_startup_marker_mix", {
+		"fade_frames": fade_frames,
+		"gains": gains,
+		"horizon_frame": pending.restore_horizon_frame,
+		"horizon_loop_epoch": pending.restore_horizon_loop_epoch,
+		"marker": pending.marker,
+		"marker_frame": int(occurrence["frame"]),
+		"marker_loop_epoch": int(occurrence["loop_epoch"]),
+		"marker_ordinal": int(occurrence["ordinal"]),
+		"operation_id": operation_id,
+		"schema_version": 1,
+	})
+	if configured != true:
+		return {}
+	_next_bgm_restore_operation_id += 1
+	var queued := BgmPendingMarkerMixState.queued(
+		pending.marker,
+		pending.stem_mix,
+		pending.fade_duration,
+		pending.marker_table_fingerprint,
+		pending.track_fingerprint,
+		pending.restore_horizon_frame,
+		pending.restore_horizon_loop_epoch,
+	)
+	if queued == null:
+		return {}
+	return {"operation_id": operation_id, "queued": queued}
+
+
 func _on_bgm_state_capture_requested(request: BgmStateCaptureRequest) -> void:
 	if _bgm_capability == null:
 		return
 	SignalBus.resolve_bgm_state_capture(
-		request, self, _bgm_capability, _capture_bgm_position())
+		request, self, _bgm_capability, _capture_bgm_state())
+
+
+func _on_bgm_state_restore_validate_requested(
+	request: BgmStateRestoreValidationRequest,
+) -> void:
+	if _bgm_capability == null or request == null:
+		return
+	SignalBus.resolve_bgm_state_restore_validation(
+		request,
+		self,
+		_bgm_capability,
+		_validate_bgm_state_restore(request.get_state()),
+	)
+
+
+func _validate_bgm_state_restore(state: Dictionary) -> bool:
+	var normalized := BgmChannelState.normalize_snapshot_state(state)
+	if normalized.is_empty():
+		return false
+	var pending := BgmPendingMarkerMixState.from_snapshot(
+		normalized.get("pending_marker_mix", {}))
+	if pending == null:
+		return false
+	var resolved := _resolve_bgm_track(
+		String(normalized.get("asset", "")),
+		String(normalized.get("cue", "")),
+		normalized.get("stem_mix", {}) as Dictionary,
+	)
+	if (
+		resolved.is_empty()
+		or not bool(resolved.get("marker_capable", false))
+		or pending.marker_table_fingerprint
+			!= String(resolved.get("marker_table_fingerprint", ""))
+		or pending.track_fingerprint
+			!= String(resolved.get("track_fingerprint", ""))
+		or _marker_bgm_gains(
+			pending.stem_mix, resolved.get("stem_names", []) as Array).is_empty()
+	):
+		return false
+	var sample_rate := int(resolved.get("sample_rate", 0))
+	var source_frame_count := int(resolved.get("source_frame_count", 0))
+	if sample_rate <= 0 or source_frame_count <= 0:
+		return false
+	if _native_bgm_fade_frames(pending.fade_duration, sample_rate) < 0:
+		return false
+	var horizon_frame := pending.restore_horizon_frame
+	var horizon_loop_epoch := pending.restore_horizon_loop_epoch
+	var loop_start_frame := roundi(
+		float(resolved.get("loop_position", 0.0)) * sample_rate)
+	var loop_end_frame := roundi(
+		float(resolved.get("loop_end_position", 0.0)) * sample_rate)
+	if (
+		horizon_frame < 0
+		or horizon_frame >= source_frame_count
+		or horizon_frame >= loop_end_frame
+		or horizon_loop_epoch < 0
+		or (not bool(resolved.get("loop", false)) and horizon_loop_epoch != 0)
+		or (
+			bool(resolved.get("loop", false))
+			and horizon_loop_epoch > 0
+			and horizon_frame < loop_start_frame
+		)
+		or roundi(float(normalized.get("position", 0.0)) * sample_rate)
+			!= horizon_frame
+	):
+		return false
+	var occurrence := _select_saved_bgm_marker_occurrence(
+		pending.marker, horizon_frame, horizon_loop_epoch, resolved)
+	if occurrence.is_empty():
+		return false
+	if pending.phase == BgmPendingMarkerMixState.Phase.QUEUED:
+		return true
+	return (
+		pending.marker_frame == int(occurrence.get("frame", -1))
+		and pending.marker_ordinal == int(occurrence.get("ordinal", -1))
+		and pending.marker_loop_epoch
+			== int(occurrence.get("loop_epoch", -1))
+	)
+
+
+func _select_saved_bgm_marker_occurrence(
+	marker_name: String,
+	horizon_frame: int,
+	horizon_loop_epoch: int,
+	resolved: Dictionary,
+) -> Dictionary:
+	var occurrences: Array = resolved.get("marker_occurrences", [])
+	var loop_end_frame := roundi(
+		float(resolved.get("loop_end_position", 0.0))
+		* float(resolved.get("sample_rate", 0)))
+	for ordinal in range(occurrences.size()):
+		var occurrence: Dictionary = occurrences[ordinal]
+		var frame := int(occurrence.get("frame", -1))
+		if (
+			String(occurrence.get("name", "")) == marker_name
+			and frame >= horizon_frame
+			and frame < loop_end_frame
+		):
+			return {
+				"frame": frame,
+				"loop_epoch": horizon_loop_epoch,
+				"ordinal": ordinal,
+			}
+	if not bool(resolved.get("loop", false)):
+		return {}
+	var loop_start_frame := roundi(
+		float(resolved.get("loop_position", 0.0))
+		* float(resolved.get("sample_rate", 0)))
+	for ordinal in range(occurrences.size()):
+		var occurrence: Dictionary = occurrences[ordinal]
+		var frame := int(occurrence.get("frame", -1))
+		if (
+			String(occurrence.get("name", "")) == marker_name
+			and frame >= loop_start_frame
+			and frame < loop_end_frame
+		):
+			return {
+				"frame": frame,
+				"loop_epoch": horizon_loop_epoch + 1,
+				"ordinal": ordinal,
+			}
+	return {}
 
 
 func _capture_bgm_position() -> float:
+	return float(_capture_bgm_state().get("position", 0.0))
+
+
+func _capture_bgm_state() -> Dictionary:
+	var target := BgmChannelState.normalize_snapshot_state(
+		_bgm_channel.get("target_state", {}))
+	if target.is_empty():
+		return {}
 	var current: Dictionary = _bgm_channel.get("current", {})
 	var player: AudioStreamPlayer = current.get("player")
 	if player == null or not is_instance_valid(player):
-		return float((_bgm_channel.get("target_state", {}) as Dictionary).get(
-			"position", 0.0))
-	return maxf(player.get_playback_position(), 0.0)
+		return target
+	var playback := current.get("marker_playback") as Object
+	if playback == null or not is_instance_valid(playback):
+		target["position"] = maxf(player.get_playback_position(), 0.0)
+		return target
+	var snapshot_value: Variant = playback.call("capture_marker_state")
+	if not snapshot_value is Dictionary:
+		return target
+	var snapshot: Dictionary = snapshot_value
+	var sample_rate := int(current.get("sample_rate", 0))
+	if sample_rate <= 0:
+		return target
+	var phase := String(snapshot.get("phase", "none"))
+	var horizon_frame := int(snapshot.get("horizon_frame", -1))
+	var horizon_loop_epoch := int(snapshot.get("horizon_loop_epoch", -1))
+	target["position"] = maxf(
+		float(snapshot.get("playback_frame_cursor", 0)) / float(sample_rate), 0.0)
+	var operation_id := int(
+		snapshot.get(
+			"queued_operation_id" if phase == "queued" else "active_operation_id",
+			0,
+		)
+	)
+	var marker_operations: Dictionary = _bgm_channel.get("marker_operations", {})
+	var record: Dictionary = marker_operations.get(operation_id, {})
+	var pending := record.get("pending") as BgmPendingMarkerMixState
+	if phase == "queued" and pending != null:
+		var queued_at_horizon := pending.at_restore_horizon(
+			horizon_frame, horizon_loop_epoch)
+		if queued_at_horizon == null:
+			return target
+		target["position"] = float(horizon_frame) / float(sample_rate)
+		target["pending_marker_mix"] = queued_at_horizon.to_snapshot()
+		return target
+	if phase == "armed" and pending != null:
+		var armed := pending.armed(
+			int(snapshot.get("marker_frame", -1)),
+			int(snapshot.get("marker_ordinal", -1)),
+			int(snapshot.get("marker_loop_epoch", -1)),
+			horizon_frame,
+			horizon_loop_epoch,
+		)
+		if armed != null:
+			target["position"] = float(horizon_frame) / float(sample_rate)
+			target["pending_marker_mix"] = armed.to_snapshot()
+		return target
+	if phase in ["triggered", "none"]:
+		var gains_value: Variant = snapshot.get("target_gains")
+		var names: Array = current.get("stem_names", [])
+		if gains_value is PackedFloat32Array and gains_value.size() == names.size():
+			var physical_mix: Dictionary = {}
+			for index in range(names.size()):
+				physical_mix[String(names[index])] = float(gains_value[index])
+			if BgmChannelState.validate_stem_mix(physical_mix, false, true):
+				target["stem_mix"] = physical_mix
+		target["pending_marker_mix"] = {}
+	return target
 
 
 func _create_bgm_voice(
@@ -1027,6 +1925,8 @@ func _create_bgm_voice(
 	stem_mix: Dictionary,
 	stem_names: Array,
 	resource_signature: Dictionary,
+	marker_info: Dictionary = {},
+	start_paused: bool = false,
 ) -> Dictionary:
 	if _audio_admission_is_closed() or stream == null:
 		return {}
@@ -1041,11 +1941,35 @@ func _create_bgm_voice(
 		"stem_mix": stem_mix.duplicate(true),
 		"stem_names": stem_names.duplicate(),
 		"resource_signature": resource_signature.duplicate(true),
+		"marker_capable": bool(marker_info.get("marker_capable", false)),
+		"marker_table_fingerprint": String(
+			marker_info.get("marker_table_fingerprint", "")),
+		"sample_rate": int(marker_info.get("sample_rate", 0)),
+		"track_fingerprint": String(marker_info.get("track_fingerprint", "")),
 	}
 	_set_bgm_stem_mix(stem_mix, voice)
 	_set_bgm_voice_level(level, voice)
 	player.finished.connect(_on_bgm_voice_finished.bind(voice), CONNECT_ONE_SHOT)
 	player.play(position)
+	# Godot resets stream_paused in play(). A pending marker restore keeps the
+	# native startup gate closed across this call, so even a forced callback can
+	# neither consume the command nor advance the cursor before this pause write.
+	player.stream_paused = start_paused
+	if bool(voice["marker_capable"]):
+		var marker_playback := player.get_stream_playback()
+		if (
+			marker_playback == null
+			or not marker_playback.has_method(&"arm_marker_mix")
+			or not marker_playback.has_method(&"drain_marker_events")
+		):
+			_stop_bgm_voice(voice)
+			return {}
+		voice["marker_playback"] = marker_playback
+		if (
+			OS.is_debug_build()
+			and _bgm_after_player_played_debug_hook.is_valid()
+		):
+			_bgm_after_player_played_debug_hook.call(player, marker_playback)
 	return voice
 
 
@@ -1122,12 +2046,19 @@ func _apply_bgm_volumes() -> void:
 func _stop_bgm_voice(voice_value: Variant) -> void:
 	if not voice_value is Dictionary:
 		return
+	_invalidate_bgm_marker_arms(voice_value as Dictionary)
 	var player: AudioStreamPlayer = (voice_value as Dictionary).get("player")
 	if player == null or not is_instance_valid(player):
 		return
 	player.stop()
 	player.stream = null
 	player.queue_free()
+
+
+func _invalidate_bgm_marker_arms(voice: Dictionary) -> void:
+	var playback := voice.get("marker_playback") as Object
+	if playback != null and is_instance_valid(playback):
+		playback.call("invalidate_marker_arms")
 
 
 func _on_bgm_voice_finished(voice: Dictionary) -> void:
@@ -1201,7 +2132,10 @@ func _prepare_bgm_definition(
 		return {}
 	var uses_single_stream := definition.stream != null
 	var uses_stems := not definition.stems.is_empty()
+	var uses_markers := not definition.markers.is_empty()
 	if uses_single_stream == uses_stems:
+		return {}
+	if uses_markers and not uses_stems:
 		return {}
 	var sources: Array[AudioStream] = []
 	var stem_names: Array[String] = []
@@ -1294,6 +2228,18 @@ func _prepare_bgm_definition(
 		stem_names, default_stem_mix, requested_stem_mix)
 	if uses_stems and stem_mix.is_empty():
 		return {}
+	if uses_markers:
+		var marker_prepared := _prepare_marker_bgm_stream(
+			sources, stem_names, stem_mix, definition.markers, selected)
+		if marker_prepared.is_empty():
+			return {}
+		selected.merge(marker_prepared, true)
+		selected["stem_mix"] = stem_mix.duplicate(true)
+		selected["stem_names"] = stem_names.duplicate()
+		selected["resource_signature"] = {
+			"marker_track_fingerprint": String(selected["track_fingerprint"]),
+		}
+		return selected
 	var prepared_streams: Array[AudioStream] = []
 	for source: AudioStream in sources:
 		var stream := _duplicate_bgm_stream(
@@ -1319,7 +2265,113 @@ func _prepare_bgm_definition(
 	selected["stem_names"] = stem_names.duplicate()
 	selected["resource_signature"] = _bgm_resource_signature(
 		sources, stem_names, default_stem_mix, selected)
+	selected["marker_capable"] = false
 	return selected
+
+
+func _prepare_marker_bgm_stream(
+	sources: Array[AudioStream],
+	stem_names: Array[String],
+	stem_mix: Dictionary,
+	markers: Array[BgmMarkerDefinition],
+	selected: Dictionary,
+) -> Dictionary:
+	if not ClassDB.class_exists(&"StellaMarkerBgmStream"):
+		push_error(
+			"AudioPresenter: marker-capable BGM requires the Stella marker "
+			+ "playback extension; build both native templates before "
+			+ "import/export (tests/build_marker_bgm_native.sh)")
+		return {}
+	var stem_bytes: Array[PackedByteArray] = []
+	var sampling_rate := 0
+	for source_index in range(sources.size()):
+		var source: AudioStream = sources[source_index]
+		if not source is AudioStreamOggVorbis:
+			return {}
+		var ogg := source as AudioStreamOggVorbis
+		if (
+			ogg.packet_sequence == null
+			or ogg.packet_sequence.sampling_rate <= 0
+			or ogg.packet_sequence.packet_data.is_empty()
+		):
+			return {}
+		if sampling_rate == 0:
+			sampling_rate = ogg.packet_sequence.sampling_rate
+		elif sampling_rate != ogg.packet_sequence.sampling_rate:
+			return {}
+		var bytes := BgmOggPacketEncoder.encode(
+			ogg.packet_sequence.packet_data,
+			ogg.packet_sequence.granule_positions,
+			0x53540000 + source_index + 1,
+		)
+		if bytes.is_empty():
+			return {}
+		stem_bytes.append(bytes)
+	var encoded_markers: Array = []
+	var previous_frame := -1
+	var names_at_frame: Dictionary = {}
+	for marker: BgmMarkerDefinition in markers:
+		if (
+			marker == null
+			or not BgmChannelState.is_valid_marker_label(marker.marker_name)
+			or marker.sample_frame < previous_frame
+		):
+			return {}
+		if marker.sample_frame != previous_frame:
+			names_at_frame.clear()
+		if names_at_frame.has(marker.marker_name):
+			return {}
+		names_at_frame[marker.marker_name] = true
+		encoded_markers.append({
+			"frame": marker.sample_frame,
+			"name": marker.marker_name,
+		})
+		previous_frame = marker.sample_frame
+	var loop_start_frame := roundi(float(selected["loop_position"]) * sampling_rate)
+	var loop_end_frame := roundi(float(selected["loop_end_position"]) * sampling_rate)
+	var gains := PackedFloat32Array()
+	gains.resize(stem_names.size())
+	for index in range(stem_names.size()):
+		gains[index] = float(stem_mix[stem_names[index]])
+	var stream_object := ClassDB.instantiate(&"StellaMarkerBgmStream")
+	if stream_object == null:
+		return {}
+	var configured: Variant = stream_object.call("configure", {
+		"initial_gains": gains,
+		"loop": bool(selected["loop"]),
+		"loop_end_frame": loop_end_frame,
+		"loop_start_frame": loop_start_frame,
+		"markers": encoded_markers,
+		"schema_version": 1,
+		"stem_names": PackedStringArray(stem_names),
+		"stem_ogg_bytes": stem_bytes,
+	})
+	if configured != true:
+		return {}
+	var stream := stream_object as AudioStream
+	if stream == null:
+		return {}
+	var source_sample_rate := int(stream_object.call("get_source_sample_rate"))
+	var source_frame_count := int(stream_object.call("get_source_frame_count"))
+	if source_sample_rate != sampling_rate or source_frame_count <= 0:
+		return {}
+	var marker_fingerprint := BgmMarkerFingerprint.marker_table(markers)
+	var track_fingerprint := BgmMarkerFingerprint.track(
+		stem_names, stem_bytes, source_sample_rate, source_frame_count,
+		bool(selected["loop"]), loop_start_frame, loop_end_frame,
+		marker_fingerprint,
+	)
+	if marker_fingerprint.is_empty() or track_fingerprint.is_empty():
+		return {}
+	return {
+		"marker_capable": true,
+		"marker_occurrences": encoded_markers.duplicate(true),
+		"marker_table_fingerprint": marker_fingerprint,
+		"sample_rate": source_sample_rate,
+		"source_frame_count": source_frame_count,
+		"stream": stream,
+		"track_fingerprint": track_fingerprint,
+	}
 
 
 func _resolve_bgm_stem_mix(

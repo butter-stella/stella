@@ -182,6 +182,8 @@ func test_tag_strings_and_signed_numeric_ids_match_godot_loader():
 
 
 func test_numeric_resource_id_grammar_matches_godot_loader():
+	var large_numeric_id := str("1e33".to_float())
+	var quoted_large_numeric_id := '"%s"' % large_numeric_id.c_escape()
 	var cases := [
 		{"literal": "+1", "accepted": false},
 		{
@@ -204,11 +206,11 @@ func test_numeric_resource_id_grammar_matches_godot_loader():
 		{"literal": '"-inf"', "reference": "-1e309", "accepted": true},
 		{
 			"literal": "1e33",
-			"reference": '"1000000000000000089690419062898688.0"',
+			"reference": quoted_large_numeric_id,
 			"accepted": true,
 		},
 		{
-			"literal": '"1000000000000000089690419062898688.0"',
+			"literal": quoted_large_numeric_id,
 			"reference": "1e33",
 			"accepted": true,
 		},
@@ -262,6 +264,7 @@ func test_numeric_resource_id_grammar_matches_godot_loader():
 
 
 func test_quoted_resource_ids_share_canonical_domain_without_reparsing():
+	var large_numeric_id := str("1e33".to_float())
 	assert_eq(
 		TextResourceInspector._normalized_resource_id_value("", true),
 		"id:",
@@ -276,10 +279,14 @@ func test_quoted_resource_ids_share_canonical_domain_without_reparsing():
 	)
 	assert_eq(
 		TextResourceInspector._normalized_resource_id_value("1e33", false),
+		"id:" + large_numeric_id,
+	)
+	assert_eq(
 		TextResourceInspector._normalized_resource_id_value(
-			"1000000000000000089690419062898688.0",
+			large_numeric_id,
 			true,
 		),
+		TextResourceInspector._normalized_resource_id_value("1e33", false),
 	)
 	assert_eq(
 		TextResourceInspector._normalized_resource_id_value("-1e-20", false),

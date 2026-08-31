@@ -11,8 +11,6 @@ var dialogue_content: Dictionary = _inactive_dialogue_content()
 var dialogue_avatar: Dictionary = DialogueAvatarState.default_state()
 
 var _connected: bool = false
-
-
 func get_provider_id() -> String:
 	return "presentation_state"
 
@@ -28,6 +26,7 @@ func connect_signals() -> void:
 		_on_dialogue_avatar_presenter_registered)
 	SignalBus.bgm_operation_committed.connect(_on_bgm_operation_committed)
 	SignalBus.bgm_position_committed.connect(_on_bgm_position_committed)
+	SignalBus.bgm_runtime_state_committed.connect(_on_bgm_runtime_state_committed)
 	SignalBus.bgm_natural_stop_committed.connect(_on_bgm_natural_stop_committed)
 	SignalBus.bgm_presenter_registered.connect(_on_bgm_presenter_registered)
 	SignalBus.movie_operation_committed.connect(_on_movie_operation_committed)
@@ -53,6 +52,7 @@ func disconnect_signals() -> void:
 		_on_dialogue_avatar_presenter_registered)
 	SignalBus.bgm_operation_committed.disconnect(_on_bgm_operation_committed)
 	SignalBus.bgm_position_committed.disconnect(_on_bgm_position_committed)
+	SignalBus.bgm_runtime_state_committed.disconnect(_on_bgm_runtime_state_committed)
 	SignalBus.bgm_natural_stop_committed.disconnect(_on_bgm_natural_stop_committed)
 	SignalBus.bgm_presenter_registered.disconnect(_on_bgm_presenter_registered)
 	SignalBus.movie_operation_committed.disconnect(_on_movie_operation_committed)
@@ -79,8 +79,7 @@ func clear() -> void:
 
 
 func capture_snapshot() -> Dictionary:
-	var captured_bgm := BgmChannelState.with_position(
-		current_bgm, SignalBus.capture_bgm_position())
+	var captured_bgm := SignalBus.capture_bgm_state(current_bgm)
 	var captured_loop_se := LoopSeChannelState.with_positions(
 		loop_se_channels,
 		SignalBus.capture_loop_se_positions(),
@@ -98,7 +97,26 @@ func capture_snapshot() -> Dictionary:
 	}
 
 
-func restore_snapshot(snapshot: Dictionary) -> void:
+func preflight_restore_snapshot(snapshot: Dictionary) -> bool:
+	if (
+		not snapshot.has("movie")
+		or not snapshot.has("dialogue_visibility")
+		or not snapshot.has("dialogue_content")
+		or not snapshot.has("dialogue_avatar")
+	):
+		return false
+	var restored_bgm: Variant = snapshot.get("bgm", {})
+	if not BgmChannelState.validate_snapshot_state(restored_bgm, false):
+		if restored_bgm is Dictionary:
+			var raw_pending: Variant = (restored_bgm as Dictionary).get(
+				"pending_marker_mix", {})
+			if not raw_pending is Dictionary or not raw_pending.is_empty():
+				return false
+		return true
+	return SignalBus.validate_bgm_state_restore(restored_bgm as Dictionary)
+
+
+func restore_snapshot(snapshot: Dictionary) -> bool:
 	if (
 		not snapshot.has("movie")
 		or not snapshot.has("dialogue_visibility")
@@ -108,12 +126,16 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 		push_warning(
 			"PresentationState: current snapshot requires movie and the complete dialogue_visibility/dialogue_content/dialogue_avatar envelope"
 		)
-		return
+		return false
+	if not preflight_restore_snapshot(snapshot):
+		push_warning(
+			"PresentationState: restore preflight rejected its envelope or pending BGM marker occurrence")
+		return false
 	current_bg = String(snapshot.get("bg", ""))
 	current_bgm.clear()
 	var restored_bgm: Variant = snapshot.get("bgm", {})
 	if BgmChannelState.validate_snapshot_state(restored_bgm, false):
-		current_bgm = (restored_bgm as Dictionary).duplicate(true)
+		_assign_bgm_state(restored_bgm as Dictionary)
 	else:
 		push_warning("PresentationState: invalid BGM snapshot; using stopped state")
 	current_movie.clear()
@@ -170,6 +192,7 @@ func restore_snapshot(snapshot: Dictionary) -> void:
 		push_warning(
 			"PresentationState: invalid dialogue_avatar snapshot; resetting avatar")
 		dialogue_avatar = DialogueAvatarState.default_state()
+	return true
 
 
 func record_dialogue_content(
@@ -246,6 +269,14 @@ static func cleared_dialogue_content(context: ScenarioContext) -> Dictionary:
 
 func apply_to_presenters(runtime_binding: Dictionary = {}) -> bool:
 	var movie_applied := [false]
+	# Freeze the validated restore payload before any projection reset runs.
+	# Earlier reset callbacks can synchronously commit the retiring audio
+	# projection, but those commits must not rewrite this restore transaction.
+	var bgm_projection_state := current_bgm.duplicate(true)
+	if not SignalBus.validate_bgm_state_restore(bgm_projection_state):
+		push_error(
+			"PresentationState: saved pending BGM marker occurrence is no longer reachable")
+		return false
 	SignalBus.run_presentation_projection(func() -> void:
 		SignalBus.reset_dialogue_visibility_visuals()
 		if SignalBus.has_signal(&"dialogue_visibility_state_apply_requested"):
@@ -257,7 +288,7 @@ func apply_to_presenters(runtime_binding: Dictionary = {}) -> bool:
 		SignalBus.reset_and_apply_stage_state(stage_layers)
 		SignalBus.reset_and_apply_dialogue_avatar_state(dialogue_avatar)
 		SignalBus.reset_and_apply_loop_se_state(loop_se_channels)
-		SignalBus.reset_and_apply_bgm_state(current_bgm)
+		SignalBus.reset_and_apply_bgm_state(bgm_projection_state)
 		movie_applied[0] = SignalBus.reset_and_apply_movie_state(current_movie)
 		SignalBus.bg_changed.emit(current_bg, "none", 0.0)
 	)
@@ -300,15 +331,27 @@ func _on_bgm_operation_committed(
 		or not BgmChannelState.validate_snapshot_state(state, false)
 	):
 		return
-	current_bgm = state.duplicate(true)
+	_assign_bgm_state(state)
 
 
 func _on_bgm_position_committed(position: float) -> void:
 	current_bgm = BgmChannelState.with_position(current_bgm, position)
 
 
+func _on_bgm_runtime_state_committed(state: Dictionary) -> void:
+	_assign_bgm_state(state)
+
+
 func _on_bgm_natural_stop_committed() -> void:
 	current_bgm.clear()
+
+
+func _assign_bgm_state(state: Dictionary) -> void:
+	var normalized := BgmChannelState.normalize_snapshot_state(state)
+	if normalized.is_empty():
+		current_bgm.clear()
+		return
+	current_bgm = normalized
 
 
 func _on_bgm_presenter_registered() -> void:
