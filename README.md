@@ -3,6 +3,10 @@
 A Godot 4.6 visual-novel framework built around a typed authoring DSL and
 independent presentation systems.
 
+Stella is an engine/framework repository. Game projects are downstream
+validation consumers: missing engine capabilities should be implemented in
+Stella instead of being hidden behind project-specific compatibility layers.
+
 ## Features
 
 - **Custom DSL** (`.stla`) — writer-friendly scripting with smart defaults
@@ -83,13 +87,37 @@ tests/                                 ← GUT 测试
 
 **日常工作流：** 写 `.stla` 剧本 + 放素材 + 编辑 `stella.cfg` → F5 运行。
 
+## Architecture at a glance
+
+```text
+.stla source
+  -> DslLexer / DslParser
+  -> ScenarioData / ScenarioEngine / ScenarioContext
+  -> CommandRegistry / CommandHandler
+  -> typed request or SignalBus adapter
+  -> PresentationDirector (transactional channels) / Presenter
+  -> PresentationState + SaveManager provider snapshots
+```
+
+`StellaRuntime` is the composition root and public facade. `SignalBus` is the
+cross-layer transport and compatibility boundary; it is not the owner of a
+second runtime. Transactional visual/audio operations share one
+`PresentationDirector`, while scene-owned Presenters remain responsible for
+Godot nodes. See the architecture documents below for ownership, cancellation,
+save/restore, and extension rules.
+
 ## Docs
 
-- [Usage Guide](docs/USAGE.md) — 安装、快速上手、配置文件、Facade API、自定义扩展
-- [DSL Reference](docs/DSL.md) — DSL 语法、智能默认值、`@combine` 合并对话、完整示例
-- [Architecture](docs/ARCHITECTURE.md) — 三层架构、命令处理器、状态机
-- [Input System Design](docs/INPUT_DESIGN.md) — 鼠标推进 + 工具栏按钮共存的输入路由方案
-- [Research](docs/RESEARCH.md) — 竞品调研、语法对比
+- [Usage Guide](docs/USAGE.md) — 安装、配置、公开 Facade 和宿主集成
+- [DSL Reference](docs/DSL.md) — `.stla` 的规范语法与诊断契约
+- [Architecture](docs/ARCHITECTURE.md) — 当前实现的模块、所有权和数据流
+- [Architecture Review](docs/ARCHITECTURE_REVIEW.md) — 合理性判断、风险和演进顺序
+- [Input System Design](docs/INPUT_DESIGN.md) — 输入所有权和一次推进边界
+- [Research](docs/RESEARCH.md) — 产品定位与历史竞品假设（不是实现契约）
+
+When documents disagree, `DSL.md` is authoritative for authored syntax,
+`USAGE.md` for supported integration, and `ARCHITECTURE.md` for runtime
+ownership. Source and tests remain the final executable truth.
 
 ## License
 

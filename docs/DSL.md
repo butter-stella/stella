@@ -3,6 +3,15 @@
 > **设计理念：脚本即演出。** 编剧写完 DSL 脚本就能完成 90% 的演出效果，程序员只负责特殊定制。
 > `.stla` 是当前唯一的剧本源格式；解析器直接生成框架运行时数据模型。
 
+**文档角色：** 本文件是 authored `.stla` 语法、默认值和错误行为的规范参考。
+运行时所有权见 [ARCHITECTURE.md](ARCHITECTURE.md)，宿主接入见
+[USAGE.md](USAGE.md)。示例与速查表不能覆盖或放宽各命令章节的 closed grammar。
+
+DSL 是公共兼容面。未知命令、未知/重复参数、非法 block 结构和无法形成
+canonical typed payload 的输入必须带 `source_path:line` fail-close；不得由项目
+importer、Presenter 或 Handler 猜测修复。对某个游戏包需要的新语义应先成为 Stella
+的正式 DSL/资源能力。
+
 ## 1. 设计原则
 
 1. **编剧零门槛** — 不需要理解编程概念，看示例即可上手
@@ -1098,7 +1107,9 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 
 DSL 是唯一的脚本格式，引擎直接解析 `.stla` 为内部数据结构（ScenarioData）。
 
-整个 `@stage_batch` block 编译为一个 `stage_batch` command，并保留每个 child source line 供 runtime fail-close；内部 IR 的唯一主说明见 [Architecture 的 PresentationDirector 与 exact Stage composition](ARCHITECTURE.md#presentationdirector-与-exact-stage-composition)。
+整个 `@stage_batch` block 编译为一个 `stage_batch` command，并保留每个 child
+source line 供 runtime fail-close；批次所有权与回执规则见
+[Architecture 的 presentation architecture](ARCHITECTURE.md#6-presentation-architecture)。
 
 ```
 ScriptParser/
@@ -1108,6 +1119,15 @@ ScriptParser/
 ├── dialogue_profile_parser.gd -- 对话 Profile 解析与校验
 └── scenario_graph_builder.gd  -- 从 ScenarioData 构建流程图
 ```
+
+当前 `DslParser` 同时承担结构 block 与各指令 grammar，属于已识别的集中化风险；
+评估与拆分顺序见 [ARCHITECTURE_REVIEW.md](ARCHITECTURE_REVIEW.md)。在完成模块化前，
+新增语法仍必须复用现有公共 tokenizer/diagnostic 规则，不能为单个命令引入第二套
+lexer、宽松 alias 或 runtime fallback。
+
+`CommandRegistry.register()` 只注册已经存在的 canonical `CommandData` handler，
+**不会**让 parser 接受新的 `@command`。新增 authored 指令必须同时实现 parser、
+typed/closed payload、handler、必要的 Presenter/存档链路、测试和本文件文档。
 
 ### 解析示例
 

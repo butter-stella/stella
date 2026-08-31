@@ -9,6 +9,7 @@ User and system instructions always take precedence.
 Before changing a subsystem, read its implementation and the relevant document:
 
 - `docs/ARCHITECTURE.md` for layering and runtime data flow
+- `docs/ARCHITECTURE_REVIEW.md` for accepted risks and extraction order
 - `docs/DSL.md` for `.stla` syntax and semantics
 - `docs/USAGE.md` for the public integration surface
 - `docs/INPUT_DESIGN.md` for input routing and UI interaction
@@ -20,8 +21,10 @@ measuring them from the current checkout.
 
 Stella is a Godot visual-novel framework. The project declares Godot 4.6
 compatibility and CI currently uses 4.6.1; the implementation is primarily
-GDScript. Rust/gdext is not part of the current build and must not be introduced
-without an explicit design decision.
+GDScript. Native GDExtension code is allowed only for a measured Godot public-API
+gap and requires an explicit design decision, deterministic multi-platform
+builds, license review, export verification, and the same typed Runtime-owned
+lifecycle as GDScript presentation.
 
 - `addons/stella/core/`: domain logic and runtime orchestration
 - `addons/stella/presentation/`: UI, rendering, animation, and audio nodes
@@ -54,6 +57,13 @@ intentional dependency upgrade. Never edit generated `.godot/` state by hand.
 - Treat public DSL, configuration, save data, and extension APIs as compatibility
   surfaces. Document intentional changes and add migration or compatibility
   handling when persisted data is affected.
+- Treat downstream remake/game projects as validation consumers, not as places
+  to hide engine gaps. Never encode a stage/character operation as a background,
+  duplicate Stella scheduling in a project, or add a project-only parser/runtime
+  fallback. Record the gap and implement a general Stella contract instead.
+- `DSL.md`, `USAGE.md`, and `ARCHITECTURE.md` are separate canonical views:
+  authored grammar, supported host integration, and runtime ownership. Update
+  every affected view without copying large feature narratives between them.
 
 ## Implementation rules
 

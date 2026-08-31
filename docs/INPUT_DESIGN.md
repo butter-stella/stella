@@ -1,5 +1,14 @@
 # 输入系统设计
 
+**文档角色：** 本文件是物理输入、semantic action 和当前剧情 owner 之间的
+规范设计。总体运行时边界见 [ARCHITECTURE.md](ARCHITECTURE.md)，宿主可绑定 action
+见 [USAGE.md](USAGE.md)。输入层只分发 intent，不直接完成 Presenter Tween、改写
+ScenarioContext 或创建第二套推进调度。
+
+核心不变量是 **one physical edge → one semantic serial → at most one story owner**。
+公开 signal 的同步 listener tail、场景替换和 modal owner 结束都不能把同一 edge
+重放给后继命令。
+
 ## 核心矛盾
 
 AVG 游戏需要"点击任意位置推进剧本"，但工具栏按钮（自动、快进、存档等）点击时不应推进。
