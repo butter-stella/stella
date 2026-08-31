@@ -1,12 +1,9 @@
-# Scenario E2E fixtures
+# 剧情端到端测试场景
 
-This directory contains synthetic, redistributable `.stla` scenarios used by
-the integration tests. Each fixture exercises a public DSL feature through the
-same parser, command handler, signal, and presenter path used by a game.
+本目录保存供集成测试使用的 synthetic、可再分发 `.stla` 场景。每个 fixture 都通过游戏实际
+使用的同一 parser、CommandHandler、SignalBus 和 Presenter 链路验证一项公开 DSL 能力。
 
-Fixtures may use `@wait click` as a deterministic inspection checkpoint. This
-also keeps them runnable by hand in a debug build: advance once to continue to
-the cleanup command, then advance again to finish the scenario.
+fixture 可以使用 `@wait click` 作为确定性检查点。这也便于在 debug build 中人工运行：推进
+一次进入 cleanup 命令，再推进一次结束场景。
 
-Keep fixtures focused on one feature and free of private game content, assets,
-or machine-specific paths.
+每个 fixture 应聚焦单项能力，严禁包含私有游戏内容、资产或机器专属路径。

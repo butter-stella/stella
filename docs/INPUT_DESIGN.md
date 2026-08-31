@@ -1,5 +1,14 @@
 # 输入系统设计
 
+**文档角色：** 本文件是物理输入、semantic action 和当前剧情 owner 之间的
+规范设计。总体运行时边界见 [ARCHITECTURE.md](ARCHITECTURE.md)，宿主可绑定 action
+见 [USAGE.md](USAGE.md)。输入层只分发 intent，不直接完成 Presenter Tween、改写
+ScenarioContext 或创建第二套推进调度。
+
+核心不变量是 **one physical edge → one semantic serial → at most one story owner**。
+公开 signal 的同步 listener tail、场景替换和 modal owner 结束都不能把同一 edge
+重放给后继命令。
+
 ## 核心矛盾
 
 AVG 游戏需要"点击任意位置推进剧本"，但工具栏按钮（自动、快进、存档等）点击时不应推进。
@@ -78,7 +87,7 @@ stop/pause 策略时应保留的用户 intent。菜单内 toolbar 正向切换�
 Presenter 在 active choice gate 下绝不让旧 ready/typewriter 建立推进 tail。Auto suspension
 解除的 positive effective edge 同样不启动旧 timer，下一条 active dialogue 才创建新 tail。
 
-### Overlay（save_load/backlog/settings）
+### 覆盖层（存读档 / 历史记录 / 设置）
 
 `_input` 处理 ESC/右键关闭。Overlay 打开时 `game_state` 不是 `PLAYING`，InputHandler 的 `is_playing()` 守卫阻断键盘推进。鼠标推进被 `gui_get_hovered_control()` 检测到 overlay 上的控件而跳过。
 
@@ -87,7 +96,7 @@ Presenter 在 active choice gate 下绝不让旧 ready/typewriter 建立推进 t
 Runtime 通过唯一 AudioPresenter 退休所有音频 owner，并等待真实 AudioServer mix + 主线程
 cleanup boundary；重复 UI/OS 请求不会创建第二个退出或等待 owner。
 
-### Action registry 与 Button 边界
+### 动作注册表与按钮边界
 
 物理输入的固定映射和 scene-authored Button 共用 Runtime-owned
 `StellaActionRegistry`。InputHandler dispatch `advance`、`hide_ui`、`flowchart`；Toolbar
@@ -115,19 +124,19 @@ UI 必须忽略，避免动作已经执行后仍留下失效 popup。
 
 Auto/Skip 在回想内仍遵循普通 typed owner 规则；返回 cleanup 会同步停止两者。Backlog 可只读打开，但 quick/manual/auto save 与所有 rollback cursor mutation 都 fail-close。normal load（包括 quick load）、start 或 title replacement 直接 supersede caller；callback 只在旧 engine/presentation 全退役后执行，并可同步启动新的 story/recollection/title owner。
 
-## 打字完成 vs 推进
+## 打字完成与推进
 
 默认的 AVG 行为是：打字未完成时正常推进输入 = 完成打字（不推进），打字完成后下一次输入 = 推进。`click_to_complete=false` 会把第一条规则改成“只消费输入、继续打字”；自然完成后，下一次输入仍正常推进。
 
 实现：左键、Space、Enter 和手柄 A 每次进入正常推进路径时都重新读取 `click_to_complete`，不会对 active line 做策略快照。Presenter 的原子 gate 返回“该 typewriter 是否消费了输入”：`true` 策略会同步取消旧的字符/等待协程、应用最终头像状态，并把当前对话剩余的 `@combine` 舞台操作按声明顺序归约后以 cut 投影；`false` 策略保持所有打字状态。两种结果都由输入层立即 `set_input_as_handled()`，绝不落入 owner/global advance；只有 gate 表明已经 ready 时，才确认当前 request 或发送兼容 advance，并同样消费事件。UI 隐藏恢复、Button/Slider、非 PLAYING，以及左键的 Skip/Auto 策略仍先于这个门槛处理。仅完成打字不会把该行标为已读；`DialogueHandler` 在当前 request 的 `DialogueActivation` 被正常确认、且 engine/context owner 仍有效后写入已读记录，中止则保持未读并终止当前 context，因此无界面执行也遵守相同语义。Presenter 的输入、Auto 与 Skip 都调用当前 `DialogueRequest.advance()`；Core 提交已读后先发送带 activation identity 的内建完成事件，再广播无参数 `advance_requested` 作为扩展/音频兼容通知。若 Presenter 没有 pending dialogue activation，输入层改发该无参通知，交给当前 Director-owned blocker 或 `@wait click`/`skippable=true` 的定时等待。WaitHandler 与各 Presenter 都用 dispatch serial 拒绝旧 signal tail，因此一次真实推进最多完成一个 blocking command。typed owner 被新 SHOW、hard hide 或生命周期边界替换时，Presenter 会在清除其可达性前 `abort()`，不会留下只能由旧 UI 完成的 Core waiter；若 abort 回调同步发布更新的 SHOW/HIDE，使正在接受的外层 request 失去 current/queue 所有权，该 incoming request 也会被明确 abort。扩展直接广播旧信号不会完成任何 DialogueHandler waiter，也不会误推进另一个 activation。
 
-## Chapter indicator fade 与一次输入边界
+## 章节标题淡变与一次输入边界
 
 当没有 pending dialogue owner、当前 sealed Director JOIN 含有 `@chapter_indicator ... transition=fade` 时，普通左键、Space、Enter 和手柄 A 仍走同一 `advance_requested` 语义：只把这个 owner 的 exact receipts snap 到 authored final state，并消费该次输入。toolbar Skip 开启也只 finish 当前 exact owner；Auto 状态本身不会自动结束 indicator。
 
 每个 Presenter 在接受 request 时记录 `SignalBus` 的 advance dispatch serial。若第一位 Presenter 的 acknowledgement 同步推进引擎并创建下一条 indicator，后一位 Presenter 收到的仍是旧 signal tail；新 request 的接受 serial 与当前 dispatch 相同，因此它必须拒绝这次旧 tail。结果是一次 physical/semantic advance 最多完成一个 blocking command，不会把 chained fade 一起跳过。
 
-## Presentation JOIN 与一次推进边界
+## 演出汇合与一次推进边界
 
 当没有 pending Dialogue owner，且当前 blocking presentation 使用 `policy=join` 时，左键、Space、Enter 和手柄 A 进入同一个 `SignalBus` semantic advance boundary。`PresentationDirector` 只向最新 current 且已 sealed JOIN 的五元 exact receipts 发送 finish；对应 Stage、dialogue avatar/visibility/content、chapter 或 Audio Presenter 将每个仍属于该 owner 的转场 snap 到 authored endpoint，再只 acknowledgement 一次。同一 advance serial 的旧 signal tail 不得完成同栈新建的下一 batch 或 Dialogue；late timer、input 或 terminal 也不得推进已替换的 tail。
 
@@ -156,12 +165,12 @@ transition generation，不会把同一输入重放给下一条 Dialogue 或 cli
 
 active presentation clip 是 story input 的最前 modal owner；它在 choice、soft-hidden UI、Button/Slider、Skip/Auto 与 typewriter 之前 claim 上述输入，但非 PLAYING 仍不处理 story advance。没有 active clip 时维持既有优先级：choice 与 GUI control 按原 owner处理，soft-hidden UI 先恢复，Skip/Auto 左键 policy 再先于普通推进。成功进入 normal path 后，无论是 typed dialogue advance、Presentation JOIN、可跳过 timed wait 还是 `@wait click` 都会 `set_input_as_handled()`。左键、Space、Enter、Ctrl 与手柄 A 进入同一个 advance dispatch serial；#133 的可重绑输入系统仍是后续工作。
 
-## Movie modal input
+## 电影模态输入
 
 活动 `movie:main` 是 presentation clip 同级的最前 fullscreen modal owner。普通左键、Space、Enter、手柄 A 完成 `skippable=true` 的电影；右键和 persistent/Ctrl Skip 分别再受 `movie_right_click_skip`、`movie_skip_on_skip` 控制。`skippable=false` 或关闭对应策略时仍消费该 edge，但不结束电影、不触发 choice、typewriter、下一条 dialogue 或任何下层 owner。Ctrl intent 的 press/hold/release 仍由中央 controller记录，MoviePresenter 不实现 `_input`，同一 physical edge 不能泄漏到新 owner。Auto 不结束电影。
 
 完成、显式 `@movie stop`、movie replacement、navigation、shutdown 与迟到 native callback 都经 Director exact receipt/generation；Skip 已 active 时是否结束新 movie只由 setting与skippable共同决定。默认产品策略是右键可跳、Skip mode 不自动跳，因此两个设置分别默认为 true/false；普通 advance 可跳同样是 Stella 的通用产品选择。
 
-## Timed wait 与一次推进边界
+## 定时等待与一次推进边界
 
 `@wait <seconds> skippable=true` 复用上述普通 advance 信号，不在 InputHandler 里建立私有 timer 或第二套输入路由。WaitHandler 安装时记录当前 advance serial；只有更新的 serial 可以赢得 timer/input/cancellation race，所以同一 physical input 的兼容 signal tail 无法结束同步开始的下一条 wait。timer 先到、输入先到、Skip 激活或 context cancellation 都会原子退休其余 listener。`skippable=false`（默认）不连接 advance/Skip，只等待 timer 或 engine cancellation；Auto 不生成这类 owner completion。

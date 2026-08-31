@@ -1,99 +1,100 @@
 # Stella
 
-> [!WARNING]
-> **Work in Progress:** Stella is still under active development. APIs, features, and documentation may change before a stable release.
+Stella 是面向 Godot 4.6 的视觉小说框架，以 typed `.stla` 作者 DSL、单一运行时所有权和
+可独立替换的表现系统为核心。
 
-A Godot 4.6 visual-novel framework built around a typed authoring DSL and
-independent presentation systems.
+本仓库是引擎/框架，而不是某个游戏的兼容层。下游游戏用于验证 Stella 的真实能力：缺失能力
+应在 Stella 中设计和实现，不得通过项目专用 parser、重复调度器或素材编码技巧掩盖。
 
-## Features
+## 主要能力
 
-- **Custom DSL** (`.stla`) — writer-friendly scripting with smart defaults
-- **Scenario Engine** — extensible command-pattern architecture
-- **Dialogue System** — typewriter, ADV/NVL/overlay modes, inline `[expr:expression]` and `{wait}/{speed}` markers
-- **`@combine` blocks** — group multiple voice segments and named-stage cues into one logical dialogue with a continuous typewriter and shared progress
-- **Named Stage System** — arbitrary reusable character/event/SD layers, stable asset/body/face channels, transforms, redraw filters, transitions, and exact save-state projection
-- **Dialogue Avatars** — inline `[expr:expression]` markers update the cropped dialogue portrait without implicitly mutating the stage
-- **Background System** — double-buffered fade / dissolve / wipe transitions
-- **Audio System** — BGM/SE/voice with per-character volume, sequential voice queue, replay, voice progress signal
-- **Native Movies** — concise typed `@movie` playback for native OGV, with independent volume and exact save/load cursors
-- **Choice System** — abstract presenter, supports custom UI styles
-- **Variable System** — 3 scopes (global / scenario / temp), expression evaluator
-- **Save System** — snapshot-based save/load with multiple slots, auto-save, quick-save, continue
-- **Settings System** — text speed, auto-play, skip, volume, per-character voice
-- **Playback Control** — auto-play, skip (read-only), read-flag tracking, backlog with sequential voice replay
-- **Game State Machine** — title / playing / save-load / backlog / settings overlays
-- **Voice Bookmarks** — collect and replay voice lines
-- **Gallery System** — illustration / BGM / scene unlock tracking
-- **Localization** — multi-locale key-value translation
+- **作者 DSL**：`.stla` 剧本、严格 closed grammar、带源码位置的 fail-close 诊断；
+- **剧情引擎**：命令模式、可取消的 `ScenarioContext`、变量、条件、跳转与并行；
+- **对话系统**：打字机、ADV/NVL/overlay、内联等待/速度/表情、`@combine`；
+- **命名舞台**：任意人物/事件/SD/前景层，独立素材通道、变换、滤镜、转场与存档投影；
+- **背景与特效**：独立背景层、fade/dissolve/wipe、shake/flash；
+- **音频系统**：BGM、one-shot SE、persistent loop-SE、多层语音、DSP、回放；
+- **Marker BGM**：在同一 BGM transport 中按音频 sample marker 原子切换 2..32 路 OGG stem；
+- **原生电影**：typed `@movie` OGV 播放、独立音量、精确存读档位置；
+- **事务化演出**：`PresentationDirector` 统一 JOIN/FNF、typed receipt、取消和选择性回滚；
+- **存档系统**：多槽、自动/快速存档、继续游戏、canonical value snapshot；
+- **播放控制**：Auto、仅已读 Skip、Backlog、语音重播和已读标记；
+- **设置、动作与输入**：typed setting registry、稳定 action ID、键鼠/手柄与 UI 统一语义；
+- **流程与扩展**：标题/游戏/overlay 状态、回想、收藏、解锁、本地化和可替换 UI。
 
-## Tech Stack
+## 技术基础
 
-- Godot 4.6+, GDScript
-- GUT for unit and integration testing
+- Godot 4.6；CI 固定 Godot 4.6.1；
+- 主要使用 GDScript；
+- Marker BGM 因 Godot 公共 API 缺口使用受控的 C++17/godot-cpp GDExtension；
+- GUT 单元/集成测试、Rendering Pixel Tests、三平台 native 构建和导出/PCK smoke。
 
-## Quick Start
+## 快速开始
 
-1. Clone this repository
-2. Open `project.godot` in Godot 4.6+
-3. Press F5 to run the demo
+1. 克隆本仓库；
+2. 使用 Godot 4.6 打开 `project.godot`；
+3. 按 F5 运行公开 demo。
 
-## Project Structure
+宿主项目安装、配置和 Facade 示例见 [使用指南](docs/USAGE.md)。
 
-```
-addons/stella/                        ← 框架插件（一般不需要修改）
-├── autoload/
-│   ├── signal_bus.gd                  ← 信号总线（Core↔Presentation 通信）
-│   └── stella_runtime.gd             ← 框架入口（加载配置、注册 handler、管理生命周期）
-├── core/                              ← 核心层（纯逻辑，不依赖 Godot 渲染）
-│   ├── config/                        ← 项目配置加载（stella.cfg）
-│   ├── data/                          ← 数据模型（CommandData, ScenarioData 等）
-│   ├── script_parser/                 ← DSL 解析器（.stla → 内部数据结构）
-│   ├── scenario_engine/               ← 剧情引擎（主循环、上下文、等待控制）
-│   ├── commands/                      ← 命令处理器（对话/舞台/背景/音频/特效...）
-│   ├── variable_system/               ← 变量系统 + 表达式求值
-│   ├── save_system/                   ← 存档/读档
-│   ├── settings/                      ← 游戏设置
-│   ├── playback/                      ← 自动播放/快进/已读/Backlog
-│   ├── state/                         ← 游戏状态机
-│   ├── bookmark/                      ← 语音收藏
-│   ├── gallery/                       ← 插画/BGM 解锁管理
-│   └── localization/                  ← 多语言本地化
-├── presentation/                      ← 表现层（Godot UI/渲染/音频）
-│   ├── dialogue/                      ← 对话框 + 打字机 + NVL/overlay
-│   ├── background/                    ← 背景 + fade 转场
-│   ├── stage/                         ← 动态命名舞台层 + 转场/滤镜
-│   ├── choice/                        ← 选项按钮
-│   ├── audio/                         ← BGM/SE/voice 播放
-│   ├── movie/                         ← Runtime-owned 原生 OGV 电影播放
-│   ├── effects/                       ← 屏幕淡入淡出 + shake/flash
-│   ├── input/                         ← 鼠标/键盘输入处理
-│   └── ui/                            ← 标题/存档/设置/Backlog 界面
-├── scenes/                            ← 内置场景（title.tscn, game.tscn）
-├── stella_plugin.gd                  ← 编辑器插件（注册 Autoload、设置主场景）
-└── plugin.cfg
+## 目录结构
 
-stella.cfg                            ← 项目配置文件（标题/路径/功能开关）
-examples/demo/                         ← 示例项目
-├── scenarios/                         ← .stla 剧本
-├── video/                             ← 原生电影资源（OGV）
-└── art/                               ← 素材（背景/头像/舞台层）
+```text
+addons/stella/
+├── autoload/             # StellaRuntime 组合根与 SignalBus 跨层端口
+├── core/                 # parser、剧情、命令、事务、状态、存档、设置
+├── presentation/         # Godot UI、渲染、音频和输入 Presenter
+├── scenes/               # bootstrap 与默认场景
+├── editor/               # 编辑器集成
+└── native/               # GDExtension descriptor 模板
 
-tests/                                 ← GUT 测试
-├── unit/                              ← 单元测试
-└── integration/                       ← 端到端集成测试
+native/marker_bgm/        # Marker BGM 原生执行器与可复现构建
+examples/demo/            # 可再分发 demo
+tests/unit/               # 聚焦契约测试
+tests/integration/        # 跨层与生命周期测试
+docs/                     # DSL、使用、输入、架构与架构评审
 ```
 
-**日常工作流：** 写 `.stla` 剧本 + 放素材 + 编辑 `stella.cfg` → F5 运行。
+## 架构速览
 
-## Docs
+```mermaid
+flowchart LR
+    Author[作者与宿主项目] --> Parser[DSL / 配置 / 资源预检]
+    Parser --> Runtime[StellaRuntime<br/>唯一组合根]
+    Runtime --> Engine[ScenarioEngine<br/>唯一剧情游标]
+    Engine --> Handler[CommandRegistry / Handler]
+    Handler --> Director[PresentationDirector<br/>唯一事务所有者]
+    Handler --> Bus[SignalBus<br/>跨层端口]
+    Director <--> Bus
+    Bus --> Presenter[Scene / Runtime Presenter]
+    Presenter --> Godot[Godot UI / Render / Audio]
+    Presenter --> Native[受控 Marker BGM 执行器]
+    Engine --> Save[SaveManager]
+    Director --> State[PresentationState]
+    State --> Save
+```
 
-- [Usage Guide](docs/USAGE.md) — 安装、快速上手、配置文件、Facade API、自定义扩展
-- [DSL Reference](docs/DSL.md) — DSL 语法、智能默认值、`@combine` 合并对话、完整示例
-- [Architecture](docs/ARCHITECTURE.md) — 三层架构、命令处理器、状态机
-- [Input System Design](docs/INPUT_DESIGN.md) — 鼠标推进 + 工具栏按钮共存的输入路由方案
-- [Research](docs/RESEARCH.md) — 竞品调研、语法对比
+架构核心不是“所有东西都走 signal”，而是：
 
-## License
+- `StellaRuntime` 是唯一组合根；
+- `ScenarioEngine` 是唯一剧情执行游标；
+- `PresentationDirector` 是阻塞演出的唯一事务/回执所有者；
+- `SignalBus` 是跨层传输与兼容边界，不是第二套 Runtime；
+- Core 保存逻辑 ID 和 canonical value，Presenter 拥有 Godot 节点与物理执行；
+- 原生执行器只解决测量过的 Godot API 缺口，不拥有剧情或演出调度。
 
-MIT
+## 文档
+
+- [架构设计](docs/ARCHITECTURE.md)：模块所有权与运行时数据流；
+- [架构评审](docs/ARCHITECTURE_REVIEW.md)：当前判断、风险和演进方案；
+- [DSL 规范](docs/DSL.md)：作者语法、默认值和错误行为；
+- [使用指南](docs/USAGE.md)：宿主安装、配置、资源和 Facade；
+- [输入设计](docs/INPUT_DESIGN.md)：输入优先级与一次输入边界；
+- [竞品调研](docs/RESEARCH.md)：视觉小说引擎与语法对比。
+
+文档发生冲突时：作者语法以 `DSL.md` 为准，宿主接入以 `USAGE.md` 为准，运行时所有权以
+`ARCHITECTURE.md` 为准；源码和测试始终是最终可执行事实。
+
+## 许可证
+
+Stella 使用 [MIT License](LICENSE)。第三方组件保留各自许可证与 notice。

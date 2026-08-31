@@ -1,90 +1,101 @@
-# Stella marker BGM native playback
+# Stella Marker BGM 原生执行器
 
-This directory contains Stella's one custom `AudioStreamPlayback` for
-sample-frame marker switching across synchronized BGM stems. It is deliberately
-limited to the physical `bgm:main` transport: `AudioPresenter` remains the sole
-main-thread owner and `PresentationDirector` remains the sole semantic
-scheduler/receipt owner. The extension does not create a thread, player,
-scheduler, timer, or wall-clock poll.
+本目录包含 Stella 唯一的自定义 `AudioStreamPlayback`，用于在同步 BGM stems 上按
+sample-frame marker 切换完整混音状态。它被严格限制在物理 `bgm:main` transport 内：
 
-## Design boundary
+- `AudioPresenter` 仍是唯一 main-thread owner；
+- `PresentationDirector` 仍是唯一语义 scheduler 和 receipt owner；
+- extension 不创建 thread、player、scheduler、Timer 或 wall-clock poll。
 
-Godot 4.6 does not expose a real-time-safe way for GDScript to change all
-children of `AudioStreamSynchronized` at a source-sample boundary. Its public
-child-gain calls cross Variant/locking boundaries, while the native resampled
-playback helper predecodes an internal chunk before calling extension code.
-Consequently this implementation owns one direct OGG playback, source-rate
-linear interpolation, loop cursor, fixed-capacity POD command/event rings, and
-the atomic stem-gain ramp. The audio callback performs no Godot Variant/Array
-construction, allocation, lock, signal, deferred call, or resource lookup.
-Each stem decodes into a fixed preallocated chunk; the resampler keeps raw
-per-stem prefetched samples so a new mix can still apply at the earliest
-not-yet-activated source frame. Selection and pending persistence use the same
-exact `(source frame, loop epoch)` coordinate, including rate>1 callbacks that
-activate several intermediate frames or cross multiple short loops. Restore
-stores its exact arm in the stream before playback instantiation; `_start()`
-publishes that command behind an atomic silent full-buffer hold which the sole
-AudioPresenter releases only after registering the owner and paused state. A
-callback during the hold returns the complete requested frame count as exact
-zero PCM while decoder, cursor, command, event, gain, and ramp state remain
-unchanged, so Godot never mistakes the hold for a short-buffer stream end. The
-same full-buffer silence contract applies to an unsupported positive source
-step before any command/control consumption; the queued operation executes
-once when a supported rate returns. Only stop, EOF, or a decoder terminal may
-short-return, and those paths settle any admitted native operation first. The
-`rt_*_violations` fields are explicit
-forbidden-fallback sentinels, not process-wide allocator or mutex hooks. The RT
-claim is therefore enforced jointly by fixed-storage code review, warning-as-
-error native builds, the 32-stem refill bound, and callback lifecycle tests.
-godot-cpp headers are compiler `SYSTEM` includes. The stb implementation is a
-separate vendor object with its documented upstream-only warning exemptions;
-the first-party `register_types.cpp` and `stella_marker_bgm.cpp` compile with
-`-Wall -Wextra -Werror` and no `-Wno-*`, or MSVC `/W4 /WX` and no `/wd*`.
-Only the stb object disables MSVC's upstream narrowing/sign and shadowing
-diagnostics (C4244/C4245 and C4456/C4457), plus its bounded-reader
-potentially-uninitialized diagnostic (C4701). A compile-command gate checks
-the exact boundary after every GCC/Clang build and whenever the MSVC generator
-provides a compile database.
-The existing `AudioPresenter._process()` only drains already timestamped ring
-events; marker selection and triggering happen solely at an audio callback
-boundary.
+## 设计边界
 
-`StellaMarkerBgmStream.configure(Dictionary)` and playback control methods are
-internal FFI. `configure` rejects any missing, extra, mistyped, non-finite, or
-inconsistent field; the public project/author surface remains typed
-`BgmTrackDefinition` / `BgmMarkerDefinition`. `debug_*` methods are bound only
-when Godot compiles the extension with `DEBUG_ENABLED`.
+Godot 4.6 没有公开的实时安全 GDScript API，可以在某个 source sample 上同时修改
+`AudioStreamSynchronized` 的所有 child gain。公开 child-gain 调用会跨 Variant/同步边界，
+native resampled helper 还会在 extension callback 前预解码内部 chunk。
 
-Marker-capable tracks currently require imported OGG stems. Main-thread
-preflight deterministically rebuilds an Ogg container from Godot's exported
-`OggPacketSequence`; the audio callback receives immutable byte storage.
-Ordinary non-marker BGM keeps the existing OGG/MP3/WAV path.
+因此本实现直接拥有一个 OGG playback，并负责：
 
-## Build and release support
+- 同一 cursor/loop 上的多 stem OGG decode；
+- source-rate linear interpolation；
+- fixed-capacity POD command/event ring；
+- marker occurrence 选择；
+- sample H 处的 buffer split；
+- 完整 stem gain 的原子切换与 source-frame ramp。
 
-The build uses C++17 and is pinned to godot-cpp commit
-`58d1de720b8ffe9f8ffcdfe3a85148582cfd2e74`, the Godot 4.6 API and Stella's
-Godot 4.6.1 CI ABI. It vendors `stb_vorbis.c` from stb commit
-`2c980bb59875b0d32144a71867fbdebb2f77cd20`. See
-`THIRD_PARTY_NOTICES.md` and `third_party/stb/LICENSE`.
+Audio callback 不构造 Godot Variant/Array/Ref，不分配、不加锁、不发 signal、不 deferred call、
+不查询 Resource。每个 stem 解码到预分配 chunk；resampler 保存每 stem 的 raw prefetched sample，
+因此新 mix 仍能作用于 earliest-not-yet-activated source frame。marker selection 与 pending
+persistence 使用相同的 `(source frame, loop epoch)` 坐标，包括 rate>1 callback 中跨过多个
+中间 frame 或短 loop 的情况。
 
-Build both templates before import/export:
+restore 会在 playback instantiate 前把 exact arm 写入 stream。`_start()` 在 atomic startup
+gate 后发布 command；只有唯一 AudioPresenter 注册 owner 和 paused state 后才释放 gate。
+gate 期间 callback 返回完整 requested frame count 的 exact zero PCM，decoder、cursor、command、
+event、gain 和 ramp 都不前进，因此 Godot 不会把它误判为 short-buffer stream end。
+
+不支持的正 source step 也采用相同的完整静音 hold，并且必须发生在任何 command/control
+consume 之前；恢复支持的速率后，原 queued operation 才在下个 callback boundary 执行。只有
+stop、EOF 或 decoder terminal 可以 short-return，而且必须先 settle 已接受的 native operation。
+
+`rt_*_violations` 只是禁止 fallback 路径的 sentinel，不是全进程 allocator/mutex hook。
+实时线程边界由以下证据共同约束：
+
+- fixed-storage 实现审查；
+- first-party warnings-as-errors build；
+- 32-stem decoder refill 上界；
+- callback/lifecycle contract tests。
+
+godot-cpp header 作为 compiler `SYSTEM` include。`stb_vorbis` 实现单独编译为 vendor object，
+只对 upstream 诊断保留明确列出的 warning exemption；first-party
+`register_types.cpp` / `stella_marker_bgm.cpp` 继续开启完整 warnings-as-errors 且没有
+`-Wno-*` / `/wd*`。
+
+stb vendor object 仅关闭 MSVC upstream narrowing/sign/shadowing 诊断 C4244、C4245、C4456、
+C4457，以及 bounded-reader 的 C4701。GCC/Clang/可用的 MSVC compile database 都经过
+`tests/check_marker_bgm_compile_commands.py` 检查作用域。
+
+现有 `AudioPresenter._process()` 只 drain 已由 audio callback 决定并带时间戳的 ring event；
+marker 选择和触发完全发生在 callback 中，它不是第二 scheduler。
+
+`configure(Dictionary)` 和 debug test hook 都是内部 FFI。`configure` 严格拒绝缺失、额外、
+错误类型、非有限或互相矛盾的字段；项目/作者公开面保持 typed resource 和 operation。
+debug hook 只在 `DEBUG_ENABLED` 构建中注册。
+
+marker-capable track 当前要求 imported OGG stems。main-thread preflight 从 Godot 导出的
+`OggPacketSequence` 确定性重建 Ogg container，再一次性交给 native stream。普通无 marker
+BGM 继续使用既有 OGG/MP3/WAV 路径。
+
+## 构建与发布支持
+
+构建使用 C++17，并固定：
+
+- godot-cpp commit `58d1de720b8ffe9f8ffcdfe3a85148582cfd2e74`；
+- Godot 4.6 API / CI 的 Godot 4.6.1 ABI；
+- stb_vorbis commit `2c980bb59875b0d32144a71867fbdebb2f77cd20`。
+
+第三方许可证见 `THIRD_PARTY_NOTICES.md` 与 `third_party/stb/LICENSE`。
+
+import/export 前必须构建两个 template：
 
 ```bash
 tests/build_marker_bgm_native.sh template_debug
 tests/build_marker_bgm_native.sh template_release
 ```
 
-Generated libraries live under `addons/stella/native/bin/` and are ignored,
-not source artifacts. The build copies the checked-in
-`stella_marker_bgm.gdextension.in` to the active `.gdextension` descriptor only
-after compiling; an unbuilt clean clone therefore imports without a missing-
-library loader error, while requesting a marker track reports the exact build
-requirement and fails closed. CI builds macOS universal (arm64+x86_64), Linux
-x86_64, and Windows x86_64 debug/release libraries from clean checkouts, runs
-the native and exported-PCK PCM probes on each host, and publishes the generated
-descriptor plus binaries as per-platform artifacts. Shipping another
-OS/architecture requires adding a deterministic CI-built library entry and an
-export/load smoke; do not silently fall back to immediate mix.
-Maintainers must rebuild both templates for godot-cpp/Godot ABI changes and
-carry the native compiler/toolchain plus stb license in release provenance.
+生成库位于 `addons/stella/native/bin/`，属于 ignored build artifact，不是源码。构建完成后，
+脚本会把受版本控制的 `addons/stella/native/stella_marker_bgm.gdextension.in` 复制成 active
+descriptor。未构建的 clean clone 可以正常 import；只有请求 marker track 时才输出精确构建提示
+并 fail-close。
+
+CI 从 clean checkout 构建并验证：
+
+- macOS universal：arm64 + x86_64；
+- Linux x86_64；
+- Windows x86_64；
+- 三平台 debug/release；
+- native contract 与 exported-PCK PCM probe；
+- per-platform descriptor + binary artifact。
+
+支持新系统/架构前，必须添加确定性 CI binary build 和 export/load smoke，不能静默退化成立即
+mix。Godot/godot-cpp ABI 更新时，维护者必须重编两个 template，并在 release provenance 中
+保留 native toolchain 与 stb 许可证信息。

@@ -1,5 +1,22 @@
 # Stella — 使用指南
 
+**文档角色：** 本文件说明宿主项目当前支持的安装、配置、资源和 Facade
+集成方式。完整 authored grammar 见 [DSL.md](DSL.md)，内部所有权和生命周期见
+[ARCHITECTURE.md](ARCHITECTURE.md)。没有在本文件列出的 Runtime 私有方法、typed
+receipt、registrar capability 或 exact built-in Presenter 不是稳定宿主 API。
+
+| 集成面 | 稳定性意图 |
+|---|---|
+| `.stla` 与 `stella.cfg` | 公共 closed schema；非法输入 fail-close |
+| 本文列出的 `StellaRuntime` Facade | 公共宿主 API |
+| 配置根下的逻辑资源/Profile | 公共声明式资源面 |
+| 本文明确列出的 SignalBus 通知 | 兼容/扩展面，不负责完成内建 blocking command |
+| `core/data` receipt、Runtime 私有方法、registrar | 内部协议 |
+
+游戏项目是 Stella 能力的验证者，而不是兼容层。遇到缺失能力时应在 Stella 提
+Issue/实现公共契约；不要把立绘编码成背景、复制调度器，或在 importer 中静默猜测
+未支持语义。
+
 ## 安装
 
 ### 方法 1：从 GitHub 安装
@@ -19,7 +36,7 @@
 
 ## 快速开始（5 分钟跑通）
 
-### Step 1 — 创建目录结构
+### 步骤 1 — 创建目录结构
 
 在你的项目中创建以下目录：
 
@@ -40,7 +57,7 @@ your_project/
 └── stella.cfg            ← 配置文件
 ```
 
-### Step 2 — 写一段剧本
+### 步骤 2 — 写一段剧本
 
 创建 `scenarios/demo.stla`：
 
@@ -58,7 +75,7 @@ sakura「这是一个最小的示例。」
 @bg bg_black fade 1.0
 ```
 
-### Step 3 — 创建配置文件
+### 步骤 3 — 创建配置文件
 
 创建 `stella.cfg`：
 
@@ -192,7 +209,7 @@ GODOT_BIN=godot tests/pck_smoke/run_export_smoke.sh
 
 `stella.local.cfg` 只是方便开发的覆盖层，不是 secrets vault：它既不加密，也不保证不会被误导出、备份或读取。不要在其中存放 API token、密码或其他凭据；凭据应通过环境变量或专用密钥管理服务提供。
 
-### Step 4 — 搭建游戏场景
+### 步骤 4 — 搭建游戏场景
 
 参考 `examples/demo/` 的结构搭建自己的标题场景和游戏场景，然后在 `stella.cfg` 的 `[overrides]` 中指向它们。
 
@@ -309,17 +326,17 @@ RichTextLabel 与 typewriter 相同的 parsed-character domain，不把 BBCode b
 DialoguePresenter Auto timer/voice waiter authority 拥有，不会创建项目 timer、callback 或
 第二 scheduler。完全不引用资源时，行为仍是原有 `auto_play_delay`。
 
-### Step 5 — 运行
+### 步骤 5 — 运行
 
 按 F5 运行。
 
 ---
 
-## Facade API
+## 公开 Facade API
 
 `StellaRuntime` 提供简洁的 API，用户搭建自己的 UI 时只需要调用这些方法：
 
-### 声明式 UI action
+### 声明式 UI 动作
 
 项目按钮不需要为每个 action 编写脚本，也不应调用 Presenter 的 `_on_*` 私有方法。在
 任意 `BaseButton` 下添加一个 `StellaAction` 子节点，并在 Inspector 中填写稳定的
@@ -499,7 +516,7 @@ signal 内允许独立 nested receipt，但最多 8 个，超过即 fail-close�
 `action_id`。legacy destructive enum 会同步消费本次专用 receipt 以维持既有行为，正常
 confirmation UI 必须按上例忽略带 auto-confirm marker 的请求。
 
-### 自定义对话 consumer / handler 迁移
+### 自定义对话消费端 / Handler 迁移
 
 Canonical 对话事件是 `SignalBus.dialogue_requested(request)`。自定义 UI 或无界面 runner 完成显示后，应确认收到的**同一个** request；不要用旧的全局 `advance_requested` 作为剧情确认：
 
@@ -537,7 +554,7 @@ StellaRuntime.request_quit()         # 安全退休音频后退出
 
 自定义标题、性能模式或其他宿主退出入口必须调用 `request_quit(exit_code=0)`，不要直接 `get_tree().quit()`。该 API 与内置标题、`StellaAction.QUIT` 和 OS close 共用同一个幂等边界：OS close 先自动存档，唯一 AudioPresenter 再退休 BGM/loop-SE/Voice/SE，Runtime 观察真实 AudioServer mix 回绕并给主线程一次 cleanup boundary 后退出。ack、driver 或 timing 非法及有界等待耗尽会以非零状态 fail-close。Godot 4.6.1 的 raw `--quit-after` 存在上游 audio-driver teardown 顺序限制（godotengine/godot#76745 / #122742），不能用于验证 active-audio 的产品 clean shutdown。
 
-#### 场景回想 / Gallery 播放
+#### 场景回想 / 鉴赏播放
 
 Gallery controller 以一个明确的零参数 continuation 启动同一份 STLA：
 
@@ -701,7 +718,7 @@ scheduler。完整语法见 [DSL 文档](DSL.md#35b-addressable-dialogue-avatar)
 可运行且由 CI 实际解析的公开 synthetic 示例位于
 [`examples/demo/scenarios/dialogue_avatar.stla`](../examples/demo/scenarios/dialogue_avatar.stla)。
 
-### 声明式 presentation clip
+### 声明式演出片段
 
 普通作者只选择一个 logical definition；时间线、命名状态 cue、system audio cue、UI 抑制和
 转场都保存在可复用的 `PresentationClipDefinition` 中，不展开成一长串 DSL 参数：
@@ -781,7 +798,7 @@ choice 不会被同步 save 捕获；Backlog、previous-choice、flowchart 也�
 cursor/history/path。load 后未访问 chapter 的 initial checkpoint 使用存档 initial seed 重建，绝不
 采用 load 过程中临时 fresh entropy。
 
-### Native movie
+### 原生电影
 
 项目先把可发布的视频离线转为 Godot 4.6 原生 Ogg Theora/Vorbis `.ogv`，放在 `[paths] movies` 根目录，以 logical ID 引用：
 
@@ -846,7 +863,7 @@ standalone 默认 fire-and-forget，不需要 policy、transition、duration 或
 
 资源从 `[paths] se` 解析，只接受 OGG/WAV；格式 stream 会先 duplicate 再启用 loop，所以普通 one-shot 不受影响，并保留已有 OGG/WAV loop marker。same channel 的 asset+volume 相同是 no-op；只改 volume 保留 player/position；换 asset 才 crossfade，任意时刻最多一个 incoming 与一个 outgoing。缺失资源会在 mixed batch 的任何 child mutation 前按 authored line 拒绝整批。session/new-game/title reset 会清 channels；普通场景和 UI replacement 不会。
 
-### BGM lifecycle 与 cue marker
+### BGM 生命周期与 cue marker
 
 BGM 只有一个 `bgm:main` channel。普通作者使用五种短 standalone action；默认立即执行并 fire-and-forget，动画必须显式写 `fade=`：
 
@@ -886,7 +903,7 @@ marker transport 是 Stella 明确的最小 C++/godot-cpp 设计边界，因为 
 
 旧 `@bgm asset [fade]` / `@bgm off [fade]` 已删除，必须迁移为 `play` / `stop` action grammar；Runtime 中没有第二 BGM handler 或 legacy alias。
 
-### 声明式 Stage 批次：JOIN 与 fire-and-forget
+### 声明式 Stage 批次：JOIN 与非阻塞执行
 
 当多个命名 Stage 层必须在同一 authored boundary 提交，且后续对话或音频必须等待全部转场到达终态时，使用 `policy=join`：
 
@@ -993,7 +1010,7 @@ StellaRuntime.show_backlog()         # 打开回想记录
 StellaRuntime.close_overlay()        # 关闭当前覆盖层
 ```
 
-### CG Gallery
+### CG 鉴赏
 
 ```gdscript
 StellaRuntime.unlock_cg(cg_id)       # 启用 cg_gallery 时记录解锁
@@ -1301,7 +1318,11 @@ Timed wait 默认不可由玩家截短；`skippable=true` 是唯一可选项，�
 
 ## 自定义扩展
 
-### 添加自定义命令
+### 添加命令处理器
+
+下面的 Handler 注册只对程序化构造的 `CommandData(type="my_shake")` 生效。
+`.stla` 是 closed grammar，当前 `DslParser` 会拒绝未知 `@my_shake`；因此仅注册
+Handler **不等于**增加 DSL 指令。
 
 ```gdscript
 class_name MyShakeHandler extends CommandHandler
@@ -1329,6 +1350,21 @@ context 在一次剧情执行期间就是它的代际 token；载入、重启或
 StellaRuntime.registry.register(MyShakeHandler.new())
 ```
 
+要把它变成正式 authored DSL，必须在 Stella 仓库中同时完成：
+
+1. parser grammar、严格参数校验与 `source_path:line` 诊断；
+2. canonical typed/closed payload；
+3. Handler 和必要的 SignalBus/Presenter 链路；
+4. blocking cancellation、存档/恢复（若适用）；
+5. parser/lifecycle/integration 测试以及 `DSL.md` 文档。
+
+不要在宿主项目中 monkey-patch parser 或把未知指令降级成自定义 signal；这会让
+同一剧本在不同项目中产生不同语义。
+
 ### 添加自定义选项风格
 
-继承 `TextChoicePresenter`，实现自己的 UI 展示逻辑。
+当前没有稳定、带 `class_name` 的抽象 ChoicePresenter 基类；默认
+`text_choice_presenter.gd` 是具体 Control 实现。宿主可以提供自己的 choice Control，
+但必须完整遵循 `choice_show` / `choice_hide` / `choice_selected`、输入消费和当前 choice
+session 校验。该 SignalBus 协议目前属于兼容/扩展面，而不是可自由覆盖的继承 API；
+若需要长期稳定的多样化选择 UI，应先在 Stella 中定义并测试正式 Presenter contract。

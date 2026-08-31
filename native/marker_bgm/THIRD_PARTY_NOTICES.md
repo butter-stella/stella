@@ -1,8 +1,10 @@
-# Third-party notices
+# 第三方声明
+
+本文件的说明文字使用中文；许可证正文必须保留上游英文原文，以避免翻译改变法律含义。
 
 ## godot-cpp
 
-Pinned source commit: `58d1de720b8ffe9f8ffcdfe3a85148582cfd2e74`
+固定源码提交：`58d1de720b8ffe9f8ffcdfe3a85148582cfd2e74`
 
 MIT License
 
@@ -28,7 +30,7 @@ SOFTWARE.
 
 ## stb_vorbis
 
-Pinned upstream source commit: `2c980bb59875b0d32144a71867fbdebb2f77cd20`
+固定上游源码提交：`2c980bb59875b0d32144a71867fbdebb2f77cd20`
 
-The vendored source is offered under the upstream dual MIT/public-domain
-terms. The complete notice is retained in `third_party/stb/LICENSE`.
+vendored 源码沿用上游 MIT / public-domain 双许可；完整原文保留在
+`third_party/stb/LICENSE`。

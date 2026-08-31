@@ -3,6 +3,15 @@
 > **设计理念：脚本即演出。** 编剧写完 DSL 脚本就能完成 90% 的演出效果，程序员只负责特殊定制。
 > `.stla` 是当前唯一的剧本源格式；解析器直接生成框架运行时数据模型。
 
+**文档角色：** 本文件是 authored `.stla` 语法、默认值和错误行为的规范参考。
+运行时所有权见 [ARCHITECTURE.md](ARCHITECTURE.md)，宿主接入见
+[USAGE.md](USAGE.md)。示例与速查表不能覆盖或放宽各命令章节的 closed grammar。
+
+DSL 是公共兼容面。未知命令、未知/重复参数、非法 block 结构和无法形成
+canonical typed payload 的输入必须带 `source_path:line` fail-close；不得由项目
+importer、Presenter 或 Handler 猜测修复。对某个游戏包需要的新语义应先成为 Stella
+的正式 DSL/资源能力。
+
 ## 1. 设计原则
 
 1. **编剧零门槛** — 不需要理解编程概念，看示例即可上手
@@ -325,7 +334,7 @@ alpha；自定义 scene 的 typed binding 规则见[使用指南](USAGE.md#声�
 
 `@stage` 是人物立绘、身体/脸部差分、事件图、SD 与前景图片的统一舞台接口。它通过稳定 ID 管理任意数量的动态层，不预建位置槽，也不限制同时显示的人物数量。ID 区分大小写且必须非空；`clear` 是无 ID 的全舞台动作。
 
-### 3.5A Dialogue visibility
+### 3.5A 对话界面显隐
 
 ```stla
 @dialogue_visibility hide
@@ -352,17 +361,16 @@ alpha；自定义 scene 的 typed binding 规则见[使用指南](USAGE.md#声�
 
 每条 standalone command 都是 blocking JOIN；无 Presenter 的 headless runner 同步完成。
 
-### 3.5B Addressable dialogue avatar
+### 3.5B 可寻址对话头像
 
 ```stla
 @dialogue_avatar show asset=character:portraits/hero.png
 @dialogue_avatar hide
 ```
 
-`@dialogue_avatar` controls one stable avatar projection owned by the dialogue surface. It is
-independent from line-local `[expr:]` markers and from named Stage layers. The shortest
-`show`/`hide` forms are sufficient for ordinary use; `set` can prepare a hidden stable state
-without waiting for a later dialogue line:
+`@dialogue_avatar` 控制一份由对话 surface 拥有的稳定头像投影。它与行内 `[expr:]`
+标记、命名 Stage layer 相互独立。普通场景使用最短的 `show` / `hide` 即可；`set` 可以先准备
+一份隐藏的稳定状态，不必等待后续对话行：
 
 ```stla
 @dialogue_avatar set character=hero expression=neutral visible=false position=-280,-140 origin=-480,320 scale=0.45,0.45
@@ -371,33 +379,30 @@ without waiting for a later dialogue line:
 @dialogue_avatar remove transition=fade duration=0.25
 ```
 
-The exact grammar is:
+精确 grammar 为：
 
 - `@dialogue_avatar set <properties...> [transition=cut|fade] [duration=<seconds>]`
 - `@dialogue_avatar show [<properties...>] [transition=cut|fade] [duration=<seconds>]`
 - `@dialogue_avatar hide [transition=cut|fade] [duration=<seconds>]`
 - `@dialogue_avatar remove [transition=cut|fade] [duration=<seconds>]`
-- source is either `asset=<logical-id>` or the pair `character=<id> expression=<id>`; the two forms are mutually exclusive
-- canonical properties are `visible` (only with `set`), `position=x,y`, `origin=x,y`, `scale=x,y`, `rotation`, `z_index`, and `opacity`
-- `position` and `origin` are signed pixel coordinates in the avatar container local canvas; `position` places the Sprite, while `origin` is the pivot measured from the source texture top-left and projects as `Sprite2D.offset=-origin`
-- `scale` is a unitless positive pair and `rotation` is in radians; source fixed-point, unsigned, degree, or packed encodings must be decoded by the importer before constructing Stella DSL
-- `cut` is the default and requires `duration=0`; `fade` defaults to `duration=0.25` and crossfades old/new projections
+- source 必须是 `asset=<logical-id>`，或成对的 `character=<id> expression=<id>`；两种形式互斥
+- canonical properties 为 `visible`（仅 `set`）、`position=x,y`、`origin=x,y`、`scale=x,y`、`rotation`、`z_index`、`opacity`
+- `position` 与 `origin` 是头像容器本地画布中的有符号像素坐标；`position` 放置 Sprite，`origin` 是从源纹理左上角计算的 pivot，并投影为 `Sprite2D.offset=-origin`
+- `scale` 是无单位正数对，`rotation` 使用弧度；源格式中的定点、无符号、角度或 packed 编码必须由 importer 在构造 Stella DSL 前解码
+- 默认 `cut` 且要求 `duration=0`；`fade` 默认 `duration=0.25`，并在新旧投影之间 crossfade
 
-Source-format fields such as `xpos`, `ypos`, `zoom`, `showmode`, `visvalue`, `leveloffset`,
-`order`, and `zpos` are not Stella aliases. An importer must prove and translate them into the
-canonical properties above, or reject the source at its original line. Unknown, duplicate,
-non-finite, out-of-range, incomplete source, and unsupported current-state updates all
-fail-close before Presenter mutation.
+`xpos`、`ypos`、`zoom`、`showmode`、`visvalue`、`leveloffset`、`order`、`zpos`
+等源格式字段不是 Stella alias。importer 必须证明语义并转换为上述 canonical properties，
+否则应在源格式原始行拒绝。未知、重复、非有限、越界、不完整 source 和当前状态不支持的更新，
+都会在 Presenter mutation 前 fail-close。
 
-Standalone avatar commands lower to a one-child JOIN and always traverse the Runtime-owned
-typed Director/DialoguePresenter preflight. Click and Skip may make the effective transition a
-cut, but cannot bypass logical-resource validation. Save/load records only the sealed stable
-avatar target; Tween, receipt, generation, and line-local avatar state do not enter the snapshot.
-Backlog replay restores text and never re-dispatches avatar operations.
-The CI-compiled public reference scenario is
+独立头像命令会 lower 为单 child JOIN，并始终经过 Runtime-owned typed
+Director/DialoguePresenter preflight。Click 和 Skip 可以令有效转场成为 cut，但不能绕过逻辑资源
+验证。存读档只记录 sealed stable avatar target；Tween、receipt、generation 和行内头像状态都不
+进入 snapshot。Backlog 回放只恢复文本，不会重新派发头像操作。CI 会编译的公开参考场景为
 [`examples/demo/scenarios/dialogue_avatar.stla`](../examples/demo/scenarios/dialogue_avatar.stla).
 
-### 3.5C Declarative presentation clip
+### 3.5C 声明式演出片段
 
 ```stla
 @presentation_clip ui/eyecatch
@@ -478,7 +483,7 @@ cursor/path 前验证该 mandatory provider。
 [`tests/fixtures/scenarios/presentation_clip/lifecycle.stla`](../tests/fixtures/scenarios/presentation_clip/lifecycle.stla)
 由 CI 通过同一 parser、Director 与三个 Runtime-owned participant 实际执行。
 
-### 3.5D Dialogue page clear
+### 3.5D 清空对话页
 
 ```stla
 @dialogue_clear
@@ -498,7 +503,7 @@ token、Tween 或 wall-clock wait。存档显式记录 cleared 状态，不能�
 `text == ""` 推断；load、rollback、restart 与 scene replacement 都使用 generation 边界拒绝
 旧 callback。
 
-#### 高级：mixed presentation batch
+#### 高级：混合演出批次
 
 只有需要把 chapter indicator、dialogue visibility、dialogue clear、addressable dialogue avatar 与 Stage 操作组成同一 JOIN/FNF 边界时，才使用
 `@presentation_batch`：
@@ -1087,7 +1092,7 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 | timed wait 可跳过 | `false` | 显式 `skippable=true` 才接受普通推进或 Skip |
 | 对话推进 | 等待点击 | 有语音时可配置等语音播完 |
 
-### Native movie
+### 原生电影
 
 普通电影只需一行：
 
@@ -1106,7 +1111,9 @@ sakura「这样啊...那没关系。」 #voice:sakura_020
 
 DSL 是唯一的脚本格式，引擎直接解析 `.stla` 为内部数据结构（ScenarioData）。
 
-整个 `@stage_batch` block 编译为一个 `stage_batch` command，并保留每个 child source line 供 runtime fail-close；内部 IR 的唯一主说明见 [Architecture 的 PresentationDirector 与 exact Stage composition](ARCHITECTURE.md#presentationdirector-与-exact-stage-composition)。
+整个 `@stage_batch` block 编译为一个 `stage_batch` command，并保留每个 child
+source line 供 runtime fail-close；批次所有权与回执规则见
+[架构设计的表现事务](ARCHITECTURE.md#7-表现事务)。
 
 ```
 ScriptParser/
@@ -1116,6 +1123,15 @@ ScriptParser/
 ├── dialogue_profile_parser.gd -- 对话 Profile 解析与校验
 └── scenario_graph_builder.gd  -- 从 ScenarioData 构建流程图
 ```
+
+当前 `DslParser` 同时承担结构 block 与各指令 grammar，属于已识别的集中化风险；
+评估与拆分顺序见 [ARCHITECTURE_REVIEW.md](ARCHITECTURE_REVIEW.md)。在完成模块化前，
+新增语法仍必须复用现有公共 tokenizer/diagnostic 规则，不能为单个命令引入第二套
+lexer、宽松 alias 或 runtime fallback。
+
+`CommandRegistry.register()` 只注册已经存在的 canonical `CommandData` handler，
+**不会**让 parser 接受新的 `@command`。新增 authored 指令必须同时实现 parser、
+typed/closed payload、handler、必要的 Presenter/存档链路、测试和本文件文档。
 
 ### 解析示例
 
